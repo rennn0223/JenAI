@@ -1,6 +1,6 @@
 [project]
 name = "jenai"
-version = "0.1.1"
+version = "0.2.0"
 description = "Terminal-first AI agent interface for ROS2 robot workflows."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -46,6 +46,7 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
-# The WebUI dashboard embeds a CSS/HTML/JS template as a string literal; its
-# lines (fonts URL, CSS rules) legitimately exceed the line-length limit.
+# The WebUI embeds CSS/HTML/JS as string literals (fonts URL, CSS rules, HTML
+# fragments) that legitimately exceed the line-length limit.
 "src/jenai/webui/server.py" = ["E501"]
+"src/jenai/webui/commands.py" = ["E501"]

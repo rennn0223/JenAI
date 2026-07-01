@@ -179,6 +179,26 @@ def topic_echo(topic: str, *, count: int = 1, timeout: float = 5.0) -> list[str]
     return messages
 
 
+def action_available(name: str, *, timeout: float = 6.0) -> bool:
+    """True if `name` is an advertised ROS2 action (e.g. Nav2's /navigate_to_pose)."""
+    completed = _run(["action", "list"], timeout=timeout)
+    return name in {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+
+
+def action_send_goal(
+    name: str, action_type: str, goal_yaml: str, *, timeout: float = 120.0
+) -> tuple[bool, str]:
+    """Send a goal to an action server and wait for the result (blocking).
+
+    Returns (succeeded, detail). Best-effort success detection from the CLI
+    output — the caller should treat a non-succeeded result honestly.
+    """
+    completed = _run(["action", "send_goal", name, action_type, goal_yaml], timeout=timeout)
+    output = (completed.stdout or "").strip()
+    succeeded = completed.returncode == 0 and "SUCCEEDED" in output.upper()
+    return succeeded, output or (completed.stderr or "").strip() or "no output"
+
+
 @dataclass
 class PubResult:
     ok: bool

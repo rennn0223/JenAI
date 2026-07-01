@@ -52,7 +52,7 @@ JenAI 啟動流程：
 | 指令 | 說明 | 範例 |
 |---|---|---|
 | `/plan <task>` | 規劃任務，不執行 side effects | `/plan 導航到機械系館並回報電量` |
-| `/run <task>` | 執行任務，允許呼叫工具 | `/run 帶我到應科大樓` |
+| `/run <task>` | 執行任務：Supervisor agent 依需求 handoff 給 ROS/Motion/Navigation/Perception 專職 agent（多-agent） | `/run 帶我到應科大樓` |
 | `/why` | 解釋 agent 目前決策原因 | `/why` |
 | `/review` | 重新檢視目前 plan 並建議修改 | `/review` |
 | `/abort` | 中止目前 run | `/abort` |
@@ -75,7 +75,9 @@ JenAI 啟動流程：
 | `/ros schema <topic>` | 解析 topic message type 並以人話摘要欄位 | `/ros schema /cmd_vel` |
 | `/ros echo <topic>` | 即時監看 topic 訊息流 | `/ros echo /scan` |
 | `/ros pub <topic> <payload>` | 向 topic 發送訊息（需批准） | `/ros pub /cmd_vel {"linear":{"x":0.5}}` |
-| `/ros graph` | 顯示 node/topic 連線關係圖（🚧 規劃中，v0.1.0 未實作） | `/ros graph` |
+| `/ros drive <topic> <payload> [秒]` | 定頻發布 N 秒後自動送 0 停車（需批准） | `/ros drive /cmd_vel {"linear":{"x":0.5}} 2` |
+| `/ros state` | 觀察機器人當下狀態（/odom + /scan 快照，閉環感知） | `/ros state` |
+| `/ros graph` | 顯示 node/topic 連線關係圖（🚧 規劃中，未實作） | `/ros graph` |
 
 > `/ros echo` 目前為 snapshot 模式：擷取 N 筆訊息（`/ros echo <topic> [count]`）後結束，尚未支援連續 streaming。
 
@@ -84,6 +86,8 @@ JenAI 啟動流程：
 | 指令 | 說明 | 範例 |
 |---|---|---|
 | `/route <text>` | 自然語言路由，解析起終點並送出導航（需批准） | `/route 從應科大樓到機械系館` |
+| `/drive <自然語言>` | 說人話控車：解析成速度指令後定時發布（需批准） | `/drive 前進兩秒` |
+| `/mission <地點, …>` | 多步巡邏任務：依序前進/導航各點並回報結果（需批准一次） | `/mission 廚房, drive 左轉, 大廳` |
 | `/loc list` | 列出所有可用地點 | `/loc list` |
 | `/loc show <name>` | 顯示特定地點詳細資料 | `/loc show 應科大樓` |
 | `/loc add` | 新增地點（互動式）（🚧 規劃中，v0.1.0 未實作） | `/loc add` |

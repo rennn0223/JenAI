@@ -182,7 +182,10 @@ def route(text: str, config: ConfigOption = None) -> None:
         raise typer.Exit(0)
 
     result = asyncio.run(route_execute(loaded, output.outgoing_action))
-    console.print(f"[green]{result.execution_status}[/green]")
+    if result.execution_status == "succeeded":
+        console.print(f"[green]{result.execution_status}[/green]")
+    else:
+        console.print(f"[yellow]{result.execution_status}: {result.route_preview}[/yellow]")
 
 
 @app.command()

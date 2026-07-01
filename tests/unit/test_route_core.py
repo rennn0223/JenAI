@@ -61,8 +61,8 @@ def test_route_preview_unresolvable_location_lists_candidates() -> None:
     assert output.candidate_matches[0].name == "Engineering Building"
 
 
-def test_route_execute_uses_stub_adapter() -> None:
+def test_route_execute_reports_no_backend_honestly() -> None:
     output = asyncio.run(route_core.route_execute(_config(), {"start": "a", "goal": "b"}))
-    # Stub adapter reports success using the shared "succeeded" vocabulary so
-    # consumers that branch on execution_status == "succeeded" work uniformly.
-    assert output.execution_status == "succeeded"
+    # No navigation backend is wired: report "unavailable", never fake success.
+    assert output.execution_status == "unavailable"
+    assert "not sent" in output.route_preview.lower()

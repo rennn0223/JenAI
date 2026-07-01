@@ -7,11 +7,11 @@ from jenai.schemas import JenAIError, PlanStep, ToolCallRecord
 # Claude Code-style markers (kept local to avoid importing the app module).
 BULLET = "⏺"
 ELBOW = "⎿"
-ACCENT = "#dd9460"
-GREEN = "#6fbf73"
-ERROR = "#e06c75"
-MUTED = "#7c8893"
-TEXT = "#e8ecef"
+ACCENT = "#d97757"
+GREEN = "#7d9b6a"
+ERROR = "#cb6250"
+MUTED = "#9c9689"
+TEXT = "#f2ede1"
 
 _STEP_ICONS = {
     "pending": "○",
@@ -20,6 +20,35 @@ _STEP_ICONS = {
     "skipped": "–",
     "failed": "✗",
 }
+
+# Human-readable names so the transcript never shows raw tool identifiers.
+_FRIENDLY_TOOL = {
+    "ros_topics_tool": "List topics",
+    "ros_topic_info_tool": "Topic info",
+    "ros_schema_tool": "Read message format",
+    "ros_echo_tool": "Peek messages",
+    "ros_pub_validate_tool": "Check message",
+    "ros_pub_execute_tool": "Publish",
+    "ros_drive_execute_tool": "Drive",
+    "route_preview_tool": "Plan route",
+    "route_execute_tool": "Send route",
+    "loc_lookup_tool": "Find place",
+    "vision_image_tool": "Look at image",
+    "shell_run_tool": "Run command",
+}
+
+_FRIENDLY_ERROR = {
+    "tool_error": "Something went wrong",
+    "model_error": "The AI hit a limit",
+    "env_error": "Environment problem",
+    "config_error": "Config problem",
+    "validation_error": "Invalid input",
+    "approval_rejected": "You declined this",
+}
+
+
+def _friendly_tool(name: str) -> str:
+    return _FRIENDLY_TOOL.get(name, name.removesuffix("_tool").replace("_", " ").capitalize())
 
 
 class PlanBlock(Static):
@@ -44,9 +73,9 @@ class ToolBlock(Static):
     def __init__(self, tool_call: ToolCallRecord) -> None:
         call = tool_call
         marker_color = GREEN if call.status == "succeeded" else ACCENT
-        header = f"[{marker_color}]{BULLET}[/] [bold {TEXT}]{call.tool_name}[/]"
+        header = f"[{marker_color}]{BULLET}[/] [bold {TEXT}]{_friendly_tool(call.tool_name)}[/]"
         if call.input_summary:
-            header += f" [{MUTED}]({call.input_summary})[/]"
+            header += f" [{MUTED}]· {call.input_summary}[/]"
         lines = [header]
         result = call.output_summary or f"status: {call.status}"
         lines.append(f"  [{MUTED}]{ELBOW}[/] [{MUTED}]{result}[/]")
@@ -58,7 +87,8 @@ class ErrorBlock(Static):
     """An error rendered as a red bullet with elbow-indented detail."""
 
     def __init__(self, error: JenAIError) -> None:
-        lines = [f"[{ERROR}]{BULLET}[/] [bold {ERROR}]{error.error_type}[/]"]
+        label = _FRIENDLY_ERROR.get(str(error.error_type), str(error.error_type))
+        lines = [f"[{ERROR}]{BULLET}[/] [bold {ERROR}]{label}[/]"]
         lines.append(f"  [{MUTED}]{ELBOW}[/] [{TEXT}]{error.message}[/]")
         if error.fix_suggestion:
             lines.append(f"     [{MUTED}]fix: {error.fix_suggestion}[/]")

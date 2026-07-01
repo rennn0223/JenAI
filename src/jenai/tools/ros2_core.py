@@ -84,6 +84,31 @@ async def ros_topic_info(config: AppConfig, topic: str) -> RosTopicInfoOutput:
     )
 
 
+async def ros_state(
+    config: AppConfig, *, odom_topic: str = "/odom", scan_topic: str = "/scan"
+) -> dict:
+    """Snapshot the robot's current state (pose from odometry, laser scan) so the
+    agent can *observe* before deciding — the closed-loop primitive behind
+    "drive until arrived" / "stop if there's an obstacle". Each field is the raw
+    one-shot message, or None if that topic is idle/absent (honest, never faked).
+    """
+    _ = config
+
+    async def _snap(topic: str) -> str | None:
+        try:
+            blocks = await asyncio.to_thread(ros2_adapter.topic_echo, topic, count=1)
+        except ros2_adapter.Ros2AdapterError:
+            return None
+        return blocks[0] if blocks else None
+
+    return {
+        "odom_topic": odom_topic,
+        "scan_topic": scan_topic,
+        "odom": await _snap(odom_topic),
+        "scan": await _snap(scan_topic),
+    }
+
+
 async def ros_echo(config: AppConfig, topic: str, *, limit: int = 1) -> RosEchoOutput:
     """Capture a snapshot of up to `limit` messages from a topic.
 
@@ -234,7 +259,35 @@ async def ros_pub_validate(topic: str, payload: dict) -> Ros2PubValidation:
     return Ros2PubValidation(ok=True, message_type=info.message_type, payload_preview=payload)
 
 
+# Deterministic safety limits for velocity commands (m/s and rad/s). Applied at
+# execution regardless of what the model or user asked — a hard floor under the
+# LLM-side guardrails so a bad number can never send the robot flying.
+MAX_LINEAR = 1.0
+MAX_ANGULAR = 2.0
+
+
+def _clamp(value, limit):
+    return max(-limit, min(limit, value)) if isinstance(value, int | float) else value
+
+
+def _safety_clamp(payload: dict) -> dict:
+    """Return a copy of a Twist-like payload with linear/angular velocities
+    clamped to the safe limits. Non-Twist payloads pass through unchanged.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    clamped = json.loads(json.dumps(payload))  # cheap deep copy
+    for key, limit in (("linear", MAX_LINEAR), ("angular", MAX_ANGULAR)):
+        axes = clamped.get(key)
+        if isinstance(axes, dict):
+            for axis in ("x", "y", "z"):
+                if axis in axes:
+                    axes[axis] = _clamp(axes[axis], limit)
+    return clamped
+
+
 async def ros_pub_execute(topic: str, message_type: str, payload: dict) -> RosPubOutput:
+    payload = _safety_clamp(payload)
     payload_yaml = _payload_to_yaml(payload)
     result = await asyncio.to_thread(ros2_adapter.topic_pub, topic, message_type, payload_yaml)
     return RosPubOutput(
@@ -260,6 +313,7 @@ async def ros_drive(
     single publish would only nudge the robot before the controller watchdog stops it.
     """
     duration_s = max(0.0, min(duration_s, 30.0))  # clamp to a safe window
+    payload = _safety_clamp(payload)
     payload_yaml = _payload_to_yaml(payload)
     stop_yaml = _payload_to_yaml(_zero_like(payload))
     result = await asyncio.to_thread(

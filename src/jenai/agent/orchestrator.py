@@ -3,9 +3,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agents import Agent, MaxTurnsExceeded, ModelBehaviorError, Runner, ToolTimeoutError
+from agents import (
+    Agent,
+    InputGuardrailTripwireTriggered,
+    MaxTurnsExceeded,
+    ModelBehaviorError,
+    RunConfig,
+    Runner,
+    ToolTimeoutError,
+)
 
 from jenai.agent.context import JenAIRunContext
+from jenai.agent.session import JenAIFileSession
+from jenai.agent.tracing import install_local_tracing
 from jenai.schemas import (
     ApprovalRequest,
     ApprovalStatus,
@@ -36,12 +46,24 @@ _MAX_APPROVALS_PER_RUN = 1
 async def start_run(
     agent: Agent[JenAIRunContext], ctx: JenAIRunContext, task_input: str
 ) -> RunRecord:
+    install_local_tracing()  # observability: log SDK traces to a local JSONL
     run, run_store = ctx.run, ctx.run_store
     run_store.set_status(run, RunStatus.UNDERSTANDING)
     run_store.set_status(run, RunStatus.RUNNING)
 
     try:
-        result = await Runner.run(agent, task_input, context=ctx, max_turns=_MAX_TURNS)
+        # `session` gives cross-run memory (see JenAIFileSession); `run_config`
+        # names the SDK trace for observability. Session is used only on the
+        # initial run — resume replays the paused RunState, which already carries
+        # this run's conversation.
+        result = await Runner.run(
+            agent,
+            task_input,
+            context=ctx,
+            max_turns=_MAX_TURNS,
+            session=JenAIFileSession(run.session_id),
+            run_config=RunConfig(workflow_name="JenAI /run"),
+        )
     except Exception as exc:  # includes provider/API errors, not just _RUN_ERRORS
         run_store.finish(run, status=RunStatus.FAILED, error=_error_from_exc(exc))
         return run
@@ -85,7 +107,13 @@ async def resume_with_approvals(
 
     run_store.set_status(run, RunStatus.RUNNING)
     try:
-        result = await Runner.run(agent, state, context=ctx, max_turns=_MAX_TURNS)
+        result = await Runner.run(
+            agent,
+            state,
+            context=ctx,
+            max_turns=_MAX_TURNS,
+            run_config=RunConfig(workflow_name="JenAI /run (resume)"),
+        )
     except Exception as exc:  # includes provider/API errors, not just _RUN_ERRORS
         run_store.finish(run, status=RunStatus.FAILED, error=_error_from_exc(exc))
         return run
@@ -153,6 +181,12 @@ def _error_from_exc(exc: Exception) -> JenAIError:
     """Classify a run failure so the UI shows an actionable message instead of a
     blanket 'tool_error' (which used to hide max-turns loops and provider faults).
     """
+    if isinstance(exc, InputGuardrailTripwireTriggered):
+        return JenAIError(
+            error_type=ErrorType.VALIDATION_ERROR,
+            message="Blocked by a safety guardrail (the request tried to bypass safety).",
+            fix_suggestion="Rephrase without disabling safety or forcing unsafe motion.",
+        )
     if isinstance(exc, MaxTurnsExceeded):
         return JenAIError(
             error_type=ErrorType.MODEL_ERROR,

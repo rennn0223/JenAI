@@ -387,6 +387,36 @@ def test_tui_run_remembered_tool_skips_card(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_tui_mission_shows_card_and_runs(monkeypatch) -> None:
+    from jenai.tools.mission_core import MissionReport, StepResult
+
+    ran = {}
+
+    async def fake_run_mission(config, locations, steps, *, on_step=None):
+        ran["steps"] = len(steps)
+        result = StepResult("goto", "kitchen", "succeeded", "arrived")
+        if on_step:
+            await on_step(result)
+        return MissionReport([result])
+
+    monkeypatch.setattr("jenai.tui.app.run_mission", fake_run_mission)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/mission kitchen, lobby")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert "2 steps" in cards[0].approval.title
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert ran["steps"] == 2
+            assert list(app.query(ApprovalCard)) == []
+
+    asyncio.run(run())
+
+
 def test_tui_bang_prefix_enters_shell_mode(monkeypatch) -> None:
     from jenai.schemas import ShellOutput
 
@@ -607,7 +637,8 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
 
     async def fake_route_execute(config, outgoing_action):
         return RouteOutput(
-            input_text="", outgoing_action=outgoing_action, execution_status="sent (stub)"
+            input_text="", outgoing_action=outgoing_action, execution_status="unavailable",
+            route_preview="No navigation backend — the goal was NOT sent.",
         )
 
     monkeypatch.setattr("jenai.tui.app.route_preview", fake_route_preview)
