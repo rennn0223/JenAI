@@ -43,9 +43,9 @@ JenAI 啟動流程：
 | `/help` | 顯示指令簡介、分類、範例與快捷鍵 | `/help` or `/help ros` |
 | `/status` | 顯示目前 session 狀態、provider、model、ROS 連線 | `/status` |
 | `/clear` | 清除目前對話畫面 | `/clear` |
-| `/compact` | 壓縮對話歷史以節省 context | `/compact` |
-| `/theme` | 切換顯示主題 | `/theme dark` |
-| `/resume` | 恢復上一個被中斷的 run | `/resume` |
+| `/compact` | 壓縮對話歷史以節省 context（🚧 規劃中，v0.1.0 未實作） | `/compact` |
+| `/theme` | 切換顯示主題（🚧 規劃中，v0.1.0 未實作） | `/theme dark` |
+| `/resume` | 恢復上一個被中斷的 run（🚧 規劃中，v0.1.0 未實作） | `/resume` |
 
 ### Planning
 
@@ -75,7 +75,9 @@ JenAI 啟動流程：
 | `/ros schema <topic>` | 解析 topic message type 並以人話摘要欄位 | `/ros schema /cmd_vel` |
 | `/ros echo <topic>` | 即時監看 topic 訊息流 | `/ros echo /scan` |
 | `/ros pub <topic> <payload>` | 向 topic 發送訊息（需批准） | `/ros pub /cmd_vel {"linear":{"x":0.5}}` |
-| `/ros graph` | 顯示 node/topic 連線關係圖 | `/ros graph` |
+| `/ros graph` | 顯示 node/topic 連線關係圖（🚧 規劃中，v0.1.0 未實作） | `/ros graph` |
+
+> `/ros echo` 目前為 snapshot 模式：擷取 N 筆訊息（`/ros echo <topic> [count]`）後結束，尚未支援連續 streaming。
 
 ### Route
 
@@ -84,20 +86,21 @@ JenAI 啟動流程：
 | `/route <text>` | 自然語言路由，解析起終點並送出導航（需批准） | `/route 從應科大樓到機械系館` |
 | `/loc list` | 列出所有可用地點 | `/loc list` |
 | `/loc show <name>` | 顯示特定地點詳細資料 | `/loc show 應科大樓` |
-| `/loc add` | 新增地點（互動式） | `/loc add` |
+| `/loc add` | 新增地點（互動式）（🚧 規劃中，v0.1.0 未實作） | `/loc add` |
 
 ### Vision
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
 | `/vision image <path>` | 分析圖片並輸出結構化觀察 | `/vision image /tmp/scene.jpg` |
-| `/vision camera` | 擷取目前 camera topic 並分析（待規格） | `/vision camera` |
+| `/vision camera` | 擷取目前 camera topic 並分析（🚧 規劃中，v0.1.0 未實作） | `/vision camera` |
 
 ### System
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
 | `/shell <cmd>` | 執行 shell 命令（需批准） | `/shell ls -la /var/log` |
+| `!<cmd>` | Bash 模式：以 `!` 開頭的輸入直接當 `/shell` 執行（仍需批准） | `!ls -la` |
 
 ---
 
@@ -105,21 +108,27 @@ JenAI 啟動流程：
 
 | 按鍵 | 功能 |
 |---|---|
-| `Enter` | 送出輸入 / 批准 approval card |
-| `Esc` | 關閉 palette / 拒絕 approval card |
+| `Enter` | 送出輸入 / 選定 approval 目前選項 |
+| `!` | 以 `!` 開頭 → 該行當 shell 命令執行 |
+| `Esc` | 中斷執行中的任務 / 拒絕 approval / 關閉 palette |
+| `1` `2` `3` | 直接選 approval 選項（Yes / Yes 並記住 / No） |
 | `Tab` | 補全命令名稱或模板 |
-| `↑` | 查看前一筆歷史輸入（單行模式） |
-| `↓` | 查看後一筆歷史輸入（單行模式） |
-| `↑/↓` | 在 slash palette 中上下移動選項 |
+| `↑` `↓` | 歷史輸入、slash palette 選項、或 approval 選項 |
 
 ---
 
 ## 需批准的指令（Approval Required）
 
-以下指令在執行前一律進入 `awaiting_approval` 狀態，顯示 approval card，等待 Enter 批准或 Esc 拒絕：
+以下指令在執行前一律進入 `awaiting_approval` 狀態，顯示 approval card：
 
 - `/ros pub`
 - `/route`
-- `/shell`
+- `/shell`（含 `!` bash 模式）
 - `/run` 內部觸發的任何 side-effect tool
+
+Approval card 為 Claude Code 風格的**編號選項**，可用 `↑/↓`+`Enter` 或直接按數字鍵：
+
+1. **Yes** — 批准這一次
+2. **Yes, and don't ask again this session** — 批准並在本 session 自動核准同類指令
+3. **No**（或 `Esc`）— 拒絕，並可告訴 JenAI 改用別的做法
 

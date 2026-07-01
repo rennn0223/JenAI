@@ -14,6 +14,36 @@ def test_doctor_reports_missing_config(tmp_path: Path) -> None:
     assert any(item.section == "config" and item.status == "fail" for item in result.items)
 
 
+def test_doctor_every_failure_has_a_fix_suggestion(tmp_path: Path) -> None:
+    # F02 acceptance: every FAIL item carries an actionable fix_suggestion.
+    result = run_doctor(tmp_path / "missing.toml")
+    fails = [item for item in result.items if item.status == "fail"]
+    assert fails
+    assert all(item.fix_suggestion for item in fails)
+
+
+def test_doctor_ros2_distinguishes_missing_cli_from_unsourced_env(monkeypatch) -> None:
+    # F02 acceptance: ROS2 check separates "command missing" from "env not sourced".
+    from jenai.doctor import checks
+
+    monkeypatch.setattr(checks.shutil, "which", lambda name: None)
+    missing = checks._check_ros2()
+    assert missing[0].status == "fail"
+    assert "not found on PATH" in missing[0].message
+
+    monkeypatch.setattr(checks.shutil, "which", lambda name: "/opt/ros/jazzy/bin/ros2")
+
+    class _Fail:
+        returncode = 1
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(checks.subprocess, "run", lambda *a, **kw: _Fail())
+    unsourced = checks._check_ros2()
+    assert unsourced[0].status == "fail"
+    assert "sourced" in (unsourced[0].fix_suggestion or "")
+
+
 def test_doctor_reports_provider_and_models_from_config(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JENAI_TEST_API_KEY", "test-key")
     path = tmp_path / "config.toml"

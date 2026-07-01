@@ -269,12 +269,25 @@ def _check_locations(config: AppConfig | None, config_path: Path | None) -> list
 
 
 def _check_webui_assets() -> list[DoctorCheckItem]:
+    try:
+        from jenai.webui import render_dashboard_html
+
+        render_dashboard_html({"provider": None})
+    except Exception as exc:  # pragma: no cover - defensive
+        return [
+            DoctorCheckItem(
+                section="webui",
+                check_name="assets",
+                status=DoctorStatus.FAIL,
+                message=f"WebUI renderer could not load: {exc}",
+                fix_suggestion="Check the jenai.webui package for import errors.",
+            )
+        ]
     return [
         DoctorCheckItem(
             section="webui",
             check_name="assets",
-            status=DoctorStatus.WARN,
-            message="WebUI skeleton is not implemented yet.",
-            fix_suggestion="Implement WebUI assets in a later PR-sized task.",
+            status=DoctorStatus.PASS,
+            message="WebUI dashboard renderer is available (JenAI web).",
         )
     ]

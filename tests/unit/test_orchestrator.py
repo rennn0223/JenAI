@@ -168,7 +168,10 @@ def test_start_run_handles_max_turns_exceeded(monkeypatch) -> None:
 
     assert result.status == "failed"
     assert result.error is not None
-    assert result.error.error_type == "tool_error"
+    # Max-turns loops are classified as model_error with an actionable hint,
+    # not a blanket tool_error.
+    assert result.error.error_type == "model_error"
+    assert "turn limit" in result.error.message
 
 
 def test_resume_without_pending_state_raises(monkeypatch) -> None:

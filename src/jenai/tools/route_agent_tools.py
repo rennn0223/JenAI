@@ -84,7 +84,17 @@ async def route_execute_tool(
     route_preview_tool has produced a resolved outgoing_action. `outgoing_action_json` is
     the outgoing_action dict from route_preview_tool's response, JSON-encoded."""
     call = _record_call(ctx, "route_execute_tool", "execute route")
-    outgoing_action = json.loads(outgoing_action_json)
+    try:
+        outgoing_action = json.loads(outgoing_action_json)
+    except json.JSONDecodeError as exc:
+        _finish_call(ctx, call, ok=False, summary="invalid JSON action")
+        return {
+            "input_text": "",
+            "outgoing_action": {},
+            "approval_status": "approved",
+            "execution_status": "failed",
+            "route_preview": f"outgoing_action_json is not valid JSON: {exc}",
+        }
     output = await route_core.route_execute(ctx.context.config, outgoing_action)
     _finish_call(ctx, call, ok=True, summary=output.execution_status)
     return output.model_dump(mode="json")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -12,26 +13,71 @@ class ApprovalCardFields:
     justification: str
 
 
+def _decode_json_arg(arguments: dict, key: str) -> object:
+    """Return the decoded value for a `*_json` tool argument.
+
+    Tool parameters carry structured payloads as JSON strings (e.g.
+    ``payload_json``); decode them so the approval card shows the real content
+    rather than an opaque string. Falls back to the raw value on bad JSON.
+    """
+    raw = arguments.get(key)
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+    return raw if raw is not None else {}
+
+
 def format_ros_pub_approval(arguments: dict) -> ApprovalCardFields:
     topic = arguments.get("topic", "?")
     message_type = arguments.get("message_type", "?")
-    payload = arguments.get("payload", {})
+    payload = _decode_json_arg(arguments, "payload_json")
     return ApprovalCardFields(
         title=f"Publish to {topic}",
         summary=f"Send a {message_type} message to ROS2 topic {topic}.",
-        raw_action=f"ros2 topic pub --once {topic} {message_type} \"{payload}\"",
+        raw_action=f"ros2 topic pub --once {topic} {message_type} \"{json.dumps(payload)}\"",
         justification="The agent needs to publish this message to complete the requested task.",
     )
 
 
+def format_ros_drive_approval(arguments: dict) -> ApprovalCardFields:
+    topic = arguments.get("topic", "?")
+    message_type = arguments.get("message_type", "?")
+    duration = arguments.get("duration_seconds", 1.0)
+    payload = _decode_json_arg(arguments, "payload_json")
+    return ApprovalCardFields(
+        title=f"Drive {topic} for {duration}s",
+        summary=f"Publish a {message_type} to {topic} for {duration}s, then auto-stop.",
+        raw_action=(
+            f"ros2 topic pub --rate 10 {topic} {message_type} \"{json.dumps(payload)}\" "
+            f"for {duration}s, then zero-stop"
+        ),
+        justification="The agent needs time-bounded motion to complete the requested task.",
+    )
+
+
 def format_route_approval(arguments: dict) -> ApprovalCardFields:
-    action = arguments.get("outgoing_action", arguments)
+    action = _decode_json_arg(arguments, "outgoing_action_json")
     return ApprovalCardFields(
         title="Send navigation route",
         summary="Send a navigation goal to the route adapter.",
-        raw_action=str(action),
+        raw_action=json.dumps(action, ensure_ascii=False),
         justification=(
             "The agent needs to send this navigation goal to complete the requested route."
+        ),
+    )
+
+
+def format_shell_approval(arguments: dict) -> ApprovalCardFields:
+    command = arguments.get("command", "?")
+    cwd = arguments.get("cwd") or "(current directory)"
+    return ApprovalCardFields(
+        title="Run shell command",
+        summary=f"Execute a host shell command in {cwd}.",
+        raw_action=command,
+        justification=(
+            "The agent needs to run this shell command to complete the requested task."
         ),
     )
 
@@ -47,7 +93,9 @@ def format_generic_approval(tool_name: str, arguments: dict) -> ApprovalCardFiel
 
 APPROVAL_FORMATTERS: dict[str, Callable[[dict], ApprovalCardFields]] = {
     "ros_pub_execute_tool": format_ros_pub_approval,
+    "ros_drive_execute_tool": format_ros_drive_approval,
     "route_execute_tool": format_route_approval,
+    "shell_run_tool": format_shell_approval,
 }
 
 

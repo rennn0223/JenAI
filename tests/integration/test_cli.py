@@ -145,7 +145,7 @@ def test_route_command_prompts_and_executes(tmp_path: Path, monkeypatch) -> None
     )
 
     assert result.exit_code == 0
-    assert "sent (stub)" in result.stdout
+    assert "succeeded" in result.stdout
 
 
 def test_route_command_cancelled_by_user(tmp_path: Path) -> None:

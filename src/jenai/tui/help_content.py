@@ -14,11 +14,25 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="ROS2",
-        commands=["/ros topics", "/ros schema <topic>", "/ros pub <topic> <payload>"],
+        commands=[
+            "/ros topics",
+            "/ros topic-info <topic>",
+            "/ros schema <topic>",
+            "/ros echo <topic> [count]",
+            "/ros pub <topic> <payload>",
+        ],
     ),
     CommandGroup(
         name="Route",
         commands=["/route <text>", "/loc list", "/loc show <name>"],
+    ),
+    CommandGroup(
+        name="Vision",
+        commands=["/vision image <path>"],
+    ),
+    CommandGroup(
+        name="System",
+        commands=["/shell <cmd>"],
     ),
     CommandGroup(
         name="Provider / Model",
@@ -33,10 +47,12 @@ _EXAMPLES = [
 ]
 
 _KEYBOARD_SHORTCUTS = [
-    KeyboardShortcut(key="Enter", action="Submit input / approve an approval card"),
-    KeyboardShortcut(key="Esc", action="Close palette / reject an approval card"),
+    KeyboardShortcut(key="Enter", action="Submit input / choose the selected approval option"),
+    KeyboardShortcut(key="!", action="Run the rest of the line as a shell command"),
+    KeyboardShortcut(key="Esc", action="Interrupt a running task / reject an approval"),
+    KeyboardShortcut(key="1 / 2 / 3", action="Pick an approval option (Yes / Yes+remember / No)"),
     KeyboardShortcut(key="Tab", action="Complete the selected command"),
-    KeyboardShortcut(key="↑ / ↓", action="Navigate input history or the command palette"),
+    KeyboardShortcut(key="↑ / ↓", action="History, command palette, or approval options"),
 ]
 
 

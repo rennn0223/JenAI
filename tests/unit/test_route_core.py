@@ -63,4 +63,6 @@ def test_route_preview_unresolvable_location_lists_candidates() -> None:
 
 def test_route_execute_uses_stub_adapter() -> None:
     output = asyncio.run(route_core.route_execute(_config(), {"start": "a", "goal": "b"}))
-    assert output.execution_status == "sent (stub)"
+    # Stub adapter reports success using the shared "succeeded" vocabulary so
+    # consumers that branch on execution_status == "succeeded" work uniformly.
+    assert output.execution_status == "succeeded"

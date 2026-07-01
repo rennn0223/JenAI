@@ -8,7 +8,11 @@ from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_json
 from jenai.schemas import Location, RouteOutput
 
-_SPLIT_PATTERN = re.compile(r"(?:從|from)\s*(.+?)\s*(?:到|to)\s*(.+)", re.IGNORECASE)
+# English `to`/`from` require word boundaries so they don't match inside words
+# (e.g. the "to" in "photo"); Chinese 從/到 have no such boundaries and match as-is.
+_SPLIT_PATTERN = re.compile(
+    r"(?:從|\bfrom\b)\s*(.+?)\s*(?:到|\bto\b)\s*(.+)", re.IGNORECASE
+)
 
 
 def _extract_via_regex(text: str) -> tuple[str, str] | None:

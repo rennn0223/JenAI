@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+import asyncio
+
+from jenai.schemas import EffectScope, RiskLevel
+from jenai.tools import shell_core
+
+
+def test_assess_command_flags_destructive() -> None:
+    risk = shell_core.assess_command("rm -rf /tmp/data")
+    assert risk.risk_level == RiskLevel.P2
+    assert risk.effect_scope == EffectScope.HOST_COMMAND
+    assert "rm" in risk.risk_summary
+
+
+def test_assess_command_default_is_p1() -> None:
+    risk = shell_core.assess_command("ls -la")
+    assert risk.risk_level == RiskLevel.P1
+    assert risk.effect_scope == EffectScope.HOST_COMMAND
+
+
+def test_preview_does_not_execute() -> None:
+    preview = shell_core.preview_command("echo hi", cwd="/tmp")
+    assert preview.approval_status == "pending"
+    assert preview.working_directory.endswith("/tmp")
+    assert preview.exit_code == 0  # default, nothing ran
+
+
+def test_run_shell_captures_output() -> None:
+    output = asyncio.run(shell_core.run_shell("echo hello-jenai"))
+    assert output.exit_code == 0
+    assert "hello-jenai" in output.stdout_summary
+    assert output.approval_status == "approved"
+
+
+def test_run_shell_reports_nonzero_exit() -> None:
+    output = asyncio.run(shell_core.run_shell("exit 3"))
+    assert output.exit_code == 3

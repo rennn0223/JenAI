@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import NamedTuple
 
+from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, ScrollableContainer, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Input, Static
 
 from jenai import __version__
@@ -39,12 +42,22 @@ from jenai.schemas import (
 )
 from jenai.state import InputHistory, RunStore, create_session
 from jenai.tools.registry import TOOL_RISK_REGISTRY
-from jenai.tools.ros2_core import ros_pub_execute, ros_pub_validate, ros_schema, ros_topics
+from jenai.tools.ros2_core import (
+    ros_drive,
+    ros_echo,
+    ros_pub_execute,
+    ros_pub_validate,
+    ros_schema,
+    ros_topic_info,
+    ros_topics,
+)
 from jenai.tools.route_core import route_execute, route_preview
+from jenai.tools.shell_core import assess_command, preview_command, run_shell
+from jenai.tools.vision_core import VisionError, analyze_image
 from jenai.tui.help_content import build_help_output
 from jenai.tui.widgets import ApprovalCard, ErrorBlock, PlanBlock, ToolBlock
 
-APPROVAL_REQUIRED_COMMANDS = ("/ros pub", "/route", "/run")
+APPROVAL_REQUIRED_COMMANDS = ("/ros pub", "/route", "/shell", "/run")
 
 ACCENT = "#dd9460"
 ACCENT_DARK = "#c8765a"
@@ -79,15 +92,26 @@ SLASH_COMMANDS = [
     SlashCommand("/review", "Re-plan and critique the current plan"),
     SlashCommand("/abort", "Abort the active run"),
     SlashCommand("/ros topics", "List ROS2 topics"),
-    SlashCommand("/ros schema", "Summarize a ROS2 topic's message schema", "/ros schema <topic>"),
     SlashCommand(
-        "/ros pub", "Publish to a ROS2 topic (needs approval)", "/ros pub <topic> <payload>"
+        "/ros topic-info", "Show a topic's type/publishers/subscribers", "/ros topic-info <topic>"
+    ),
+    SlashCommand("/ros schema", "Summarize a ROS2 topic's message schema", "/ros schema <topic>"),
+    SlashCommand("/ros echo", "Snapshot recent messages on a topic", "/ros echo <topic> [count]"),
+    SlashCommand(
+        "/ros pub", "Publish once to a ROS2 topic (needs approval)", "/ros pub <topic> <payload>"
+    ),
+    SlashCommand(
+        "/ros drive",
+        "Drive for N seconds then auto-stop (needs approval)",
+        "/ros drive <topic> <payload> [seconds]",
     ),
     SlashCommand(
         "/route", "Resolve and send a navigation route (needs approval)", "/route <text>"
     ),
     SlashCommand("/loc list", "List known locations"),
     SlashCommand("/loc show", "Show a location's details", "/loc show <name>"),
+    SlashCommand("/vision image", "Analyze a local image with the VLM", "/vision image <path>"),
+    SlashCommand("/shell", "Run a host shell command (needs approval)", "/shell <cmd>"),
     SlashCommand("/clear", "Clear the output area"),
     SlashCommand("/quit", "Exit JenAI"),
 ]
@@ -122,32 +146,14 @@ class JenAITuiApp(App[None]):
         background: #1e242b;
     }
 
-    #header {
-        height: 3;
-        padding: 0 3;
-        background: #1e242b;
-        border-bottom: heavy #303944;
-        content-align: left middle;
-    }
-
-    #header-left {
-        color: #e8ecef;
-        text-style: bold;
-        width: 1fr;
-    }
-
-    #header-right {
-        color: #7c8893;
-        text-align: right;
-        width: auto;
-    }
-
     #body {
         height: 1fr;
         padding: 1 3 0 3;
+        scrollbar-size-vertical: 1;
         scrollbar-background: #1e242b;
-        scrollbar-color: #c8765a;
-        scrollbar-color-hover: #dd9460;
+        scrollbar-color: #2c333c;
+        scrollbar-color-hover: #3a424c;
+        scrollbar-color-active: #3a424c;
     }
 
     #welcome {
@@ -204,19 +210,10 @@ class JenAITuiApp(App[None]):
         margin: 1 0;
     }
 
-    .hint {
-        color: #7c8893;
-        margin-bottom: 1;
-        text-style: italic;
-    }
-
-    .prompt-pill {
-        background: #2b323b;
-        color: #e8ecef;
-        border: round #3a424c;
-        padding: 0 2;
-        margin-bottom: 1;
-        width: auto;
+    .prompt-line {
+        height: auto;
+        margin: 1 0 0 0;
+        color: #c8cdd2;
     }
 
     #events {
@@ -224,120 +221,62 @@ class JenAITuiApp(App[None]):
         margin-bottom: 1;
     }
 
-    .timeline-item {
+    .bullet-line {
         height: auto;
         margin-bottom: 1;
-    }
-
-    .dot {
-        width: 3;
-        text-style: bold;
-        color: #e8ecef;
-    }
-
-    .dot-command {
-        color: #8e9bf0;
-    }
-
-    .dot-success {
-        color: #6fbf73;
-    }
-
-    .dot-warn {
-        color: #dd9460;
-    }
-
-    .dot-error {
-        color: #e06c75;
-    }
-
-    .dot-muted {
-        color: #9aa3ad;
-    }
-
-    .timeline-copy {
-        width: 1fr;
-        color: #c8cdd2;
-    }
-
-    .output-panel {
-        background: #232a33;
-        border: round #3a424c;
-        border-title-color: #8e9bf0;
-        padding: 1 2;
-        margin-bottom: 1;
-        height: auto;
-    }
-
-    .panel-title {
-        color: #8e9bf0;
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    .panel-copy {
         color: #c8cdd2;
     }
 
     .approval-card {
-        background: #2b241f;
-        border: heavy #dd9460;
-        padding: 1 2;
+        background: #262b31;
+        border-left: thick #b5794f;
+        padding: 0 2;
         margin-bottom: 1;
         height: auto;
-    }
-
-    .approval-title {
-        color: #dd9460;
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    .approval-summary {
-        color: #e8ecef;
-        margin-bottom: 1;
-    }
-
-    .approval-meta {
-        color: #7c8893;
-        margin-bottom: 1;
-    }
-
-    .approval-justification {
-        color: #c8cdd2;
-        margin-bottom: 1;
-    }
-
-    .approval-footer {
-        color: #7c8893;
     }
 
     #composer-wrap {
         height: auto;
         padding: 1 3 1 3;
         background: #1e242b;
-        border-top: solid #262d35;
     }
 
     #palette {
         height: auto;
-        max-height: 10;
+        max-height: 16;
         margin-bottom: 1;
         padding: 1 2;
-        background: #232a33;
-        border: round #3a424c;
+        background: #0d0f12;
+        border: round #34302a;
     }
 
     #composer {
         height: 3;
         background: #232a33;
         color: #e8ecef;
-        border: round #3a424c;
+        border: round #3a3630;
         padding: 0 1;
     }
 
     #composer:focus {
         border: round #dd9460;
+    }
+
+    #spinner {
+        height: auto;
+        color: #dd9460;
+        margin-bottom: 1;
+        display: none;
+    }
+
+    #spinner.active {
+        display: block;
+    }
+
+    #statusbar {
+        height: 1;
+        color: #7c8893;
+        margin-top: 1;
     }
     """
 
@@ -373,44 +312,38 @@ class JenAITuiApp(App[None]):
         # tool_call_id -> {"kind", "ctx", ...} for approvals from deterministic,
         # non-agent commands (/ros pub, /route) that skip the LLM entirely.
         self._pending_direct_approvals: dict[str, dict] = {}
+        # Claude Code-style working indicator + interruptible execution.
+        self._active_task: asyncio.Task | None = None
+        self._spinner_timer = None
+        self._spinner_frame = 0
+        self._spinner_started = 0.0
+        self._spinner_label = "Working"
+        # Tool kinds the user chose to auto-approve for the rest of the session
+        # via the approval card's "Yes, and don't ask again" option.
+        self._auto_approved: set[str] = set()
 
     def compose(self) -> ComposeResult:
         profile = self._active_profile()
-        model_name = self._chat_model_display()
-
         with Container(id="stage"):
             with Vertical(id="window"):
-                yield CliHeader()
                 with ScrollableContainer(id="body"):
                     yield WelcomePanel(
                         version=__version__,
                         provider_name=profile.name if profile else "provider missing",
                         provider_kind=profile.provider if profile else "unknown",
-                        model_name=model_name,
+                        model_name=self._chat_model_display(),
                         config_path=self.config_path,
                         doctor_result=self.doctor_result,
                     )
-                    yield Static(
-                        "/help · /plan · /run · /ros topics · /route · /loc list · /status",
-                        classes="hint",
-                    )
-                    with Vertical(id="events"):
-                        yield TimelineItem(
-                            "success",
-                            "JenAI shell is ready. Type [bold #e8ecef]/help[/] to see "
-                            "available commands.",
-                        )
-                        yield TimelineItem(
-                            "muted",
-                            "Provider chat, planning/execution, ROS2 tools, and route/location "
-                            "commands are all live. WebUI is still a later module.",
-                        )
+                    yield Vertical(id="events")
                 with Container(id="composer-wrap"):
                     yield CommandPalette(id="palette")
+                    yield Static("", id="spinner")
                     yield Input(
-                        placeholder="Ask JenAI or type /help",
+                        placeholder="Ask JenAI, / for commands, ! for shell",
                         id="composer",
                     )
+                    yield Static(self._status_line(), id="statusbar")
 
     def on_mount(self) -> None:
         self.query_one("#palette", CommandPalette).display = False
@@ -432,10 +365,40 @@ class JenAITuiApp(App[None]):
 
         event.input.value = ""
         self._hide_command_palette()
-        if value:
+        if not value:
+            return
+        if self._active_task is not None and not self._active_task.done():
+            return  # busy; ignore new submissions until the current one finishes
+        self._active_task = asyncio.create_task(self._run_user_text(value))
+
+    async def _run_user_text(self, value: str) -> None:
+        """Run one submission with a working spinner; cancellable via Esc."""
+        self._start_spinner(self._spinner_label_for(value))
+        try:
             await self.handle_user_text(value)
+        except asyncio.CancelledError:
+            # Esc interrupt (or app shutdown). Only report if the UI is still
+            # mounted — during quit the widgets are already gone.
+            if self.is_running:
+                try:
+                    await self._mount_event(TimelineItem("warn", "Interrupted."))
+                    self._scroll_to_bottom()
+                except NoMatches:
+                    pass
+        finally:
+            self._stop_spinner()
+            self._active_task = None
 
     def on_key(self, event) -> None:
+        # Key routing priority: (1) Esc interrupts a running task, (2) the slash
+        # palette owns up/down/tab while open, (3) up/down otherwise walks the
+        # input history. Each branch stops the event so only one thing reacts.
+        if event.key == "escape" and self._active_task is not None and not self._active_task.done():
+            self._active_task.cancel()
+            event.prevent_default()
+            event.stop()
+            return
+
         if self._palette_is_visible():
             if event.key == "down":
                 self._move_command_selection(1)
@@ -449,6 +412,7 @@ class JenAITuiApp(App[None]):
             event.stop()
             return
 
+        # No palette open: up/down scrolls the per-session input history.
         if event.key in ("up", "down"):
             composer = self.query_one("#composer", Input)
             if not composer.has_focus:
@@ -470,10 +434,13 @@ class JenAITuiApp(App[None]):
             return
 
         await self._mount_event(PromptPill(value))
-        if value.startswith("/"):
+        if value.startswith("!"):
+            # Bash mode: everything after ! runs as a (still approval-gated)
+            # shell command, mirroring Claude Code's ! prefix.
+            await self._show_shell(value[1:].strip())
+        elif value.startswith("/"):
             await self._handle_command(value)
         else:
-            await self._mount_event(TimelineItem("muted", "Sending to provider..."))
             self._scroll_to_bottom()
             try:
                 response = await ask_provider(self.config, value)
@@ -482,12 +449,7 @@ class JenAITuiApp(App[None]):
                 self._scroll_to_bottom()
                 return
 
-            await self._mount_event(
-                TimelineItem(
-                    "command",
-                    f"[#7c8893]{response.provider} · {response.model}[/]\n{response.content}",
-                )
-            )
+            await self._mount_event(TimelineItem("assistant", escape(response.content)))
         self._scroll_to_bottom()
 
     def action_focus_composer(self) -> None:
@@ -537,6 +499,9 @@ class JenAITuiApp(App[None]):
         if not self._command_matches:
             return
 
+        # Wrap over the full match list (not just the visible window); the
+        # palette's scroll window follows this index, so every command is
+        # reachable by holding up/down.
         self._selected_command_index = (
             self._selected_command_index + delta
         ) % len(self._command_matches)
@@ -595,8 +560,11 @@ class JenAITuiApp(App[None]):
             subcommand, _, rest = arg.partition(" ")
             ros_handlers = {
                 "topics": self._show_ros_topics,
+                "topic-info": self._show_ros_topic_info,
                 "schema": self._show_ros_schema,
+                "echo": self._show_ros_echo,
                 "pub": self._show_ros_pub,
+                "drive": self._show_ros_drive,
             }
             return ros_handlers.get(subcommand), rest.strip()
 
@@ -624,6 +592,8 @@ class JenAITuiApp(App[None]):
             "/review": self._show_review,
             "/abort": self._show_abort,
             "/route": self._show_route,
+            "/vision": self._show_vision,
+            "/shell": self._show_shell,
             "/quit": self._quit_from_command,
             "/exit": self._quit_from_command,
         }
@@ -762,14 +732,28 @@ class JenAITuiApp(App[None]):
         if run.status == "awaiting_approval":
             pending_approvals = [a for a in run.interruptions if a.status == "pending"]
             if agent is not None and pending_approvals:
-                self._pending_approvals[run.run_id] = {
+                entry = {
                     "agent": agent,
                     "ctx": ctx,
                     "decisions": {},
                     "expected": {a.tool_call_id for a in pending_approvals},
                 }
-            for approval in pending_approvals:
-                await self._mount_event(ApprovalCard(approval))
+                self._pending_approvals[run.run_id] = entry
+                mounted_card = False
+                for approval in pending_approvals:
+                    # "Don't ask again": tools the user remembered this session
+                    # are auto-approved without another card.
+                    if approval.tool_name and approval.tool_name in self._auto_approved:
+                        entry["decisions"][approval.tool_call_id] = True
+                    else:
+                        await self._mount_event(ApprovalCard(approval))
+                        mounted_card = True
+                if not mounted_card and set(entry["decisions"]) >= entry["expected"]:
+                    await self._finalize_agent_approvals(run.run_id)
+                    return
+            else:
+                for approval in pending_approvals:
+                    await self._mount_event(ApprovalCard(approval))
         elif run.status == "completed":
             if run.final_output:
                 await self._mount_event(OutputPanel("Result", run.final_output))
@@ -791,7 +775,6 @@ class JenAITuiApp(App[None]):
 
         ctx = self._new_run_context(arg)
         self._last_plan_ctx = ctx
-        await self._mount_event(TimelineItem("muted", "Planning..."))
         self._scroll_to_bottom()
         run = await run_plan(ctx, arg)
         await self._render_run_update(ctx, run)
@@ -803,7 +786,6 @@ class JenAITuiApp(App[None]):
 
         ctx = self._new_run_context(arg)
         agent = build_run_agent(self.config)
-        await self._mount_event(TimelineItem("muted", "Running..."))
         self._scroll_to_bottom()
         run = await orchestrator.start_run(agent, ctx, arg)
         await self._render_run_update(ctx, run, agent=agent)
@@ -837,7 +819,6 @@ class JenAITuiApp(App[None]):
 
         ctx = self._last_plan_ctx
         task = arg or ctx.run.user_input
-        await self._mount_event(TimelineItem("muted", "Reviewing plan..."))
         self._scroll_to_bottom()
         run = await review_plan(ctx, task)
         await self._render_run_update(ctx, run)
@@ -871,6 +852,42 @@ class JenAITuiApp(App[None]):
             return
         rows = [f"{item.name}  [#7c8893]({item.kind_hint})[/]" for item in output.topics]
         await self._mount_event(OutputPanel("ROS2 topics", "\n".join(rows)))
+
+    async def _show_ros_topic_info(self, arg: str) -> None:
+        if not arg:
+            await self._mount_event(TimelineItem("warn", "Usage: /ros topic-info <topic>"))
+            return
+
+        output = await ros_topic_info(self.config, arg)
+        if not output.message_type:
+            await self._mount_event(TimelineItem("warn", output.summary))
+            return
+
+        lines = [
+            f"Message type: [bold #e8ecef]{output.message_type}[/]",
+            f"Publishers ({output.publisher_count}): {', '.join(output.publishers) or '—'}",
+            f"Subscribers ({output.subscriber_count}): {', '.join(output.subscribers) or '—'}",
+        ]
+        await self._mount_event(OutputPanel(f"Topic info: {arg}", "\n".join(lines)))
+
+    async def _show_ros_echo(self, arg: str) -> None:
+        parts = arg.split()
+        if not parts:
+            await self._mount_event(TimelineItem("warn", "Usage: /ros echo <topic> [count]"))
+            return
+        topic = parts[0]
+        limit = 1
+        if len(parts) > 1 and parts[1].isdigit():
+            limit = max(1, int(parts[1]))
+
+        output = await ros_echo(self.config, topic, limit=limit)
+        if not output.messages:
+            await self._mount_event(TimelineItem("warn", output.summary))
+            return
+        rendered = "\n\n".join(
+            json.dumps(msg, ensure_ascii=False, indent=2) for msg in output.messages
+        )
+        await self._mount_event(OutputPanel(f"Echo: {topic}", rendered))
 
     async def _show_ros_schema(self, arg: str) -> None:
         if not arg:
@@ -913,6 +930,17 @@ class JenAITuiApp(App[None]):
             effect_scope=EffectScope.SIM_CONTROL,
         )
         self.run_store.add_tool_call(ctx.run, tool_call)
+        if "ros_pub" in self._auto_approved:
+            await self._execute_direct(
+                {
+                    "kind": "ros_pub",
+                    "ctx": ctx,
+                    "topic": topic,
+                    "message_type": validation.message_type,
+                    "payload": payload,
+                }
+            )
+            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -933,6 +961,70 @@ class JenAITuiApp(App[None]):
             "message_type": validation.message_type,
             "payload": payload,
         }
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_ros_drive(self, arg: str) -> None:
+        # /ros drive <topic> <json payload> [seconds]
+        parts = arg.split()
+        if len(parts) < 2:
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /ros drive <topic> <json payload> [seconds]")
+            )
+            return
+        duration = 1.0
+        if len(parts) >= 3 and _is_number(parts[-1]):
+            duration = float(parts[-1])
+            payload_json = " ".join(parts[1:-1])
+        else:
+            payload_json = " ".join(parts[1:])
+        topic = parts[0]
+        try:
+            payload = json.loads(payload_json)
+        except json.JSONDecodeError as exc:
+            await self._mount_event(TimelineItem("error", f"Invalid JSON payload: {exc}"))
+            return
+
+        validation = await ros_pub_validate(topic, payload)
+        if not validation.ok:
+            message = validation.error.message if validation.error else "Validation failed."
+            await self._mount_event(TimelineItem("error", message))
+            return
+
+        ctx = self._new_run_context(f"/ros drive {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="ros_drive_execute_tool",
+            category=ToolCallCategory.ROS2,
+            input_summary=f"drive {topic} for {duration}s",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        pending = {
+            "kind": "drive",
+            "ctx": ctx,
+            "topic": topic,
+            "message_type": validation.message_type,
+            "payload": payload,
+            "duration": duration,
+        }
+        if "drive" in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="ros_drive_execute_tool",
+            title=f"Drive {topic} for {duration}s",
+            summary=f"Publish a {validation.message_type} to {topic} for {duration}s, then stop.",
+            raw_action=f"ros2 topic pub --rate 10 {topic} … for {duration}s, then zero-stop",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="Requested via /ros drive.",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
         await self._mount_event(ApprovalCard(approval))
         self._scroll_to_bottom()
 
@@ -973,6 +1065,11 @@ class JenAITuiApp(App[None]):
             effect_scope=EffectScope.SIM_CONTROL,
         )
         self.run_store.add_tool_call(ctx.run, tool_call)
+        if "route" in self._auto_approved:
+            await self._execute_direct(
+                {"kind": "route", "ctx": ctx, "outgoing_action": output.outgoing_action}
+            )
+            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -990,6 +1087,75 @@ class JenAITuiApp(App[None]):
             "kind": "route",
             "ctx": ctx,
             "outgoing_action": output.outgoing_action,
+        }
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_vision(self, arg: str) -> None:
+        # Accept both "/vision image <path>" and "/vision <path>".
+        parts = arg.split(maxsplit=1)
+        if parts and parts[0] == "image":
+            path = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            path = arg.strip()
+        if not path:
+            await self._mount_event(TimelineItem("warn", "Usage: /vision image <path>"))
+            return
+
+        try:
+            output = await analyze_image(self.config, path)
+        except VisionError as exc:
+            await self._mount_event(TimelineItem("error", str(exc)))
+            return
+
+        lines = [output.summary]
+        if output.objects:
+            lines.append(f"[bold #e8ecef]Objects:[/] {', '.join(output.objects)}")
+        if output.anomalies:
+            lines.append(f"[bold #e8ecef]Anomalies:[/] {', '.join(output.anomalies)}")
+        if output.next_action_suggestions:
+            lines.append(
+                "[bold #e8ecef]Suggested next:[/] " + "; ".join(output.next_action_suggestions)
+            )
+        await self._mount_event(OutputPanel(f"Vision: {output.source}", "\n".join(lines)))
+
+    async def _show_shell(self, arg: str) -> None:
+        command = arg.strip()
+        if not command:
+            await self._mount_event(TimelineItem("warn", "Usage: /shell <command>"))
+            return
+
+        preview = preview_command(command)
+        risk = assess_command(command)
+        ctx = self._new_run_context(f"/shell {command}")
+        tool_call = ToolCallRecord(
+            tool_name="shell_run_tool",
+            category=ToolCallCategory.SHELL,
+            input_summary=command,
+            risk_level=risk.risk_level,
+            effect_scope=risk.effect_scope,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        if "shell" in self._auto_approved:
+            await self._execute_direct({"kind": "shell", "ctx": ctx, "command": command})
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            title="Run shell command",
+            summary=f"Execute in {preview.working_directory}. {risk.risk_summary}",
+            raw_action=command,
+            risk_level=risk.risk_level,
+            effect_scope=risk.effect_scope,
+            justification="Requested via /shell.",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+
+        self._pending_direct_approvals[approval.tool_call_id] = {
+            "kind": "shell",
+            "ctx": ctx,
+            "command": command,
         }
         await self._mount_event(ApprovalCard(approval))
         self._scroll_to_bottom()
@@ -1039,13 +1205,42 @@ class JenAITuiApp(App[None]):
     # -- Approval decisions ---------------------------------------------------
 
     async def on_approval_card_decision(self, message: ApprovalCard.Decision) -> None:
+        # Two approval sources share one card + message: deterministic slash
+        # commands (/ros pub, /route, /shell) tracked in _pending_direct_approvals,
+        # and agent-driven /run interruptions tracked in _pending_approvals.
         if message.tool_call_id in self._pending_direct_approvals:
+            # Option 2 ("don't ask again") remembers this command kind so future
+            # cards of the same kind are auto-approved for the session.
+            if message.approved and message.remember:
+                kind = self._pending_direct_approvals[message.tool_call_id]["kind"]
+                self._auto_approved.add(kind)
+                await self._mount_event(
+                    TimelineItem("muted", f"Auto-approving '{kind}' for the rest of this session.")
+                )
             await self._resolve_direct_approval(message.tool_call_id, message.approved)
             return
 
         run_id = self._find_run_id_for_call(message.tool_call_id)
         if run_id is not None:
+            # Agent-flow "don't ask again": remember by tool_name so later
+            # interruptions for the same tool auto-approve (see _render_run_update).
+            if message.approved and message.remember:
+                approval = self._approval_by_call_id(message.tool_call_id)
+                if approval is not None and approval.tool_name:
+                    self._auto_approved.add(approval.tool_name)
+                    await self._mount_event(
+                        TimelineItem(
+                            "muted",
+                            f"Auto-approving '{approval.tool_name}' for the rest of this session.",
+                        )
+                    )
             await self._resolve_agent_approval(run_id, message.tool_call_id, message.approved)
+
+    def _approval_by_call_id(self, tool_call_id: str) -> ApprovalRequest | None:
+        for card in self.query(ApprovalCard):
+            if card.approval.tool_call_id == tool_call_id:
+                return card.approval
+        return None
 
     def _find_run_id_for_call(self, tool_call_id: str) -> str | None:
         for run_id, pending in self._pending_approvals.items():
@@ -1078,11 +1273,24 @@ class JenAITuiApp(App[None]):
             self._scroll_to_bottom()
             return
 
+        await self._execute_direct(pending)
+
+    async def _execute_direct(self, pending: dict) -> None:
+        """Run an approved (or auto-approved) direct command and render its result."""
+        ctx: JenAIRunContext = pending["ctx"]
         self.run_store.set_status(ctx.run, RunStatus.RUNNING)
-        if pending["kind"] == "ros_pub":
-            output = await ros_pub_execute(
-                pending["topic"], pending["message_type"], pending["payload"]
-            )
+        if pending["kind"] in ("ros_pub", "drive"):
+            if pending["kind"] == "drive":
+                output = await ros_drive(
+                    pending["topic"],
+                    pending["message_type"],
+                    pending["payload"],
+                    duration_s=pending["duration"],
+                )
+            else:
+                output = await ros_pub_execute(
+                    pending["topic"], pending["message_type"], pending["payload"]
+                )
             self.run_store.finish(
                 ctx.run,
                 status=RunStatus.COMPLETED
@@ -1102,6 +1310,20 @@ class JenAITuiApp(App[None]):
                 ctx.run, status=RunStatus.COMPLETED, final_output=output.route_preview
             )
             await self._mount_event(TimelineItem("success", output.route_preview))
+        elif pending["kind"] == "shell":
+            shell_output = await run_shell(pending["command"])
+            ok = shell_output.exit_code == 0
+            self.run_store.finish(
+                ctx.run,
+                status=RunStatus.COMPLETED if ok else RunStatus.FAILED,
+                final_output=f"exit {shell_output.exit_code}",
+            )
+            body = shell_output.stdout_summary or "(no stdout)"
+            if shell_output.stderr_summary:
+                body += f"\n[bold #e8a1a1]stderr:[/]\n{shell_output.stderr_summary}"
+            await self._mount_event(
+                OutputPanel(f"$ {shell_output.command} (exit {shell_output.exit_code})", body)
+            )
         self._scroll_to_bottom()
 
     async def _resolve_agent_approval(self, run_id: str, tool_call_id: str, approved: bool) -> None:
@@ -1112,8 +1334,11 @@ class JenAITuiApp(App[None]):
         if set(pending["decisions"]) < pending["expected"]:
             return
 
-        del self._pending_approvals[run_id]
-        await self._mount_event(TimelineItem("muted", "Resuming..."))
+        await self._finalize_agent_approvals(run_id)
+
+    async def _finalize_agent_approvals(self, run_id: str) -> None:
+        """Resume a paused agent run once every interruption has a decision."""
+        pending = self._pending_approvals.pop(run_id)
         self._scroll_to_bottom()
         run = await orchestrator.resume_with_approvals(
             pending["agent"], pending["ctx"], pending["decisions"]
@@ -1133,6 +1358,59 @@ class JenAITuiApp(App[None]):
     def _scroll_to_bottom(self) -> None:
         self.query_one("#body", ScrollableContainer).scroll_end(animate=False)
 
+    # -- Status line + working spinner ---------------------------------------
+
+    _SPINNER_FRAMES = "✻✳✢✦✳"
+
+    def _status_line(self) -> str:
+        profile = self._active_profile()
+        provider = profile.provider if profile else "no-provider"
+        model = self._chat_model_display()
+        return f"[#7c8893]⏵⏵ {provider} · {model} · {_short_cwd()}[/]"
+
+    def _spinner_label_for(self, value: str) -> str:
+        if value.startswith("/plan"):
+            return "Planning"
+        if value.startswith("/run"):
+            return "Running"
+        if value.startswith("/review"):
+            return "Reviewing"
+        if value.startswith(("/", "!")):
+            return "Working"
+        return "Thinking"
+
+    def _start_spinner(self, label: str) -> None:
+        self._spinner_label = label
+        self._spinner_started = time.monotonic()
+        self._spinner_frame = 0
+        spinner = self.query_one("#spinner", Static)
+        spinner.add_class("active")
+        self._render_spinner()
+        self._spinner_timer = self.set_interval(0.2, self._render_spinner)
+
+    def _render_spinner(self) -> None:
+        frame = self._SPINNER_FRAMES[self._spinner_frame % len(self._SPINNER_FRAMES)]
+        self._spinner_frame += 1
+        elapsed = int(time.monotonic() - self._spinner_started)
+        try:
+            self.query_one("#spinner", Static).update(
+                f"[#dd9460]{frame}[/] {self._spinner_label}… "
+                f"[#7c8893]({elapsed}s · esc to interrupt)[/]"
+            )
+        except NoMatches:  # widget gone (app shutting down)
+            pass
+
+    def _stop_spinner(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        try:
+            spinner = self.query_one("#spinner", Static)
+        except NoMatches:  # widget gone (app shutting down)
+            return
+        spinner.remove_class("active")
+        spinner.update("")
+
     def _active_profile(self) -> ProviderProfile | None:
         return self.config.active_profile()
 
@@ -1151,16 +1429,9 @@ class JenAITuiApp(App[None]):
         return f"[bold {status_color(value)}]{value}[/]"
 
 
-class CliHeader(Horizontal):
-    def __init__(self) -> None:
-        super().__init__(id="header")
-
-    def compose(self) -> ComposeResult:
-        yield Static(f"[#dd9460]JenAI[/] [#7c8893]v{__version__}[/]", id="header-left")
-        yield Static("/help · ctrl+c quit", id="header-right")
-
-
 class WelcomePanel(Container):
+    """Orange hero card shown at the top of the transcript."""
+
     def __init__(
         self,
         *,
@@ -1219,41 +1490,69 @@ class WelcomePanel(Container):
         return text
 
 
+# Claude Code-style markers: a filled bullet for each transcript entry and an
+# elbow connector for the indented result/detail lines beneath it.
+BULLET = "⏺"
+ELBOW = "⎿"
+
+_MARKER_COLOR = {
+    "command": BLUE,
+    "success": GREEN,
+    "warn": ACCENT,
+    "error": ERROR,
+    "muted": MUTED,
+    "assistant": ACCENT,
+}
+
+
+def _bullet_markup(variant: str, body: str) -> str:
+    color = _MARKER_COLOR.get(variant, ACCENT)
+    return f"[{color}]{BULLET}[/] {body}"
+
+
+def _detail_markup(lines: list[str]) -> str:
+    """Render detail lines under a bullet as Claude Code elbow-indented text."""
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        prefix = f"  [{MUTED}]{ELBOW}[/] " if i == 0 else "     "
+        out.append(f"{prefix}[{MUTED}]{line}[/]")
+    return "\n".join(out)
+
+
 class PromptPill(Static):
+    """Echo of the user's submitted line, shown as a muted `>` prompt."""
+
     def __init__(self, text: str) -> None:
-        super().__init__(f"[#6b7681]›[/] {text}", classes="prompt-pill")
+        super().__init__(f"[{MUTED}]>[/] [#c8cdd2]{text}[/]", classes="prompt-line")
 
 
-class TimelineItem(Horizontal):
+class TimelineItem(Static):
+    """A single Claude Code-style bullet line (⏺ marker + body markup)."""
+
     def __init__(self, variant: str, body: str) -> None:
-        super().__init__(classes="timeline-item")
+        super().__init__(_bullet_markup(variant, body), classes="bullet-line")
         self.variant = variant
         self.body = body
 
-    def compose(self) -> ComposeResult:
-        dot_class = {
-            "command": "dot dot-command",
-            "success": "dot dot-success",
-            "warn": "dot dot-warn",
-            "error": "dot dot-error",
-            "muted": "dot dot-muted",
-        }.get(self.variant, "dot")
-        yield Static("●", classes=dot_class)
-        yield Static(self.body, classes="timeline-copy")
 
+class OutputPanel(Static):
+    """A bullet with a title line and elbow-indented body lines (no box)."""
 
-class OutputPanel(Vertical):
-    def __init__(self, title: str, body: str) -> None:
-        super().__init__(classes="output-panel")
+    def __init__(self, title: str, body: str, *, variant: str = "assistant") -> None:
+        detail = _detail_markup(body.split("\n")) if body else ""
+        markup = _bullet_markup(variant, f"[bold #e8ecef]{title}[/]")
+        if detail:
+            markup = f"{markup}\n{detail}"
+        super().__init__(markup, classes="bullet-line")
         self.title = title
         self.body = body
 
-    def compose(self) -> ComposeResult:
-        yield Static(self.title, classes="panel-title")
-        yield Static(self.body, classes="panel-copy")
-
 
 class CommandPalette(Static):
+    # Rows shown at once; the window scrolls to follow the selection so every
+    # matching command is reachable without a hard cap.
+    WINDOW = 12
+
     def update_matches(
         self,
         matches: list[SlashCommand],
@@ -1263,18 +1562,50 @@ class CommandPalette(Static):
             self.update("[#7c8893]No matching commands[/]")
             return
 
+        total = len(matches)
+        # Centre the window on the selection, then clamp so it never runs past
+        # either end of the list (keeps the selected row visible while scrolling).
+        if total <= self.WINDOW:
+            start = 0
+        else:
+            start = min(max(selected_index - self.WINDOW // 2, 0), total - self.WINDOW)
+        end = min(start + self.WINDOW, total)
+
         text = Text()
-        text.append("Commands\n", style=f"bold {ACCENT}")
-        for index, command in enumerate(matches[:8]):
+        text.append(f"Commands  ({selected_index + 1}/{total})\n", style=f"bold {ACCENT}")
+        if start > 0:
+            text.append(f"  ↑ {start} more\n", style=MUTED)
+        for index in range(start, end):
+            command = matches[index]
             selected = index == selected_index
             arrow_style = GREEN if selected else MUTED
             line_style = "bold #e8ecef" if selected else "#c8cdd2"
-            text.append("› " if selected else "  ", style=arrow_style)
-            text.append(command.name.ljust(12), style=line_style)
+            text.append("❯ " if selected else "  ", style=arrow_style)
+            text.append(command.name.ljust(16), style=line_style)
             text.append(command.description, style=MUTED)
-            if index != min(len(matches), 8) - 1:
-                text.append("\n")
+            text.append("\n")
+        if end < total:
+            text.append(f"  ↓ {total - end} more", style=MUTED)
+        text.rstrip()
         self.update(text)
+
+
+def _is_number(text: str) -> bool:
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _short_cwd() -> str:
+    """Home-relative, abbreviated cwd for the status line (e.g. ~/JenAI)."""
+    cwd = Path.cwd()
+    try:
+        return "~/" + str(cwd.relative_to(Path.home()))
+    except ValueError:
+        return str(cwd)
+
 
 
 def pixel_mark() -> Text:
@@ -1351,7 +1682,6 @@ def pixel_mark() -> Text:
         if y + 1 < max_y:
             text.append("\n")
     return text
-
 
 def status_color(status: DoctorStatus | str) -> str:
     try:

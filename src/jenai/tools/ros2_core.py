@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 
@@ -8,8 +9,10 @@ from jenai.config.models import AppConfig
 from jenai.schemas import (
     ErrorType,
     JenAIError,
+    RosEchoOutput,
     RosPubOutput,
     RosSchemaOutput,
+    RosTopicInfoOutput,
     RosTopicsOutput,
     TopicItem,
 )
@@ -32,43 +35,147 @@ def _kind_hint(topic: str) -> str:
 
 async def ros_topics(config: AppConfig) -> RosTopicsOutput:
     _ = config
-    topics = ros2_adapter.list_topics()
+    topics = await asyncio.to_thread(ros2_adapter.list_topics)
     return RosTopicsOutput(
         topics=[TopicItem(name=name, kind_hint=_kind_hint(name)) for name in topics]
     )
 
 
+def _fuzzy_topic_candidates(topic: str, topics: list[str], limit: int = 5) -> list[str]:
+    needle = topic.strip().strip("/").lower()
+    if not needle:
+        return topics[:limit]
+    return [name for name in topics if needle in name.lower()][:limit]
+
+
+async def ros_topic_info(config: AppConfig, topic: str) -> RosTopicInfoOutput:
+    """Resolve a single topic's type, publishers and subscribers.
+
+    When the topic is not present on the graph, return fuzzy candidates rather
+    than raising, so the caller can suggest alternatives.
+    """
+    _ = config
+    topics = await asyncio.to_thread(ros2_adapter.list_topics)
+    if topic not in topics:
+        candidates = _fuzzy_topic_candidates(topic, topics)
+        hint = (
+            f"Did you mean: {', '.join(candidates)}?"
+            if candidates
+            else "Run /ros topics to see available topics."
+        )
+        return RosTopicInfoOutput(
+            name=topic,
+            summary=f"Topic '{topic}' was not found. {hint}",
+            candidates=candidates,
+        )
+
+    info = await asyncio.to_thread(ros2_adapter.topic_info, topic)
+    return RosTopicInfoOutput(
+        name=info.name,
+        message_type=info.message_type,
+        publisher_count=info.publisher_count,
+        subscriber_count=info.subscriber_count,
+        publishers=info.publishers,
+        subscribers=info.subscribers,
+        summary=(
+            f"{info.message_type or 'unknown type'} — "
+            f"{info.publisher_count} publisher(s), {info.subscriber_count} subscriber(s)."
+        ),
+    )
+
+
+async def ros_echo(config: AppConfig, topic: str, *, limit: int = 1) -> RosEchoOutput:
+    """Capture a snapshot of up to `limit` messages from a topic.
+
+    An idle topic makes `ros2 topic echo --once` time out; treat that as an
+    empty (but friendly) snapshot rather than surfacing a raw command error.
+    A missing `ros2` binary still propagates as an environment error.
+    """
+    _ = config
+    try:
+        blocks = await asyncio.to_thread(ros2_adapter.topic_echo, topic, count=limit)
+    except ros2_adapter.Ros2NotAvailableError:
+        raise
+    except ros2_adapter.Ros2CommandError as exc:
+        return RosEchoOutput(
+            topic=topic,
+            mode="snapshot",
+            messages=[],
+            summary=(
+                f"No messages captured from '{topic}': {exc}. The topic may be "
+                "idle, have no publisher, or use an incompatible QoS."
+            ),
+        )
+    messages = [{"raw": block} for block in blocks]
+    if not messages:
+        summary = f"No messages received on '{topic}' (topic idle or timed out)."
+    else:
+        summary = f"Captured {len(messages)} message(s) from '{topic}'."
+    return RosEchoOutput(topic=topic, mode="snapshot", messages=messages, summary=summary)
+
+
+def _primitive_default(field_type: str):
+    base = field_type.split("[")[0]  # strip array suffix, e.g. float64[3] -> float64
+    if "float" in base or "double" in base:
+        return 0.0
+    if "int" in base:  # covers int8..int64 and uint8..uint64
+        return 0
+    if base == "bool":
+        return False
+    if base in ("string", "wstring"):
+        return ""
+    return {}
+
+
 def _naive_example_payload(raw_interface: str) -> dict:
-    example: dict = {}
-    for line in raw_interface.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parts = stripped.split(maxsplit=1)
+    """Build an example payload from `ros2 interface show` output.
+
+    Nested message types are expanded inline with tab/space indentation (e.g.
+    a Twist shows `Vector3 linear` followed by indented `float64 x/y/z`), so we
+    track indentation to reconstruct the nested structure instead of flattening
+    every field to the top level. Arrays become a single-element example list;
+    constants (lines with `=`) are skipped.
+    """
+    lines = [
+        line
+        for line in raw_interface.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    root: dict = {}
+    stack: list[tuple[int, dict]] = [(-1, root)]  # (indent, container)
+
+    for i, line in enumerate(lines):
+        indent = len(line) - len(line.lstrip())
+        parts = line.strip().split(maxsplit=1)
         if len(parts) != 2:
             continue
-        field_type, field_name = parts
-        field_name = field_name.split("#", 1)[0].strip()
-        if not field_name:
+        field_type, rest = parts
+        name = rest.split("#", 1)[0].strip().split(maxsplit=1)[0] if rest.strip() else ""
+        if not name or "=" in name:  # skip blanks and constants (e.g. `uint8 FOO=1`)
             continue
-        if field_type.endswith("[]"):
-            example[field_name] = []
-        elif "float" in field_type or "double" in field_type:
-            example[field_name] = 0.0
-        elif "int" in field_type or "uint" in field_type:
-            example[field_name] = 0
-        elif field_type == "bool":
-            example[field_name] = False
-        elif field_type == "string":
-            example[field_name] = ""
+
+        # Dedent to the container that owns this field.
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        parent = stack[-1][1]
+
+        next_indent = (
+            len(lines[i + 1]) - len(lines[i + 1].lstrip()) if i + 1 < len(lines) else -1
+        )
+        is_array = field_type.rstrip().endswith("]")
+        if next_indent > indent:
+            # Complex type with expanded sub-fields: recurse into a child dict.
+            child: dict = {}
+            parent[name] = [child] if is_array else child
+            stack.append((indent, child))
         else:
-            example[field_name] = {}
-    return example
+            parent[name] = [] if is_array else _primitive_default(field_type)
+    return root
 
 
 async def ros_schema(config: AppConfig, topic: str) -> RosSchemaOutput:
-    info = ros2_adapter.topic_info(topic)
-    raw_interface = ros2_adapter.interface_show(info.message_type)
+    info = await asyncio.to_thread(ros2_adapter.topic_info, topic)
+    raw_interface = await asyncio.to_thread(ros2_adapter.interface_show, info.message_type)
     field_summary = await summarize_ros_schema(config, info.message_type, raw_interface)
     return RosSchemaOutput(
         topic=topic,
@@ -89,7 +196,7 @@ class Ros2PubValidation:
 
 async def ros_pub_validate(topic: str, payload: dict) -> Ros2PubValidation:
     try:
-        topics = ros2_adapter.list_topics()
+        topics = await asyncio.to_thread(ros2_adapter.list_topics)
     except ros2_adapter.Ros2AdapterError as exc:
         return Ros2PubValidation(
             ok=False,
@@ -108,7 +215,7 @@ async def ros_pub_validate(topic: str, payload: dict) -> Ros2PubValidation:
         )
 
     try:
-        info = ros2_adapter.topic_info(topic)
+        info = await asyncio.to_thread(ros2_adapter.topic_info, topic)
     except ros2_adapter.Ros2AdapterError as exc:
         return Ros2PubValidation(
             ok=False,
@@ -129,7 +236,7 @@ async def ros_pub_validate(topic: str, payload: dict) -> Ros2PubValidation:
 
 async def ros_pub_execute(topic: str, message_type: str, payload: dict) -> RosPubOutput:
     payload_yaml = _payload_to_yaml(payload)
-    result = ros2_adapter.topic_pub(topic, message_type, payload_yaml)
+    result = await asyncio.to_thread(ros2_adapter.topic_pub, topic, message_type, payload_yaml)
     return RosPubOutput(
         topic=topic,
         message_type=message_type,
@@ -138,6 +245,53 @@ async def ros_pub_execute(topic: str, message_type: str, payload: dict) -> RosPu
         execution_status="succeeded" if result.ok else "failed",
         result_message=result.message,
     )
+
+
+async def ros_drive(
+    topic: str,
+    message_type: str,
+    payload: dict,
+    *,
+    duration_s: float = 1.0,
+    rate_hz: float = 10.0,
+) -> RosPubOutput:
+    """Publish `payload` continuously for `duration_s` seconds, then send a zeroed
+    message so the robot stops. Use this for "move for N seconds" requests where a
+    single publish would only nudge the robot before the controller watchdog stops it.
+    """
+    duration_s = max(0.0, min(duration_s, 30.0))  # clamp to a safe window
+    payload_yaml = _payload_to_yaml(payload)
+    stop_yaml = _payload_to_yaml(_zero_like(payload))
+    result = await asyncio.to_thread(
+        ros2_adapter.topic_pub_for,
+        topic,
+        message_type,
+        payload_yaml,
+        rate_hz=rate_hz,
+        duration_s=duration_s,
+        stop_yaml=stop_yaml,
+    )
+    return RosPubOutput(
+        topic=topic,
+        message_type=message_type,
+        payload_preview=payload,
+        approval_status="approved",
+        execution_status="succeeded" if result.ok else "failed",
+        result_message=result.message,
+    )
+
+
+def _zero_like(value):
+    """Return the same structure with every number set to 0 (for a stop message)."""
+    if isinstance(value, dict):
+        return {key: _zero_like(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_zero_like(inner) for inner in value]
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return 0
+    return value
 
 
 def _payload_to_yaml(payload: dict) -> str:

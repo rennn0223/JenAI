@@ -158,9 +158,10 @@ def resolve_model_alias(model: str, profile: ProviderProfile | None = None) -> s
 
 def _api_key(profile: ProviderProfile) -> str:
     if not profile.api_key_env:
-        raise ProviderChatError(
-            f"Provider '{profile.name}' does not define an API key environment variable."
-        )
+        # Local / keyless providers (e.g. Ollama, llama.cpp) need no real key,
+        # but the OpenAI client still requires a non-empty string. Leaving
+        # api_key_env blank in the profile opts into this keyless mode.
+        return "not-needed"
 
     api_key = os.environ.get(profile.api_key_env)
     if not api_key:
@@ -169,6 +170,48 @@ def _api_key(profile: ProviderProfile) -> str:
         )
 
     return api_key
+
+
+async def ask_vision_json(
+    config: AppConfig,
+    prompt: str,
+    image_data_url: str,
+    *,
+    binding: str = "vision",
+) -> Any | None:
+    """Send an image + prompt to the vision model and parse the reply as JSON.
+
+    Returns None on any failure so vision callers can degrade gracefully.
+    """
+    try:
+        profile = _active_profile(config)
+        api_key = _api_key(profile)
+        model = resolved_model(config, profile, binding)
+    except ProviderChatError:
+        return None
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ],
+        }
+    ]
+    try:
+        async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.0,
+            )
+        content = response.choices[0].message.content if response.choices else None
+        if not content:
+            return None
+        return json.loads(content)
+    except (OpenAIError, json.JSONDecodeError):
+        return None
 
 
 async def ask_json(config: AppConfig, prompt: str, *, binding: str = "chat") -> Any | None:
