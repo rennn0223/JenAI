@@ -20,14 +20,26 @@ JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人
 ## 快速入門
 
 ```bash
+# 開發環境
+uv sync
+uv run pytest
+
 # 首次執行（自動進入 setup wizard）
-JenAI
+uv run JenAI
 
 # 環境健康檢查
-JenAI doctor
+uv run JenAI doctor
 
 # 啟動 WebUI 監控中心
-JenAI web
+uv run JenAI web
+```
+
+如果是測試 PR1，請先切到實作分支：
+
+```bash
+git fetch origin
+git switch codex/pr1-foundation
+uv run pytest
 ```
 
 ---
@@ -59,5 +71,4 @@ JenAI web
 
 ## 狀態
 
-> 🚧 目前為規格設計階段，程式碼尚未開始實作。
-
+> 🚧 PR1 基礎骨架已開始實作：uv 專案、CLI、config、doctor、Pydantic schemas 與測試已可執行。TUI、agent runtime、ROS2 tools、route/location 與 WebUI 仍在後續階段。
