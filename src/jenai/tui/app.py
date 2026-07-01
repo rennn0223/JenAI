@@ -41,6 +41,7 @@ from jenai.schemas import (
     ToolCallRecord,
 )
 from jenai.state import InputHistory, RunStore, create_session
+from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tools.ros2_core import (
     ros_drive,
@@ -104,6 +105,9 @@ SLASH_COMMANDS = [
         "/ros drive",
         "Drive for N seconds then auto-stop (needs approval)",
         "/ros drive <topic> <payload> [seconds]",
+    ),
+    SlashCommand(
+        "/drive", "Drive by plain language (needs approval)", "/drive 前進兩秒"
     ),
     SlashCommand(
         "/route", "Resolve and send a navigation route (needs approval)", "/route <text>"
@@ -592,6 +596,7 @@ class JenAITuiApp(App[None]):
             "/review": self._show_review,
             "/abort": self._show_abort,
             "/route": self._show_route,
+            "/drive": self._show_drive,
             "/vision": self._show_vision,
             "/shell": self._show_shell,
             "/quit": self._quit_from_command,
@@ -1021,6 +1026,63 @@ class JenAITuiApp(App[None]):
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /ros drive.",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_drive(self, arg: str) -> None:
+        # Natural-language driving: "前進兩秒", "turn left", "slowly reverse".
+        if not arg:
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /drive <plain language>, e.g. /drive 前進兩秒")
+            )
+            return
+
+        intent = await extract_drive_command(self.config, arg)
+        if intent is None:
+            await self._mount_event(
+                TimelineItem("warn", f"Could not understand '{arg}' as a drive command.")
+            )
+            return
+
+        topic = "/cmd_vel"
+        message_type = "geometry_msgs/msg/Twist"
+        ctx = self._new_run_context(f"/drive {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="ros_drive_execute_tool",
+            category=ToolCallCategory.ROS2,
+            input_summary=intent.description,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        pending = {
+            "kind": "drive",
+            "ctx": ctx,
+            "topic": topic,
+            "message_type": message_type,
+            "payload": intent.to_payload(),
+            "duration": intent.duration_s,
+        }
+        if "drive" in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="ros_drive_execute_tool",
+            title=f"Drive: {intent.description}",
+            summary=f"Interpreted '{arg}' as: {intent.description}.",
+            raw_action=(
+                f"{topic} linear.x={intent.linear_x:g} angular.z={intent.angular_z:g} "
+                f"for {intent.duration_s:g}s (continuous, then stop)"
+            ),
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification=f"Requested via /drive: {arg}",
         )
         self.run_store.add_interruption(ctx.run, approval)
         self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
