@@ -764,6 +764,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "litellm" },
+    { name = "openai" },
     { name = "openai-agents" },
     { name = "pydantic" },
     { name = "rich" },
@@ -782,6 +783,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "litellm", specifier = ">=1.60.0" },
+    { name = "openai", specifier = ">=1.50.0" },
     { name = "openai-agents", specifier = ">=0.2.0" },
     { name = "pydantic", specifier = ">=2.8.0" },
     { name = "rich", specifier = ">=13.7.0" },

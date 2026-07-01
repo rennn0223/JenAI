@@ -42,6 +42,11 @@ class AppConfig(BaseModel):
             and self.model_bindings is not None
         )
 
+    def active_profile(self) -> ProviderProfile | None:
+        if self.active_provider is None:
+            return None
+        return self.provider_profiles.get(self.active_provider)
+
     def resolved_locations_path(self, config_path: Path) -> Path | None:
         if self.locations_path is None:
             return None

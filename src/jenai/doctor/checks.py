@@ -155,7 +155,7 @@ def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:
             )
         ]
 
-    profile = config.provider_profiles.get(config.active_provider)
+    profile = config.active_profile()
     if profile is None:
         return [
             DoctorCheckItem(
