@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Annotated
@@ -9,10 +10,20 @@ from rich.console import Console
 from rich.table import Table
 
 from jenai import __version__
+from jenai.adapters.locations import (
+    LocationNotFoundError,
+    LocationsFileError,
+    ensure_locations_file,
+    find_location,
+    load_locations,
+)
 from jenai.config import ConfigError, default_config_path, load_config
+from jenai.config.models import AppConfig
 from jenai.config.setup import run_setup_wizard
 from jenai.doctor import run_doctor
-from jenai.schemas import DoctorResult, DoctorStatus
+from jenai.schemas import DoctorResult, DoctorStatus, Location
+from jenai.tools.route_core import route_execute, route_preview
+from jenai.tui import run_tui, status_color
 
 app = typer.Typer(
     name="JenAI",
@@ -66,8 +77,15 @@ def main(
             _print_doctor_result(doctor_result)
         raise typer.Exit(1)
 
-    console.print("[bold orange1]JenAI TUI is not implemented yet.[/bold orange1]")
-    console.print("Next PR task: Textual shell with header, output area, and input composer.")
+    try:
+        run_tui(loaded, config_path=config_path, doctor_result=doctor_result)
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        console.print(f"[red]JenAI TUI exited unexpectedly: {exc}[/red]")
+        if debug:
+            console.print_exception()
+        raise typer.Exit(1) from exc
 
 
 @app.command()
@@ -146,10 +164,25 @@ def models(config: ConfigOption = None) -> None:
 
 @app.command()
 def route(text: str, config: ConfigOption = None) -> None:
-    _ = config
-    console.print("[yellow]Non-interactive route is not implemented yet.[/yellow]")
-    console.print(f"Requested route text: {text}")
-    raise typer.Exit(2)
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    locations = _load_locations_for_cli(loaded, config_path)
+    output = asyncio.run(route_preview(loaded, locations, text))
+    console.print(output.route_preview)
+    if not output.outgoing_action:
+        raise typer.Exit(1)
+
+    if not typer.confirm("Send this route?"):
+        console.print("[yellow]Cancelled.[/yellow]")
+        raise typer.Exit(0)
+
+    result = asyncio.run(route_execute(loaded, output.outgoing_action))
+    console.print(f"[green]{result.execution_status}[/green]")
 
 
 @app.command()
@@ -166,17 +199,59 @@ def version_command() -> None:
 
 @loc_app.command("list")
 def loc_list(config: ConfigOption = None) -> None:
-    _ = config
-    console.print("[yellow]Location listing is not implemented yet.[/yellow]")
-    raise typer.Exit(2)
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    locations = _load_locations_for_cli(loaded, config_path)
+    if not locations:
+        console.print("[yellow]No locations configured.[/yellow]")
+        raise typer.Exit(1)
+
+    table = Table(title="JenAI locations")
+    table.add_column("Name")
+    table.add_column("Aliases")
+    table.add_column("Tags")
+    for location in locations:
+        table.add_row(location.name, ", ".join(location.aliases), ", ".join(location.tags))
+    console.print(table)
 
 
 @loc_app.command("show")
 def loc_show(name: str, config: ConfigOption = None) -> None:
-    _ = config
-    console.print("[yellow]Location lookup is not implemented yet.[/yellow]")
-    console.print(f"Requested location: {name}")
-    raise typer.Exit(2)
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    locations = _load_locations_for_cli(loaded, config_path)
+    try:
+        location = find_location(locations, name)
+    except LocationNotFoundError as exc:
+        if exc.candidates:
+            names = ", ".join(loc.name for loc in exc.candidates)
+            console.print(f"[yellow]Location '{name}' not found. Did you mean: {names}?[/yellow]")
+        else:
+            console.print(f"[yellow]Location '{name}' not found.[/yellow]")
+        raise typer.Exit(1) from exc
+
+    console.print(json.dumps(location.model_dump(mode="json"), ensure_ascii=False, indent=2))
+
+
+def _load_locations_for_cli(loaded: AppConfig, config_path: Path) -> list[Location]:
+    locations_path = loaded.resolved_locations_path(config_path)
+    if locations_path is None:
+        return []
+    try:
+        ensure_locations_file(locations_path)
+        return load_locations(locations_path)
+    except LocationsFileError:
+        return []
 
 
 def _print_doctor_result(result: DoctorResult) -> None:
@@ -188,11 +263,7 @@ def _print_doctor_result(result: DoctorResult) -> None:
     table.add_column("Fix")
 
     for item in result.items:
-        style = {
-            DoctorStatus.PASS: "green",
-            DoctorStatus.WARN: "yellow",
-            DoctorStatus.FAIL: "red",
-        }[DoctorStatus(item.status)]
+        style = status_color(item.status)
         table.add_row(
             item.section,
             item.check_name,

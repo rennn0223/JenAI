@@ -65,6 +65,7 @@ def build_minimal_config(
     default_model: str,
     base_url: str | None = None,
     api_key_env: str | None = None,
+    locations_path: str = "locations.toml",
 ) -> AppConfig:
     profile = ProviderProfile(
         name=provider_name,
@@ -83,7 +84,7 @@ def build_minimal_config(
         active_provider=provider_name,
         provider_profiles={provider_name: profile},
         model_bindings=bindings,
-        locations_path="locations.toml",
+        locations_path=locations_path,
         created_by_setup=True,
     )
 
