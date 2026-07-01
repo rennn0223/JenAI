@@ -193,6 +193,36 @@ def test_tui_ros_topic_info_command(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_tui_drive_natural_language_shows_card_and_executes(monkeypatch) -> None:
+    from jenai.schemas import RosPubOutput
+
+    executed = {}
+
+    async def fake_drive(topic, message_type, payload, *, duration_s=1.0):
+        executed.update(payload=payload, duration=duration_s)
+        return RosPubOutput(
+            topic=topic, message_type=message_type,
+            execution_status="succeeded", result_message="drove then stopped",
+        )
+
+    monkeypatch.setattr("jenai.tui.app.ros_drive", fake_drive)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/drive 前進兩秒")  # regex path, no LLM needed
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert "forward" in cards[0].approval.title
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert executed["duration"] == 2.0
+            assert executed["payload"]["linear"]["x"] > 0
+
+    asyncio.run(run())
+
+
 def test_tui_ros_drive_shows_card_and_executes_on_approve(monkeypatch) -> None:
     from jenai.schemas import RosPubOutput
     from jenai.tools.ros2_core import Ros2PubValidation

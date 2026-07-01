@@ -1,6 +1,6 @@
 [project]
 name = "jenai"
-version = "0.1.0"
+version = "0.1.1"
 description = "Terminal-first AI agent interface for ROS2 robot workflows."
 readme = "README.md"
 requires-python = ">=3.12"

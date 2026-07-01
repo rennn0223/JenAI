@@ -105,7 +105,11 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
         run_store.finish(
             run,
             status=RunStatus.COMPLETED,
-            final_output=str(result.final_output) or "Action handled; stopping to avoid a loop.",
+            final_output=_final_text(result)
+            or (
+                "Stopped after one approval. If the robot did not move, run the action "
+                "directly, e.g. /ros drive /cmd_vel '{\"linear\": {\"x\": 0.2}}' 1"
+            ),
         )
         return run
 
@@ -135,8 +139,14 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
         run_store.set_status(run, RunStatus.AWAITING_APPROVAL)
         return run
 
-    run_store.finish(run, status=RunStatus.COMPLETED, final_output=str(result.final_output))
+    run_store.finish(run, status=RunStatus.COMPLETED, final_output=_final_text(result))
     return run
+
+
+def _final_text(result: Any) -> str:
+    """Final output as a display string, avoiding the literal 'None'."""
+    final = getattr(result, "final_output", None)
+    return str(final) if final not in (None, "") else ""
 
 
 def _error_from_exc(exc: Exception) -> JenAIError:
