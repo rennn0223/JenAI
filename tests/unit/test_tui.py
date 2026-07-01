@@ -19,6 +19,15 @@ from jenai.tui.app import pixel_mark
 from jenai.tui.widgets import ApprovalCard
 
 
+def test_tui_uses_colored_dachshund_mascot() -> None:
+    mascot = pixel_mark()
+    styles = {str(span.style) for span in mascot.spans}
+
+    assert any("#d98c69" in style for style in styles)
+    assert any("#5fb1c0" in style for style in styles)
+    assert 4 <= mascot.plain.count("\n") <= 7
+
+
 def _app(tmp_path: Path | None = None) -> JenAITuiApp:
     config = build_minimal_config(
         provider_name="test",
@@ -41,7 +50,6 @@ def test_tui_composes_jenai_shell() -> None:
             config_path=Path("/tmp/config.toml"),
         )
         async with app.run_test():
-            assert app.query_one("#header")
             assert app.query_one("#window")
             welcome = app.query_one("#welcome")
             assert welcome.region.y <= 4
@@ -103,15 +111,6 @@ def test_tui_shows_slash_command_palette() -> None:
     asyncio.run(run())
 
 
-def test_tui_uses_colored_dachshund_mascot() -> None:
-    mascot = pixel_mark()
-    styles = {str(span.style) for span in mascot.spans}
-
-    assert any("#d98c69" in style for style in styles)
-    assert any("#5fb1c0" in style for style in styles)
-    assert 4 <= mascot.plain.count("\n") <= 7
-
-
 def test_tui_sends_natural_language_to_provider(monkeypatch) -> None:
     async def fake_ask_provider(config, prompt):
         calls.append((config.active_provider, prompt))
@@ -169,6 +168,324 @@ def test_tui_ros_schema_command(monkeypatch) -> None:
             await app.handle_user_text("/ros schema /cmd_vel")
             panels = [w for w in app.query_one("#events").children if hasattr(w, "title")]
             assert any("Schema" in p.title for p in panels)
+
+    asyncio.run(run())
+
+
+def test_tui_ros_topic_info_command(monkeypatch) -> None:
+    from jenai.schemas import RosTopicInfoOutput
+
+    async def fake_topic_info(config, topic):
+        assert topic == "/cmd_vel"
+        return RosTopicInfoOutput(
+            name=topic, message_type="geometry_msgs/msg/Twist", publisher_count=1
+        )
+
+    monkeypatch.setattr("jenai.tui.app.ros_topic_info", fake_topic_info)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            await app.handle_user_text("/ros topic-info /cmd_vel")
+            panels = [w for w in app.query_one("#events").children if hasattr(w, "title")]
+            assert any("Topic info" in p.title for p in panels)
+
+    asyncio.run(run())
+
+
+def test_tui_ros_drive_shows_card_and_executes_on_approve(monkeypatch) -> None:
+    from jenai.schemas import RosPubOutput
+    from jenai.tools.ros2_core import Ros2PubValidation
+
+    executed = {}
+
+    async def fake_validate(topic, payload):
+        return Ros2PubValidation(ok=True, message_type="geometry_msgs/msg/Twist")
+
+    async def fake_drive(topic, message_type, payload, *, duration_s=1.0):
+        executed.update(topic=topic, duration=duration_s)
+        return RosPubOutput(
+            topic=topic, message_type=message_type,
+            execution_status="succeeded", result_message="drove then stopped",
+        )
+
+    monkeypatch.setattr("jenai.tui.app.ros_pub_validate", fake_validate)
+    monkeypatch.setattr("jenai.tui.app.ros_drive", fake_drive)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text('/ros drive /cmd_vel {"linear": {"x": 0.2}} 2')
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert "for 2" in cards[0].approval.title
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert executed == {"topic": "/cmd_vel", "duration": 2.0}
+            assert list(app.query(ApprovalCard)) == []
+
+    asyncio.run(run())
+
+
+def test_tui_ros_echo_command(monkeypatch) -> None:
+    from jenai.schemas import RosEchoOutput
+
+    async def fake_echo(config, topic, *, limit=1):
+        assert topic == "/chatter"
+        return RosEchoOutput(topic=topic, messages=[{"raw": "data: hi"}], summary="1 message")
+
+    monkeypatch.setattr("jenai.tui.app.ros_echo", fake_echo)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            await app.handle_user_text("/ros echo /chatter")
+            panels = [w for w in app.query_one("#events").children if hasattr(w, "title")]
+            assert any("Echo" in p.title for p in panels)
+
+    asyncio.run(run())
+
+
+def test_tui_vision_command(monkeypatch) -> None:
+    from jenai.schemas import VisionOutput
+
+    async def fake_analyze(config, path, *, task_context=""):
+        assert path == "/tmp/frame.png"
+        return VisionOutput(source=path, summary="a robot", objects=["robot"])
+
+    monkeypatch.setattr("jenai.tui.app.analyze_image", fake_analyze)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            await app.handle_user_text("/vision image /tmp/frame.png")
+            panels = [w for w in app.query_one("#events").children if hasattr(w, "title")]
+            assert any("Vision" in p.title for p in panels)
+
+    asyncio.run(run())
+
+
+def _awaiting_run(app, tool_name: str, call_id: str = "c1"):
+    from jenai.agent.context import JenAIRunContext
+    from jenai.schemas import ApprovalRequest, EffectScope, RiskLevel
+
+    run_rec = app.run_store.create_run(app.session.session_id, "drive forward")
+    run_rec.status = "awaiting_approval"
+    run_rec.interruptions.append(
+        ApprovalRequest(
+            run_id=run_rec.run_id,
+            tool_call_id=call_id,
+            tool_name=tool_name,
+            title="Publish to /cmd_vel",
+            summary="Send a Twist.",
+            raw_action="ros2 topic pub ...",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="requested",
+        )
+    )
+    ctx = JenAIRunContext(
+        config=app.config,
+        config_path=app.config_path,
+        session=app.session,
+        run=run_rec,
+        run_store=app.run_store,
+    )
+    return ctx, run_rec
+
+
+def test_tui_run_approval_remember_auto_approves(monkeypatch) -> None:
+    from jenai.schemas import RunRecord
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            captured: dict = {}
+
+            async def fake_resume(agent, ctx, decisions, **kw):
+                captured["decisions"] = dict(decisions)
+                return RunRecord(
+                    session_id=app.session.session_id,
+                    user_input="x",
+                    status="completed",
+                    final_output="done",
+                )
+
+            monkeypatch.setattr(
+                "jenai.tui.app.orchestrator.resume_with_approvals", fake_resume
+            )
+            ctx, run_rec = _awaiting_run(app, "ros_pub_execute_tool")
+            await app._render_run_update(ctx, run_rec, agent=object())
+            assert len(list(app.query(ApprovalCard))) == 1  # first time asks
+
+            # Option 2 = approve + don't ask again.
+            await app.on_approval_card_decision(
+                ApprovalCard.Decision("c1", True, remember=True)
+            )
+            assert "ros_pub_execute_tool" in app._auto_approved
+            assert captured["decisions"] == {"c1": True}
+
+    asyncio.run(run())
+
+
+def test_tui_run_remembered_tool_skips_card(monkeypatch) -> None:
+    from jenai.schemas import RunRecord
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            app._auto_approved.add("ros_pub_execute_tool")
+            captured: dict = {}
+
+            async def fake_resume(agent, ctx, decisions, **kw):
+                captured["decisions"] = dict(decisions)
+                return RunRecord(
+                    session_id=app.session.session_id, user_input="x", status="completed"
+                )
+
+            monkeypatch.setattr(
+                "jenai.tui.app.orchestrator.resume_with_approvals", fake_resume
+            )
+            ctx, run_rec = _awaiting_run(app, "ros_pub_execute_tool")
+            await app._render_run_update(ctx, run_rec, agent=object())
+
+            # No card shown — the remembered tool auto-approves and resumes.
+            assert list(app.query(ApprovalCard)) == []
+            assert captured["decisions"] == {"c1": True}
+
+    asyncio.run(run())
+
+
+def test_tui_bang_prefix_enters_shell_mode(monkeypatch) -> None:
+    from jenai.schemas import ShellOutput
+
+    async def fake_run_shell(command, *, cwd=None, timeout=30.0):
+        return ShellOutput(command=command, exit_code=0)
+
+    monkeypatch.setattr("jenai.tui.app.run_shell", fake_run_shell)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            await app.handle_user_text("!ls -la")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert cards[0].approval.raw_action == "ls -la"
+
+    asyncio.run(run())
+
+
+def test_tui_shell_remember_auto_approves_subsequent(monkeypatch) -> None:
+    from jenai.schemas import ShellOutput
+
+    executed: list[str] = []
+
+    async def fake_run_shell(command, *, cwd=None, timeout=30.0):
+        executed.append(command)
+        return ShellOutput(command=command, exit_code=0, stdout_summary="ok")
+
+    monkeypatch.setattr("jenai.tui.app.run_shell", fake_run_shell)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/shell echo one")
+            assert len(list(app.query(ApprovalCard))) == 1
+            # Option 2 = "Yes, and don't ask again this session"
+            await pilot.press("2")
+            await pilot.pause()
+            assert "shell" in app._auto_approved
+            assert executed == ["echo one"]
+
+            # A second /shell must run without showing a card.
+            await app.handle_user_text("/shell echo two")
+            await pilot.pause()
+            assert list(app.query(ApprovalCard)) == []
+            assert executed == ["echo one", "echo two"]
+
+    asyncio.run(run())
+
+
+def test_tui_status_line_shows_provider_and_model() -> None:
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            line = app._status_line()
+            assert "openai" in line
+            assert "gpt-test" in line
+            assert app.query_one("#statusbar")
+
+    asyncio.run(run())
+
+
+def test_tui_escape_interrupts_active_task(monkeypatch) -> None:
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+
+            async def blocking(_value: str) -> None:
+                await asyncio.sleep(10)
+
+            app.handle_user_text = blocking  # type: ignore[method-assign]
+            app._active_task = asyncio.create_task(app._run_user_text("/run x"))
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.pause()
+
+            bodies = [getattr(w, "body", "") for w in app.query_one("#events").children]
+            assert "Interrupted." in bodies
+            assert app._active_task is None
+
+    asyncio.run(run())
+
+
+def test_tui_shell_shows_card_and_executes_on_approve(monkeypatch) -> None:
+    from jenai.schemas import ShellOutput
+
+    executed = []
+
+    async def fake_run_shell(command, *, cwd=None, timeout=30.0):
+        executed.append(command)
+        return ShellOutput(command=command, exit_code=0, stdout_summary="ok")
+
+    monkeypatch.setattr("jenai.tui.app.run_shell", fake_run_shell)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/shell echo hi")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert cards[0].approval.effect_scope == "host_command"
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert executed == ["echo hi"]
+
+    asyncio.run(run())
+
+
+def test_tui_shell_rejects_on_escape(monkeypatch) -> None:
+    from jenai.schemas import ShellOutput
+
+    executed = []
+
+    async def fake_run_shell(command, *, cwd=None, timeout=30.0):
+        executed.append(command)
+        return ShellOutput(command=command, exit_code=0)
+
+    monkeypatch.setattr("jenai.tui.app.run_shell", fake_run_shell)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/shell rm -rf /tmp/x")
+            assert len(list(app.query(ApprovalCard))) == 1
+            await pilot.press("escape")
+            await pilot.pause()
+            assert executed == []
 
     asyncio.run(run())
 

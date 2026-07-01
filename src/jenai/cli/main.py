@@ -186,10 +186,22 @@ def route(text: str, config: ConfigOption = None) -> None:
 
 
 @app.command()
-def web(config: ConfigOption = None) -> None:
-    _ = config
-    console.print("[yellow]WebUI skeleton is not implemented yet.[/yellow]")
-    raise typer.Exit(2)
+def web(
+    config: ConfigOption = None,
+    host: Annotated[str, typer.Option("--host", help="Bind address.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Bind port.")] = 8760,
+) -> None:
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    from jenai.webui import serve
+
+    console.print(f"[green]JenAI WebUI serving at http://{host}:{port}[/green] (Ctrl-C to stop)")
+    serve(loaded, config_path, host=host, port=port)
 
 
 @app.command("version")

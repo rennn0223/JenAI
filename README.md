@@ -34,13 +34,26 @@ uv run JenAI doctor
 uv run JenAI web
 ```
 
-如果是測試 PR1，請先切到實作分支：
+### 一鍵啟動（含 ROS2）
+
+`~/.local/bin/jenai` 啟動腳本會先 source ROS2 Jazzy、確保 uv，再用 `uv run` 啟動：
 
 ```bash
-git fetch origin
-git switch codex/pr1-foundation
-uv run pytest
+jenai            # source ROS2 → 進 TUI
+jenai doctor     # 環境檢查（ros2 會是 pass）
+jenai web        # WebUI 儀表板
+# 覆寫路徑：JENAI_DIR=/path/to/JenAI  ROS_SETUP=/opt/ros/humble/setup.bash jenai
 ```
+
+### 使用本地 Ollama
+
+Ollama 提供 OpenAI 相容端點，設定要點：
+
+- `base_url` = `http://localhost:11434/v1`（**要有 `/v1`**）
+- model 用純 tag（例如 `qwen3.6:35b`，**不要** `ollama/` 前綴）
+- `api_key_env` 留空即可（本地 keyless，不需金鑰）
+
+設定檔位置：`~/.config/jenai/config.toml`。
 
 ---
 
@@ -71,4 +84,6 @@ uv run pytest
 
 ## 狀態
 
-> 🚧 PR1 基礎骨架已開始實作：uv 專案、CLI、config、doctor、Pydantic schemas 與測試已可執行。TUI、agent runtime、ROS2 tools、route/location 與 WebUI 仍在後續階段。
+> ✅ v0.1.0 核心功能已實作：CLI 入口、setup wizard、`doctor`、agent runtime（`/plan`、`/run` 含 approval）、ROS2 工具（`topics`／`topic-info`／`schema`／`echo`／`pub`）、`/route` 與 locations、`/vision image`、`/shell`、TUI（slash palette、歷史、approval card）以及最小 WebUI 儀表板（`JenAI web`）。詳細功能驗收狀態見 [`docs/FEATURES.md`](docs/FEATURES.md)。
+>
+> 🚧 後續：連續 `/ros echo` streaming、provider 連線探測、WebUI 完整 timeline／approval queue、跨 session 持久化歷史。

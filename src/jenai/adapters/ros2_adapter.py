@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 
 
@@ -84,6 +85,19 @@ def topic_info(topic: str, *, timeout: float = 5.0) -> TopicInfo:
     return _parse_topic_info(topic, completed.stdout)
 
 
+def _safe_int(value: str) -> int:
+    """Parse a count field tolerantly.
+
+    `ros2 topic info --verbose` output can vary across distros / locales; a
+    non-integer count should degrade to 0 rather than crash the whole schema
+    lookup with an uncaught ValueError.
+    """
+    try:
+        return int(value.strip())
+    except (ValueError, TypeError):
+        return 0
+
+
 def _parse_topic_info(topic: str, raw: str) -> TopicInfo:
     """Best-effort line parser for `ros2 topic info --verbose` output.
 
@@ -103,12 +117,12 @@ def _parse_topic_info(topic: str, raw: str) -> TopicInfo:
         if stripped.startswith("Type:"):
             message_type = stripped.split("Type:", 1)[1].strip()
         elif stripped.startswith("Publisher count:"):
-            publisher_count = int(stripped.split(":", 1)[1].strip())
+            publisher_count = _safe_int(stripped.split(":", 1)[1])
             section = "publishers"
         elif stripped.startswith("Subscription count:") or stripped.startswith(
             "Subscriber count:"
         ):
-            subscriber_count = int(stripped.split(":", 1)[1].strip())
+            subscriber_count = _safe_int(stripped.split(":", 1)[1])
             section = "subscribers"
         elif stripped.startswith("Node name:"):
             node_name = stripped.split(":", 1)[1].strip()
@@ -140,6 +154,31 @@ def interface_show(message_type: str, *, timeout: float = 5.0) -> str:
     return completed.stdout
 
 
+def topic_echo(topic: str, *, count: int = 1, timeout: float = 5.0) -> list[str]:
+    """Capture up to `count` snapshot messages from a topic.
+
+    Uses `ros2 topic echo <topic> --once`, invoked once per requested message.
+    Returns the raw per-message text blocks; an empty list means no message
+    arrived (empty topic or timeout), which the caller reports gracefully.
+    """
+    messages: list[str] = []
+    for _ in range(max(1, count)):
+        completed = _run(["topic", "echo", topic, "--once"], timeout=timeout)
+        if completed.returncode != 0:
+            raise Ros2CommandError(
+                f"ros2 topic echo {topic} exited with code {completed.returncode}: "
+                f"{completed.stderr.strip()}",
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                returncode=completed.returncode,
+            )
+        block = completed.stdout.strip().strip("-").strip()
+        if not block:
+            break
+        messages.append(block)
+    return messages
+
+
 @dataclass
 class PubResult:
     ok: bool
@@ -169,3 +208,54 @@ def topic_pub(
             returncode=completed.returncode,
         )
     return PubResult(ok=True, message=completed.stdout.strip() or "published")
+
+
+def topic_pub_for(
+    topic: str,
+    message_type: str,
+    payload_yaml: str,
+    *,
+    rate_hz: float = 10.0,
+    duration_s: float = 1.0,
+    stop_yaml: str | None = None,
+) -> PubResult:
+    """Publish a message at `rate_hz` for `duration_s`, then optionally send a
+    single stop message (e.g. a zero Twist).
+
+    Robot velocity controllers usually watchdog-stop when commands stop arriving,
+    so a single `--once` publish only nudges the robot. This drives it for a fixed
+    duration by running `ros2 topic pub --rate` and terminating it after the time
+    window, then publishing `stop_yaml` once so the robot halts deterministically.
+    """
+    if not is_available():
+        raise Ros2NotAvailableError(
+            "ros2 command was not found on PATH. Install ROS2 Jazzy and source its setup script."
+        )
+    args = ["ros2", "topic", "pub", topic, message_type, payload_yaml, "--rate", str(rate_hz)]
+    try:
+        proc = subprocess.Popen(  # noqa: S603 - args are constructed, not shell
+            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+    except OSError as exc:
+        raise Ros2CommandError(f"ros2 topic pub could not start: {exc}") from exc
+
+    try:
+        time.sleep(max(0.0, duration_s))
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    if stop_yaml is not None:
+        # Best-effort stop pulse; ignore its failure so a completed drive still reports ok.
+        try:
+            topic_pub(topic, message_type, stop_yaml)
+        except Ros2AdapterError:
+            pass
+
+    return PubResult(
+        ok=True,
+        message=f"drove {topic} at {rate_hz:g} Hz for {duration_s:g}s, then sent stop",
+    )

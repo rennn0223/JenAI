@@ -189,6 +189,7 @@ class ApprovalRequest(JenAIModel):
     approval_id: str = Field(default_factory=lambda: new_id("approval"))
     run_id: str
     tool_call_id: str
+    tool_name: str = ""
     title: str
     summary: str
     raw_action: str

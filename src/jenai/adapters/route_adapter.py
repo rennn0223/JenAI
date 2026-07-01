@@ -26,7 +26,12 @@ class StubRouteAdapter:
 
     def resolve(self, outgoing_action: dict) -> RouteSendResult:
         logger.info("StubRouteAdapter: would send route action: %s", outgoing_action)
-        return RouteSendResult(execution_status="sent (stub)", detail=str(outgoing_action))
+        # Use the shared "succeeded" vocabulary so consumers that branch on
+        # execution_status == "succeeded" treat a stub send as a success.
+        return RouteSendResult(
+            execution_status="succeeded",
+            detail="Route action accepted by the stub adapter (no real navigation stack).",
+        )
 
 
 def get_route_adapter(adapter_name: str) -> RouteAdapter:

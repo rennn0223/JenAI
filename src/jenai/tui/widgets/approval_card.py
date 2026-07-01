@@ -1,52 +1,84 @@
 from __future__ import annotations
 
-from textual.containers import Vertical
+from rich.text import Text
 from textual.message import Message
-from textual.widgets import Collapsible, Static
+from textual.widgets import Static
 
 from jenai.schemas import ApprovalRequest
 
+ACCENT = "#dd9460"
+GREEN = "#6fbf73"
+MUTED = "#7c8893"
+TEXT = "#e8ecef"
+WARN = "⚠"
 
-class ApprovalCard(Vertical):
-    """Human-in-the-loop approval prompt, per UX.md: title, summary, collapsed
-    raw_action, risk/scope badges, justification, Enter=approve/Esc=reject.
+# (label, approved, remember)
+_OPTIONS = [
+    ("Yes", True, False),
+    ("Yes, and don't ask again this session", True, True),
+    ("No, and tell JenAI what to do differently (Esc)", False, False),
+]
+
+
+class ApprovalCard(Static):
+    """Claude Code-style approval prompt with numbered options.
+
+    ❯ 1. Yes   2. Yes, and don't ask again   3. No (Esc)
+    Navigable with ↑/↓ + Enter, or the number keys 1/2/3; Esc rejects.
     """
 
     can_focus = True
 
     class Decision(Message):
-        def __init__(self, tool_call_id: str, approved: bool) -> None:
+        def __init__(self, tool_call_id: str, approved: bool, remember: bool = False) -> None:
             self.tool_call_id = tool_call_id
             self.approved = approved
+            self.remember = remember
             super().__init__()
 
     def __init__(self, approval: ApprovalRequest) -> None:
         super().__init__(classes="approval-card")
         self.approval = approval
-
-    def compose(self):
-        approval = self.approval
-        yield Static(f"⚠ Approval Required · {approval.title}", classes="approval-title")
-        yield Static(approval.summary, classes="approval-summary")
-        with Collapsible(title="raw action", collapsed=True):
-            yield Static(approval.raw_action)
-        yield Static(
-            f"Risk: {approval.risk_level} · Scope: {approval.effect_scope}",
-            classes="approval-meta",
-        )
-        yield Static(approval.justification, classes="approval-justification")
-        yield Static(
-            "[bold]Enter[/] Approve    [bold]Esc[/] Reject",
-            classes="approval-footer",
-        )
+        self._selected = 0
 
     def on_mount(self) -> None:
         self.focus()
 
+    def render(self) -> Text:
+        approval = self.approval
+        body = Text()
+        body.append(f"{WARN} ", style=ACCENT)
+        body.append(f"{approval.title}\n", style=f"bold {TEXT}")
+        body.append(f"  {approval.summary}\n", style=TEXT)
+        body.append(f"  {approval.raw_action}\n", style=MUTED)
+        body.append(
+            f"  Risk: {approval.risk_level} · Scope: {approval.effect_scope}\n\n",
+            style=MUTED,
+        )
+        for index, (label, _approved, _remember) in enumerate(_OPTIONS):
+            selected = index == self._selected
+            pointer = "❯ " if selected else "  "
+            style = f"bold {GREEN}" if selected else MUTED
+            body.append(f"{pointer}{index + 1}. {label}\n", style=style)
+        return body
+
+    def _emit(self, index: int) -> None:
+        _label, approved, remember = _OPTIONS[index]
+        self.post_message(self.Decision(self.approval.tool_call_id, approved, remember))
+
     def on_key(self, event) -> None:
-        if event.key == "enter":
-            self.post_message(self.Decision(self.approval.tool_call_id, True))
-            event.stop()
+        if event.key == "down":
+            self._selected = (self._selected + 1) % len(_OPTIONS)
+            self.refresh()
+        elif event.key == "up":
+            self._selected = (self._selected - 1) % len(_OPTIONS)
+            self.refresh()
+        elif event.key in ("1", "2", "3"):
+            self._emit(int(event.key) - 1)
+        elif event.key == "enter":
+            self._emit(self._selected)
         elif event.key == "escape":
-            self.post_message(self.Decision(self.approval.tool_call_id, False))
-            event.stop()
+            self._emit(len(_OPTIONS) - 1)  # last option is "No"
+        else:
+            return
+        event.stop()

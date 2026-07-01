@@ -34,12 +34,16 @@ from jenai.schemas.outputs import (
     LocListOutput,
     LocShowOutput,
     PlanOutput,
+    RosEchoOutput,
     RosPubOutput,
     RosSchemaOutput,
+    RosTopicInfoOutput,
     RosTopicsOutput,
     RouteOutput,
     RunOutput,
+    ShellOutput,
     TopicItem,
+    VisionOutput,
 )
 
 __all__ = [
@@ -66,8 +70,10 @@ __all__ = [
     "Pose2D",
     "RiskLevel",
     "RosContext",
+    "RosEchoOutput",
     "RosPubOutput",
     "RosSchemaOutput",
+    "RosTopicInfoOutput",
     "RosTopicsOutput",
     "RouteOutput",
     "RunOutput",
@@ -75,10 +81,12 @@ __all__ = [
     "RunStatus",
     "SessionMode",
     "SessionState",
+    "ShellOutput",
     "Theme",
     "ToolCallCategory",
     "ToolCallRecord",
     "ToolCallStatus",
     "TopicItem",
+    "VisionOutput",
 ]
 

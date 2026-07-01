@@ -25,6 +25,10 @@ class RunStore:
     def __init__(self) -> None:
         self._runs: dict[str, RunRecord] = {}
         self._pending_state: dict[str, Any] = {}
+        # Position-aligned approval ids for the paused state's interruptions, so
+        # resume can map each interruption back to its unique ApprovalRequest id
+        # (the SDK often gives no call_id, so index alone would collide).
+        self._pending_approval_ids: dict[str, list[str]] = {}
 
     def create_run(self, session_id: str, user_input: str) -> RunRecord:
         run = RunRecord(session_id=session_id, user_input=user_input)
@@ -33,6 +37,10 @@ class RunStore:
 
     def get(self, run_id: str) -> RunRecord | None:
         return self._runs.get(run_id)
+
+    def list_runs(self) -> list[RunRecord]:
+        """Return all runs in creation order (oldest first)."""
+        return list(self._runs.values())
 
     def set_status(self, run: RunRecord, status: RunStatus) -> None:
         run.status = RunStatus(status).value
@@ -79,8 +87,14 @@ class RunStore:
         run.error = error
         self.set_status(run, status)
 
-    def stash_pending_state(self, run_id: str, state: Any) -> None:
+    def stash_pending_state(
+        self, run_id: str, state: Any, approval_ids: list[str] | None = None
+    ) -> None:
         self._pending_state[run_id] = state
+        self._pending_approval_ids[run_id] = list(approval_ids or [])
 
     def pop_pending_state(self, run_id: str) -> Any | None:
         return self._pending_state.pop(run_id, None)
+
+    def pop_pending_approval_ids(self, run_id: str) -> list[str]:
+        return self._pending_approval_ids.pop(run_id, [])

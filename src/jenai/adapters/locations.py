@@ -116,9 +116,33 @@ def _fuzzy_candidates(
     return candidates
 
 
+_TOML_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+
 def _quote(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
+    """Emit a TOML basic string, escaping control characters.
+
+    TOML basic strings forbid literal control characters (newlines, tabs,
+    etc.); without escaping them the written file would fail to reload via
+    tomllib and silently drop every saved location.
+    """
+    out = []
+    for ch in value:
+        if ch in _TOML_ESCAPES:
+            out.append(_TOML_ESCAPES[ch])
+        elif ch < "\x20" or ch == "\x7f":
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 def _toml_array(values: list[str]) -> str:

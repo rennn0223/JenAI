@@ -44,3 +44,8 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The WebUI dashboard embeds a CSS/HTML/JS template as a string literal; its
+# lines (fonts URL, CSS rules) legitimately exceed the line-length limit.
+"src/jenai/webui/server.py" = ["E501"]

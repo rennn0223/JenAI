@@ -38,6 +38,24 @@ class RosSchemaOutput(JenAIModel):
     example_payload: dict = Field(default_factory=dict)
 
 
+class RosTopicInfoOutput(JenAIModel):
+    name: str
+    message_type: str = ""
+    publisher_count: int = 0
+    subscriber_count: int = 0
+    publishers: list[str] = Field(default_factory=list)
+    subscribers: list[str] = Field(default_factory=list)
+    summary: str = ""
+    candidates: list[str] = Field(default_factory=list)
+
+
+class RosEchoOutput(JenAIModel):
+    topic: str
+    mode: Literal["stream", "snapshot"] = "snapshot"
+    messages: list[dict] = Field(default_factory=list)
+    summary: str = ""
+
+
 class RosPubOutput(JenAIModel):
     topic: str
     message_type: str
@@ -95,6 +113,25 @@ class RunOutput(JenAIModel):
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     interruptions: list[_ApprovalRequest] = Field(default_factory=list)
     final_output: str = ""
+
+
+class VisionOutput(JenAIModel):
+    source: str
+    summary: str = ""
+    objects: list[str] = Field(default_factory=list)
+    anomalies: list[str] = Field(default_factory=list)
+    relevance_to_task: str = ""
+    next_action_suggestions: list[str] = Field(default_factory=list)
+
+
+class ShellOutput(JenAIModel):
+    command: str
+    working_directory: str = ""
+    risk_summary: str = ""
+    approval_status: str = "pending"
+    exit_code: int = 0
+    stdout_summary: str = ""
+    stderr_summary: str = ""
 
 
 class CommandGroup(JenAIModel):
