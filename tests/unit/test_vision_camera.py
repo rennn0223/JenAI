@@ -48,7 +48,8 @@ def test_vision_camera_captures_default_topic_and_analyzes(tmp_path: Path, monke
             return fake
 
         monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
-        monkeypatch.setattr("jenai.tui.robot_commands.analyze_image", fake_analyze)
+        # The camera flow now runs through the shared vision_core helper.
+        monkeypatch.setattr("jenai.tools.vision_core.analyze_image", fake_analyze)
         async with app.run_test():
             await app.handle_user_text("/vision camera")
             await app.handle_user_text("/vision camera /front_cam/image_raw")

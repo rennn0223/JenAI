@@ -8,9 +8,8 @@ from typing import Any
 from jenai.adapters import ros2_adapter
 from jenai.adapters.locations import (
     LocationNotFoundError,
-    ensure_locations_file,
     find_location,
-    load_locations,
+    load_locations_tolerant,
 )
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
@@ -51,14 +50,8 @@ def _isnum(text: str) -> bool:
 
 
 def _load_locations(config: AppConfig, config_path: Path):
-    path = config.resolved_locations_path(config_path)
-    if path is None:
-        return []
-    try:
-        ensure_locations_file(path)
-        return load_locations(path)
-    except Exception:
-        return []
+    locations, _error = load_locations_tolerant(config.resolved_locations_path(config_path))
+    return locations
 
 
 async def run_web_command(config: AppConfig, config_path: Path, text: str) -> dict:

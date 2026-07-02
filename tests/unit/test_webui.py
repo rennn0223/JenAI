@@ -231,3 +231,45 @@ def test_api_map_pose_staleness(tmp_path) -> None:
 
     cache.latest["ts"] = time.time() - 60  # stale → treated as no pose
     assert build_map_payload(config, config_path, cache)["pose"] is None
+
+
+def test_pose_cache_backs_off_after_bridge_failure(monkeypatch) -> None:
+    """A bridge that keeps dying must not be respawned by every 2s map poll —
+    only after the backoff window (and the stale pose must be cleared)."""
+    import time as _time
+    from types import SimpleNamespace
+
+    from jenai.webui import server as server_module
+    from jenai.webui.server import PoseCache
+
+    monkeypatch.setattr(
+        server_module.RosBridgeClient, "available", staticmethod(lambda: True)
+    )
+    spawned: list[int] = []
+    monkeypatch.setattr(
+        server_module.threading,
+        "Thread",
+        lambda **kw: SimpleNamespace(start=lambda: spawned.append(1)),
+    )
+
+    cache = PoseCache(retry_after_s=30.0)
+    cache.ensure_started()
+    assert len(spawned) == 1
+
+    async def dead_loop() -> None:
+        raise RuntimeError("bridge never came up")
+
+    cache.latest = {"x": 1.0}
+    monkeypatch.setattr(cache, "_loop", dead_loop)
+    try:
+        cache._run_loop()
+    except RuntimeError:
+        pass
+
+    assert cache.latest is None  # stale pose cleared on exit
+    cache.ensure_started()
+    assert len(spawned) == 1  # within the backoff window: no respawn
+
+    cache._last_exit = _time.monotonic() - 31.0  # window elapsed
+    cache.ensure_started()
+    assert len(spawned) == 2  # retried after backoff

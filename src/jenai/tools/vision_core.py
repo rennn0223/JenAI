@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_vision_json
 from jenai.schemas import VisionOutput
+
+if TYPE_CHECKING:
+    from jenai.bridge import RosBridgeClient
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
@@ -75,3 +80,27 @@ async def analyze_image(
         relevance_to_task=str(parsed.get("relevance_to_task", task_context)),
         next_action_suggestions=_as_str_list(parsed.get("next_action_suggestions")),
     )
+
+
+async def capture_and_analyze(
+    config: AppConfig,
+    bridge: RosBridgeClient,
+    topic: str,
+    *,
+    timeout: float = 5.0,
+    on_captured: Callable[[], None] | None = None,
+) -> VisionOutput:
+    """One-shot camera capture → VLM analysis, with guaranteed frame cleanup.
+
+    The shared flow behind `/vision camera` and the MCP camera_look tool.
+    Raises BridgeError when no frame can be captured and VisionError when the
+    file can't be analyzed; `on_captured` fires between the two phases (the
+    TUI uses it to flip its spinner label).
+    """
+    frame_path = await bridge.capture_frame(topic, timeout=timeout)
+    if on_captured is not None:
+        on_captured()
+    try:
+        return await analyze_image(config, str(frame_path))
+    finally:
+        frame_path.unlink(missing_ok=True)  # one-shot capture; don't litter /tmp

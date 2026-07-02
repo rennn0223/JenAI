@@ -50,17 +50,29 @@ async def run_daemon(
     locations_path = config.resolved_locations_path(config_path)
 
     async def _navigate(decision: Decision) -> None:
-        if locations_path is None or not locations_path.exists():
-            on_status(f"'{decision.rule.name}': no locations file — cannot navigate")
-            return
+        # Fire-and-forget task: nothing awaits it, so every failure must be
+        # reported here — an uncaught exception would kill the navigation
+        # silently (the rule fires, the robot never moves, nobody learns why).
         try:
-            location = find_location(load_locations(locations_path), decision.navigate_to or "")
-        except LocationNotFoundError:
-            on_status(f"'{decision.rule.name}': unknown location '{decision.navigate_to}'")
-            return
-        on_status(f"'{decision.rule.name}': navigating to {location.name}")
-        output = await navigate_live(bridge, {"goal": location.model_dump(mode="json")})
-        on_status(f"'{decision.rule.name}': {output.execution_status} — {output.route_preview}")
+            if locations_path is None or not locations_path.exists():
+                on_status(f"'{decision.rule.name}': no locations file — cannot navigate")
+                return
+            try:
+                location = find_location(
+                    load_locations(locations_path), decision.navigate_to or ""
+                )
+            except LocationNotFoundError:
+                on_status(f"'{decision.rule.name}': unknown location '{decision.navigate_to}'")
+                return
+            on_status(f"'{decision.rule.name}': navigating to {location.name}")
+            output = await navigate_live(bridge, {"goal": location.model_dump(mode="json")})
+            on_status(
+                f"'{decision.rule.name}': {output.execution_status} — {output.route_preview}"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            on_status(f"'{decision.rule.name}': navigation failed — {exc}")
 
     try:
         while True:
@@ -80,7 +92,10 @@ async def run_daemon(
         # robot actually halts), then tear down the bridge.
         if nav_task is not None and not nav_task.done():
             nav_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, BridgeError):
+            # Suppress *anything* the dying task raises (a dead bridge pipe
+            # surfaces as BrokenPipeError, not BridgeError) — bridge.stop()
+            # below must always run or the rclpy subprocess is leaked.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await nav_task
         try:
             await bridge.stop()

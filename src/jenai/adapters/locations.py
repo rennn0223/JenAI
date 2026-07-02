@@ -64,6 +64,23 @@ def load_locations(path: Path) -> list[Location]:
         raise LocationsFileError(f"Locations file has invalid entries: {exc}") from exc
 
 
+def load_locations_tolerant(path: Path | None) -> tuple[list[Location], str | None]:
+    """Load locations for display/lookup flows: create a starter file when
+    missing and map failures to a message instead of an exception.
+
+    Returns (locations, error_message) — error_message is None on success.
+    The shared form of the loader every surface (CLI, TUI, WebUI, MCP) needs,
+    so error handling can't drift between copies.
+    """
+    if path is None:
+        return [], "No locations file is configured (locations.toml)."
+    try:
+        ensure_locations_file(path)
+        return load_locations(path), None
+    except LocationsFileError as exc:
+        return [], str(exc)
+
+
 def save_locations(locations: list[Location], path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_to_toml(locations), encoding="utf-8")

@@ -42,7 +42,7 @@ class RosBridgeClient:
         self._event_handlers: dict[str, list[Callable[[dict], None]]] = {}
         self._watch_handlers: dict[int, Callable[[dict], None]] = {}
         self._ready = asyncio.Event()
-        self._start_lock: asyncio.Lock | None = None
+        self._start_lock = asyncio.Lock()
 
     @staticmethod
     def available() -> bool:
@@ -60,8 +60,6 @@ class RosBridgeClient:
         parallel): a lock ensures exactly one bridge process is spawned.
         Raises BridgeError when ROS is absent or the bridge never comes up.
         """
-        if self._start_lock is None:
-            self._start_lock = asyncio.Lock()
         async with self._start_lock:
             if self.running:
                 return

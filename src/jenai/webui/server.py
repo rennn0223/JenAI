@@ -61,10 +61,12 @@ class PoseCache:
     event loop + bridge and publishes the latest pose here; /api/map just reads.
     """
 
-    def __init__(self, refresh_s: float = 1.0) -> None:
+    def __init__(self, refresh_s: float = 1.0, retry_after_s: float = 30.0) -> None:
         self.latest: dict[str, Any] | None = None
         self._refresh_s = refresh_s
+        self._retry_after_s = retry_after_s
         self._started = False
+        self._last_exit: float | None = None
         self._lock = threading.Lock()
 
     def ensure_started(self) -> None:
@@ -72,6 +74,14 @@ class PoseCache:
             return  # don't latch: ROS may be sourced/installed later
         with self._lock:
             if self._started:
+                return
+            if (
+                self._last_exit is not None
+                and time.monotonic() - self._last_exit < self._retry_after_s
+            ):
+                # The last bridge attempt just died. Back off instead of letting
+                # the map card's 2s polling respawn a bridge subprocess forever
+                # when ROS looks present but the bridge can never come up.
                 return
             self._started = True
         threading.Thread(target=self._run_loop, daemon=True).start()
@@ -81,11 +91,14 @@ class PoseCache:
             asyncio.run(self._loop())
         finally:
             # Whatever ended the loop (bridge failed to start, crashed, ROS went
-            # away), un-latch so a later /api/map request can try again instead
-            # of showing "no pose" until the server restarts.
+            # away), un-latch so a later /api/map request can try again — after
+            # the backoff window. Clear the pose BEFORE un-latching (inside the
+            # lock) so this dying thread can never clobber a pose a successor
+            # thread has already published.
             with self._lock:
+                self.latest = None
+                self._last_exit = time.monotonic()
                 self._started = False
-            self.latest = None
 
     async def _loop(self) -> None:
         client = RosBridgeClient()

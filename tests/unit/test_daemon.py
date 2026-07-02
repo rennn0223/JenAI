@@ -114,3 +114,66 @@ def test_example_rules_file_parses() -> None:
     rules = load_rules(Path(__file__).parents[2] / "rules.example.toml")
     assert len(rules) == 2
     assert all(not r.auto_approve for r in rules)  # example must ship safe
+
+
+def test_daemon_navigate_failure_is_reported_not_silent(tmp_path: Path, monkeypatch) -> None:
+    """A fire-and-forget nav task that dies (malformed locations.toml) must
+    surface through on_status — the rule fired, the robot didn't move, and the
+    operator has to learn why."""
+    import asyncio
+    import contextlib
+    import sys
+
+    from jenai.bridge import RosBridgeClient
+    from jenai.bridge import client as client_module
+    from jenai.config.store import build_minimal_config
+    from jenai.daemon.runner import run_daemon
+
+    monkeypatch.setattr(
+        client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py"
+    )
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "nav2"  # allow goto rules
+    config_path = tmp_path / "config.toml"
+    (tmp_path / "locations.toml").write_text("not = [valid toml", encoding="utf-8")
+
+    # fake_bridge's watch op immediately emits {"percentage": 0.42}.
+    rule = Rule(
+        name="low-battery",
+        topic="/battery",
+        msg_type="sensor_msgs/msg/BatteryState",
+        fld="percentage",
+        below=0.5,
+        action="goto Dock",
+        auto_approve=True,
+        cooldown_s=0.0,
+    )
+
+    statuses: list[str] = []
+
+    async def run() -> None:
+        task = asyncio.create_task(
+            run_daemon(
+                config,
+                config_path,
+                [rule],
+                on_decision=lambda d: None,
+                on_status=statuses.append,
+            )
+        )
+        for _ in range(100):  # wait for the nav task's failure report
+            await asyncio.sleep(0.05)
+            if any("navigation failed" in s for s in statuses):
+                break
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    assert any("navigation failed" in s for s in statuses)

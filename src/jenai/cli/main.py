@@ -12,10 +12,8 @@ from rich.table import Table
 from jenai import __version__
 from jenai.adapters.locations import (
     LocationNotFoundError,
-    LocationsFileError,
-    ensure_locations_file,
     find_location,
-    load_locations,
+    load_locations_tolerant,
 )
 from jenai.config import ConfigError, default_config_path, load_config, load_env_file
 from jenai.config.models import AppConfig
@@ -33,6 +31,10 @@ app = typer.Typer(
 loc_app = typer.Typer(help="Manage locations.")
 app.add_typer(loc_app, name="loc")
 console = Console()
+# ALL diagnostics/warnings/status lines go here, never to `console`: stdout is
+# the MCP protocol channel under `jenai mcp`, and one stray decorated print
+# from shared code would break every connected MCP client.
+err_console = Console(stderr=True)
 
 
 ConfigOption = Annotated[
@@ -52,9 +54,7 @@ def main(
     # the same. Shell-exported variables still take precedence over the file.
     env_result = load_env_file()
     if env_result.explicit and not env_result.found:
-        # stderr, not stdout: this callback also runs before `jenai mcp`, whose
-        # stdout is the MCP protocol channel and must stay clean.
-        Console(stderr=True).print(
+        err_console.print(
             f"[yellow]JENAI_ENV_FILE points to a missing file: {env_result.path}[/yellow]"
         )
 
@@ -230,20 +230,18 @@ def mcp(
     ] = False,
 ) -> None:
     """Serve JenAI's robot tools over MCP stdio (for Claude Code/Desktop etc.)."""
-    import sys
-
     config_path = config or default_config_path()
     try:
         loaded = load_config(config_path)
     except ConfigError as exc:
-        print(str(exc), file=sys.stderr)
+        err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
     from jenai.mcp_server import build_mcp_server
 
     # stdio transport: stdout belongs to the MCP protocol — status goes to stderr.
     mode = "read-only + navigate_to" if allow_actions else "read-only"
-    print(f"jenai mcp server starting ({mode})", file=sys.stderr)
+    err_console.print(f"jenai mcp server starting ({mode})")
     server = build_mcp_server(loaded, config_path, allow_actions=allow_actions)
     server.run(transport="stdio")
 
@@ -349,14 +347,8 @@ def loc_show(name: str, config: ConfigOption = None) -> None:
 
 
 def _load_locations_for_cli(loaded: AppConfig, config_path: Path) -> list[Location]:
-    locations_path = loaded.resolved_locations_path(config_path)
-    if locations_path is None:
-        return []
-    try:
-        ensure_locations_file(locations_path)
-        return load_locations(locations_path)
-    except LocationsFileError:
-        return []
+    locations, _error = load_locations_tolerant(loaded.resolved_locations_path(config_path))
+    return locations
 
 
 def _print_doctor_result(result: DoctorResult) -> None:

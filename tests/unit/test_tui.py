@@ -166,6 +166,62 @@ def test_tui_stream_error_keeps_partial_and_reports(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_tui_stream_unexpected_error_is_surfaced(monkeypatch) -> None:
+    # Transport errors escape the openai SDK unwrapped mid-stream; they must
+    # still produce an error bullet instead of a silently orphaned '…' bubble.
+    async def exploding_stream(config, prompt):
+        yield "partial "
+        raise RuntimeError("connection reset by peer")
+
+    async def run() -> None:
+        app = JenAITuiApp(
+            config=build_minimal_config(
+                provider_name="test",
+                provider="openai",
+                default_model="gpt-test",
+                api_key_env="",
+            ),
+            config_path=Path("/tmp/config.toml"),
+        )
+        async with app.run_test():
+            await app.handle_user_text("hi")
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert "partial " in bodies  # partial answer preserved
+            assert any("connection reset by peer" in b for b in bodies)
+            assert not any(b == "…" for b in bodies)  # no orphaned placeholder
+
+    monkeypatch.setattr("jenai.tui.app.stream_provider", exploding_stream)
+    asyncio.run(run())
+
+
+def test_tui_stream_error_text_is_markup_safe(monkeypatch) -> None:
+    from jenai.providers import ProviderChatError
+
+    # '[Errno 111]' and stray '[/]' are what real provider errors look like —
+    # they must render as text, not crash Textual's markup parser.
+    async def refused_stream(config, prompt):
+        raise ProviderChatError("endpoint said [/] no: [Errno 111] Connection refused")
+        yield  # pragma: no cover — makes this an async generator
+
+    async def run() -> None:
+        app = JenAITuiApp(
+            config=build_minimal_config(
+                provider_name="test",
+                provider="openai",
+                default_model="gpt-test",
+                api_key_env="",
+            ),
+            config_path=Path("/tmp/config.toml"),
+        )
+        async with app.run_test():
+            await app.handle_user_text("hi")
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("Errno 111" in b for b in bodies)  # surfaced, not crashed
+
+    monkeypatch.setattr("jenai.tui.app.stream_provider", refused_stream)
+    asyncio.run(run())
+
+
 def test_tui_ros_topics_command(monkeypatch) -> None:
     async def fake_ros_topics(config):
         return RosTopicsOutput(topics=[TopicItem(name="/cmd_vel", kind_hint="control")])
@@ -674,7 +730,9 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
         )
 
     monkeypatch.setattr("jenai.tui.robot_commands.route_preview", fake_route_preview)
-    monkeypatch.setattr("jenai.tui.robot_commands.route_execute", fake_route_execute)
+    # Execution dispatch lives in the shared navigate_with_fallback, which
+    # resolves route_execute from route_core at call time.
+    monkeypatch.setattr("jenai.tools.route_core.route_execute", fake_route_execute)
 
     async def run() -> None:
         app = _app(tmp_path)

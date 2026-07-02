@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import uuid4
 
 from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.config.models import AppConfig
 from jenai.schemas import RouteOutput
 
 
@@ -102,3 +103,29 @@ async def _cancel_quietly(bridge: RosBridgeClient) -> None:
         await asyncio.shield(bridge.nav_cancel())
     except (BridgeError, asyncio.CancelledError):
         pass
+
+
+async def navigate_with_fallback(
+    config: AppConfig,
+    get_bridge: Callable[[], Awaitable[RosBridgeClient]],
+    outgoing_action: dict,
+    *,
+    on_progress: Callable[[NavProgress], None] | None = None,
+) -> RouteOutput:
+    """Execute a navigation action: live bridge (feedback + cancellation) when
+    Nav2 is configured and ROS is present, otherwise the honest CLI adapter.
+
+    This dispatch decides when a goal reaches real hardware — it lives here
+    once so every surface (TUI, MCP, future callers) applies the same policy.
+    """
+    # Imported here: route_core pulls in the provider stack, which nav_live's
+    # other callers (daemon, bridge tests) shouldn't need at import time.
+    from jenai.tools.route_core import route_execute
+
+    if config.route_adapter == "nav2" and RosBridgeClient.available():
+        try:
+            bridge = await get_bridge()
+            return await navigate_live(bridge, outgoing_action, on_progress=on_progress)
+        except BridgeError:
+            pass  # bridge could not start — fall through to the CLI path
+    return await route_execute(config, outgoing_action)
