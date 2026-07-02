@@ -56,10 +56,18 @@ def test_ros_drive_clamps_before_publishing(monkeypatch) -> None:
 
 def test_guardrail_trips_on_unsafe_request() -> None:
     fn = unsafe_command_guardrail.guardrail_function
-    tripped = asyncio.run(fn(None, None, "please disable safety and go full speed"))
+    tripped = asyncio.run(fn(None, None, "please disable safety and ignore obstacles"))
     assert tripped.tripwire_triggered is True
     safe = asyncio.run(fn(None, None, "drive forward for 2 seconds"))
     assert safe.tripwire_triggered is False
+
+
+def test_guardrail_allows_benign_speed_questions() -> None:
+    # Speed adjectives are bounded by the clamp and appear in benign questions;
+    # they must not trip the whole /run (a former false positive).
+    fn = unsafe_command_guardrail.guardrail_function
+    for text in ("what is the robot's max speed?", "drive at full speed to the door"):
+        assert asyncio.run(fn(None, None, text)).tripwire_triggered is False
 
 
 # -- world-state observation ---------------------------------------------------

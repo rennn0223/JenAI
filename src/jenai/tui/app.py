@@ -23,6 +23,7 @@ from jenai.adapters.locations import (
 )
 from jenai.agent import build_run_agent, orchestrator, review_plan, run_plan
 from jenai.agent.context import JenAIRunContext
+from jenai.agent.session import JenAIFileSession
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.doctor import run_doctor
 from jenai.providers import ProviderChatError, ask_provider, chat_model_name, resolve_model_alias
@@ -377,8 +378,11 @@ class JenAITuiApp(App[None]):
         try:
             await self.handle_user_text(value)
         except asyncio.CancelledError:
-            # Esc interrupt (or app shutdown). Only report if the UI is still
-            # mounted — during quit the widgets are already gone.
+            # Esc interrupt (or app shutdown). CancelledError is a BaseException,
+            # so orchestrator's `except Exception` never finalises the run —
+            # finish it here or it is orphaned in RUNNING forever. Only report if
+            # the UI is still mounted (during quit the widgets are already gone).
+            self._finalize_interrupted_run()
             if self.is_running:
                 try:
                     await self._mount_event(TimelineItem("warn", "Interrupted."))
@@ -388,6 +392,17 @@ class JenAITuiApp(App[None]):
         finally:
             self._stop_spinner()
             self._active_task = None
+
+    def _finalize_interrupted_run(self) -> None:
+        """Mark an in-flight run as stopped so an Esc interrupt doesn't leave it
+        stuck in a non-terminal state (RUNNING/UNDERSTANDING/PLANNING)."""
+        run_id = self.session.current_run_id
+        if run_id is None:
+            return
+        run = self.run_store.get(run_id)
+        in_flight = (RunStatus.RUNNING, RunStatus.UNDERSTANDING, RunStatus.PLANNING)
+        if run is not None and run.status in in_flight:
+            self.run_store.finish(run, status=RunStatus.BLOCKED)
 
     def on_key(self, event) -> None:
         # Key routing priority: (1) Esc interrupts a running task, (2) the slash
@@ -430,7 +445,10 @@ class JenAITuiApp(App[None]):
         self.history.record(value)
         if value == "/clear":
             await self._clear_events()
-            await self._mount_event(TimelineItem("success", "Session output cleared."))
+            # Also reset the persisted conversation memory, so /clear truly starts
+            # fresh rather than the agent silently remembering the old thread.
+            await JenAIFileSession(self.session.session_id).clear_session()
+            await self._mount_event(TimelineItem("success", "Session output and memory cleared."))
             return
 
         await self._mount_event(PromptPill(value))
@@ -1383,7 +1401,23 @@ class JenAITuiApp(App[None]):
         await self._execute_direct(pending)
 
     async def _execute_direct(self, pending: dict) -> None:
-        """Run an approved (or auto-approved) direct command and render its result."""
+        """Run an approved direct command, finalising the run even on failure.
+
+        Reached from the ApprovalCard decision handler, which runs outside the
+        command-dispatch try/except — so a raising tool (e.g. a ROS error) would
+        otherwise escape unhandled and leave the run stuck RUNNING. Mirror the
+        WebUI/agent contract: finish FAILED and surface the error.
+        """
+        ctx: JenAIRunContext = pending["ctx"]
+        try:
+            await self._run_direct(pending)
+        except Exception as exc:
+            if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
+                self.run_store.finish(ctx.run, status=RunStatus.FAILED, final_output=str(exc))
+            await self._mount_event(TimelineItem("error", f"Action failed: {exc}"))
+            self._scroll_to_bottom()
+
+    async def _run_direct(self, pending: dict) -> None:
         ctx: JenAIRunContext = pending["ctx"]
         self.run_store.set_status(ctx.run, RunStatus.RUNNING)
         if pending["kind"] in ("ros_pub", "drive"):

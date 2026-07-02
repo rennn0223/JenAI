@@ -157,6 +157,44 @@ def test_resume_with_rejection_feeds_rejection_message(monkeypatch) -> None:
     assert result.interruptions[0].status == "rejected"
 
 
+def test_resume_stops_blocked_when_model_loops_same_action(monkeypatch) -> None:
+    # After approving an action, the model re-raises the SAME action (a loop):
+    # the run must stop honestly as BLOCKED, not re-prompt or fake COMPLETED.
+    first = _FakeState([_FakeApprovalItem("some_tool", "call_1", {"topic": "/cmd_vel"})])
+    looped = _FakeState([_FakeApprovalItem("some_tool", "call_2", {"topic": "/cmd_vel"})])
+    calls: list[str] = []
+
+    async def fake_run(agent, task_input, *, context=None, **kwargs):
+        calls.append(task_input)
+        return _FakeResult(first) if len(calls) == 1 else _FakeResult(looped)
+
+    monkeypatch.setattr(Runner, "run", fake_run)
+    ctx = _ctx(monkeypatch)
+    asyncio.run(orchestrator.start_run(_agent(), ctx, "drive forward"))
+    result = asyncio.run(orchestrator.resume_with_approvals(_agent(), ctx, {"call_1": True}))
+
+    assert result.status == "blocked"
+
+
+def test_resume_asks_again_for_a_genuinely_new_action(monkeypatch) -> None:
+    # A distinct second action (different args) is legitimate multi-step work and
+    # must still prompt for approval rather than be silently truncated.
+    first = _FakeState([_FakeApprovalItem("some_tool", "call_1", {"topic": "/cmd_vel"})])
+    different = _FakeState([_FakeApprovalItem("some_tool", "call_2", {"topic": "/arm"})])
+    calls: list[str] = []
+
+    async def fake_run(agent, task_input, *, context=None, **kwargs):
+        calls.append(task_input)
+        return _FakeResult(first) if len(calls) == 1 else _FakeResult(different)
+
+    monkeypatch.setattr(Runner, "run", fake_run)
+    ctx = _ctx(monkeypatch)
+    asyncio.run(orchestrator.start_run(_agent(), ctx, "drive then move arm"))
+    result = asyncio.run(orchestrator.resume_with_approvals(_agent(), ctx, {"call_1": True}))
+
+    assert result.status == "awaiting_approval"
+
+
 def test_start_run_handles_max_turns_exceeded(monkeypatch) -> None:
     async def fake_run(agent, task_input, *, context=None, **kwargs):
         raise MaxTurnsExceeded("too many turns")

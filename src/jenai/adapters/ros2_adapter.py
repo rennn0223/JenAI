@@ -253,8 +253,12 @@ def topic_pub_for(
         )
     args = ["ros2", "topic", "pub", topic, message_type, payload_yaml, "--rate", str(rate_hz)]
     try:
+        # stdout is DEVNULL: `ros2 topic pub --rate` prints one line per publish,
+        # which we never read — piping it risks filling the ~64KB OS buffer and
+        # blocking the child mid-drive. stderr stays piped (low volume) so a fast
+        # failure's error message is available for an honest report.
         proc = subprocess.Popen(  # noqa: S603 - args are constructed, not shell
-            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
         )
     except OSError as exc:
         raise Ros2CommandError(f"ros2 topic pub could not start: {exc}") from exc
@@ -262,11 +266,30 @@ def topic_pub_for(
     try:
         time.sleep(max(0.0, duration_s))
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        # If the process exited on its own before the duration elapsed, the drive
+        # FAILED (bad message type/topic, ros2 not sourced, immediate crash) — a
+        # publisher we asked to run at a fixed rate should still be alive here.
+        # Distinguish that from our own deliberate termination below.
+        exited_early = proc.poll() is not None
+        if exited_early:
+            stderr_text = (proc.stderr.read() if proc.stderr else "") or ""
+        else:
+            stderr_text = ""
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    if exited_early:
+        detail = stderr_text.strip().splitlines()[-1] if stderr_text.strip() else ""
+        return PubResult(
+            ok=False,
+            message=(
+                f"drive failed: ros2 topic pub on {topic} exited early "
+                f"(code {proc.returncode})" + (f": {detail}" if detail else "")
+            ),
+        )
 
     if stop_yaml is not None:
         # Best-effort stop pulse; ignore its failure so a completed drive still reports ok.

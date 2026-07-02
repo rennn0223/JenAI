@@ -36,12 +36,6 @@ _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
 # motion) is stopped quickly instead of prompting for approval over and over.
 _MAX_TURNS = 6
 
-# Hard cap on approval prompts per /run. A weak local model (and some SDK/model
-# combos that omit tool call_ids) can loop, re-raising an approval every cycle.
-# Capping the total interruptions a run may raise guarantees the user is never
-# asked to approve endlessly, regardless of model or SDK behaviour.
-_MAX_APPROVALS_PER_RUN = 1
-
 
 async def start_run(
     agent: Agent[JenAIRunContext], ctx: JenAIRunContext, task_input: str
@@ -53,9 +47,8 @@ async def start_run(
 
     try:
         # `session` gives cross-run memory (see JenAIFileSession); `run_config`
-        # names the SDK trace for observability. Session is used only on the
-        # initial run — resume replays the paused RunState, which already carries
-        # this run's conversation.
+        # names the SDK trace for observability. The same session id is passed on
+        # resume too, so an approved action's result is persisted like any other.
         result = await Runner.run(
             agent,
             task_input,
@@ -112,6 +105,7 @@ async def resume_with_approvals(
             state,
             context=ctx,
             max_turns=_MAX_TURNS,
+            session=JenAIFileSession(run.session_id),
             run_config=RunConfig(workflow_name="JenAI /run (resume)"),
         )
     except Exception as exc:  # includes provider/API errors, not just _RUN_ERRORS
@@ -126,32 +120,32 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
     state = result.to_state()
     interruptions = state.get_interruptions()
 
-    if interruptions and len(run.interruptions) >= _MAX_APPROVALS_PER_RUN:
-        # Already asked once this run; a re-raised/looped approval would spam the
-        # user. Stop here instead of prompting again. Issue another /run for a
-        # further action.
-        run_store.finish(
-            run,
-            status=RunStatus.COMPLETED,
-            final_output=_final_text(result)
-            or (
-                "Stopped after one approval. If the robot did not move, run the action "
-                "directly, e.g. /ros drive /cmd_vel '{\"linear\": {\"x\": 0.2}}' 1"
-            ),
-        )
+    if not interruptions:
+        run_store.finish(run, status=RunStatus.COMPLETED, final_output=_final_text(result))
         return run
 
-    if interruptions:
-        approval_ids: list[str] = []
-        for item in interruptions:
-            # Unique id per approval (SDK call_id when present, else a fresh id)
-            # so resume and resolve never confuse approvals across turns.
-            call_id = item.call_id or new_id("call")
-            approval_ids.append(call_id)
-            arguments = json.loads(item.arguments) if item.arguments else {}
-            fields = format_approval(item.tool_name, arguments)
-            risk_info = TOOL_RISK_REGISTRY.get(item.tool_name)
-            approval = ApprovalRequest(
+    # Build the approval request for each raised interruption. A weak model (or
+    # some SDK/model combos) can loop, re-raising the SAME action every turn; we
+    # detect that by comparing each action against the ones already surfaced this
+    # run (tool + rendered command). A genuinely new action is still allowed
+    # through — only a round where EVERY action repeats one already approved is
+    # treated as a loop and stopped honestly (BLOCKED, never a fake COMPLETED).
+    seen = {(ir.tool_name, ir.raw_action) for ir in run.interruptions}
+    all_repeats = bool(seen)
+    approval_ids: list[str] = []
+    requests: list[ApprovalRequest] = []
+    for item in interruptions:
+        # Unique id per approval (SDK call_id when present, else a fresh id)
+        # so resume and resolve never confuse approvals across turns.
+        call_id = item.call_id or new_id("call")
+        approval_ids.append(call_id)
+        arguments = json.loads(item.arguments) if item.arguments else {}
+        fields = format_approval(item.tool_name, arguments)
+        if (item.tool_name, fields.raw_action) not in seen:
+            all_repeats = False
+        risk_info = TOOL_RISK_REGISTRY.get(item.tool_name)
+        requests.append(
+            ApprovalRequest(
                 run_id=run.run_id,
                 tool_call_id=call_id,
                 tool_name=item.tool_name,
@@ -162,12 +156,25 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
                 effect_scope=risk_info.effect_scope if risk_info else EffectScope.SIM_CONTROL,
                 justification=fields.justification,
             )
-            run_store.add_interruption(run, approval)
-        run_store.stash_pending_state(run.run_id, state, approval_ids)
-        run_store.set_status(run, RunStatus.AWAITING_APPROVAL)
+        )
+
+    if all_repeats:
+        run_store.finish(
+            run,
+            status=RunStatus.BLOCKED,
+            final_output=_final_text(result)
+            or (
+                "Stopped: the agent kept re-requesting an action it had already asked to "
+                "approve this run (a model loop). Start a new /run for the next step, or run "
+                "the action directly, e.g. /ros drive /cmd_vel '{\"linear\": {\"x\": 0.2}}' 1"
+            ),
+        )
         return run
 
-    run_store.finish(run, status=RunStatus.COMPLETED, final_output=_final_text(result))
+    for approval in requests:
+        run_store.add_interruption(run, approval)
+    run_store.stash_pending_state(run.run_id, state, approval_ids)
+    run_store.set_status(run, RunStatus.AWAITING_APPROVAL)
     return run
 
 

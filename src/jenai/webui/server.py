@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import secrets
+import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +17,38 @@ from jenai.providers.chat import chat_model_name
 from jenai.state.runs import RunStore
 from jenai.tools.ros2_core import _kind_hint
 from jenai.webui.commands import run_web_command, run_web_confirm
+
+
+class _PendingConfirms:
+    """Server-side store binding a previewed robot action to a one-time token.
+
+    The browser only ever receives an opaque ``confirm_id``; the actual action
+    dict stays here and is executed exactly once, when that id is confirmed. So
+    (a) a client cannot fabricate or tamper with what it confirms — it can only
+    release an action the server already previewed and validated — and (b) a
+    blind POST to ``/api/confirm`` without a valid, unused id does nothing. This
+    turns the confirm step into a real server-side gate rather than a cosmetic
+    button, without adding auth to what is still a localhost tool.
+    """
+
+    def __init__(self, max_entries: int = 32) -> None:
+        self._items: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self._max = max_entries
+
+    def put(self, action: dict) -> str:
+        token = secrets.token_urlsafe(16)
+        with self._lock:
+            self._items[token] = action
+            while len(self._items) > self._max:  # bound memory; evict oldest
+                self._items.pop(next(iter(self._items)), None)
+        return token
+
+    def pop(self, token: str) -> dict | None:
+        if not token:
+            return None
+        with self._lock:
+            return self._items.pop(token, None)
 
 
 def _ros_snapshot() -> dict[str, Any]:
@@ -436,7 +470,7 @@ function render(res){
     yes.querySelector('button').onclick = async () => {
       row.remove(); danger.remove();
       const busy = el('dim','running…'); wrap.appendChild(busy);
-      const out = await post('api/confirm', {action: res.action});
+      const out = await post('api/confirm', {confirm_id: res.confirm_id});
       busy.remove(); wrap.appendChild(el('out', out.html));
       scroll();
     };
@@ -499,6 +533,7 @@ class _Handler(BaseHTTPRequestHandler):
     config: AppConfig
     config_path: Path
     run_store: RunStore | None = None
+    pending: _PendingConfirms | None = None
 
     def log_message(self, *args: Any) -> None:  # silence default stderr logging
         pass
@@ -540,8 +575,19 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if path == "/api/command":
             result = asyncio.run(run_web_command(self.config, self.config_path, body.get("text", "")))
+            # A previewed actuation is held server-side under a one-time id; the
+            # browser never gets (or gets to alter) the raw action it confirms.
+            if result.get("kind") == "confirm" and self.pending is not None:
+                result["confirm_id"] = self.pending.put(result.pop("action", {}))
         elif path == "/api/confirm":
-            result = asyncio.run(run_web_confirm(self.config, body.get("action") or {}))
+            action = self.pending.pop(body.get("confirm_id", "")) if self.pending else None
+            if action is None:
+                result = {
+                    "kind": "error",
+                    "html": "<p>This confirmation expired or was already used. Re-run the command.</p>",
+                }
+            else:
+                result = asyncio.run(run_web_confirm(self.config, action))
         else:
             result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
@@ -558,7 +604,12 @@ def make_server(
     handler = type(
         "JenAIWebHandler",
         (_Handler,),
-        {"config": config, "config_path": config_path, "run_store": run_store},
+        {
+            "config": config,
+            "config_path": config_path,
+            "run_store": run_store,
+            "pending": _PendingConfirms(),
+        },
     )
     return ThreadingHTTPServer((host, port), handler)
 

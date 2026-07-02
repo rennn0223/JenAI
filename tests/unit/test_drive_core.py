@@ -31,6 +31,18 @@ def test_regex_stop() -> None:
     assert intent.linear_x == 0.0 and intent.angular_z == 0.0
 
 
+def test_regex_movement_wins_over_stray_stop() -> None:
+    # "don't stop" contains the substring "stop" but the user asked to move.
+    intent = drive_core._extract_via_regex("go forward and don't stop")
+    assert intent.linear_x > 0.0
+
+
+def test_regex_negated_bare_stop_defers_to_llm() -> None:
+    # No direction to infer and the stop is negated -> fall through (None) so the
+    # LLM can interpret it, rather than wrongly commanding a full stop.
+    assert drive_core._extract_via_regex("don't stop") is None
+
+
 def test_regex_returns_none_for_unrelated() -> None:
     assert drive_core._extract_via_regex("what is the weather") is None
 

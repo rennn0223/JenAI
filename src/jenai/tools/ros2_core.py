@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from dataclasses import dataclass
 
@@ -175,7 +176,11 @@ def _naive_example_payload(raw_interface: str) -> dict:
         if len(parts) != 2:
             continue
         field_type, rest = parts
-        name = rest.split("#", 1)[0].strip().split(maxsplit=1)[0] if rest.strip() else ""
+        # Take the token before any trailing comment. Split first, then index
+        # safely: a line like `float64 # note` leaves nothing before the comment,
+        # and `"".split()[0]` would raise IndexError.
+        pre_comment = rest.split("#", 1)[0].split()
+        name = pre_comment[0] if pre_comment else ""
         if not name or "=" in name:  # skip blanks and constants (e.g. `uint8 FOO=1`)
             continue
 
@@ -267,22 +272,50 @@ MAX_ANGULAR = 2.0
 
 
 def _clamp(value, limit):
-    return max(-limit, min(limit, value)) if isinstance(value, int | float) else value
+    # bool is a subclass of int, so guard it explicitly — a JSON `true` must not
+    # be treated as the number 1 and clamped to full speed. Non-numeric values
+    # pass through untouched so ros2 rejects them honestly rather than us faking
+    # a plausible velocity.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    return max(-limit, min(limit, value))
+
+
+def _clamp_velocities(node) -> None:
+    """Recursively clamp every ``linear``/``angular`` velocity dict found anywhere
+    in the payload, mutating in place.
+
+    This covers plain ``geometry_msgs/Twist`` (top-level ``linear``/``angular``)
+    *and* nested variants such as ``geometry_msgs/TwistStamped``
+    (``{"twist": {"linear": ...}}``), which ROS2 Jazzy/Nav2 use on ``/cmd_vel``.
+    Non-Twist-family control messages (e.g. Ackermann ``.drive.speed`` or a raw
+    ``std_msgs/Float64``) are NOT velocity-clamped — we clamp only structures we
+    can interpret rather than pretend to bound arbitrary message types.
+    """
+    if isinstance(node, dict):
+        for key, limit in (("linear", MAX_LINEAR), ("angular", MAX_ANGULAR)):
+            axes = node.get(key)
+            if isinstance(axes, dict):
+                for axis in ("x", "y", "z"):
+                    if axis in axes:
+                        axes[axis] = _clamp(axes[axis], limit)
+        for value in node.values():
+            _clamp_velocities(value)
+    elif isinstance(node, list):
+        for item in node:
+            _clamp_velocities(item)
 
 
 def _safety_clamp(payload: dict) -> dict:
-    """Return a copy of a Twist-like payload with linear/angular velocities
+    """Return a copy of a Twist-family payload with linear/angular velocities
     clamped to the safe limits. Non-Twist payloads pass through unchanged.
     """
     if not isinstance(payload, dict):
         return payload
-    clamped = json.loads(json.dumps(payload))  # cheap deep copy
-    for key, limit in (("linear", MAX_LINEAR), ("angular", MAX_ANGULAR)):
-        axes = clamped.get(key)
-        if isinstance(axes, dict):
-            for axis in ("x", "y", "z"):
-                if axis in axes:
-                    axes[axis] = _clamp(axes[axis], limit)
+    clamped = copy.deepcopy(payload)  # copy.deepcopy, not a JSON round-trip:
+    # the payload may hold non-JSON-native values and a round-trip would raise
+    # or silently coerce types inside what must be a transparent copy-and-clamp.
+    _clamp_velocities(clamped)
     return clamped
 
 

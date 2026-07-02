@@ -75,6 +75,32 @@ def test_session_persists_across_instances(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_session_get_items_limit_zero_returns_empty(tmp_path) -> None:
+    # limit=0 means "the last zero items"; a falsy check would wrongly return all.
+    session = JenAIFileSession("s3", directory=tmp_path)
+
+    async def run():
+        await session.add_items([{"content": "a"}, {"content": "b"}])
+        assert await session.get_items(limit=0) == []
+        assert len(await session.get_items(limit=None)) == 2
+
+    asyncio.run(run())
+
+
+def test_session_history_is_capped(tmp_path) -> None:
+    from jenai.agent import session as session_mod
+
+    session = JenAIFileSession("s4", directory=tmp_path)
+
+    async def run():
+        await session.add_items([{"n": i} for i in range(session_mod._MAX_ITEMS + 50)])
+        items = await session.get_items()
+        assert len(items) == session_mod._MAX_ITEMS
+        assert items[-1]["n"] == session_mod._MAX_ITEMS + 49  # newest kept
+
+    asyncio.run(run())
+
+
 def test_file_tracing_processor_writes(tmp_path) -> None:
     path = tmp_path / "traces.jsonl"
     proc = FileTracingProcessor(path)

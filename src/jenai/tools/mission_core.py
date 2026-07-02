@@ -70,12 +70,17 @@ async def run_mission(
     """
     report = MissionReport()
     for step in steps:
-        if step.kind == "goto":
-            result = await _goto(config, locations, step.target)
-        elif step.kind == "drive":
-            result = await _drive(config, step.target)
-        else:
-            result = StepResult(step.kind, step.target, "failed", f"unknown step '{step.kind}'")
+        try:
+            if step.kind == "goto":
+                result = await _goto(config, locations, step.target)
+            elif step.kind == "drive":
+                result = await _drive(config, step.target)
+            else:
+                result = StepResult(step.kind, step.target, "failed", f"unknown step '{step.kind}'")
+        except Exception as exc:
+            # One failing step (a ROS error, a provider hiccup) must not abort the
+            # whole mission — record it and carry on so the report stays complete.
+            result = StepResult(step.kind, step.target, "failed", f"error: {exc}")
         report.results.append(result)
         if on_step is not None:
             await on_step(result)

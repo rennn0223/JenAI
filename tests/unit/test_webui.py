@@ -134,6 +134,43 @@ def test_web_command_unknown_is_error(tmp_path: Path) -> None:
     assert res["kind"] == "error"
 
 
+def test_pending_confirms_is_one_time_and_bounded() -> None:
+    from jenai.webui.server import _PendingConfirms
+
+    store = _PendingConfirms(max_entries=2)
+    token = store.put({"type": "drive"})
+    assert store.pop(token) == {"type": "drive"}
+    assert store.pop(token) is None  # one-time use
+    assert store.pop("never-issued") is None
+    # Oldest entries are evicted past the cap (bounded memory).
+    ids = [store.put({"n": i}) for i in range(3)]
+    assert store.pop(ids[0]) is None
+    assert store.pop(ids[2]) == {"n": 2}
+
+
+def test_confirm_endpoint_rejects_unknown_id(tmp_path: Path) -> None:
+    # A blind POST to /api/confirm without a server-issued id must not actuate.
+    server = make_server(_config(), tmp_path / "config.toml", port=0)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    try:
+        host, port = server.server_address
+        body = json.dumps({"confirm_id": "bogus"}).encode()
+        req = urllib.request.Request(
+            f"http://{host}:{port}/api/confirm",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read().decode())
+        assert payload["kind"] == "error"
+        assert "expired" in payload["html"].lower() or "used" in payload["html"].lower()
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_dashboard_has_command_console(tmp_path: Path) -> None:
     html = render_dashboard_html(build_status_payload(_config(), tmp_path / "c.toml"))
     assert 'id="cmdinput"' in html and 'id="transcript"' in html

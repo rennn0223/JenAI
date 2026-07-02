@@ -18,6 +18,9 @@ _BACK = ("後退", "后退", "backward", "backwards", "reverse", "back up")
 _LEFT = ("左轉", "左转", "turn left", "left")
 _RIGHT = ("右轉", "右转", "turn right", "right")
 _STOP = ("停", "stop", "halt", "煞車", "刹车", "brake")
+# Negations that flip a bare "stop" into "keep going" ("don't stop" / "別停");
+# too ambiguous for the regex to turn into a direction, so we defer to the LLM.
+_NEGATIONS = ("don't", "do not", "dont", "never", "不要", "別", "别", "勿", "甭")
 
 
 @dataclass(frozen=True)
@@ -60,8 +63,6 @@ def _describe(linear_x: float, angular_z: float, duration_s: float) -> str:
 
 def _extract_via_regex(text: str) -> DriveIntent | None:
     lowered = text.lower()
-    if any(k in lowered for k in _STOP):
-        return DriveIntent(0.0, 0.0, 0.5, "stop")
 
     linear_x = 0.0
     angular_z = 0.0
@@ -79,10 +80,20 @@ def _extract_via_regex(text: str) -> DriveIntent | None:
         angular_z = -_TURN
         matched = True
 
-    if not matched:
-        return None
-    duration = _parse_duration(text)
-    return DriveIntent(linear_x, angular_z, duration, _describe(linear_x, angular_z, duration))
+    if matched:
+        # A movement direction was given; a stray "stop" in the sentence (e.g.
+        # "go forward and don't stop") must not override the requested motion.
+        duration = _parse_duration(text)
+        return DriveIntent(linear_x, angular_z, duration, _describe(linear_x, angular_z, duration))
+
+    if any(k in lowered for k in _STOP):
+        # Bare stop — but not a negated one ("don't stop"), which has no direction
+        # we can infer here, so let the LLM interpret it.
+        if any(neg in lowered for neg in _NEGATIONS):
+            return None
+        return DriveIntent(0.0, 0.0, 0.5, "stop")
+
+    return None
 
 
 async def _extract_via_llm(config: AppConfig, text: str) -> DriveIntent | None:

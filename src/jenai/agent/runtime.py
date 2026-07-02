@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agents import Agent, OpenAIChatCompletionsModel
+from openai import AsyncOpenAI
 
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.instructions import PLAN_AGENT_INSTRUCTIONS, REVIEW_AGENT_INSTRUCTIONS
@@ -9,8 +10,13 @@ from jenai.providers.agent_model import ModelBinding, build_agent_model
 from jenai.schemas import PlanOutput
 
 
-def build_model(config: AppConfig, *, binding: ModelBinding = "chat") -> OpenAIChatCompletionsModel:
-    return build_agent_model(config, binding=binding)
+def build_model(
+    config: AppConfig,
+    *,
+    binding: ModelBinding = "chat",
+    client: AsyncOpenAI | None = None,
+) -> OpenAIChatCompletionsModel:
+    return build_agent_model(config, binding=binding, client=client)
 
 
 def build_plan_agent(config: AppConfig) -> Agent[JenAIRunContext]:

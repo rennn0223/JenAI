@@ -5,7 +5,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from agents import add_trace_processor
+from agents import set_trace_processors
 from agents.tracing import TracingProcessor
 
 
@@ -17,10 +17,11 @@ class FileTracingProcessor(TracingProcessor):
     """Write openai-agents traces/spans to a local JSONL file.
 
     The SDK emits a rich trace of each run (agent turns, tool calls, handoffs,
-    guardrails). Its default processor exports to OpenAI's backend, which we skip
-    (no key). This processor makes the same events observable locally — one JSON
-    line per event — so `/run` behaviour can be inspected and later surfaced in
-    the WebUI timeline. Registered via `agents.add_trace_processor`.
+    guardrails). By default it ships those spans to OpenAI's hosted backend. We
+    replace that exporter entirely (see `install_local_tracing`) so nothing —
+    task text, navigation goals, /cmd_vel payloads — is uploaded to a third
+    party; instead this processor writes one JSON line per event locally, so
+    `/run` behaviour can be inspected and later surfaced in the WebUI timeline.
     """
 
     def __init__(self, path: Path | None = None) -> None:
@@ -67,9 +68,15 @@ _installed = False
 
 
 def install_local_tracing(path: Path | None = None) -> None:
-    """Register the local file trace processor once per process (idempotent)."""
+    """Route SDK tracing to the local file processor once per process (idempotent).
+
+    Uses ``set_trace_processors`` (which REPLACES the processor list) rather than
+    ``add_trace_processor`` (which appends): appending would leave the SDK's
+    default OpenAI backend exporter registered, so traces would still be uploaded
+    when OPENAI_API_KEY is set — or log export errors every run when it is not.
+    """
     global _installed
     if _installed:
         return
-    add_trace_processor(FileTracingProcessor(path))
+    set_trace_processors([FileTracingProcessor(path)])
     _installed = True
