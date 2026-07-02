@@ -455,7 +455,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 self._scroll_to_bottom()
                 return
 
-            await self._mount_event(TimelineItem("assistant", escape(response.content)))
+            await self._mount_event(
+                TimelineItem("assistant", escape(response.content), spaced=True)
+            )
         self._scroll_to_bottom()
 
     def action_focus_composer(self) -> None:

@@ -127,6 +127,19 @@ def _bullet_markup(variant: str, body: str) -> str:
     return f"[{color}]{BULLET}[/] {body}"
 
 
+def _spaced_body(body: str) -> str:
+    """Open up a multi-line reply: blank line between logical lines, and align
+    continuation lines under the bullet's text so it reads as one airy block."""
+    lines = body.split("\n")
+    if len(lines) == 1:
+        return body
+    spaced: list[str] = [lines[0]]
+    for line in lines[1:]:
+        spaced.append("")  # blank line widens the vertical rhythm
+        spaced.append(f"  {line}" if line else line)
+    return "\n".join(spaced)
+
+
 def _detail_markup(lines: list[str]) -> str:
     """Render detail lines under a bullet as Claude Code elbow-indented text."""
     out: list[str] = []
@@ -144,10 +157,15 @@ class PromptPill(Static):
 
 
 class TimelineItem(Static):
-    """A single Claude Code-style bullet line (⏺ marker + body markup)."""
+    """A single Claude Code-style bullet line (⏺ marker + body markup).
 
-    def __init__(self, variant: str, body: str) -> None:
-        super().__init__(_bullet_markup(variant, body), classes="bullet-line")
+    `spaced` opens up a multi-line body with blank lines between logical lines
+    (used for assistant replies so answers breathe instead of packing tight).
+    """
+
+    def __init__(self, variant: str, body: str, *, spaced: bool = False) -> None:
+        rendered = _spaced_body(body) if spaced else body
+        super().__init__(_bullet_markup(variant, rendered), classes="bullet-line")
         self.variant = variant
         self.body = body
 
