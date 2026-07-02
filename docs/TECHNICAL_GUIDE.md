@@ -93,7 +93,18 @@ vision = "qwen3.6:latest"          # 要挑有 vision capability 的模型
 
 Console(chat + slash + **確認按鈕**,手機可批准)、Status 卡片(5 秒自動更新)、**Map 卡片**(已存地點 + 機器人即時位置與朝向,2 秒更新)。動作類指令一律回 confirm token,由伺服器端一次性持有 —— 瀏覽器無法偽造或重放。
 
-### 3.3 daemon(`jenai daemon`)
+### 3.3 MCP server(`jenai mcp`)
+
+把 JenAI 的機器人工具以 [MCP](https://modelcontextprotocol.io) stdio 服務開放給任何 MCP client(Claude Code、Claude Desktop⋯):
+
+```jsonc
+// Claude Code 的 .mcp.json
+{ "mcpServers": { "jenai": { "command": "uv", "args": ["run", "--project", "/home/nvidia/JenAI", "JenAI", "mcp"] } } }
+```
+
+預設**唯讀**(ros_topics/ros_topic_info/ros_echo/list_locations/robot_pose/camera_look);啟動加 `--allow-actions` 才註冊 `navigate_to`。安全模型:client 端的工具批准是人閘,operator 的 `--allow-actions` 是總開關,兩層都過機器人才會動。
+
+### 3.4 daemon(`jenai daemon`)
 
 ```bash
 cp rules.example.toml ~/.config/jenai/rules.toml   # 編輯規則
@@ -183,7 +194,7 @@ env -u PYTHONPATH uv run ruff check src tests
 
 ## 5. 後續建議(接下來值得做)
 
-1. **MCP server 化**:把 tool registry 映射成 MCP tools,讓 Claude Code/Desktop 直接控機器人 —— 現有結構幾乎可直翻
+1. ~~MCP server 化~~(已完成:`jenai mcp`)
 2. **WebUI SSE**:把 5s/2s 輪詢換成 Server-Sent Events;地圖上點一下直接下導航 goal(走既有 confirm 流程)
 3. **多機器人**:namespace 切換(像 `/provider` 一樣的 `/robot <ns>`),bridge 已可帶 namespace 參數擴充
 4. **語音**:Jetson 上 Whisper(STT)+ Piper(TTS),入口掛在 TUI 的輸入層

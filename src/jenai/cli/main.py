@@ -217,6 +217,36 @@ def web(
 
 
 @app.command()
+def mcp(
+    config: ConfigOption = None,
+    allow_actions: Annotated[
+        bool,
+        typer.Option(
+            "--allow-actions",
+            help="Also expose navigate_to (moves the robot). Off by default.",
+        ),
+    ] = False,
+) -> None:
+    """Serve JenAI's robot tools over MCP stdio (for Claude Code/Desktop etc.)."""
+    import sys
+
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        raise typer.Exit(1) from exc
+
+    from jenai.mcp_server import build_mcp_server
+
+    # stdio transport: stdout belongs to the MCP protocol — status goes to stderr.
+    mode = "read-only + navigate_to" if allow_actions else "read-only"
+    print(f"jenai mcp server starting ({mode})", file=sys.stderr)
+    server = build_mcp_server(loaded, config_path, allow_actions=allow_actions)
+    server.run(transport="stdio")
+
+
+@app.command()
 def daemon(
     config: ConfigOption = None,
     rules: Annotated[
