@@ -138,6 +138,11 @@ class RosBridgeClient:
     def on_event(self, event: str, handler: Callable[[dict], None]) -> None:
         self._event_handlers.setdefault(event, []).append(handler)
 
+    def off_event(self, event: str, handler: Callable[[dict], None]) -> None:
+        handlers = self._event_handlers.get(event, [])
+        if handler in handlers:
+            handlers.remove(handler)
+
     def clear_event_handlers(self, event: str) -> None:
         self._event_handlers.pop(event, None)
 

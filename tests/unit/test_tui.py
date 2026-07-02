@@ -392,7 +392,7 @@ def test_tui_mission_shows_card_and_runs(monkeypatch) -> None:
 
     ran = {}
 
-    async def fake_run_mission(config, locations, steps, *, on_step=None):
+    async def fake_run_mission(config, locations, steps, *, on_step=None, navigate=None):
         ran["steps"] = len(steps)
         result = StepResult("goto", "kitchen", "succeeded", "arrived")
         if on_step:
@@ -411,6 +411,9 @@ def test_tui_mission_shows_card_and_runs(monkeypatch) -> None:
 
             await pilot.press("enter")
             await pilot.pause()
+            # Approved actions now run as the cancellable active task.
+            if app._active_task is not None:
+                await app._active_task
             assert ran["steps"] == 2
             assert list(app.query(ApprovalCard)) == []
 

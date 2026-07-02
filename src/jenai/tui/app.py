@@ -24,6 +24,7 @@ from jenai.adapters.locations import (
 from jenai.agent import build_run_agent, orchestrator, review_plan, run_plan
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.session import JenAIFileSession
+from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config import save_config
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.doctor import run_doctor
@@ -51,6 +52,7 @@ from jenai.schemas import (
 from jenai.state import InputHistory, RunStore, create_session
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.mission_core import parse_mission, run_mission
+from jenai.tools.nav_live import navigate_live
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tools.ros2_core import (
     ros_drive,
@@ -322,6 +324,8 @@ class JenAITuiApp(App[None]):
         self._auto_approved: set[str] = set()
         # Provider model ids fetched by /model, so "/model 2" can pick by number.
         self._available_models: list[str] = []
+        # Lazily-started rclpy bridge for live Nav2 feedback / pose / camera.
+        self._bridge: RosBridgeClient | None = None
 
     def compose(self) -> ComposeResult:
         profile = self._active_profile()
@@ -823,6 +827,38 @@ class JenAITuiApp(App[None]):
             )
             return None
         return self._available_models[index - 1]
+
+    # -- ROS bridge (live nav / pose / camera) --------------------------------
+
+    async def _get_bridge(self) -> RosBridgeClient:
+        """Start (or reuse) the rclpy bridge; raises BridgeError when ROS is absent."""
+        if self._bridge is None:
+            self._bridge = RosBridgeClient()
+        if not self._bridge.running:
+            await self._bridge.start()
+        return self._bridge
+
+    async def _execute_route_action(self, outgoing_action: dict):
+        """Execute a navigation action: live bridge (feedback + Esc cancel) when
+        Nav2 is configured and ROS is present, otherwise the honest CLI adapter."""
+        if self.config.route_adapter == "nav2" and RosBridgeClient.available():
+            try:
+                bridge = await self._get_bridge()
+
+                def _progress(p) -> None:
+                    self._spinner_label = (
+                        f"Navigating · {p.distance_remaining:.1f} m left · {p.elapsed:.0f}s"
+                        + (f" · {p.recoveries} recoveries" if p.recoveries else "")
+                    )
+
+                return await navigate_live(bridge, outgoing_action, on_progress=_progress)
+            except BridgeError:
+                pass  # bridge could not start — fall through to the CLI path
+        return await route_execute(self.config, outgoing_action)
+
+    async def on_unmount(self) -> None:
+        if self._bridge is not None:
+            await self._bridge.stop()
 
     def _refresh_model_display(self) -> None:
         profile = self._active_profile()
@@ -1597,7 +1633,35 @@ class JenAITuiApp(App[None]):
             self._scroll_to_bottom()
             return
 
-        await self._execute_direct(pending)
+        # Run the approved action as the active task so long executions (live
+        # Nav2 goals, missions) show the working spinner and stop on Esc.
+        if self._active_task is not None and not self._active_task.done():
+            await self._execute_direct(pending)  # already inside a task
+            return
+        self._active_task = asyncio.create_task(self._run_direct_task(pending))
+
+    async def _run_direct_task(self, pending: dict) -> None:
+        self._start_spinner("Executing")
+        ctx: JenAIRunContext = pending["ctx"]
+        try:
+            await self._execute_direct(pending)
+        except asyncio.CancelledError:
+            # Esc: nav_live already cancelled the Nav2 goal; close out the run.
+            if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
+                self.run_store.finish(
+                    ctx.run, status=RunStatus.BLOCKED, final_output="interrupted"
+                )
+            if self.is_running:
+                try:
+                    await self._mount_event(
+                        TimelineItem("warn", "Interrupted — the action was cancelled.")
+                    )
+                    self._scroll_to_bottom()
+                except NoMatches:
+                    pass
+        finally:
+            self._stop_spinner()
+            self._active_task = None
 
     async def _execute_direct(self, pending: dict) -> None:
         """Run an approved direct command, finalising the run even on failure.
@@ -1645,7 +1709,7 @@ class JenAITuiApp(App[None]):
                 )
             )
         elif pending["kind"] == "route":
-            output = await route_execute(self.config, pending["outgoing_action"])
+            output = await self._execute_route_action(pending["outgoing_action"])
             sent = output.execution_status == "succeeded"
             self.run_store.finish(
                 ctx.run,
@@ -1668,7 +1732,11 @@ class JenAITuiApp(App[None]):
                 self._scroll_to_bottom()
 
             report = await run_mission(
-                self.config, pending["locations"], pending["steps"], on_step=_on_step
+                self.config,
+                pending["locations"],
+                pending["steps"],
+                on_step=_on_step,
+                navigate=self._execute_route_action,
             )
             ok = all(r.status == "succeeded" for r in report.results)
             self.run_store.finish(
