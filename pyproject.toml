@@ -49,4 +49,5 @@ select = ["E", "F", "I", "UP", "B"]
 # The WebUI embeds CSS/HTML/JS as string literals (fonts URL, CSS rules, HTML
 # fragments) that legitimately exceed the line-length limit.
 "src/jenai/webui/server.py" = ["E501"]
+"src/jenai/webui/render.py" = ["E501"]
 "src/jenai/webui/commands.py" = ["E501"]

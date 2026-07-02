@@ -1,0 +1,320 @@
+"""Visual building blocks of the JenAI TUI.
+
+Widgets, colors, and text-mark helpers only — no command handling, no app
+state. Everything here renders; nothing here decides.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import NamedTuple
+
+from rich.text import Text
+from textual.app import ComposeResult
+from textual.containers import Container
+from textual.widgets import Static
+
+from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
+
+
+class SlashCommand(NamedTuple):
+    name: str
+    description: str
+    template: str = ""
+
+    @property
+    def completion(self) -> str:
+        return self.template or self.name
+
+
+
+ACCENT = "#d97757"
+ACCENT_DARK = "#c15f3c"
+MUTED = "#9c9689"
+GREEN = "#7d9b6a"
+ERROR = "#cb6250"
+BLUE = "#d97757"
+
+
+
+class WelcomePanel(Container):
+    """Orange hero card shown at the top of the transcript."""
+
+    def __init__(
+        self,
+        *,
+        version: str,
+        provider_name: str,
+        provider_kind: str,
+        model_name: str,
+        config_path: Path,
+        doctor_result: DoctorResult | None,
+    ) -> None:
+        super().__init__(id="welcome")
+        self.version = version
+        self.provider_name = provider_name
+        self.provider_kind = provider_kind
+        self.model_name = model_name
+        self.config_path = config_path
+        self.doctor_result = doctor_result
+
+    def compose(self) -> ComposeResult:
+        # Single, centred column so it never crushes on a narrow (mobile) terminal.
+        # The mascot is decorative and is hidden below a width threshold (see the
+        # app's on_resize -> `narrow` class) rather than being squished.
+        self.border_title = f"JenAI v{self.version}"
+        yield Static(pixel_mark(), id="pixel-mark")
+        yield Static("Robot workflow console", classes="heading")
+        yield Static("Plan, inspect, and drive robot tasks from one terminal.", classes="meta")
+        yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
+        yield Static(self._doctor_summary(), id="welcome-doctor-status", classes="meta")
+
+    def update_doctor_result(self, doctor_result: DoctorResult | None) -> None:
+        self.doctor_result = doctor_result
+        self.query_one("#welcome-doctor-status", Static).update(self._doctor_summary())
+
+    def update_model(
+        self,
+        model_name: str,
+        *,
+        provider_name: str | None = None,
+        provider_kind: str | None = None,
+    ) -> None:
+        self.model_name = model_name
+        if provider_name is not None:
+            self.provider_name = provider_name
+        if provider_kind is not None:
+            self.provider_kind = provider_kind
+        self.query_one("#welcome-provider-meta", Static).update(self._provider_meta())
+
+    def _provider_meta(self) -> str:
+        return (
+            f"{self.model_name} · {self.provider_kind}\n"
+            f"{self.provider_name} · {self.config_path.parent}"
+        )
+
+    def _doctor_summary(self) -> Text:
+        if self.doctor_result is None:
+            return Text("Not checked", style=MUTED)
+
+        text = Text()
+        status = DoctorStatus(self.doctor_result.overall)
+        text.append(status.value, style=f"bold {status_color(status)}")
+
+        fails = sum(item.status == DoctorStatus.FAIL for item in self.doctor_result.items)
+        warns = sum(item.status == DoctorStatus.WARN for item in self.doctor_result.items)
+        text.append(f" · {fails} fail · {warns} warn", style=MUTED)
+        return text
+
+
+# Claude Code-style markers: a filled bullet for each transcript entry and an
+# elbow connector for the indented result/detail lines beneath it.
+BULLET = "⏺"
+ELBOW = "⎿"
+
+_MARKER_COLOR = {
+    "command": BLUE,
+    "success": GREEN,
+    "warn": ACCENT,
+    "error": ERROR,
+    "muted": MUTED,
+    "assistant": ACCENT,
+}
+
+
+def _bullet_markup(variant: str, body: str) -> str:
+    color = _MARKER_COLOR.get(variant, ACCENT)
+    return f"[{color}]{BULLET}[/] {body}"
+
+
+def _detail_markup(lines: list[str]) -> str:
+    """Render detail lines under a bullet as Claude Code elbow-indented text."""
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        prefix = f"  [{MUTED}]{ELBOW}[/] " if i == 0 else "     "
+        out.append(f"{prefix}[{MUTED}]{line}[/]")
+    return "\n".join(out)
+
+
+class PromptPill(Static):
+    """Echo of the user's submitted line, shown as a muted `>` prompt."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(f"[{MUTED}]>[/] [#d9d3c7]{text}[/]", classes="prompt-line")
+
+
+class TimelineItem(Static):
+    """A single Claude Code-style bullet line (⏺ marker + body markup)."""
+
+    def __init__(self, variant: str, body: str) -> None:
+        super().__init__(_bullet_markup(variant, body), classes="bullet-line")
+        self.variant = variant
+        self.body = body
+
+
+class OutputPanel(Static):
+    """A bullet with a title line and elbow-indented body lines (no box)."""
+
+    def __init__(self, title: str, body: str, *, variant: str = "assistant") -> None:
+        detail = _detail_markup(body.split("\n")) if body else ""
+        markup = _bullet_markup(variant, f"[bold #f2ede1]{title}[/]")
+        if detail:
+            markup = f"{markup}\n{detail}"
+        super().__init__(markup, classes="bullet-line")
+        self.title = title
+        self.body = body
+
+
+class CommandPalette(Static):
+    # Rows shown at once; the window scrolls to follow the selection so every
+    # matching command is reachable without a hard cap.
+    WINDOW = 12
+
+    def update_matches(
+        self,
+        matches: list[SlashCommand],
+        selected_index: int,
+    ) -> None:
+        if not matches:
+            self.update("[#9c9689]No matching commands[/]")
+            return
+
+        total = len(matches)
+        # Centre the window on the selection, then clamp so it never runs past
+        # either end of the list (keeps the selected row visible while scrolling).
+        if total <= self.WINDOW:
+            start = 0
+        else:
+            start = min(max(selected_index - self.WINDOW // 2, 0), total - self.WINDOW)
+        end = min(start + self.WINDOW, total)
+
+        text = Text()
+        text.append(f"Commands  ({selected_index + 1}/{total})\n", style=f"bold {ACCENT}")
+        if start > 0:
+            text.append(f"  ↑ {start} more\n", style=MUTED)
+        for index in range(start, end):
+            command = matches[index]
+            selected = index == selected_index
+            arrow_style = GREEN if selected else MUTED
+            line_style = "bold #f2ede1" if selected else "#d9d3c7"
+            text.append("❯ " if selected else "  ", style=arrow_style)
+            text.append(command.name.ljust(16), style=line_style)
+            text.append(command.description, style=MUTED)
+            text.append("\n")
+        if end < total:
+            text.append(f"  ↓ {total - end} more", style=MUTED)
+        text.rstrip()
+        self.update(text)
+
+
+def _is_number(text: str) -> bool:
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _short_cwd() -> str:
+    """Home-relative, abbreviated cwd for the status line (e.g. ~/JenAI)."""
+    cwd = Path.cwd()
+    try:
+        return "~/" + str(cwd.relative_to(Path.home()))
+    except ValueError:
+        return str(cwd)
+
+
+
+def pixel_mark() -> Text:
+    colors = {
+        "body": "#d98c69",
+        "belly": "#e8a987",
+        "dark": "#ad6248",
+        "black": "#34241d",
+        "white": "#fdf5ef",
+        "cheek": "#e89a9a",
+        "collar": "#5fb1c0",
+        "tag": "#f0c84e",
+    }
+    cells: dict[tuple[int, int], str] = {}
+
+    def fill(x0: int, y0: int, x1: int, y1: int, color: str) -> None:
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                cells[(x, y)] = color
+
+    def put(x: int, y: int, color: str) -> None:
+        cells[(x, y)] = color
+
+    def delete(x: int, y: int) -> None:
+        cells.pop((x, y), None)
+
+    fill(9, 2, 11, 9, colors["dark"])
+    put(10, 10, colors["dark"])
+    fill(11, 1, 18, 7, colors["body"])
+    delete(11, 1)
+    delete(18, 1)
+    fill(16, 5, 20, 7, colors["body"])
+    delete(20, 7)
+    put(20, 5, colors["black"])
+    put(20, 6, colors["black"])
+    put(19, 6, colors["black"])
+    put(18, 7, colors["black"])
+    fill(14, 3, 15, 4, colors["black"])
+    put(15, 3, colors["white"])
+    put(17, 6, colors["cheek"])
+    fill(-1, 7, 13, 10, colors["body"])
+    delete(-1, 7)
+    fill(0, 10, 12, 10, colors["belly"])
+    put(-2, 6, colors["body"])
+    put(-3, 5, colors["body"])
+    put(-3, 4, colors["body"])
+    put(-2, 4, colors["body"])
+    fill(0, 11, 1, 13, colors["body"])
+    fill(3, 11, 4, 13, colors["body"])
+    fill(10, 11, 11, 13, colors["body"])
+    fill(13, 11, 14, 13, colors["body"])
+    # Collar/tag is drawn last: the body fills above cover this region.
+    fill(11, 7, 12, 9, colors["collar"])
+    put(12, 10, colors["tag"])
+
+    min_x = min(x for x, _ in cells)
+    max_x = max(x for x, _ in cells)
+    min_y = min(y for _, y in cells)
+    max_y = max(y for _, y in cells)
+
+    text = Text()
+    for y in range(min_y, max_y + 1, 2):
+        for x in range(min_x, max_x + 1):
+            top = cells.get((x, y))
+            bottom = cells.get((x, y + 1))
+            if top and bottom:
+                text.append("█" if top == bottom else "▀", style=f"{top} on {bottom}")
+            elif top:
+                text.append("▀", style=top)
+            elif bottom:
+                text.append("▄", style=bottom)
+            else:
+                text.append(" ")
+        if y + 1 < max_y:
+            text.append("\n")
+    return text
+
+def status_color(status: DoctorStatus | str) -> str:
+    try:
+        status = DoctorStatus(status)
+    except ValueError:
+        return MUTED
+    return {
+        DoctorStatus.PASS: GREEN,
+        DoctorStatus.WARN: ACCENT,
+        DoctorStatus.FAIL: ERROR,
+    }.get(status, MUTED)
+
+
+def format_doctor_item(item: DoctorCheckItem) -> str:
+    fix = f"\n[#9c9689]  fix:[/] {item.fix_suggestion}" if item.fix_suggestion else ""
+    return (
+        f"[bold {status_color(item.status)}]{item.status}[/] "
+        f"{item.section}.{item.check_name}: {item.message}{fix}"
+    )

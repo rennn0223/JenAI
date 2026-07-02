@@ -31,7 +31,7 @@ def test_model_command_lists_provider_models(tmp_path: Path, monkeypatch) -> Non
     async def run() -> None:
         app = _app(tmp_path)
         monkeypatch.setattr(
-            "jenai.tui.app.list_provider_models", _fake_listing(["llama3.2", "qwen2.5"])
+            "jenai.tui.info_commands.list_provider_models", _fake_listing(["llama3.2", "qwen2.5"])
         )
         async with app.run_test():
             await app.handle_user_text("/model")
@@ -64,7 +64,7 @@ def test_model_command_switches_by_number(tmp_path: Path, monkeypatch) -> None:
     async def run() -> None:
         app = _app(tmp_path)
         monkeypatch.setattr(
-            "jenai.tui.app.list_provider_models", _fake_listing(["llama3.2", "qwen2.5"])
+            "jenai.tui.info_commands.list_provider_models", _fake_listing(["llama3.2", "qwen2.5"])
         )
         async with app.run_test():
             await app.handle_user_text("/model 2")
@@ -105,7 +105,7 @@ def test_model_command_reports_unreachable_provider(tmp_path: Path, monkeypatch)
 
     async def run() -> None:
         app = _app(tmp_path)
-        monkeypatch.setattr("jenai.tui.app.list_provider_models", failing)
+        monkeypatch.setattr("jenai.tui.info_commands.list_provider_models", failing)
         async with app.run_test():
             await app.handle_user_text("/model")
             await app.handle_user_text("/model 3")
@@ -119,7 +119,9 @@ def test_model_command_reports_unreachable_provider(tmp_path: Path, monkeypatch)
 def test_model_command_rejects_out_of_range_number(tmp_path: Path, monkeypatch) -> None:
     async def run() -> None:
         app = _app(tmp_path)
-        monkeypatch.setattr("jenai.tui.app.list_provider_models", _fake_listing(["only-one"]))
+        monkeypatch.setattr(
+            "jenai.tui.info_commands.list_provider_models", _fake_listing(["only-one"])
+        )
         async with app.run_test():
             await app.handle_user_text("/model 5")
 

@@ -48,7 +48,7 @@ def test_vision_camera_captures_default_topic_and_analyzes(tmp_path: Path, monke
             return fake
 
         monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
-        monkeypatch.setattr("jenai.tui.app.analyze_image", fake_analyze)
+        monkeypatch.setattr("jenai.tui.robot_commands.analyze_image", fake_analyze)
         async with app.run_test():
             await app.handle_user_text("/vision camera")
             await app.handle_user_text("/vision camera /front_cam/image_raw")
@@ -84,7 +84,7 @@ def test_vision_image_path_still_works(tmp_path: Path, monkeypatch) -> None:
 
     async def run() -> None:
         app = _app(tmp_path)
-        monkeypatch.setattr("jenai.tui.app.analyze_image", fake_analyze)
+        monkeypatch.setattr("jenai.tui.robot_commands.analyze_image", fake_analyze)
         async with app.run_test():
             await app.handle_user_text("/vision image /tmp/some.png")
 
