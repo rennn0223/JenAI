@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import time
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+
+class RuleError(Exception):
+    """Raised when a rules file cannot be read or validated."""
+
+
+class Rule(BaseModel):
+    """One event-trigger rule: watch a topic field, fire an action on a threshold.
+
+    Safety: `action` defaults to notify-only. A rule that moves the robot
+    ("goto <location>") additionally requires `auto_approve = true` — an
+    unattended daemon must never actuate on an implicit default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    topic: str
+    msg_type: str
+    fld: str  # dotted path into the message dict, e.g. "percentage"
+    below: float | None = None
+    above: float | None = None
+    equals: Any | None = None
+    cooldown_s: float = 300.0
+    action: str = "notify"
+    auto_approve: bool = False
+    throttle_s: float = 2.0
+
+    @model_validator(mode="after")
+    def _check(self) -> Rule:
+        if self.below is None and self.above is None and self.equals is None:
+            raise ValueError(f"rule '{self.name}' needs one of below/above/equals")
+        if not (self.action == "notify" or self.action.startswith("goto ")):
+            raise ValueError(f"rule '{self.name}': action must be 'notify' or 'goto <location>'")
+        return self
+
+
+def load_rules(path: Path) -> list[Rule]:
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuleError(f"Rules file not found: {path}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise RuleError(f"Rules file is not valid TOML: {path}") from exc
+
+    rules = []
+    for entry in raw.get("rules", []):
+        # TOML uses "field"; the model calls it fld to dodge pydantic's reserved names.
+        if "field" in entry:
+            entry = dict(entry)
+            entry["fld"] = entry.pop("field")
+        try:
+            rules.append(Rule.model_validate(entry))
+        except ValueError as exc:
+            raise RuleError(str(exc)) from exc
+    return rules
+
+
+def extract_field(data: dict, dotted: str) -> Any | None:
+    cur: Any = data
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def condition_met(rule: Rule, value: Any) -> bool:
+    if value is None:
+        return False
+    if rule.equals is not None:
+        return value == rule.equals
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    if rule.below is not None and number < rule.below:
+        return True
+    return rule.above is not None and number > rule.above
+
+
+@dataclass
+class Decision:
+    rule: Rule
+    value: Any
+    fired: bool
+    reason: str
+    navigate_to: str | None = None  # location name, only when actually allowed to move
+
+
+@dataclass
+class RuleEngine:
+    """Pure trigger logic: feed topic messages in, get decisions out.
+
+    Owns cooldown bookkeeping; owns NO ROS or navigation. The runner wires
+    bridge watches to handle_event and executes allowed decisions.
+    """
+
+    rules: list[Rule]
+    nav_allowed: bool = False  # route_adapter == "nav2"
+    _last_fired: dict[str, float] = field(default_factory=dict)
+
+    def handle_event(self, rule: Rule, data: dict, now: float | None = None) -> Decision:
+        now = time.monotonic() if now is None else now
+        value = extract_field(data, rule.fld)
+        if not condition_met(rule, value):
+            return Decision(rule, value, fired=False, reason="condition not met")
+
+        last = self._last_fired.get(rule.name)
+        if last is not None and now - last < rule.cooldown_s:
+            remaining = rule.cooldown_s - (now - last)
+            return Decision(rule, value, fired=False, reason=f"cooldown ({remaining:.0f}s left)")
+
+        self._last_fired[rule.name] = now
+        if rule.action.startswith("goto "):
+            target = rule.action[5:].strip()
+            if not rule.auto_approve:
+                return Decision(
+                    rule,
+                    value,
+                    fired=True,
+                    reason=f"would navigate to '{target}' — set auto_approve = true to allow",
+                )
+            if not self.nav_allowed:
+                return Decision(
+                    rule,
+                    value,
+                    fired=True,
+                    reason=f"would navigate to '{target}' — route_adapter is not 'nav2'",
+                )
+            return Decision(
+                rule, value, fired=True, reason=f"navigating to '{target}'", navigate_to=target
+            )
+        return Decision(rule, value, fired=True, reason="notify")

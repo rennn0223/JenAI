@@ -216,6 +216,55 @@ def web(
     serve(loaded, config_path, host=host, port=port)
 
 
+@app.command()
+def daemon(
+    config: ConfigOption = None,
+    rules: Annotated[
+        Path | None,
+        typer.Option("--rules", help="Path to rules TOML (default: rules.toml next to config)."),
+    ] = None,
+) -> None:
+    """Watch topics and fire rules (see rules.example.toml). Notify-only by default."""
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    from jenai.daemon import RuleError, load_rules, run_daemon
+
+    rules_path = rules or config_path.parent / "rules.toml"
+    try:
+        rule_list = load_rules(rules_path)
+    except RuleError as exc:
+        console.print(f"[red]{exc}[/red]")
+        console.print("See rules.example.toml in the repo for the format.")
+        raise typer.Exit(1) from exc
+    if not rule_list:
+        console.print(f"[yellow]No rules defined in {rules_path}.[/yellow]")
+        raise typer.Exit(1)
+
+    def on_decision(decision) -> None:
+        console.print(
+            f"[bold #d97757]▲ {decision.rule.name}[/] "
+            f"{decision.rule.fld}={decision.value} → {decision.reason}"
+        )
+
+    def on_status(message: str) -> None:
+        console.print(f"[#9c9689]{message}[/]")
+
+    console.print(
+        f"[green]JenAI daemon[/green] · {len(rule_list)} rule(s) from {rules_path} (Ctrl-C to stop)"
+    )
+    try:
+        asyncio.run(
+            run_daemon(loaded, config_path, rule_list, on_decision=on_decision, on_status=on_status)
+        )
+    except KeyboardInterrupt:
+        console.print("stopped.")
+
+
 @app.command("version")
 def version_command() -> None:
     console.print(f"JenAI {__version__}")
