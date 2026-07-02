@@ -37,7 +37,7 @@ _COMMAND_GROUPS = [
     CommandGroup(
         name="Provider / Model",
         commands=[
-            "/provider",
+            "/provider [name|number]",
             "/providers",
             "/model [name|number]",
             "/models",
