@@ -68,34 +68,47 @@ class PoseCache:
         self._lock = threading.Lock()
 
     def ensure_started(self) -> None:
+        if not RosBridgeClient.available():
+            return  # don't latch: ROS may be sourced/installed later
         with self._lock:
             if self._started:
                 return
             self._started = True
-        if not RosBridgeClient.available():
-            return
-        threading.Thread(target=lambda: asyncio.run(self._loop()), daemon=True).start()
+        threading.Thread(target=self._run_loop, daemon=True).start()
+
+    def _run_loop(self) -> None:
+        try:
+            asyncio.run(self._loop())
+        finally:
+            # Whatever ended the loop (bridge failed to start, crashed, ROS went
+            # away), un-latch so a later /api/map request can try again instead
+            # of showing "no pose" until the server restarts.
+            with self._lock:
+                self._started = False
+            self.latest = None
 
     async def _loop(self) -> None:
         client = RosBridgeClient()
         try:
             await client.start()
+            while True:
+                try:
+                    pose = await client.get_pose(timeout=2.0)
+                    self.latest = {
+                        "x": pose.x,
+                        "y": pose.y,
+                        "yaw": pose.yaw,
+                        "frame_id": pose.frame_id,
+                        "source": pose.source,
+                        "ts": time.time(),
+                    }
+                except BridgeError:
+                    self.latest = None
+                await asyncio.sleep(self._refresh_s)
         except BridgeError:
-            return
-        while True:
-            try:
-                pose = await client.get_pose(timeout=2.0)
-                self.latest = {
-                    "x": pose.x,
-                    "y": pose.y,
-                    "yaw": pose.yaw,
-                    "frame_id": pose.frame_id,
-                    "source": pose.source,
-                    "ts": time.time(),
-                }
-            except BridgeError:
-                self.latest = None
-            await asyncio.sleep(self._refresh_s)
+            pass
+        finally:
+            await client.stop()
 
 
 def build_map_payload(

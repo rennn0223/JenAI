@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -31,7 +32,10 @@ async def run_daemon(
     on_status(f"bridge up · watching {len(rules)} rule(s)")
 
     loop = asyncio.get_running_loop()
-    nav_busy = asyncio.Lock()
+    # One navigation at a time. The consumer loop is the only place that
+    # creates this task, so checking it right before create_task is race-free —
+    # unlike a lock's .locked(), which can miss a task that hasn't started yet.
+    nav_task: asyncio.Task | None = None
     queue: asyncio.Queue[tuple[Rule, dict]] = asyncio.Queue()
 
     for rule in rules:
@@ -54,12 +58,9 @@ async def run_daemon(
         except LocationNotFoundError:
             on_status(f"'{decision.rule.name}': unknown location '{decision.navigate_to}'")
             return
-        async with nav_busy:
-            on_status(f"'{decision.rule.name}': navigating to {location.name}")
-            output = await navigate_live(
-                bridge, {"goal": location.model_dump(mode="json")}
-            )
-            on_status(f"'{decision.rule.name}': {output.execution_status} — {output.route_preview}")
+        on_status(f"'{decision.rule.name}': navigating to {location.name}")
+        output = await navigate_live(bridge, {"goal": location.model_dump(mode="json")})
+        on_status(f"'{decision.rule.name}': {output.execution_status} — {output.route_preview}")
 
     try:
         while True:
@@ -68,13 +69,19 @@ async def run_daemon(
             if decision.fired:
                 on_decision(decision)
             if decision.navigate_to:
-                if nav_busy.locked():
+                if nav_task is not None and not nav_task.done():
                     on_status(f"'{rule.name}': navigation already in progress — skipped")
                 else:
-                    loop.create_task(_navigate(decision))
+                    nav_task = loop.create_task(_navigate(decision))
     except asyncio.CancelledError:
         raise
     finally:
+        # Stop an in-flight navigation first (cancels the Nav2 goal, so the
+        # robot actually halts), then tear down the bridge.
+        if nav_task is not None and not nav_task.done():
+            nav_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, BridgeError):
+                await nav_task
         try:
             await bridge.stop()
         except BridgeError:

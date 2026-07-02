@@ -53,6 +53,11 @@ class RosBridgeClient:
         return self._proc is not None and self._proc.returncode is None
 
     async def start(self, timeout: float = 10.0) -> None:
+        """Spawn the bridge process and wait for its ready handshake.
+
+        Idempotent: returns immediately if the bridge is already running.
+        Raises BridgeError when ROS is absent or the bridge never comes up.
+        """
         if self.running:
             return
         if not self.available():
@@ -82,6 +87,7 @@ class RosBridgeClient:
             raise BridgeError("ROS bridge did not become ready (rclpy missing?).") from None
 
     async def stop(self) -> None:
+        """Shut the bridge down cleanly, failing any in-flight requests."""
         proc, self._proc = self._proc, None
         if self._reader_task is not None:
             self._reader_task.cancel()
@@ -143,10 +149,13 @@ class RosBridgeClient:
         if handler in handlers:
             handlers.remove(handler)
 
-    def clear_event_handlers(self, event: str) -> None:
-        self._event_handlers.pop(event, None)
-
     async def request(self, op: str, timeout: float = 10.0, params: dict | None = None) -> dict:
+        """Send one op to the bridge and await its response.
+
+        `timeout` bounds the client-side wait; ops that also wait bridge-side
+        (pose, capture_frame) take their own `timeout` inside `params`, so pass
+        a client timeout comfortably larger than the bridge one.
+        """
         if not self.running:
             await self.start()
         self._next_id += 1
@@ -182,9 +191,15 @@ class RosBridgeClient:
             source=result["source"],
         )
 
-    async def nav_send(self, x: float, y: float, yaw: float = 0.0, frame_id: str = "map") -> None:
+    async def nav_send(
+        self, x: float, y: float, yaw: float = 0.0, frame_id: str = "map", tag: str = ""
+    ) -> None:
+        """Send a Nav2 goal; `tag` is echoed in nav_feedback/nav_result events so
+        the caller can ignore stale events from an earlier (cancelled) goal."""
         await self.request(
-            "nav_send", timeout=8.0, params={"x": x, "y": y, "yaw": yaw, "frame_id": frame_id}
+            "nav_send",
+            timeout=8.0,
+            params={"x": x, "y": y, "yaw": yaw, "frame_id": frame_id, "tag": tag},
         )
 
     async def nav_cancel(self) -> bool:
@@ -204,6 +219,10 @@ class RosBridgeClient:
         handler: Callable[[dict], None],
         throttle: float = 1.0,
     ) -> int:
+        """Stream a topic's messages (as dicts) into `handler`, at most one per
+        `throttle` seconds. `handler` runs on the reader task — keep it cheap
+        and non-blocking (push to a queue if real work is needed). Returns a
+        watch id for `unwatch`."""
         self._next_id += 1
         watch_id = self._next_id
         self._watch_handlers[watch_id] = handler

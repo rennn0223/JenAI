@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 import tempfile
 import threading
@@ -35,6 +36,13 @@ def _emit(payload: dict) -> None:
     with _STDOUT_LOCK:
         sys.stdout.write(json.dumps(payload) + "\n")
         sys.stdout.flush()
+
+
+def _new_frame_path(suffix: str) -> str:
+    """A fresh temp file for one captured frame (caller deletes after use)."""
+    fd, path = tempfile.mkstemp(prefix="jenai_frame_", suffix=suffix)
+    os.close(fd)
+    return path
 
 
 def _yaw_from_quaternion(q) -> float:
@@ -92,7 +100,15 @@ class BridgeNode(Node):
 
     # -- Nav2 ---------------------------------------------------------------
 
-    def nav_send(self, x: float, y: float, yaw: float, frame_id: str = "map") -> dict:
+    def nav_send(
+        self, x: float, y: float, yaw: float, frame_id: str = "map", tag: str = ""
+    ) -> dict:
+        """Send a NavigateToPose goal; feedback/result events carry `tag`.
+
+        The tag lets the client match events to the goal it sent — without it,
+        a late result from a cancelled goal could be misread as the outcome of
+        the next one.
+        """
         from nav2_msgs.action import NavigateToPose
 
         if self._nav_client is None:
@@ -114,6 +130,7 @@ class BridgeNode(Node):
             _emit(
                 {
                     "event": "nav_feedback",
+                    "tag": tag,
                     "distance_remaining": round(f.distance_remaining, 2),
                     "recoveries": f.number_of_recoveries,
                     "elapsed": round(time.monotonic() - started, 1),
@@ -125,7 +142,7 @@ class BridgeNode(Node):
         def _on_accepted(fut) -> None:
             handle = fut.result()
             if not handle.accepted:
-                _emit({"event": "nav_result", "status": "rejected"})
+                _emit({"event": "nav_result", "tag": tag, "status": "rejected"})
                 return
             self._nav_goal_handle = handle
             result_future = handle.get_result_async()
@@ -136,7 +153,7 @@ class BridgeNode(Node):
                 status = {4: "succeeded", 5: "canceled", 6: "aborted"}.get(
                     rfut.result().status, "failed"
                 )
-                _emit({"event": "nav_result", "status": status})
+                _emit({"event": "nav_result", "tag": tag, "status": status})
 
             result_future.add_done_callback(_on_result)
 
@@ -175,7 +192,7 @@ class BridgeNode(Node):
 
         msg = got[0]
         if compressed:
-            path = tempfile.mktemp(prefix="jenai_frame_", suffix=".jpg")
+            path = _new_frame_path(".jpg")
             with open(path, "wb") as fh:
                 fh.write(bytes(msg.data))
             return {"path": path, "width": None, "height": None, "encoding": msg.format}
@@ -184,17 +201,24 @@ class BridgeNode(Node):
         from PIL import Image as PILImage
 
         encoding = msg.encoding.lower()
+        channels = 3 if encoding in ("rgb8", "bgr8") else 1
+        if channels == 1 and encoding not in ("mono8", "8uc1"):
+            raise RuntimeError(f"Unsupported image encoding '{msg.encoding}'.")
+
+        # Real cameras often pad rows (msg.step > width*channels); reshape by
+        # step first and slice off the padding, or frombuffer's length check
+        # blows up on exactly the hardware this feature exists for.
         buf = np.frombuffer(bytes(msg.data), dtype=np.uint8)
-        if encoding in ("rgb8", "bgr8"):
-            arr = buf.reshape((msg.height, msg.width, 3))
+        step = int(msg.step) or msg.width * channels
+        rows = buf.reshape((msg.height, step))[:, : msg.width * channels]
+        if channels == 3:
+            arr = rows.reshape((msg.height, msg.width, 3))
             if encoding == "bgr8":
                 arr = arr[:, :, ::-1]
             img = PILImage.fromarray(arr, "RGB")
-        elif encoding in ("mono8", "8uc1"):
-            img = PILImage.fromarray(buf.reshape((msg.height, msg.width)), "L")
         else:
-            raise RuntimeError(f"Unsupported image encoding '{msg.encoding}'.")
-        path = tempfile.mktemp(prefix="jenai_frame_", suffix=".png")
+            img = PILImage.fromarray(rows, "L")
+        path = _new_frame_path(".png")
         img.save(path)
         return {"path": path, "width": msg.width, "height": msg.height, "encoding": msg.encoding}
 
@@ -239,7 +263,9 @@ def _handle(node: BridgeNode, op: str, req: dict) -> dict:
     if op == "pose":
         return node.get_pose(float(req.get("timeout", 2.0)))
     if op == "nav_send":
-        return node.nav_send(req["x"], req["y"], req.get("yaw", 0.0), req.get("frame_id", "map"))
+        return node.nav_send(
+            req["x"], req["y"], req.get("yaw", 0.0), req.get("frame_id", "map"), req.get("tag", "")
+        )
     if op == "nav_cancel":
         return node.nav_cancel()
     if op == "capture_frame":

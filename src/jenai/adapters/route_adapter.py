@@ -18,6 +18,8 @@ class RouteSendResult:
 
 
 class RouteAdapter(Protocol):
+    """Anything that can take a resolved navigation action and (try to) send it."""
+
     def resolve(self, outgoing_action: dict) -> RouteSendResult: ...
 
 
@@ -83,6 +85,11 @@ class Nav2RouteAdapter:
 
 
 def get_route_adapter(adapter_name: str) -> RouteAdapter:
+    """Map the config's route_adapter name to an implementation.
+
+    Unknown names fall back to the honest NullRouteAdapter (reports
+    unavailable) rather than guessing at hardware.
+    """
     # "stub"/"none" mean "no backend wired" — honest, non-faking null adapter.
     if adapter_name in ("stub", "none", ""):
         return NullRouteAdapter()

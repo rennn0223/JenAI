@@ -53,9 +53,12 @@ def main() -> None:
             )
             emit({"id": req_id, "ok": True, "result": {"watch_id": req["watch_id"]}})
         elif op == "nav_send":
-            emit({"event": "nav_feedback", "distance_remaining": 3.2, "elapsed": 1.0})
+            tag = req.get("tag", "")
+            # A stale event from a "previous goal" first — clients must ignore it.
+            emit({"event": "nav_result", "tag": "stale-goal", "status": "canceled"})
+            emit({"event": "nav_feedback", "tag": tag, "distance_remaining": 3.2, "elapsed": 1.0})
             emit({"id": req_id, "ok": True, "result": {"sent": True}})
-            emit({"event": "nav_result", "status": "succeeded"})
+            emit({"event": "nav_result", "tag": tag, "status": "succeeded"})
         else:
             emit({"id": req_id, "ok": False, "error": f"unknown op '{op}'"})
 

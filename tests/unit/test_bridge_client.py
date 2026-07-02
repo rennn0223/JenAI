@@ -83,10 +83,13 @@ def test_bridge_nav_feedback_and_result_events(fake_bridge) -> None:
         await client.start()
         client.on_event("nav_feedback", feedback.append)
         client.on_event("nav_result", results.append)
-        await client.nav_send(1.0, 2.0)
+        await client.nav_send(1.0, 2.0, tag="goal-1")
         await asyncio.sleep(0.1)
         assert feedback and feedback[0]["distance_remaining"] == 3.2
-        assert results and results[0]["status"] == "succeeded"
+        # The fake emits a stale-tagged result first; raw listeners see both,
+        # and the tag is what lets consumers (nav_live) tell them apart.
+        assert [r["status"] for r in results] == ["canceled", "succeeded"]
+        assert [r["tag"] for r in results] == ["stale-goal", "goal-1"]
         await client.stop()
 
     asyncio.run(run())
