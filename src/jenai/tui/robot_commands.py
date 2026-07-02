@@ -517,7 +517,10 @@ class RobotCommandsMixin:
             )
             return
         self._spinner_label = "Analyzing frame"
-        await self._analyze_and_render(str(frame_path), source_label=topic)
+        try:
+            await self._analyze_and_render(str(frame_path), source_label=topic)
+        finally:
+            frame_path.unlink(missing_ok=True)  # one-shot capture; don't litter /tmp
 
     async def _analyze_and_render(self, path: str, *, source_label: str | None = None) -> None:
         try:

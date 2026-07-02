@@ -45,6 +45,8 @@ class Rule(BaseModel):
 
 
 def load_rules(path: Path) -> list[Rule]:
+    """Parse a rules TOML file (see rules.example.toml); raises RuleError with
+    a human-readable reason on any malformed or unsafe rule."""
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -66,6 +68,7 @@ def load_rules(path: Path) -> list[Rule]:
 
 
 def extract_field(data: dict, dotted: str) -> Any | None:
+    """Walk a dotted path ("pose.pose.position.x") into a message dict; None if absent."""
     cur: Any = data
     for part in dotted.split("."):
         if not isinstance(cur, dict) or part not in cur:
@@ -75,6 +78,11 @@ def extract_field(data: dict, dotted: str) -> Any | None:
 
 
 def condition_met(rule: Rule, value: Any) -> bool:
+    """True when the extracted value crosses the rule's threshold.
+
+    Missing or non-numeric values never fire — a sensor dropout must not
+    trigger an action.
+    """
     if value is None:
         return False
     if rule.equals is not None:
@@ -110,6 +118,12 @@ class RuleEngine:
     _last_fired: dict[str, float] = field(default_factory=dict)
 
     def handle_event(self, rule: Rule, data: dict, now: float | None = None) -> Decision:
+        """Evaluate one topic message against one rule.
+
+        Returns a Decision that says what happened and why; `navigate_to` is
+        set only when every safety gate passed (condition + cooldown +
+        auto_approve + nav2 adapter). `now` is injectable for tests.
+        """
         now = time.monotonic() if now is None else now
         value = extract_field(data, rule.fld)
         if not condition_met(rule, value):

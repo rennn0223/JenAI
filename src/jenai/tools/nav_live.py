@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from uuid import uuid4
 
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.schemas import RouteOutput
@@ -34,9 +35,16 @@ async def navigate_live(
 
     loop = asyncio.get_running_loop()
     result_future: asyncio.Future[str] = loop.create_future()
+    # Events are matched by tag: after an Esc-cancel, the goal's terminal
+    # "canceled" result can arrive while the NEXT navigation is already
+    # listening — without the tag it would consume that stale result as its own.
+    tag = uuid4().hex[:8]
+
+    def _mine(event: dict) -> bool:
+        return event.get("tag", "") in ("", tag)  # "" tolerates older bridges
 
     def _on_feedback(event: dict) -> None:
-        if on_progress is not None:
+        if on_progress is not None and _mine(event):
             on_progress(
                 NavProgress(
                     distance_remaining=float(event.get("distance_remaining", 0.0)),
@@ -46,7 +54,7 @@ async def navigate_live(
             )
 
     def _on_result(event: dict) -> None:
-        if not result_future.done():
+        if _mine(event) and not result_future.done():
             result_future.set_result(str(event.get("status", "failed")))
 
     bridge.on_event("nav_feedback", _on_feedback)
@@ -57,6 +65,7 @@ async def navigate_live(
             y=float(pose.get("y", 0.0)),
             yaw=float(pose.get("yaw", 0.0)),
             frame_id=goal.get("frame_id", "map"),
+            tag=tag,
         )
         status = await asyncio.wait_for(result_future, timeout)
         detail = {
