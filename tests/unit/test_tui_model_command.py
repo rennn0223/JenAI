@@ -126,3 +126,61 @@ def test_model_command_rejects_out_of_range_number(tmp_path: Path, monkeypatch) 
         assert app.config.model_bindings.chat == "gpt-test"
 
     asyncio.run(run())
+
+
+def test_provider_command_switches_profile(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.provider_profiles["cloud"] = app.config.provider_profiles["ollama"].model_copy(
+            update={"name": "cloud", "base_url": "https://example.invalid/v1"}
+        )
+        async with app.run_test():
+            await app.handle_user_text("/provider cloud")
+
+        assert app.config.active_provider == "cloud"
+        persisted = load_config(tmp_path / "config.toml")
+        assert persisted.active_provider == "cloud"
+
+    asyncio.run(run())
+
+
+def test_provider_command_switches_by_number_and_clears_model_cache(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.provider_profiles["cloud"] = app.config.provider_profiles["ollama"].model_copy(
+            update={"name": "cloud"}
+        )
+        app._available_models = ["stale-model"]
+        async with app.run_test():
+            await app.handle_user_text("/provider 2")
+
+        assert app.config.active_provider == "cloud"
+        assert app._available_models == []  # endpoint changed; numbers must not leak
+
+    asyncio.run(run())
+
+
+def test_provider_command_rejects_unknown_profile(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = _app(tmp_path)
+        async with app.run_test():
+            await app.handle_user_text("/provider nope")
+
+        assert app.config.active_provider == "ollama"
+
+    asyncio.run(run())
+
+
+def test_submitted_palette_placeholder_never_reaches_handlers(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = _app(tmp_path)
+        async with app.run_test():
+            await app.handle_user_text("/model <name|number>")
+            await app.handle_user_text("/provider <name>")
+            await app.handle_user_text("/model <partially-edited>")
+
+        bindings = app.config.model_bindings
+        assert bindings.chat == "gpt-test"  # placeholder was never saved
+        assert app.config.active_provider == "ollama"
+
+    asyncio.run(run())

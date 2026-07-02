@@ -96,7 +96,7 @@ SLASH_COMMANDS = [
     SlashCommand("/providers", "List configured provider profiles"),
     SlashCommand("/model", "List provider models and switch (Ollama etc.)", "/model <name|number>"),
     SlashCommand("/models", "Show model bindings"),
-    SlashCommand("/provider", "Show the active provider profile"),
+    SlashCommand("/provider", "Show or switch the active provider profile", "/provider <name>"),
     SlashCommand("/permissions", "Show which commands require approval"),
     SlashCommand("/config", "Show config file details"),
     SlashCommand("/plan", "Plan a task without executing any tools", "/plan <task>"),
@@ -566,7 +566,22 @@ class JenAITuiApp(App[None]):
         self._hide_command_palette()
         composer.focus()
 
+    # Palette completions like "/model <name|number>" insert their usage
+    # placeholder into the composer; a submitted placeholder must never reach a
+    # handler (it once saved the literal "<name|number>" as a model binding).
+    _TEMPLATE_VALUES = frozenset(c.template for c in SLASH_COMMANDS if "<" in c.template)
+
     async def _handle_command(self, value: str) -> None:
+        if value.strip() in self._TEMPLATE_VALUES:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "Replace the [bold #f2ede1]<placeholder>[/] with a real value first, "
+                    f"e.g. [bold #f2ede1]{value.split()[0]} …[/]. See /help.",
+                )
+            )
+            return
+
         command, _, arg = value.partition(" ")
         arg = arg.strip()
 
@@ -679,12 +694,14 @@ class JenAITuiApp(App[None]):
             return
 
         rows = []
-        for name, profile in self.config.provider_profiles.items():
-            active = "*" if name == self.config.active_provider else " "
+        for idx, (name, profile) in enumerate(self.config.provider_profiles.items(), start=1):
+            active = f"[bold {GREEN}]→[/]" if name == self.config.active_provider else " "
             rows.append(
-                f"{active} [bold #f2ede1]{name}[/] · {profile.provider} · "
+                f" {active} [{MUTED}]{idx}[/] [bold #f2ede1]{name}[/] · {profile.provider} · "
                 f"{profile.base_url or 'provider default'} · {profile.api_key_env or 'no key env'}"
             )
+        rows.append("")
+        rows.append(f"[{MUTED}]Switch with /provider <name|number>.[/]")
         await self._mount_event(OutputPanel("Provider profiles", "\n".join(rows)))
 
     async def _show_models(self, _: str = "") -> None:
@@ -775,6 +792,15 @@ class JenAITuiApp(App[None]):
         await self._mount_event(OutputPanel("Model", "\n".join(lines)))
 
     async def _resolve_model_spec(self, spec: str) -> str | None:
+        if spec.startswith("<"):
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "That looks like the usage placeholder — give a real model, "
+                    "e.g. [bold #f2ede1]/model qwen3:8b[/]. Run [bold #f2ede1]/model[/] to list.",
+                )
+            )
+            return None
         if not spec.isdigit():
             return spec
         if not self._available_models:
@@ -797,9 +823,14 @@ class JenAITuiApp(App[None]):
         return self._available_models[index - 1]
 
     def _refresh_model_display(self) -> None:
+        profile = self._active_profile()
         try:
             self.query_one("#statusbar", Static).update(self._status_line())
-            self.query_one(WelcomePanel).update_model(self._chat_model_display())
+            self.query_one(WelcomePanel).update_model(
+                self._chat_model_display(),
+                provider_name=profile.name if profile else "provider missing",
+                provider_kind=profile.provider if profile else "unknown",
+            )
         except NoMatches:  # app shutting down / panel not mounted
             pass
 
@@ -818,9 +849,57 @@ class JenAITuiApp(App[None]):
             )
         )
 
-    async def _show_provider(self, _: str = "") -> None:
-        profile = self._active_profile()
-        await self._mount_event(OutputPanel("Provider", self._format_profile(profile)))
+    async def _show_provider(self, arg: str = "") -> None:
+        if not arg:
+            profile = self._active_profile()
+            body = (
+                f"{self._format_profile(profile)}\n\n"
+                f"[{MUTED}]Switch with /provider <name|number> · profiles: /providers[/]"
+            )
+            await self._mount_event(OutputPanel("Provider", body))
+            return
+
+        profiles = self.config.provider_profiles
+        name = arg.strip()
+        if name.startswith("<"):
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "That looks like the usage placeholder — give a profile name, "
+                    "e.g. [bold #f2ede1]/provider local[/]. Run [bold #f2ede1]/providers[/] to list.",
+                )
+            )
+            return
+        if name.isdigit():
+            index = int(name)
+            names = list(profiles)
+            if not 1 <= index <= len(names):
+                await self._mount_event(
+                    TimelineItem("warn", f"No provider #{index} — run /providers to list.")
+                )
+                return
+            name = names[index - 1]
+        if name not in profiles:
+            known = ", ".join(profiles) or "none configured"
+            await self._mount_event(
+                TimelineItem("warn", f"Unknown provider '{name}'. Profiles: {known}.")
+            )
+            return
+
+        self.config.active_provider = name
+        # Model ids are endpoint-specific; stale numbers must not leak across.
+        self._available_models = []
+        await asyncio.to_thread(save_config, self.config, self.config_path)
+        self._refresh_model_display()
+        profile = profiles[name]
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Provider switched to [bold #f2ede1]{name}[/] ({profile.provider} · "
+                f"{profile.base_url or 'provider default'}) · saved to config\n"
+                f"Run [bold #f2ede1]/model[/] to pick one of its models.",
+            )
+        )
 
     async def _show_permissions(self, _: str = "") -> None:
         lines = [f"[bold #f2ede1]{cmd}[/] requires approval" for cmd in APPROVAL_REQUIRED_COMMANDS]
@@ -1750,8 +1829,18 @@ class WelcomePanel(Container):
         self.doctor_result = doctor_result
         self.query_one("#welcome-doctor-status", Static).update(self._doctor_summary())
 
-    def update_model(self, model_name: str) -> None:
+    def update_model(
+        self,
+        model_name: str,
+        *,
+        provider_name: str | None = None,
+        provider_kind: str | None = None,
+    ) -> None:
         self.model_name = model_name
+        if provider_name is not None:
+            self.provider_name = provider_name
+        if provider_kind is not None:
+            self.provider_kind = provider_kind
         self.query_one("#welcome-provider-meta", Static).update(self._provider_meta())
 
     def _provider_meta(self) -> str:
