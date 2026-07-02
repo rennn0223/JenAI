@@ -10,6 +10,7 @@ from jenai.providers.chat import (
     list_provider_models,
     resolve_model_alias,
     resolved_model,
+    stream_provider,
 )
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "chat_model_name",
     "list_provider_models",
     "resolve_model_alias",
+    "stream_provider",
     "resolved_model",
 ]

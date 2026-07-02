@@ -52,7 +52,9 @@ def main(
     # the same. Shell-exported variables still take precedence over the file.
     env_result = load_env_file()
     if env_result.explicit and not env_result.found:
-        console.print(
+        # stderr, not stdout: this callback also runs before `jenai mcp`, whose
+        # stdout is the MCP protocol channel and must stay clean.
+        Console(stderr=True).print(
             f"[yellow]JENAI_ENV_FILE points to a missing file: {env_result.path}[/yellow]"
         )
 
@@ -214,6 +216,36 @@ def web(
 
     console.print(f"[green]JenAI WebUI serving at http://{host}:{port}[/green] (Ctrl-C to stop)")
     serve(loaded, config_path, host=host, port=port)
+
+
+@app.command()
+def mcp(
+    config: ConfigOption = None,
+    allow_actions: Annotated[
+        bool,
+        typer.Option(
+            "--allow-actions",
+            help="Also expose navigate_to (moves the robot). Off by default.",
+        ),
+    ] = False,
+) -> None:
+    """Serve JenAI's robot tools over MCP stdio (for Claude Code/Desktop etc.)."""
+    import sys
+
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        raise typer.Exit(1) from exc
+
+    from jenai.mcp_server import build_mcp_server
+
+    # stdio transport: stdout belongs to the MCP protocol — status goes to stderr.
+    mode = "read-only + navigate_to" if allow_actions else "read-only"
+    print(f"jenai mcp server starting ({mode})", file=sys.stderr)
+    server = build_mcp_server(loaded, config_path, allow_actions=allow_actions)
+    server.run(transport="stdio")
 
 
 @app.command()

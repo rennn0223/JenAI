@@ -42,6 +42,7 @@ class RosBridgeClient:
         self._event_handlers: dict[str, list[Callable[[dict], None]]] = {}
         self._watch_handlers: dict[int, Callable[[dict], None]] = {}
         self._ready = asyncio.Event()
+        self._start_lock: asyncio.Lock | None = None
 
     @staticmethod
     def available() -> bool:
@@ -55,14 +56,20 @@ class RosBridgeClient:
     async def start(self, timeout: float = 10.0) -> None:
         """Spawn the bridge process and wait for its ready handshake.
 
-        Idempotent: returns immediately if the bridge is already running.
+        Idempotent and safe under concurrency (MCP tools may call in
+        parallel): a lock ensures exactly one bridge process is spawned.
         Raises BridgeError when ROS is absent or the bridge never comes up.
         """
-        if self.running:
-            return
-        if not self.available():
-            raise BridgeError("ROS2 is not installed (no setup script or ros2 on PATH).")
+        if self._start_lock is None:
+            self._start_lock = asyncio.Lock()
+        async with self._start_lock:
+            if self.running:
+                return
+            if not self.available():
+                raise BridgeError("ROS2 is not installed (no setup script or ros2 on PATH).")
+            await self._spawn(timeout)
 
+    async def _spawn(self, timeout: float) -> None:
         ros_setup = os.environ.get("ROS_SETUP", _DEFAULT_ROS_SETUP)
         python = os.environ.get("JENAI_BRIDGE_PYTHON", "/usr/bin/python3")
         # Source ROS then exec the system python: works whether or not the

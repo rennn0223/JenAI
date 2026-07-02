@@ -18,9 +18,9 @@ from jenai.bridge import RosBridgeClient
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.providers import (
     ProviderChatError,
-    ask_provider,
     chat_model_name,
     resolve_model_alias,
+    stream_provider,
 )
 from jenai.schemas import (
     ApprovalRequest,
@@ -448,17 +448,50 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             await self._handle_command(value)
         else:
             self._scroll_to_bottom()
-            try:
-                response = await ask_provider(self.config, value)
-            except ProviderChatError as exc:
-                await self._mount_event(TimelineItem("error", str(exc)))
-                self._scroll_to_bottom()
-                return
-
-            await self._mount_event(
-                TimelineItem("assistant", escape(response.content), spaced=True)
-            )
+            await self._stream_chat_reply(value)
         self._scroll_to_bottom()
+
+    async def _stream_chat_reply(self, prompt: str) -> None:
+        """Stream the assistant reply token-by-token into one TimelineItem."""
+        item = TimelineItem("assistant", "…", spaced=True)
+        await self._mount_event(item)
+        parts: list[str] = []
+        last_paint = 0.0
+        try:
+            async for delta in stream_provider(self.config, prompt):
+                parts.append(delta)
+                now = time.monotonic()
+                if now - last_paint >= 0.05:  # cap repaints at ~20 fps
+                    item.set_body(escape("".join(parts)))
+                    self._scroll_to_bottom()
+                    last_paint = now
+        except ProviderChatError as exc:
+            if parts:  # keep the partial answer, then surface the failure
+                item.set_body(escape("".join(parts)))
+            else:
+                await item.remove()
+            await self._mount_event(TimelineItem("error", str(exc)))
+            return
+        except asyncio.CancelledError:
+            # Esc mid-answer: freeze what arrived (or drop the empty shell).
+            # Widget ops can fail if the app is tearing down — never let that
+            # mask the cancellation itself.
+            try:
+                if parts:
+                    item.set_body(escape("".join(parts)))
+                else:
+                    await item.remove()
+            except Exception:
+                pass
+            raise
+
+        if not parts:
+            await item.remove()
+            await self._mount_event(
+                TimelineItem("error", "Provider returned an empty response.")
+            )
+            return
+        item.set_body(escape("".join(parts)))  # final full paint
 
     def action_focus_composer(self) -> None:
         self._hide_command_palette()
