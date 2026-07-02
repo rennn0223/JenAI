@@ -164,10 +164,17 @@ class TimelineItem(Static):
     """
 
     def __init__(self, variant: str, body: str, *, spaced: bool = False) -> None:
+        self._spaced = spaced
         rendered = _spaced_body(body) if spaced else body
         super().__init__(_bullet_markup(variant, rendered), classes="bullet-line")
         self.variant = variant
         self.body = body
+
+    def set_body(self, body: str) -> None:
+        """Replace the body in place — this is how a streaming reply grows."""
+        self.body = body
+        rendered = _spaced_body(body) if self._spaced else body
+        self.update(_bullet_markup(self.variant, rendered))
 
 
 class OutputPanel(Static):

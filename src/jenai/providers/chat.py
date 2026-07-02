@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +39,56 @@ NVIDIA_MODEL_ALIASES = {
     "qwen3-coder": "qwen/qwen3-coder-480b-a35b-instruct",
 }
 
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are JenAI, a concise terminal-first assistant for ROS2 robot "
+    "workflows. Answer clearly and keep responses practical."
+)
+
+
+def _chat_messages(prompt: str, system_prompt: str | None) -> list[dict]:
+    return [
+        {"role": "system", "content": system_prompt or _DEFAULT_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+
+
+async def stream_provider(
+    config: AppConfig,
+    prompt: str,
+    *,
+    system_prompt: str | None = None,
+) -> AsyncIterator[str]:
+    """Stream a chat completion as text deltas (the TUI renders them live).
+
+    Raises ProviderChatError with the same mapping as ask_provider; callers
+    that cancel mid-stream close the HTTP connection via the async-with exit.
+    """
+    profile = _active_profile(config)
+    model = _chat_model(config, profile)
+    api_key = _api_key(profile)
+
+    try:
+        async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=_chat_messages(prompt, system_prompt),
+                temperature=0.2,
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    yield delta
+    except (APIConnectionError, APITimeoutError) as exc:
+        raise ProviderChatError(f"Could not reach provider endpoint: {exc}") from exc
+    except APIStatusError as exc:
+        raise ProviderChatError(f"Provider API error ({exc.status_code}): {exc}") from exc
+    except APIError as exc:
+        raise ProviderChatError(f"Provider API error: {exc}") from exc
+    except OpenAIError as exc:
+        raise ProviderChatError(f"Provider request failed: {exc}") from exc
+
+
 async def ask_provider(
     config: AppConfig,
     prompt: str,
@@ -48,17 +99,7 @@ async def ask_provider(
     model = _chat_model(config, profile)
     api_key = _api_key(profile)
 
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt
-            or (
-                "You are JenAI, a concise terminal-first assistant for ROS2 robot "
-                "workflows. Answer clearly and keep responses practical."
-            ),
-        },
-        {"role": "user", "content": prompt},
-    ]
+    messages = _chat_messages(prompt, system_prompt)
 
     try:
         # A fresh client per call keeps this safe across separate asyncio event

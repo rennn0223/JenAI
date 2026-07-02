@@ -4,7 +4,6 @@ import asyncio
 from pathlib import Path
 
 from jenai.config.store import build_minimal_config
-from jenai.providers import ChatResponse
 from jenai.schemas import (
     PlanStep,
     RosPubOutput,
@@ -15,7 +14,7 @@ from jenai.schemas import (
 )
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
-from jenai.tui.panels import pixel_mark
+from jenai.tui.panels import TimelineItem, pixel_mark
 from jenai.tui.widgets import ApprovalCard
 
 
@@ -111,10 +110,11 @@ def test_tui_shows_slash_command_palette() -> None:
     asyncio.run(run())
 
 
-def test_tui_sends_natural_language_to_provider(monkeypatch) -> None:
-    async def fake_ask_provider(config, prompt):
+def test_tui_streams_natural_language_reply(monkeypatch) -> None:
+    async def fake_stream_provider(config, prompt):
         calls.append((config.active_provider, prompt))
-        return ChatResponse(content="LLM says hi", model="gpt-test", provider="test")
+        for delta in ("LLM ", "says ", "hi"):
+            yield delta
 
     async def run() -> None:
         app = JenAITuiApp(
@@ -128,13 +128,42 @@ def test_tui_sends_natural_language_to_provider(monkeypatch) -> None:
         )
         async with app.run_test():
             await app.handle_user_text("hi")
+            items = app.query(TimelineItem)
+            assert any(i.body == "LLM says hi" for i in items)  # full reply assembled
 
     calls = []
-    monkeypatch.setattr("jenai.tui.app.ask_provider", fake_ask_provider)
+    monkeypatch.setattr("jenai.tui.app.stream_provider", fake_stream_provider)
 
     asyncio.run(run())
 
     assert calls == [("test", "hi")]
+
+
+def test_tui_stream_error_keeps_partial_and_reports(monkeypatch) -> None:
+    from jenai.providers import ProviderChatError
+
+    async def broken_stream(config, prompt):
+        yield "partial "
+        raise ProviderChatError("connection dropped")
+
+    async def run() -> None:
+        app = JenAITuiApp(
+            config=build_minimal_config(
+                provider_name="test",
+                provider="openai",
+                default_model="gpt-test",
+                api_key_env="",
+            ),
+            config_path=Path("/tmp/config.toml"),
+        )
+        async with app.run_test():
+            await app.handle_user_text("hi")
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert "partial " in bodies          # partial answer preserved
+            assert any("connection dropped" in b for b in bodies)  # error surfaced
+
+    monkeypatch.setattr("jenai.tui.app.stream_provider", broken_stream)
+    asyncio.run(run())
 
 
 def test_tui_ros_topics_command(monkeypatch) -> None:
