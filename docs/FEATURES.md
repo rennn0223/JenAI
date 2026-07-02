@@ -457,3 +457,40 @@ ShellOutput(
 - [x] stdout / stderr 有結構化顯示
 - [x] 高風險命令額外加強警示（p2 level）
 
+
+---
+
+## 完整 Agent 架構（v0.2，基於 openai-agents SDK）
+
+把 JenAI 從「工具執行器」升級成分工協作的 agent。分三階段實作，全部有單元測試。
+
+### Phase 1 — 多-agent + 記憶 + 可觀測性
+- **多-agent（SDK handoffs）**：`Supervisor` agent 依需求 handoff 給專職 agent
+  —— `ROS Explorer`（唯讀查詢）、`Motion`（發布/驅動）、`Navigation`（導航）、
+  `Perception`（視覺）。每個 agent 只帶自己領域的工具，工具選擇更可靠。
+  程式：`src/jenai/agent/specialists.py`（`agents.Agent(handoffs=[...])`）。
+- **對話記憶（SDK Session）**：`JenAIFileSession` 實作 `agents.memory.SessionABC`，
+  以 JSON 檔持久化對話，`Runner.run(session=...)`（初次執行與 resume 都帶）自動載入/續存。
+  互動 TUI 用「依工作目錄推導的**穩定 session id**」，記憶**跨重啟保存**（不同專案各自獨立），
+  歷史上限 200 筆、原子寫入，`/clear` 連帶清除記憶。程式：`agent/session.py`。
+- **可觀測性（SDK Tracing）**：`FileTracingProcessor` 以 `agents.set_trace_processors`
+  **取代**預設的 OpenAI 後端 exporter（因此 trace 不會外傳），把每次 run 的推理/工具呼叫/
+  handoff 寫成本地 JSONL。程式：`agent/tracing.py`。
+
+### Phase 2 — 安全護欄 + 閉環感知 + 真導航
+- **Guardrails（SDK input guardrail）**：`unsafe_command_guardrail`（`@input_guardrail`）
+  攔截「解除安全/無視障礙」等**停用安全機制**的意圖（不誤擋「最高速多少」這類善意問句）；
+  底層再加**確定性速度夾限**（`ros2_core._safety_clamp`，硬性上限 1.0 m/s / 2.0 rad/s，
+  遞迴涵蓋 Twist 與巢狀的 TwistStamped，不依賴 LLM）。程式：`agent/guardrails.py`。
+- **閉環感知**：`/ros state` 與 `ros_state_tool` 一次快照 `/odom`+`/scan`，讓 agent 能
+  「先觀察再決策」。程式：`ros2_core.ros_state`。
+- **真導航（Nav2）**：`Nav2RouteAdapter` 以 `NavigateToPose` action 送目標；Nav2 未啟動時
+  誠實回報 `unavailable`（不假成功）。以 `route_adapter = "nav2"` 啟用。程式：`adapters/route_adapter.py`。
+
+### Phase 3 — 自主任務 + 回報
+- **確定性任務執行器**：`/mission 廚房, drive 左轉, 大廳` 依序執行各步（不靠 LLM 迴圈，
+  可靠且可測），批准一次後逐步執行並串流進度，最後產出報告。程式：`tools/mission_core.py`。
+
+### 已知範圍
+- `/run` 的 agent 迴圈在本地弱模型下仍受「一次一動作」護欄限制；多步自主請用 `/mission`（確定性）。
+- Nav2 與閉環感知需真實機器人堆疊在線才能端到端驗證；程式為誠實實作 + 單元測試。

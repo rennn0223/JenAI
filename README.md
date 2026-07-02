@@ -84,6 +84,8 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ## 狀態
 
-> ✅ v0.1.0 核心功能已實作：CLI 入口、setup wizard、`doctor`、agent runtime（`/plan`、`/run` 含 approval）、ROS2 工具（`topics`／`topic-info`／`schema`／`echo`／`pub`）、`/route` 與 locations、`/vision image`、`/shell`、TUI（slash palette、歷史、approval card）以及最小 WebUI 儀表板（`JenAI web`）。詳細功能驗收狀態見 [`docs/FEATURES.md`](docs/FEATURES.md)。
+> ✅ 核心功能：CLI 入口、setup wizard、`doctor`、`/plan`、ROS2 工具（`topics`／`topic-info`／`schema`／`echo`／`pub`／`drive`／`state`）、`/drive` 自然語言控車、`/route`、`/vision image`、`/shell`、Claude 風格 TUI（項目符號時間軸、編號審批、`!` bash、esc 中斷）與可互動的 WebUI（`jenai web`，含指令 console，手機 App 佈局）。
 >
-> 🚧 後續：連續 `/ros echo` streaming、provider 連線探測、WebUI 完整 timeline／approval queue、跨 session 持久化歷史。
+> ✅ 完整 Agent 架構（基於 openai-agents SDK）：**多-agent handoffs**（Supervisor + ROS/Motion/Navigation/Perception 專職 agent）、**跨重啟對話記憶**（`Session`，依專案，`/clear` 清除）、**安全 guardrails** + 確定性速度夾限（涵蓋 Twist/TwistStamped）、**閉環感知**（`/ros state`）、**Nav2 導航**（誠實回報）、**確定性任務執行器**（`/mission`）、**本地 tracing**（取代 OpenAI 後端，不外傳）。詳見 [`docs/FEATURES.md`](docs/FEATURES.md)。
+>
+> 🚧 後續：`/run` 多步自主的可靠化、Nav2/感知端到端驗證、連續 `/ros echo` streaming、WebUI 完整 timeline。

@@ -53,16 +53,27 @@ def test_route_preview_missing_start_or_goal_asks_for_clarification(monkeypatch)
     assert "Could not determine" in output.route_preview
 
 
-def test_route_preview_unresolvable_location_lists_candidates() -> None:
-    text = "from Enginering Buildng to Mechanical Hall"
+def test_route_preview_unresolvable_goal_lists_candidates() -> None:
+    # An unresolvable GOAL blocks the route and offers close matches.
+    text = "from Engineering Building to Mechnical Hll"
     output = asyncio.run(route_core.route_preview(_config(), _locations(), text))
     assert output.outgoing_action == {}
     assert output.candidate_matches
-    assert output.candidate_matches[0].name == "Engineering Building"
+    assert output.candidate_matches[0].name == "Mechanical Hall"
 
 
-def test_route_execute_uses_stub_adapter() -> None:
+def test_route_preview_unresolvable_start_still_navigates_to_goal() -> None:
+    # Nav2 navigates from the robot's current pose, so a start we can't resolve
+    # must not block a resolvable goal — it is simply omitted, not sent.
+    text = "from Nowhere Place to Mechanical Hall"
+    output = asyncio.run(route_core.route_preview(_config(), _locations(), text))
+    assert output.resolved_goal.name == "Mechanical Hall"
+    assert output.outgoing_action["goal"]["name"] == "Mechanical Hall"
+    assert "start" not in output.outgoing_action
+
+
+def test_route_execute_reports_no_backend_honestly() -> None:
     output = asyncio.run(route_core.route_execute(_config(), {"start": "a", "goal": "b"}))
-    # Stub adapter reports success using the shared "succeeded" vocabulary so
-    # consumers that branch on execution_status == "succeeded" work uniformly.
-    assert output.execution_status == "succeeded"
+    # No navigation backend is wired: report "unavailable", never fake success.
+    assert output.execution_status == "unavailable"
+    assert "not sent" in output.route_preview.lower()

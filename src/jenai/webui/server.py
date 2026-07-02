@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
+import secrets
+import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +16,39 @@ from jenai.doctor import run_doctor
 from jenai.providers.chat import chat_model_name
 from jenai.state.runs import RunStore
 from jenai.tools.ros2_core import _kind_hint
+from jenai.webui.commands import run_web_command, run_web_confirm
+
+
+class _PendingConfirms:
+    """Server-side store binding a previewed robot action to a one-time token.
+
+    The browser only ever receives an opaque ``confirm_id``; the actual action
+    dict stays here and is executed exactly once, when that id is confirmed. So
+    (a) a client cannot fabricate or tamper with what it confirms — it can only
+    release an action the server already previewed and validated — and (b) a
+    blind POST to ``/api/confirm`` without a valid, unused id does nothing. This
+    turns the confirm step into a real server-side gate rather than a cosmetic
+    button, without adding auth to what is still a localhost tool.
+    """
+
+    def __init__(self, max_entries: int = 32) -> None:
+        self._items: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self._max = max_entries
+
+    def put(self, action: dict) -> str:
+        token = secrets.token_urlsafe(16)
+        with self._lock:
+            self._items[token] = action
+            while len(self._items) > self._max:  # bound memory; evict oldest
+                self._items.pop(next(iter(self._items)), None)
+        return token
+
+    def pop(self, token: str) -> dict | None:
+        if not token:
+            return None
+        with self._lock:
+            return self._items.pop(token, None)
 
 
 def _ros_snapshot() -> dict[str, Any]:
@@ -106,6 +142,33 @@ def _pill(status: str) -> str:
     return f'<span class="pill p-{_status_class(status)}">{html.escape(str(status))}</span>'
 
 
+_CHECK_LABELS = {
+    "python": "Python",
+    "uv": "uv",
+    "virtual_env": "Virtual env",
+    "config_file": "Config file",
+    "ros2_cli": "ROS2 command",
+    "active_provider": "Provider",
+    "api_key": "API key",
+    "model_bindings": "Models",
+    "locations_file": "Locations file",
+    "assets": "WebUI assets",
+}
+
+
+def _health_summary(doctor: dict) -> str:
+    items = doctor.get("items", [])
+    fails = sum(1 for i in items if str(i["status"]).lower() == "fail")
+    warns = sum(1 for i in items if str(i["status"]).lower() == "warn")
+    if not items:
+        return "Getting your setup ready…"
+    if fails:
+        return f"{fails} thing{'s' if fails != 1 else ''} need{'' if fails == 1 else 's'} attention."
+    if warns:
+        return f"Running fine — {warns} minor note{'s' if warns != 1 else ''}."
+    return "Everything looks healthy."
+
+
 def render_main(status: dict[str, Any]) -> str:
     """Render the dynamic dashboard body (also served at /fragment for refresh)."""
     stats = [
@@ -134,15 +197,16 @@ def render_main(status: dict[str, Any]) -> str:
 
     check_rows: list[str] = []
     for section in order:
-        check_rows.append(f'<div class="group">{html.escape(section)}</div>')
+        check_rows.append(f'<div class="group">{html.escape(section.capitalize())}</div>')
         for item in groups[section]:
             fix = (
                 f'<div class="fix">↳ {html.escape(item["fix"])}</div>' if item.get("fix") else ""
             )
+            name = _CHECK_LABELS.get(item["check"], item["check"].replace("_", " ").capitalize())
             check_rows.append(
                 '<div class="check">'
                 '<div class="check-main">'
-                f'<span class="check-name">{html.escape(item["check"])}</span>'
+                f'<span class="check-name">{html.escape(name)}</span>'
                 f'<span class="check-msg">{html.escape(item["message"])}</span>{fix}'
                 "</div>"
                 f'{_pill(item["status"])}'
@@ -174,6 +238,7 @@ def render_main(status: dict[str, Any]) -> str:
 
     updated = datetime.now().strftime("%H:%M:%S")
     return (
+        f'<p class="summary">{html.escape(_health_summary(doctor))}</p>'
         f'<div class="stats">{stats_html}</div>'
         '<section class="card">'
         '<div class="card-head"><h2>Environment</h2>'
@@ -203,18 +268,18 @@ _PAGE = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  --paper:#f3f0e8; --card:#fffdf8; --ink:#2a2622; --ink-soft:#57524b; --muted:#8d887d;
-  --line:#e6e0d3; --accent:#c05f3b; --teal:#3c7a76; --gold:#a9821f;
-  --ok:#3f7d5b; --ok-bg:#e7efe8; --warn:#9c7420; --warn-bg:#f3ecd6;
-  --bad:#b23f2e; --bad-bg:#f4e1db; --muted-bg:#ece7db;
+  --paper:#f7f4ee; --card:#fffefb; --ink:#26231d; --ink-soft:#57524b; --muted:#928c80;
+  --line:#e9e3d6; --accent:#d97757; --accent-ink:#bf6144; --teal:#3f7a72; --gold:#b0842a;
+  --ok:#5a8a5f; --ok-bg:#e9f0e7; --warn:#a67a22; --warn-bg:#f4ecd6;
+  --bad:#c15f3c; --bad-bg:#f6e3da; --muted-bg:#efe9dc;
 }
 *{box-sizing:border-box}
 html,body{margin:0}
 body{
   background:var(--paper);
   background-image:
-    radial-gradient(1100px 560px at 82% -12%, rgba(192,95,59,.07), transparent 60%),
-    radial-gradient(820px 480px at -12% 8%, rgba(60,122,118,.055), transparent 55%);
+    radial-gradient(1100px 560px at 82% -12%, rgba(217,119,87,.09), transparent 60%),
+    radial-gradient(820px 480px at -12% 8%, rgba(63,122,114,.05), transparent 55%);
   color:var(--ink);
   font-family:'Instrument Sans',ui-sans-serif,-apple-system,'Segoe UI',sans-serif;
   font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased;
@@ -241,6 +306,8 @@ body{
   box-shadow:0 0 0 0 rgba(192,95,59,.5); animation:pulse 2.4s ease-out infinite}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(192,95,59,.45)}70%{box-shadow:0 0 0 9px rgba(192,95,59,0)}100%{box-shadow:0 0 0 0 rgba(192,95,59,0)}}
 main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .28s ease}
+.summary{font-family:'Fraunces',Georgia,serif; font-weight:500; font-size:23px;
+  line-height:1.3; color:var(--ink); margin:2px 0 20px}
 .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:10px 0 22px}
 .stat{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px}
 .stat-k{display:block; color:var(--muted); font-size:11.5px; text-transform:uppercase; letter-spacing:.07em}
@@ -285,21 +352,148 @@ main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .
   padding:1px 6px; border-radius:6px; font-size:13px}
 .updated{color:var(--muted); font-size:12px; text-align:right; margin-top:4px}
 footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted); font-size:12.5px}
-@media(max-width:640px){.stats{grid-template-columns:repeat(2,1fr)} .hero{flex-direction:column; align-items:flex-start}}
+
+/* Console (interactive command area) */
+#console{max-width:960px; margin:0 auto 8px}
+#transcript{max-height:340px; overflow-y:auto; margin-bottom:12px}
+#transcript:empty{display:none}
+.blk{margin:10px 0; animation:rise .35s cubic-bezier(.2,.7,.2,1) both}
+.you-line{color:var(--ink); font-weight:500}
+.you-mark{color:var(--accent); font-weight:700; margin-right:6px}
+.blk .out, .blk .out p{margin:2px 0; color:var(--ink-soft); font-size:14px; line-height:1.5}
+.blk-error .out{color:var(--bad)}
+.blk .out ul, .cmd-list{list-style:none; padding:0; margin:4px 0}
+.blk .out li{padding:4px 0; border-top:1px solid var(--line); font-size:13.5px}
+.blk .out .dim, .dim{color:var(--muted)}
+.blk .out code, .blk .out pre{font-family:ui-monospace,Menlo,monospace; font-size:12.5px;
+  background:#efe9dc; border-radius:6px; padding:1px 6px}
+.blk .out pre{display:block; padding:8px 10px; overflow-x:auto; white-space:pre-wrap}
+.blk-confirm{border-left:3px solid var(--accent); padding-left:12px}
+.danger{color:var(--bad); font-size:13px; margin:6px 0}
+.confirm-row{display:flex; gap:8px; margin-top:6px}
+.btn-approve,.btn-cancel,#cmdsend{font:inherit; font-weight:600; font-size:13.5px; cursor:pointer;
+  border-radius:10px; padding:7px 16px; border:1px solid transparent}
+.btn-approve{background:var(--accent); color:#fff}
+.btn-approve:hover{background:var(--accent-ink)}
+.btn-cancel{background:transparent; color:var(--muted); border-color:var(--line)}
+#cmdform{display:flex; gap:8px}
+#cmdinput{flex:1; font:inherit; font-size:14.5px; color:var(--ink); background:var(--paper);
+  border:1px solid var(--line); border-radius:12px; padding:10px 14px; outline:none}
+#cmdinput:focus{border-color:var(--accent); box-shadow:0 0 0 3px rgba(217,119,87,.14)}
+#cmdsend{background:var(--card); color:var(--ink); border-color:var(--line)}
+#cmdsend:hover{border-color:var(--accent)}
+#cmdsend:disabled{opacity:.5; cursor:default}
+
+/* Segmented Console/Status tabs — only shown on mobile */
+#tabs{display:none; gap:6px; max-width:960px; margin:0 auto 10px; padding:0 32px}
+.tab{flex:1; font:inherit; font-weight:600; font-size:14px; cursor:pointer; padding:9px;
+  border-radius:11px; border:1px solid var(--line); background:var(--card); color:var(--muted)}
+.tab.active{background:var(--accent); color:#fff; border-color:var(--accent)}
+
+/* ---- Mobile app layout (phone) ---- */
+@media(max-width:640px){
+  .topbar{height:2px}
+  .hero{position:sticky; top:0; z-index:6; margin:0; padding:12px 16px;
+    background:var(--paper); border-bottom:1px solid var(--line)}
+  .hero h1{font-size:26px}
+  .logo{font-size:26px}
+  #tabs{display:flex; position:sticky; top:56px; z-index:5; padding:10px 16px;
+    background:var(--paper); margin:0}
+  main, #console, footer{max-width:100%; padding-left:16px; padding-right:16px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+
+  /* Console becomes a full-height chat with a fixed input bar */
+  #console{margin:0; border:none; background:transparent; box-shadow:none; padding:0}
+  #console>.card-head{display:none}
+  #transcript{max-height:none; padding:0 16px 84px}
+  #transcript:empty{display:block; min-height:30vh}
+  #cmdform{position:fixed; left:0; right:0; bottom:0; z-index:7; gap:8px;
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    background:var(--paper); border-top:1px solid var(--line)}
+  #cmdinput{font-size:16px; padding:12px 14px}   /* 16px avoids iOS zoom */
+  #cmdsend{padding:12px 16px}
+  .btn-approve,.btn-cancel{padding:11px 18px}
+
+  /* One view at a time on a phone */
+  body.view-console main{display:none}
+  body.view-status #console{display:none}
+  body.view-status #cmdform{display:none}
+}
 </style>
 </head>
-<body>
+<body class="view-console">
 <div class="topbar"></div>
 <header class="hero">
   <div class="brand">
     <span class="logo">&#10043;</span>
     <div><h1>JenAI</h1><p class="tagline">ROS2 Agent Console</p></div>
   </div>
-  <div class="live"><span class="dot"></span>live monitor</div>
+  <div class="live"><span class="dot"></span>live</div>
 </header>
+<nav id="tabs">
+  <button class="tab active" data-view="console">Console</button>
+  <button class="tab" data-view="status">Status</button>
+</nav>
+<section id="console" class="card">
+  <div class="card-head"><h2>Console</h2><span class="dim">type a command, or ask in plain language</span></div>
+  <div id="transcript"></div>
+  <form id="cmdform" autocomplete="off">
+    <input id="cmdinput" placeholder="/drive 前進兩秒 · /ros topics · or ask anything…" autocomplete="off">
+    <button type="submit" id="cmdsend">Send</button>
+  </form>
+</section>
 <main>__MAIN__</main>
-<footer>Read-only monitor served by <span class="mono">jenai web</span> · this page does not control the robot.</footer>
+<footer>Actions that move the robot always ask you to confirm first · served by <span class="mono">jenai web</span> (localhost).</footer>
 <script>
+const tx = document.getElementById('transcript');
+function el(cls, html){ const d=document.createElement('div'); if(cls)d.className=cls; if(html!=null)d.innerHTML=html; return d; }
+function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function scroll(){ tx.scrollTop = tx.scrollHeight; }
+
+function block(kind, node){ const b=el('blk blk-'+kind); b.appendChild(node); tx.appendChild(b); scroll(); return b; }
+
+async function post(url, payload){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+  return r.json();
+}
+
+function render(res){
+  if(res.kind === 'confirm'){
+    const wrap = el(); wrap.innerHTML = res.html;
+    const danger = el('danger', '⚠ ' + esc(res.danger||'This will act on the robot.'));
+    wrap.appendChild(danger);
+    const row = el('confirm-row');
+    const yes = el(); yes.innerHTML='<button class="btn-approve">Approve</button>';
+    const no  = el(); no.innerHTML='<button class="btn-cancel">Cancel</button>';
+    row.appendChild(yes); row.appendChild(no); wrap.appendChild(row);
+    const b = block('confirm', wrap);
+    yes.querySelector('button').onclick = async () => {
+      row.remove(); danger.remove();
+      const busy = el('dim','running…'); wrap.appendChild(busy);
+      const out = await post('api/confirm', {confirm_id: res.confirm_id});
+      busy.remove(); wrap.appendChild(el('out', out.html));
+      scroll();
+    };
+    no.querySelector('button').onclick = () => { row.remove(); danger.remove(); wrap.appendChild(el('dim','Cancelled.')); };
+  } else {
+    block(res.kind === 'error' ? 'error' : 'result', el('out', res.html));
+  }
+}
+
+const form = document.getElementById('cmdform');
+const input = document.getElementById('cmdinput');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if(!text) return;
+  input.value='';
+  block('you', el('you-line', '<span class="you-mark">›</span> ' + esc(text)));
+  const send = document.getElementById('cmdsend'); send.disabled=true; send.textContent='…';
+  try { render(await post('api/command', {text})); }
+  catch(err){ block('error', el('out', '<p>Network error.</p>')); }
+  finally { send.disabled=false; send.textContent='Send'; input.focus(); }
+});
+
 async function refresh(){
   try{
     const r = await fetch('fragment', {cache:'no-store'});
@@ -313,6 +507,17 @@ async function refresh(){
   }catch(e){/* keep last good view */}
 }
 setInterval(refresh, 5000);
+
+// Mobile Console/Status tabs
+document.querySelectorAll('#tabs .tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('#tabs .tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.body.className = 'view-' + t.dataset.view;
+    if(t.dataset.view === 'console') input.focus();
+  });
+});
+if(window.innerWidth > 640) input.focus();
 </script>
 </body>
 </html>
@@ -328,6 +533,7 @@ class _Handler(BaseHTTPRequestHandler):
     config: AppConfig
     config_path: Path
     run_store: RunStore | None = None
+    pending: _PendingConfirms | None = None
 
     def log_message(self, *args: Any) -> None:  # silence default stderr logging
         pass
@@ -355,6 +561,37 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(render_dashboard_html(self._status()), "text/html; charset=utf-8")
 
+    def _read_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        try:
+            data = json.loads(raw.decode("utf-8")) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server naming)
+        path = self.path.rstrip("/") or "/"
+        body = self._read_json()
+        if path == "/api/command":
+            result = asyncio.run(run_web_command(self.config, self.config_path, body.get("text", "")))
+            # A previewed actuation is held server-side under a one-time id; the
+            # browser never gets (or gets to alter) the raw action it confirms.
+            if result.get("kind") == "confirm" and self.pending is not None:
+                result["confirm_id"] = self.pending.put(result.pop("action", {}))
+        elif path == "/api/confirm":
+            action = self.pending.pop(body.get("confirm_id", "")) if self.pending else None
+            if action is None:
+                result = {
+                    "kind": "error",
+                    "html": "<p>This confirmation expired or was already used. Re-run the command.</p>",
+                }
+            else:
+                result = asyncio.run(run_web_confirm(self.config, action))
+        else:
+            result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
+        self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
+
 
 def make_server(
     config: AppConfig,
@@ -367,7 +604,12 @@ def make_server(
     handler = type(
         "JenAIWebHandler",
         (_Handler,),
-        {"config": config, "config_path": config_path, "run_store": run_store},
+        {
+            "config": config,
+            "config_path": config_path,
+            "run_store": run_store,
+            "pending": _PendingConfirms(),
+        },
     )
     return ThreadingHTTPServer((host, port), handler)
 

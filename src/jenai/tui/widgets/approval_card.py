@@ -6,10 +6,10 @@ from textual.widgets import Static
 
 from jenai.schemas import ApprovalRequest
 
-ACCENT = "#dd9460"
-GREEN = "#6fbf73"
-MUTED = "#7c8893"
-TEXT = "#e8ecef"
+ACCENT = "#d97757"
+GREEN = "#7d9b6a"
+MUTED = "#9c9689"
+TEXT = "#f2ede1"
 WARN = "⚠"
 
 # (label, approved, remember)
@@ -18,6 +18,23 @@ _OPTIONS = [
     ("Yes, and don't ask again this session", True, True),
     ("No, and tell JenAI what to do differently (Esc)", False, False),
 ]
+
+# Plain-language description of what a tool actually does, keyed by effect scope,
+# so the card never shows raw jargon like "Scope: sim_control".
+_EFFECT_WORDS = {
+    "read": "Only reads data — safe.",
+    "local_write": "Writes files on this computer.",
+    "sim_control": "Moves the robot (simulation).",
+    "host_command": "Runs a command on this computer.",
+    "none": "No side effects.",
+}
+
+
+def _effect_line(effect_scope: str, risk_level: str) -> str:
+    words = _EFFECT_WORDS.get(str(effect_scope), f"Effect: {effect_scope}")
+    if str(risk_level) == "p2":
+        words += " Double-check before approving."
+    return words
 
 
 class ApprovalCard(Static):
@@ -52,7 +69,7 @@ class ApprovalCard(Static):
         body.append(f"  {approval.summary}\n", style=TEXT)
         body.append(f"  {approval.raw_action}\n", style=MUTED)
         body.append(
-            f"  Risk: {approval.risk_level} · Scope: {approval.effect_scope}\n\n",
+            f"  {_effect_line(approval.effect_scope, approval.risk_level)}\n\n",
             style=MUTED,
         )
         for index, (label, _approved, _remember) in enumerate(_OPTIONS):

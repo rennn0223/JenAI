@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 
 from jenai.adapters.locations import LocationNotFoundError, find_location
@@ -56,21 +57,20 @@ async def route_preview(config: AppConfig, locations: list[Location], text: str)
     resolved_start: Location | None = None
     resolved_goal: Location | None = None
     candidate_matches: list[Location] = []
-    missing: list[str] = []
 
+    # Only the GOAL is required. Nav2 navigates from the robot's *current* pose,
+    # so the adapter uses the goal alone — a start we can't resolve is therefore
+    # not fatal (we simply omit it) and we never imply travel from a place we do
+    # not actually send.
     try:
         resolved_start = find_location(locations, start_query)
-    except LocationNotFoundError as exc:
-        candidate_matches.extend(exc.candidates)
-        missing.append(f"start '{start_query}'")
+    except LocationNotFoundError:
+        resolved_start = None
 
     try:
         resolved_goal = find_location(locations, goal_query)
     except LocationNotFoundError as exc:
         candidate_matches.extend(exc.candidates)
-        missing.append(f"goal '{goal_query}'")
-
-    if missing:
         hint = (
             "Did you mean: " + ", ".join(loc.name for loc in candidate_matches) + "?"
             if candidate_matches
@@ -79,28 +79,27 @@ async def route_preview(config: AppConfig, locations: list[Location], text: str)
         return RouteOutput(
             input_text=text,
             resolved_start=resolved_start,
-            resolved_goal=resolved_goal,
             candidate_matches=candidate_matches,
-            route_preview=f"Could not resolve: {', '.join(missing)}. {hint}",
+            route_preview=f"Could not resolve goal '{goal_query}'. {hint}",
         )
 
-    assert resolved_start is not None and resolved_goal is not None
-    outgoing_action = {
-        "start": resolved_start.model_dump(mode="json"),
-        "goal": resolved_goal.model_dump(mode="json"),
-    }
+    outgoing_action: dict = {"goal": resolved_goal.model_dump(mode="json")}
+    if resolved_start is not None:
+        outgoing_action["start"] = resolved_start.model_dump(mode="json")
     return RouteOutput(
         input_text=text,
         resolved_start=resolved_start,
         resolved_goal=resolved_goal,
-        route_preview=f"Route from {resolved_start.name} to {resolved_goal.name}.",
+        route_preview=f"Navigate to {resolved_goal.name} (from the robot's current position).",
         outgoing_action=outgoing_action,
     )
 
 
 async def route_execute(config: AppConfig, outgoing_action: dict) -> RouteOutput:
     adapter = get_route_adapter(config.route_adapter)
-    result = adapter.resolve(outgoing_action)
+    # resolve() may block (e.g. the Nav2 adapter waits on `ros2 action send_goal`),
+    # so run it off the event loop to keep the TUI responsive.
+    result = await asyncio.to_thread(adapter.resolve, outgoing_action)
     return RouteOutput(
         input_text="",
         outgoing_action=outgoing_action,

@@ -270,3 +270,56 @@ def test_ros_pub_execute_reports_success(monkeypatch) -> None:
 
     assert output.execution_status == "succeeded"
     assert output.result_message == "published"
+
+
+def test_safety_clamp_bounds_top_level_twist() -> None:
+    out = ros2_core._safety_clamp({"linear": {"x": 50.0}, "angular": {"z": -9.0}})
+    assert out["linear"]["x"] == ros2_core.MAX_LINEAR
+    assert out["angular"]["z"] == -ros2_core.MAX_ANGULAR
+
+
+def test_safety_clamp_bounds_nested_twiststamped() -> None:
+    # TwistStamped nests the velocities under `twist`; the clamp must reach them
+    # rather than let a 50 m/s command through untouched.
+    out = ros2_core._safety_clamp({"twist": {"linear": {"x": 50.0}, "angular": {"z": 9.0}}})
+    assert out["twist"]["linear"]["x"] == ros2_core.MAX_LINEAR
+    assert out["twist"]["angular"]["z"] == ros2_core.MAX_ANGULAR
+
+
+def test_safety_clamp_does_not_treat_bool_as_speed() -> None:
+    # bool is a subclass of int; a JSON `true` must not become full speed 1.0.
+    out = ros2_core._safety_clamp({"linear": {"x": True}})
+    assert out["linear"]["x"] is True
+
+
+def test_topic_pub_for_reports_failure_when_process_exits_early(monkeypatch) -> None:
+    class _DeadProc:
+        returncode = 1
+
+        def __init__(self) -> None:
+            self.stderr = _Stderr()
+
+        def poll(self):  # already exited on its own -> the drive failed
+            return 1
+
+        def terminate(self):  # pragma: no cover - not reached on the failure path
+            raise AssertionError("should not terminate an already-dead process")
+
+    class _Stderr:
+        def read(self):
+            return "invalid message type"
+
+    monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(ros2_adapter.subprocess, "Popen", lambda *a, **kw: _DeadProc())
+    monkeypatch.setattr(ros2_adapter.time, "sleep", lambda *_: None)
+
+    result = ros2_adapter.topic_pub_for("/cmd_vel", "bad/type", "{}", duration_s=0.0)
+    assert result.ok is False
+    assert "exited early" in result.message
+    assert "invalid message type" in result.message
+
+
+def test_example_payload_survives_type_only_comment_line() -> None:
+    # `<type> #comment` (no field name) must not crash the schema parser.
+    raw = "float64 # reserved\nfloat64 x"
+    assert ros2_core._naive_example_payload(raw) == {"x": 0.0}

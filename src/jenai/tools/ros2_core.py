@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from dataclasses import dataclass
 
@@ -84,6 +85,31 @@ async def ros_topic_info(config: AppConfig, topic: str) -> RosTopicInfoOutput:
     )
 
 
+async def ros_state(
+    config: AppConfig, *, odom_topic: str = "/odom", scan_topic: str = "/scan"
+) -> dict:
+    """Snapshot the robot's current state (pose from odometry, laser scan) so the
+    agent can *observe* before deciding — the closed-loop primitive behind
+    "drive until arrived" / "stop if there's an obstacle". Each field is the raw
+    one-shot message, or None if that topic is idle/absent (honest, never faked).
+    """
+    _ = config
+
+    async def _snap(topic: str) -> str | None:
+        try:
+            blocks = await asyncio.to_thread(ros2_adapter.topic_echo, topic, count=1)
+        except ros2_adapter.Ros2AdapterError:
+            return None
+        return blocks[0] if blocks else None
+
+    return {
+        "odom_topic": odom_topic,
+        "scan_topic": scan_topic,
+        "odom": await _snap(odom_topic),
+        "scan": await _snap(scan_topic),
+    }
+
+
 async def ros_echo(config: AppConfig, topic: str, *, limit: int = 1) -> RosEchoOutput:
     """Capture a snapshot of up to `limit` messages from a topic.
 
@@ -150,7 +176,11 @@ def _naive_example_payload(raw_interface: str) -> dict:
         if len(parts) != 2:
             continue
         field_type, rest = parts
-        name = rest.split("#", 1)[0].strip().split(maxsplit=1)[0] if rest.strip() else ""
+        # Take the token before any trailing comment. Split first, then index
+        # safely: a line like `float64 # note` leaves nothing before the comment,
+        # and `"".split()[0]` would raise IndexError.
+        pre_comment = rest.split("#", 1)[0].split()
+        name = pre_comment[0] if pre_comment else ""
         if not name or "=" in name:  # skip blanks and constants (e.g. `uint8 FOO=1`)
             continue
 
@@ -234,7 +264,63 @@ async def ros_pub_validate(topic: str, payload: dict) -> Ros2PubValidation:
     return Ros2PubValidation(ok=True, message_type=info.message_type, payload_preview=payload)
 
 
+# Deterministic safety limits for velocity commands (m/s and rad/s). Applied at
+# execution regardless of what the model or user asked — a hard floor under the
+# LLM-side guardrails so a bad number can never send the robot flying.
+MAX_LINEAR = 1.0
+MAX_ANGULAR = 2.0
+
+
+def _clamp(value, limit):
+    # bool is a subclass of int, so guard it explicitly — a JSON `true` must not
+    # be treated as the number 1 and clamped to full speed. Non-numeric values
+    # pass through untouched so ros2 rejects them honestly rather than us faking
+    # a plausible velocity.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    return max(-limit, min(limit, value))
+
+
+def _clamp_velocities(node) -> None:
+    """Recursively clamp every ``linear``/``angular`` velocity dict found anywhere
+    in the payload, mutating in place.
+
+    This covers plain ``geometry_msgs/Twist`` (top-level ``linear``/``angular``)
+    *and* nested variants such as ``geometry_msgs/TwistStamped``
+    (``{"twist": {"linear": ...}}``), which ROS2 Jazzy/Nav2 use on ``/cmd_vel``.
+    Non-Twist-family control messages (e.g. Ackermann ``.drive.speed`` or a raw
+    ``std_msgs/Float64``) are NOT velocity-clamped — we clamp only structures we
+    can interpret rather than pretend to bound arbitrary message types.
+    """
+    if isinstance(node, dict):
+        for key, limit in (("linear", MAX_LINEAR), ("angular", MAX_ANGULAR)):
+            axes = node.get(key)
+            if isinstance(axes, dict):
+                for axis in ("x", "y", "z"):
+                    if axis in axes:
+                        axes[axis] = _clamp(axes[axis], limit)
+        for value in node.values():
+            _clamp_velocities(value)
+    elif isinstance(node, list):
+        for item in node:
+            _clamp_velocities(item)
+
+
+def _safety_clamp(payload: dict) -> dict:
+    """Return a copy of a Twist-family payload with linear/angular velocities
+    clamped to the safe limits. Non-Twist payloads pass through unchanged.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    clamped = copy.deepcopy(payload)  # copy.deepcopy, not a JSON round-trip:
+    # the payload may hold non-JSON-native values and a round-trip would raise
+    # or silently coerce types inside what must be a transparent copy-and-clamp.
+    _clamp_velocities(clamped)
+    return clamped
+
+
 async def ros_pub_execute(topic: str, message_type: str, payload: dict) -> RosPubOutput:
+    payload = _safety_clamp(payload)
     payload_yaml = _payload_to_yaml(payload)
     result = await asyncio.to_thread(ros2_adapter.topic_pub, topic, message_type, payload_yaml)
     return RosPubOutput(
@@ -260,6 +346,7 @@ async def ros_drive(
     single publish would only nudge the robot before the controller watchdog stops it.
     """
     duration_s = max(0.0, min(duration_s, 30.0))  # clamp to a safe window
+    payload = _safety_clamp(payload)
     payload_yaml = _payload_to_yaml(payload)
     stop_yaml = _payload_to_yaml(_zero_like(payload))
     result = await asyncio.to_thread(

@@ -77,6 +77,18 @@ async def ros_echo_tool(
 
 
 @function_tool
+async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
+    """Observe the robot's current state — a one-shot snapshot of odometry (/odom) and
+    laser scan (/scan). Use this to check where the robot is or whether something is in
+    the way before or after moving."""
+    call = _record_call(ctx, "ros_state_tool", "read robot state")
+    state = await ros2_core.ros_state(ctx.context.config)
+    has = [k for k in ("odom", "scan") if state.get(k)]
+    _finish_call(ctx, call, ok=bool(has), summary=f"read {', '.join(has) or 'nothing'}")
+    return state
+
+
+@function_tool
 async def ros_schema_tool(ctx: RunContextWrapper[JenAIRunContext], topic: str) -> dict:
     """Resolve a ROS2 topic's message type and summarize its fields in plain language."""
     call = _record_call(ctx, "ros_schema_tool", f"schema for {topic}")
@@ -193,6 +205,12 @@ ROS2_TOOL_NAMES: dict[str, ToolRiskInfo] = {
         effect_scope=EffectScope.READ,
         needs_approval=False,
         description="Summarize a ROS2 topic's message schema.",
+    ),
+    "ros_state_tool": ToolRiskInfo(
+        risk_level=RiskLevel.P0,
+        effect_scope=EffectScope.READ,
+        needs_approval=False,
+        description="Observe robot state (odom + scan snapshot).",
     ),
     "ros_echo_tool": ToolRiskInfo(
         risk_level=RiskLevel.P0,
