@@ -24,9 +24,16 @@ from jenai.adapters.locations import (
 from jenai.agent import build_run_agent, orchestrator, review_plan, run_plan
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.session import JenAIFileSession
+from jenai.config import save_config
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.doctor import run_doctor
-from jenai.providers import ProviderChatError, ask_provider, chat_model_name, resolve_model_alias
+from jenai.providers import (
+    ProviderChatError,
+    ask_provider,
+    chat_model_name,
+    list_provider_models,
+    resolve_model_alias,
+)
 from jenai.schemas import (
     ApprovalRequest,
     ApprovalStatus,
@@ -62,6 +69,8 @@ from jenai.tui.widgets import ApprovalCard, ErrorBlock, PlanBlock, ToolBlock
 
 APPROVAL_REQUIRED_COMMANDS = ("/ros pub", "/route", "/shell", "/run")
 
+MODEL_BINDING_NAMES = ("chat", "plan", "vision", "route", "default")
+
 ACCENT = "#d97757"
 ACCENT_DARK = "#c15f3c"
 MUTED = "#9c9689"
@@ -85,6 +94,7 @@ SLASH_COMMANDS = [
     SlashCommand("/status", "Show provider, model, config, and doctor state"),
     SlashCommand("/doctor", "Run setup and environment checks"),
     SlashCommand("/providers", "List configured provider profiles"),
+    SlashCommand("/model", "List provider models and switch (Ollama etc.)", "/model <name|number>"),
     SlashCommand("/models", "Show model bindings"),
     SlashCommand("/provider", "Show the active provider profile"),
     SlashCommand("/permissions", "Show which commands require approval"),
@@ -310,6 +320,8 @@ class JenAITuiApp(App[None]):
         # Tool kinds the user chose to auto-approve for the rest of the session
         # via the approval card's "Yes, and don't ask again" option.
         self._auto_approved: set[str] = set()
+        # Provider model ids fetched by /model, so "/model 2" can pick by number.
+        self._available_models: list[str] = []
 
     def compose(self) -> ComposeResult:
         profile = self._active_profile()
@@ -600,7 +612,7 @@ class JenAITuiApp(App[None]):
             "/doctor": self._show_doctor,
             "/providers": self._show_providers,
             "/models": self._show_models,
-            "/model": self._show_models,
+            "/model": self._show_model,
             "/provider": self._show_provider,
             "/permissions": self._show_permissions,
             "/config": self._show_config,
@@ -684,7 +696,112 @@ class JenAITuiApp(App[None]):
             f"{name}: [bold #f2ede1]{value}[/]"
             for name, value in self.config.model_bindings.model_dump().items()
         ]
+        rows.append("")
+        rows.append(f"[{MUTED}]Switch with /model <name> — /model lists what the provider has.[/]")
         await self._mount_event(OutputPanel("Model bindings", "\n".join(rows)))
+
+    async def _show_model(self, arg: str = "") -> None:
+        if not arg:
+            await self._list_provider_models()
+            return
+
+        first, _, rest = arg.partition(" ")
+        rest = rest.strip()
+        if first in (*MODEL_BINDING_NAMES, "all") and rest:
+            targets = MODEL_BINDING_NAMES if first == "all" else (first,)
+            spec = rest
+        else:
+            # Bare "/model <name>" switches the conversation model: chat + the
+            # default fallback, leaving specialised bindings (vision…) alone.
+            targets = ("chat", "default")
+            spec = arg
+
+        model = await self._resolve_model_spec(spec)
+        if model is None:
+            return
+
+        bindings = self.config.model_bindings
+        if bindings is None:
+            await self._mount_event(
+                TimelineItem("warn", "No model bindings are configured — run setup first.")
+            )
+            return
+
+        for name in targets:
+            setattr(bindings, name, model)
+        await asyncio.to_thread(save_config, self.config, self.config_path)
+        self._refresh_model_display()
+        scope = "all bindings" if targets is MODEL_BINDING_NAMES else " + ".join(targets)
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Model switched to [bold #f2ede1]{model}[/] ({scope}) · saved to config",
+            )
+        )
+
+    async def _list_provider_models(self) -> None:
+        lines: list[str] = []
+        if self.config.model_bindings is not None:
+            lines.append(f"[bold {ACCENT}]Bindings[/]")
+            lines.extend(
+                f"  {name}: [bold #f2ede1]{value}[/]"
+                for name, value in self.config.model_bindings.model_dump().items()
+            )
+            lines.append("")
+
+        profile = self._active_profile()
+        endpoint = (profile.base_url if profile else None) or "provider default endpoint"
+        try:
+            self._available_models = await list_provider_models(self.config)
+        except ProviderChatError as exc:
+            lines.append(f"[{ERROR}]Could not list models from {endpoint}: {exc}[/]")
+            await self._mount_event(OutputPanel("Model", "\n".join(lines).rstrip()))
+            return
+
+        current = {chat_model_name(self.config), self._chat_model_display()}
+        lines.append(f"[bold {ACCENT}]Available[/] [{MUTED}]· {endpoint}[/]")
+        if not self._available_models:
+            lines.append(f"  [{MUTED}]The endpoint reported no models.[/]")
+        for idx, model_id in enumerate(self._available_models, start=1):
+            if model_id in current:
+                lines.append(f"  [bold {GREEN}]→[/] [{MUTED}]{idx:>2}[/] [bold #f2ede1]{model_id}[/]")
+            else:
+                lines.append(f"    [{MUTED}]{idx:>2}[/] {model_id}")
+        lines.append("")
+        lines.append(
+            f"[{MUTED}]Switch: /model <name|number> · one binding: /model vision <name> · "
+            "everything: /model all <name>[/]"
+        )
+        await self._mount_event(OutputPanel("Model", "\n".join(lines)))
+
+    async def _resolve_model_spec(self, spec: str) -> str | None:
+        if not spec.isdigit():
+            return spec
+        if not self._available_models:
+            try:
+                self._available_models = await list_provider_models(self.config)
+            except ProviderChatError as exc:
+                await self._mount_event(
+                    TimelineItem("warn", f"Could not list provider models: {exc}")
+                )
+                return None
+        index = int(spec)
+        if not 1 <= index <= len(self._available_models):
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"No model #{index} — run /model to see the numbered list.",
+                )
+            )
+            return None
+        return self._available_models[index - 1]
+
+    def _refresh_model_display(self) -> None:
+        try:
+            self.query_one("#statusbar", Static).update(self._status_line())
+            self.query_one(WelcomePanel).update_model(self._chat_model_display())
+        except NoMatches:  # app shutting down / panel not mounted
+            pass
 
     async def _show_config(self, _: str = "") -> None:
         locations_path = self.config.resolved_locations_path(self.config_path)
@@ -1626,12 +1743,16 @@ class WelcomePanel(Container):
         yield Static(pixel_mark(), id="pixel-mark")
         yield Static("Robot workflow console", classes="heading")
         yield Static("Plan, inspect, and drive robot tasks from one terminal.", classes="meta")
-        yield Static(self._provider_meta(), classes="meta")
+        yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
         yield Static(self._doctor_summary(), id="welcome-doctor-status", classes="meta")
 
     def update_doctor_result(self, doctor_result: DoctorResult | None) -> None:
         self.doctor_result = doctor_result
         self.query_one("#welcome-doctor-status", Static).update(self._doctor_summary())
+
+    def update_model(self, model_name: str) -> None:
+        self.model_name = model_name
+        self.query_one("#welcome-provider-meta", Static).update(self._provider_meta())
 
     def _provider_meta(self) -> str:
         return (

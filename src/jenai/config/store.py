@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,62 @@ def default_config_path() -> Path:
         return Path(xdg_config_home) / "jenai" / "config.toml"
 
     return Path.home() / ".config" / "jenai" / "config.toml"
+
+
+def default_env_file_path() -> Path:
+    override = os.environ.get("JENAI_ENV_FILE")
+    if override:
+        return Path(override).expanduser()
+    return default_config_path().parent / ".env"
+
+
+@dataclass(frozen=True)
+class EnvFileResult:
+    path: Path
+    found: bool
+    explicit: bool
+    loaded: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+
+def load_env_file(path: Path | None = None) -> EnvFileResult:
+    """Load KEY=VALUE pairs from the JenAI env file into os.environ.
+
+    Variables already present in the environment always win, so a shell export
+    can still override the file. Every entry point goes through this (CLI, TUI,
+    WebUI, doctor) so API keys behave the same no matter how JenAI is launched.
+    """
+    explicit = path is not None or "JENAI_ENV_FILE" in os.environ
+    env_path = path or default_env_file_path()
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return EnvFileResult(path=env_path, found=False, explicit=explicit)
+
+    loaded: list[str] = []
+    skipped: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :]
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if not sep or not key or not key.replace("_", "").isalnum():
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if key in os.environ:
+            skipped.append(key)
+            continue
+        os.environ[key] = value
+        loaded.append(key)
+
+    return EnvFileResult(
+        path=env_path, found=True, explicit=explicit, loaded=loaded, skipped=skipped
+    )
 
 
 def load_config(path: Path | None = None) -> AppConfig:

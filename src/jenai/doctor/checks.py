@@ -7,7 +7,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from jenai.config import AppConfig, ConfigError, default_config_path, load_config
+from jenai.config import (
+    AppConfig,
+    ConfigError,
+    default_config_path,
+    default_env_file_path,
+    load_config,
+)
 from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
 
 
@@ -48,6 +54,7 @@ def run_doctor(config_path: Path | None = None) -> DoctorResult:
             )
         )
 
+    items.extend(_check_env_file())
     items.extend(_check_ros2())
     items.extend(_check_provider(config))
     items.extend(_check_locations(config, config_path))
@@ -93,6 +100,38 @@ def _check_virtual_env() -> list[DoctorCheckItem]:
             if venv
             else "No active virtual environment detected.",
             fix_suggestion=None if venv else "Run uv venv and activate .venv before development.",
+        )
+    ]
+
+
+def _check_env_file() -> list[DoctorCheckItem]:
+    env_path = default_env_file_path()
+    explicit = "JENAI_ENV_FILE" in os.environ
+    if env_path.is_file():
+        return [
+            DoctorCheckItem(
+                section="config",
+                check_name="env_file",
+                status=DoctorStatus.PASS,
+                message=f"Env file found: {env_path}",
+            )
+        ]
+    if explicit:
+        return [
+            DoctorCheckItem(
+                section="config",
+                check_name="env_file",
+                status=DoctorStatus.WARN,
+                message=f"JENAI_ENV_FILE points to a missing file: {env_path}",
+                fix_suggestion="Fix the JENAI_ENV_FILE path or unset it to use the default.",
+            )
+        ]
+    return [
+        DoctorCheckItem(
+            section="config",
+            check_name="env_file",
+            status=DoctorStatus.PASS,
+            message=f"No env file at {env_path} (optional; shell environment is used).",
         )
     ]
 
@@ -190,7 +229,10 @@ def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:
                 check_name="api_key",
                 status=DoctorStatus.WARN,
                 message=f"Environment variable {profile.api_key_env} is not set.",
-                fix_suggestion=f"Set {profile.api_key_env} before using provider-backed features.",
+                fix_suggestion=(
+                    f"Add it to the env file, e.g.: printf '{profile.api_key_env}=…\\n' "
+                    f">> {default_env_file_path()} && chmod 600 {default_env_file_path()}"
+                ),
             )
         )
     else:
@@ -226,7 +268,7 @@ def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:
     return items
 
 
-def _check_locations(config: AppConfig | None, config_path: Path | None) -> list[DoctorCheckItem]:
+def _check_locations(config: AppConfig | None, config_path: Path) -> list[DoctorCheckItem]:
     if config is None:
         return [
             DoctorCheckItem(
@@ -238,8 +280,7 @@ def _check_locations(config: AppConfig | None, config_path: Path | None) -> list
             )
         ]
 
-    base_path = config_path or Path.cwd() / "config.toml"
-    locations_path = config.resolved_locations_path(base_path)
+    locations_path = config.resolved_locations_path(config_path)
     if locations_path is None:
         return [
             DoctorCheckItem(

@@ -36,7 +36,13 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="Provider / Model",
-        commands=["/provider", "/providers", "/model", "/models", "/permissions"],
+        commands=[
+            "/provider",
+            "/providers",
+            "/model [name|number]",
+            "/models",
+            "/permissions",
+        ],
     ),
 ]
 
@@ -44,6 +50,7 @@ _EXAMPLES = [
     "/plan patrol area A and record anomalies",
     "/ros schema /cmd_vel",
     "/route from Engineering Building to Mechanical Hall",
+    "/model llama3.2  (or /model 2 after listing with /model)",
 ]
 
 _KEYBOARD_SHORTCUTS = [

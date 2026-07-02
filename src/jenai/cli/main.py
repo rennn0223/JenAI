@@ -17,7 +17,7 @@ from jenai.adapters.locations import (
     find_location,
     load_locations,
 )
-from jenai.config import ConfigError, default_config_path, load_config
+from jenai.config import ConfigError, default_config_path, load_config, load_env_file
 from jenai.config.models import AppConfig
 from jenai.config.setup import run_setup_wizard
 from jenai.doctor import run_doctor
@@ -47,6 +47,15 @@ def main(
     config: ConfigOption = None,
     debug: Annotated[bool, typer.Option("--debug", help="Show debug details.")] = False,
 ) -> None:
+    # Load API keys from the env file before anything touches a provider, so
+    # every launch mode (uv run, venv script, launcher, subcommands) behaves
+    # the same. Shell-exported variables still take precedence over the file.
+    env_result = load_env_file()
+    if env_result.explicit and not env_result.found:
+        console.print(
+            f"[yellow]JENAI_ENV_FILE points to a missing file: {env_result.path}[/yellow]"
+        )
+
     if ctx.invoked_subcommand is not None:
         return
 
