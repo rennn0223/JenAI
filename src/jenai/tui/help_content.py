@@ -28,7 +28,7 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="Vision",
-        commands=["/vision image <path>"],
+        commands=["/vision image <path>", "/vision camera [topic]"],
     ),
     CommandGroup(
         name="System",

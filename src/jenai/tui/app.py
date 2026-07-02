@@ -137,6 +137,9 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/loc show", "Show a location's details", "/loc show <name>"),
     SlashCommand("/vision image", "Analyze a local image with the VLM", "/vision image <path>"),
+    SlashCommand(
+        "/vision camera", "Capture a camera frame and describe it", "/vision camera [topic]"
+    ),
     SlashCommand("/shell", "Run a host shell command (needs approval)", "/shell <cmd>"),
     SlashCommand("/clear", "Clear the output area"),
     SlashCommand("/quit", "Exit JenAI"),
@@ -1458,16 +1461,43 @@ class JenAITuiApp(App[None]):
         self._scroll_to_bottom()
 
     async def _show_vision(self, arg: str) -> None:
-        # Accept both "/vision image <path>" and "/vision <path>".
+        # Accept "/vision image <path>", "/vision <path>", and "/vision camera [topic]".
         parts = arg.split(maxsplit=1)
+        if parts and parts[0] == "camera":
+            topic = parts[1].strip() if len(parts) > 1 else "/camera/image_raw"
+            await self._show_vision_camera(topic)
+            return
         if parts and parts[0] == "image":
             path = parts[1].strip() if len(parts) > 1 else ""
         else:
             path = arg.strip()
         if not path:
-            await self._mount_event(TimelineItem("warn", "Usage: /vision image <path>"))
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /vision image <path> · /vision camera [topic]")
+            )
             return
 
+        await self._analyze_and_render(path)
+
+    async def _show_vision_camera(self, topic: str) -> None:
+        """Grab one frame from a camera topic and run it through the VLM."""
+        self._spinner_label = f"Capturing {topic}"
+        try:
+            bridge = await self._get_bridge()
+            frame_path = await bridge.capture_frame(topic, timeout=5.0)
+        except BridgeError as exc:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"Could not capture from [bold #f2ede1]{topic}[/]: {exc}\n"
+                    f"[{MUTED}]List image topics with /ros topics.[/]",
+                )
+            )
+            return
+        self._spinner_label = "Analyzing frame"
+        await self._analyze_and_render(str(frame_path), source_label=topic)
+
+    async def _analyze_and_render(self, path: str, *, source_label: str | None = None) -> None:
         try:
             output = await analyze_image(self.config, path)
         except VisionError as exc:
@@ -1483,7 +1513,8 @@ class JenAITuiApp(App[None]):
             lines.append(
                 "[bold #f2ede1]Suggested next:[/] " + "; ".join(output.next_action_suggestions)
             )
-        await self._mount_event(OutputPanel(f"Vision: {output.source}", "\n".join(lines)))
+        title = source_label or output.source
+        await self._mount_event(OutputPanel(f"Vision: {title}", "\n".join(lines)))
 
     async def _show_shell(self, arg: str) -> None:
         command = arg.strip()
