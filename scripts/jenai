@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # JenAI one-key launcher.
-#   1. Sources ROS2 Jazzy (so /ros* tools can see the graph)
+#   1. Sources ROS2 (so /ros* tools can see the graph) if none is active yet
 #   2. Ensures uv is on PATH
 #   3. Launches JenAI through uv (auto-syncs the project venv)
 #
@@ -11,19 +11,20 @@
 #   jenai web        # WebUI dashboard
 #
 # Override the project location with:  JENAI_DIR=/path/to/JenAI jenai
+#
+# API keys: JenAI itself loads ~/.config/jenai/.env (next to config.toml) at
+# startup, so no env handling is needed here. Override with JENAI_ENV_FILE.
 
 JENAI_DIR="${JENAI_DIR:-$HOME/JenAI}"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
-# Secrets (e.g. NVIDIA_API_KEY) live here rather than in .bashrc, so they load
-# in every launch context — not only interactive shells. Override with JENAI_ENV_FILE.
-ENV_FILE="${JENAI_ENV_FILE:-$HOME/.config/jenai/.env}"
 
-# 1) Source ROS2 Jazzy unless it is *fully* active. We check that `ros2` is
-#    actually on PATH rather than trusting ROS_DISTRO alone: a partial/leaked
-#    env (ROS_DISTRO set but PATH reset — happens under some IDE/tmux/uv setups)
-#    would otherwise skip sourcing and leave the /ros* tools blind.
+# 1) Source ROS2 only when no ROS environment is fully active: ROS_DISTRO unset,
+#    or `ros2` missing from PATH (a partial/leaked env — ROS_DISTRO set but PATH
+#    reset happens under some IDE/tmux/uv setups). If a different distro is
+#    already sourced and working, we respect it: layering a second distro on top
+#    breaks RMW/library resolution.
 #    ROS setup scripts reference unbound variables, so we do NOT use `set -u`.
-if [ -f "$ROS_SETUP" ] && { [ "${ROS_DISTRO:-}" != "jazzy" ] || ! command -v ros2 >/dev/null 2>&1; }; then
+if [ -f "$ROS_SETUP" ] && { [ -z "${ROS_DISTRO:-}" ] || ! command -v ros2 >/dev/null 2>&1; }; then
     # shellcheck disable=SC1090
     source "$ROS_SETUP"
 fi
@@ -41,11 +42,6 @@ if [ ! -f "$JENAI_DIR/pyproject.toml" ]; then
     exit 1
 fi
 
-# 3) Load the .env (if present) into the JenAI process. uv does not auto-read
-#    .env, so pass it explicitly; skip the flag when the file is absent.
-ENV_ARGS=()
-[ -f "$ENV_FILE" ] && ENV_ARGS=(--env-file "$ENV_FILE")
-
-# 4) Launch. `uv run` resolves JenAI from the project's own venv (which takes
+# 3) Launch. `uv run` resolves JenAI from the project's own venv (which takes
 #    PATH precedence), so this never recurses back into this wrapper.
-exec uv run --project "$JENAI_DIR" "${ENV_ARGS[@]}" JenAI "$@"
+exec uv run --project "$JENAI_DIR" JenAI "$@"
