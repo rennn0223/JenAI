@@ -15,4 +15,4 @@ venv/
 .DS_Store
 
 # Personal thesis planning (not part of the project)
-docs/THESIS_PLAN.md
+docs/THESIS_*.md
