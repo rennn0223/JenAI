@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# JenAI one-key launcher.
+#   1. Sources ROS2 Jazzy (so /ros* tools can see the graph)
+#   2. Ensures uv is on PATH
+#   3. Launches JenAI through uv (auto-syncs the project venv)
+#
+# Any arguments are passed straight through, e.g.:
+#   jenai            # launch the TUI
+#   jenai doctor     # environment health check
+#   jenai web        # WebUI dashboard
+#
+# Override the project location with:  JENAI_DIR=/path/to/JenAI jenai
+
+JENAI_DIR="${JENAI_DIR:-$HOME/JenAI}"
+ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
+# Secrets (e.g. NVIDIA_API_KEY) live here rather than in .bashrc, so they load
+# in every launch context — not only interactive shells. Override with JENAI_ENV_FILE.
+ENV_FILE="${JENAI_ENV_FILE:-$HOME/.config/jenai/.env}"
+
+# 1) Source ROS2 Jazzy unless it is *fully* active. We check that `ros2` is
+#    actually on PATH rather than trusting ROS_DISTRO alone: a partial/leaked
+#    env (ROS_DISTRO set but PATH reset — happens under some IDE/tmux/uv setups)
+#    would otherwise skip sourcing and leave the /ros* tools blind.
+#    ROS setup scripts reference unbound variables, so we do NOT use `set -u`.
+if [ -f "$ROS_SETUP" ] && { [ "${ROS_DISTRO:-}" != "jazzy" ] || ! command -v ros2 >/dev/null 2>&1; }; then
+    # shellcheck disable=SC1090
+    source "$ROS_SETUP"
+fi
+
+# 2) Make sure uv (installed under ~/.local/bin) is reachable.
+export PATH="$HOME/.local/bin:$PATH"
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "jenai: 'uv' was not found on PATH. Install uv or add it to PATH." >&2
+    exit 127
+fi
+
+if [ ! -f "$JENAI_DIR/pyproject.toml" ]; then
+    echo "jenai: JenAI project not found at '$JENAI_DIR'. Set JENAI_DIR to override." >&2
+    exit 1
+fi
+
+# 3) Load the .env (if present) into the JenAI process. uv does not auto-read
+#    .env, so pass it explicitly; skip the flag when the file is absent.
+ENV_ARGS=()
+[ -f "$ENV_FILE" ] && ENV_ARGS=(--env-file "$ENV_FILE")
+
+# 4) Launch. `uv run` resolves JenAI from the project's own venv (which takes
+#    PATH precedence), so this never recurses back into this wrapper.
+exec uv run --project "$JENAI_DIR" "${ENV_ARGS[@]}" JenAI "$@"

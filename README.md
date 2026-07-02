@@ -36,13 +36,25 @@ uv run JenAI web
 
 ### 一鍵啟動（含 ROS2）
 
-`~/.local/bin/jenai` 啟動腳本會先 source ROS2 Jazzy、確保 uv，再用 `uv run` 啟動：
+啟動腳本 [`scripts/jenai`](scripts/jenai) 會先 source ROS2 Jazzy（確認 `ros2` 真的在
+PATH 上，而不只看 `ROS_DISTRO`）、確保 uv、載入 `.env`（見下），再用 `uv run` 啟動。
+安裝方式是連結到 PATH 上：
 
 ```bash
+ln -sf "$PWD/scripts/jenai" ~/.local/bin/jenai   # 一次性安裝
 jenai            # source ROS2 → 進 TUI
-jenai doctor     # 環境檢查（ros2 會是 pass）
+jenai doctor     # 環境檢查
 jenai web        # WebUI 儀表板
 # 覆寫路徑：JENAI_DIR=/path/to/JenAI  ROS_SETUP=/opt/ros/humble/setup.bash jenai
+```
+
+**API 金鑰用 `.env`（建議）**：把 provider 金鑰放在 `~/.config/jenai/.env`
+（`chmod 600`），啟動腳本會用 `uv run --env-file` 載入。這比寫在 `.bashrc` 好——
+不受「互動 shell 才載入」限制，任何啟動情境都吃得到：
+
+```bash
+printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.config/jenai/.env
+# 覆寫路徑：JENAI_ENV_FILE=/path/to/.env jenai
 ```
 
 ### 使用本地 Ollama
