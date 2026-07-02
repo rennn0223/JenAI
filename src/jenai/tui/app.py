@@ -781,7 +781,9 @@ class JenAITuiApp(App[None]):
             lines.append(f"  [{MUTED}]The endpoint reported no models.[/]")
         for idx, model_id in enumerate(self._available_models, start=1):
             if model_id in current:
-                lines.append(f"  [bold {GREEN}]→[/] [{MUTED}]{idx:>2}[/] [bold #f2ede1]{model_id}[/]")
+                lines.append(
+                    f"  [bold {GREEN}]→[/] [{MUTED}]{idx:>2}[/] [bold #f2ede1]{model_id}[/]"
+                )
             else:
                 lines.append(f"    [{MUTED}]{idx:>2}[/] {model_id}")
         lines.append("")
@@ -866,7 +868,8 @@ class JenAITuiApp(App[None]):
                 TimelineItem(
                     "warn",
                     "That looks like the usage placeholder — give a profile name, "
-                    "e.g. [bold #f2ede1]/provider local[/]. Run [bold #f2ede1]/providers[/] to list.",
+                    "e.g. [bold #f2ede1]/provider local[/]. Run [bold #f2ede1]/providers[/] "
+                    "to list.",
                 )
             )
             return
