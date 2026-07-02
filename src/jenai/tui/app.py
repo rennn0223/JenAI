@@ -474,10 +474,15 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             return
         except asyncio.CancelledError:
             # Esc mid-answer: freeze what arrived (or drop the empty shell).
-            if parts:
-                item.set_body(escape("".join(parts)))
-            else:
-                await item.remove()
+            # Widget ops can fail if the app is tearing down — never let that
+            # mask the cancellation itself.
+            try:
+                if parts:
+                    item.set_body(escape("".join(parts)))
+                else:
+                    await item.remove()
+            except Exception:
+                pass
             raise
 
         if not parts:

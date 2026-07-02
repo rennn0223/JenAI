@@ -52,7 +52,9 @@ def main(
     # the same. Shell-exported variables still take precedence over the file.
     env_result = load_env_file()
     if env_result.explicit and not env_result.found:
-        console.print(
+        # stderr, not stdout: this callback also runs before `jenai mcp`, whose
+        # stdout is the MCP protocol channel and must stay clean.
+        Console(stderr=True).print(
             f"[yellow]JENAI_ENV_FILE points to a missing file: {env_result.path}[/yellow]"
         )
 

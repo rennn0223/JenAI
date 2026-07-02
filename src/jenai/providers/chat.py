@@ -52,6 +52,23 @@ def _chat_messages(prompt: str, system_prompt: str | None) -> list[dict]:
     ]
 
 
+def _status_error(exc: APIStatusError, profile: ProviderProfile, model: str) -> ProviderChatError:
+    """Map an API status error to a ProviderChatError, with the model-id hint on 404."""
+    if exc.status_code == 404:
+        hint = ""
+        if profile.provider.lower() == "nvidia":
+            hint = (
+                " For NVIDIA, use full model ids like "
+                "'nvidia/nemotron-3-nano-30b-a3b' or "
+                "'qwen/qwen3-coder-480b-a35b-instruct'."
+            )
+        return ProviderChatError(
+            "Provider returned 404. Check the model id and base URL. "
+            f"Sent model '{model}' to '{profile.base_url or 'provider default'}'.{hint}"
+        )
+    return ProviderChatError(f"Provider API error ({exc.status_code}): {exc}")
+
+
 async def stream_provider(
     config: AppConfig,
     prompt: str,
@@ -82,7 +99,7 @@ async def stream_provider(
     except (APIConnectionError, APITimeoutError) as exc:
         raise ProviderChatError(f"Could not reach provider endpoint: {exc}") from exc
     except APIStatusError as exc:
-        raise ProviderChatError(f"Provider API error ({exc.status_code}): {exc}") from exc
+        raise _status_error(exc, profile, model) from exc
     except APIError as exc:
         raise ProviderChatError(f"Provider API error: {exc}") from exc
     except OpenAIError as exc:
@@ -114,19 +131,7 @@ async def ask_provider(
     except (APIConnectionError, APITimeoutError) as exc:
         raise ProviderChatError(f"Could not reach provider endpoint: {exc}") from exc
     except APIStatusError as exc:
-        if exc.status_code == 404:
-            hint = ""
-            if profile.provider.lower() == "nvidia":
-                hint = (
-                    " For NVIDIA, use full model ids like "
-                    "'nvidia/nemotron-3-nano-30b-a3b' or "
-                    "'qwen/qwen3-coder-480b-a35b-instruct'."
-                )
-            raise ProviderChatError(
-                "Provider returned 404. Check the model id and base URL. "
-                f"Sent model '{model}' to '{profile.base_url or 'provider default'}'.{hint}"
-            ) from exc
-        raise ProviderChatError(f"Provider API error ({exc.status_code}): {exc}") from exc
+        raise _status_error(exc, profile, model) from exc
     except APIError as exc:
         raise ProviderChatError(f"Provider API error: {exc}") from exc
     except OpenAIError as exc:
