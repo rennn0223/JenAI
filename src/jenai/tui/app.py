@@ -1,92 +1,60 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from pathlib import Path
-from typing import NamedTuple
 
 from rich.markup import escape
-from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, ScrollableContainer, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Input, Static
 
 from jenai import __version__
-from jenai.adapters.locations import (
-    LocationNotFoundError,
-    LocationsFileError,
-    ensure_locations_file,
-    find_location,
-    load_locations,
-)
 from jenai.agent import build_run_agent, orchestrator, review_plan, run_plan
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.session import JenAIFileSession
-from jenai.config import save_config
+from jenai.bridge import RosBridgeClient
 from jenai.config.models import AppConfig, ProviderProfile
-from jenai.doctor import run_doctor
 from jenai.providers import (
     ProviderChatError,
     ask_provider,
     chat_model_name,
-    list_provider_models,
     resolve_model_alias,
 )
 from jenai.schemas import (
     ApprovalRequest,
     ApprovalStatus,
-    DoctorCheckItem,
     DoctorResult,
-    DoctorStatus,
-    EffectScope,
-    Location,
-    RiskLevel,
     RunRecord,
     RunStatus,
     ToolCallCategory,
     ToolCallRecord,
 )
 from jenai.state import InputHistory, RunStore, create_session
-from jenai.tools.drive_core import extract_drive_command
-from jenai.tools.mission_core import parse_mission, run_mission
-from jenai.tools.registry import TOOL_RISK_REGISTRY
+from jenai.tools.mission_core import run_mission
 from jenai.tools.ros2_core import (
     ros_drive,
-    ros_echo,
     ros_pub_execute,
-    ros_pub_validate,
-    ros_schema,
-    ros_topic_info,
-    ros_topics,
 )
-from jenai.tools.route_core import route_execute, route_preview
 from jenai.tools.shell_core import assess_command, preview_command, run_shell
-from jenai.tools.vision_core import VisionError, analyze_image
-from jenai.tui.help_content import build_help_output
+from jenai.tui.info_commands import InfoCommandsMixin
+from jenai.tui.panels import (
+    CommandPalette,
+    OutputPanel,
+    PromptPill,
+    SlashCommand,
+    TimelineItem,
+    WelcomePanel,
+    _short_cwd,
+    status_color,
+)
+from jenai.tui.robot_commands import RobotCommandsMixin
 from jenai.tui.widgets import ApprovalCard, ErrorBlock, PlanBlock, ToolBlock
 
 APPROVAL_REQUIRED_COMMANDS = ("/ros pub", "/route", "/shell", "/run")
 
 MODEL_BINDING_NAMES = ("chat", "plan", "vision", "route", "default")
-
-ACCENT = "#d97757"
-ACCENT_DARK = "#c15f3c"
-MUTED = "#9c9689"
-GREEN = "#7d9b6a"
-ERROR = "#cb6250"
-BLUE = "#d97757"
-
-
-class SlashCommand(NamedTuple):
-    name: str
-    description: str
-    template: str = ""
-
-    @property
-    def completion(self) -> str:
-        return self.template or self.name
 
 
 SLASH_COMMANDS = [
@@ -128,8 +96,14 @@ SLASH_COMMANDS = [
         "/route", "Resolve and send a navigation route (needs approval)", "/route <text>"
     ),
     SlashCommand("/loc list", "List known locations"),
+    SlashCommand(
+        "/loc add", "Save the robot's current position as a location", "/loc add here <name>"
+    ),
     SlashCommand("/loc show", "Show a location's details", "/loc show <name>"),
     SlashCommand("/vision image", "Analyze a local image with the VLM", "/vision image <path>"),
+    SlashCommand(
+        "/vision camera", "Capture a camera frame and describe it", "/vision camera [topic]"
+    ),
     SlashCommand("/shell", "Run a host shell command (needs approval)", "/shell <cmd>"),
     SlashCommand("/clear", "Clear the output area"),
     SlashCommand("/quit", "Exit JenAI"),
@@ -145,7 +119,7 @@ def run_tui(
     JenAITuiApp(config=config, config_path=config_path, doctor_result=doctor_result).run()
 
 
-class JenAITuiApp(App[None]):
+class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     CSS = """
     Screen {
         background: #1c1b18;
@@ -322,6 +296,8 @@ class JenAITuiApp(App[None]):
         self._auto_approved: set[str] = set()
         # Provider model ids fetched by /model, so "/model 2" can pick by number.
         self._available_models: list[str] = []
+        # Lazily-started rclpy bridge for live Nav2 feedback / pose / camera.
+        self._bridge: RosBridgeClient | None = None
 
     def compose(self) -> ComposeResult:
         profile = self._active_profile()
@@ -479,7 +455,9 @@ class JenAITuiApp(App[None]):
                 self._scroll_to_bottom()
                 return
 
-            await self._mount_event(TimelineItem("assistant", escape(response.content)))
+            await self._mount_event(
+                TimelineItem("assistant", escape(response.content), spaced=True)
+            )
         self._scroll_to_bottom()
 
     def action_focus_composer(self) -> None:
@@ -617,6 +595,7 @@ class JenAITuiApp(App[None]):
             subcommand, _, rest = arg.partition(" ")
             loc_handlers = {
                 "list": self._show_loc_list,
+                "add": self._show_loc_add,
                 "show": self._show_loc_show,
             }
             return loc_handlers.get(subcommand), rest.strip()
@@ -646,181 +625,9 @@ class JenAITuiApp(App[None]):
         }
         return handlers.get(command), arg
 
-    async def _show_help(self, arg: str = "") -> None:
-        help_output = build_help_output(arg or None)
-        lines = [help_output.summary, ""]
-        for group in help_output.command_groups:
-            lines.append(f"[bold #d97757]{group.name}[/]")
-            lines.extend(f"  {cmd}" for cmd in group.commands)
-            lines.append("")
-        if help_output.examples:
-            lines.append("[bold #d97757]Examples[/]")
-            lines.extend(f"  {example}" for example in help_output.examples)
-            lines.append("")
-        if help_output.keyboard_shortcuts:
-            lines.append("[bold #d97757]Keyboard[/]")
-            lines.extend(f"  {s.key}  {s.action}" for s in help_output.keyboard_shortcuts)
-        await self._mount_event(OutputPanel(help_output.title, "\n".join(lines).rstrip()))
-
-    async def _show_status(self, _: str = "") -> None:
-        profile = self._active_profile()
-        status = "not checked"
-        if self.doctor_result is not None:
-            status = self.doctor_result.overall
-
-        lines = [
-            f"Version: [bold #f2ede1]{__version__}[/]",
-            f"Config: [#9c9689]{self.config_path}[/]",
-            f"Provider: {self._format_profile(profile)}",
-            f"Chat model: [bold #f2ede1]{self._chat_model_display()}[/]",
-            f"Doctor: {self._format_status(status)}",
-            f"Route adapter: [bold #f2ede1]{self.config.route_adapter}[/]",
-        ]
-        await self._mount_event(OutputPanel("Status", "\n".join(lines)))
-
-    async def _show_doctor(self, _: str = "") -> None:
-        self.doctor_result = await asyncio.to_thread(run_doctor, self.config_path)
-        self.query_one(WelcomePanel).update_doctor_result(self.doctor_result)
-        summary = [
-            f"Overall: {self._format_status(self.doctor_result.overall)}",
-            "",
-        ]
-        summary.extend(format_doctor_item(item) for item in self.doctor_result.items)
-        await self._mount_event(OutputPanel("Doctor", "\n".join(summary)))
-
-    async def _show_providers(self, _: str = "") -> None:
-        if not self.config.provider_profiles:
-            await self._mount_event(TimelineItem("warn", "No provider profiles are configured."))
-            return
-
-        rows = []
-        for idx, (name, profile) in enumerate(self.config.provider_profiles.items(), start=1):
-            active = f"[bold {GREEN}]→[/]" if name == self.config.active_provider else " "
-            rows.append(
-                f" {active} [{MUTED}]{idx}[/] [bold #f2ede1]{name}[/] · {profile.provider} · "
-                f"{profile.base_url or 'provider default'} · {profile.api_key_env or 'no key env'}"
-            )
-        rows.append("")
-        rows.append(f"[{MUTED}]Switch with /provider <name|number>.[/]")
-        await self._mount_event(OutputPanel("Provider profiles", "\n".join(rows)))
-
-    async def _show_models(self, _: str = "") -> None:
-        if self.config.model_bindings is None:
-            await self._mount_event(TimelineItem("warn", "No model bindings are configured."))
-            return
-
-        rows = [
-            f"{name}: [bold #f2ede1]{value}[/]"
-            for name, value in self.config.model_bindings.model_dump().items()
-        ]
-        rows.append("")
-        rows.append(f"[{MUTED}]Switch with /model <name> — /model lists what the provider has.[/]")
-        await self._mount_event(OutputPanel("Model bindings", "\n".join(rows)))
-
-    async def _show_model(self, arg: str = "") -> None:
-        if not arg:
-            await self._list_provider_models()
-            return
-
-        first, _, rest = arg.partition(" ")
-        rest = rest.strip()
-        if first in (*MODEL_BINDING_NAMES, "all") and rest:
-            targets = MODEL_BINDING_NAMES if first == "all" else (first,)
-            spec = rest
-        else:
-            # Bare "/model <name>" switches the conversation model: chat + the
-            # default fallback, leaving specialised bindings (vision…) alone.
-            targets = ("chat", "default")
-            spec = arg
-
-        model = await self._resolve_model_spec(spec)
-        if model is None:
-            return
-
-        bindings = self.config.model_bindings
-        if bindings is None:
-            await self._mount_event(
-                TimelineItem("warn", "No model bindings are configured — run setup first.")
-            )
-            return
-
-        for name in targets:
-            setattr(bindings, name, model)
-        await asyncio.to_thread(save_config, self.config, self.config_path)
-        self._refresh_model_display()
-        scope = "all bindings" if targets is MODEL_BINDING_NAMES else " + ".join(targets)
-        await self._mount_event(
-            TimelineItem(
-                "success",
-                f"Model switched to [bold #f2ede1]{model}[/] ({scope}) · saved to config",
-            )
-        )
-
-    async def _list_provider_models(self) -> None:
-        lines: list[str] = []
-        if self.config.model_bindings is not None:
-            lines.append(f"[bold {ACCENT}]Bindings[/]")
-            lines.extend(
-                f"  {name}: [bold #f2ede1]{value}[/]"
-                for name, value in self.config.model_bindings.model_dump().items()
-            )
-            lines.append("")
-
-        profile = self._active_profile()
-        endpoint = (profile.base_url if profile else None) or "provider default endpoint"
-        try:
-            self._available_models = await list_provider_models(self.config)
-        except ProviderChatError as exc:
-            lines.append(f"[{ERROR}]Could not list models from {endpoint}: {exc}[/]")
-            await self._mount_event(OutputPanel("Model", "\n".join(lines).rstrip()))
-            return
-
-        current = {chat_model_name(self.config), self._chat_model_display()}
-        lines.append(f"[bold {ACCENT}]Available[/] [{MUTED}]· {endpoint}[/]")
-        if not self._available_models:
-            lines.append(f"  [{MUTED}]The endpoint reported no models.[/]")
-        for idx, model_id in enumerate(self._available_models, start=1):
-            if model_id in current:
-                lines.append(f"  [bold {GREEN}]→[/] [{MUTED}]{idx:>2}[/] [bold #f2ede1]{model_id}[/]")
-            else:
-                lines.append(f"    [{MUTED}]{idx:>2}[/] {model_id}")
-        lines.append("")
-        lines.append(
-            f"[{MUTED}]Switch: /model <name|number> · one binding: /model vision <name> · "
-            "everything: /model all <name>[/]"
-        )
-        await self._mount_event(OutputPanel("Model", "\n".join(lines)))
-
-    async def _resolve_model_spec(self, spec: str) -> str | None:
-        if spec.startswith("<"):
-            await self._mount_event(
-                TimelineItem(
-                    "warn",
-                    "That looks like the usage placeholder — give a real model, "
-                    "e.g. [bold #f2ede1]/model qwen3:8b[/]. Run [bold #f2ede1]/model[/] to list.",
-                )
-            )
-            return None
-        if not spec.isdigit():
-            return spec
-        if not self._available_models:
-            try:
-                self._available_models = await list_provider_models(self.config)
-            except ProviderChatError as exc:
-                await self._mount_event(
-                    TimelineItem("warn", f"Could not list provider models: {exc}")
-                )
-                return None
-        index = int(spec)
-        if not 1 <= index <= len(self._available_models):
-            await self._mount_event(
-                TimelineItem(
-                    "warn",
-                    f"No model #{index} — run /model to see the numbered list.",
-                )
-            )
-            return None
-        return self._available_models[index - 1]
+    async def on_unmount(self) -> None:
+        if self._bridge is not None:
+            await self._bridge.stop()
 
     def _refresh_model_display(self) -> None:
         profile = self._active_profile()
@@ -833,84 +640,6 @@ class JenAITuiApp(App[None]):
             )
         except NoMatches:  # app shutting down / panel not mounted
             pass
-
-    async def _show_config(self, _: str = "") -> None:
-        locations_path = self.config.resolved_locations_path(self.config_path)
-        await self._mount_event(
-            OutputPanel(
-                "Config",
-                "\n".join(
-                    [
-                        f"File: [#9c9689]{self.config_path}[/]",
-                        f"Locations: [#9c9689]{locations_path}[/]",
-                        f"Created by setup: [bold #f2ede1]{self.config.created_by_setup}[/]",
-                    ]
-                ),
-            )
-        )
-
-    async def _show_provider(self, arg: str = "") -> None:
-        if not arg:
-            profile = self._active_profile()
-            body = (
-                f"{self._format_profile(profile)}\n\n"
-                f"[{MUTED}]Switch with /provider <name|number> · profiles: /providers[/]"
-            )
-            await self._mount_event(OutputPanel("Provider", body))
-            return
-
-        profiles = self.config.provider_profiles
-        name = arg.strip()
-        if name.startswith("<"):
-            await self._mount_event(
-                TimelineItem(
-                    "warn",
-                    "That looks like the usage placeholder — give a profile name, "
-                    "e.g. [bold #f2ede1]/provider local[/]. Run [bold #f2ede1]/providers[/] to list.",
-                )
-            )
-            return
-        if name.isdigit():
-            index = int(name)
-            names = list(profiles)
-            if not 1 <= index <= len(names):
-                await self._mount_event(
-                    TimelineItem("warn", f"No provider #{index} — run /providers to list.")
-                )
-                return
-            name = names[index - 1]
-        if name not in profiles:
-            known = ", ".join(profiles) or "none configured"
-            await self._mount_event(
-                TimelineItem("warn", f"Unknown provider '{name}'. Profiles: {known}.")
-            )
-            return
-
-        self.config.active_provider = name
-        # Model ids are endpoint-specific; stale numbers must not leak across.
-        self._available_models = []
-        await asyncio.to_thread(save_config, self.config, self.config_path)
-        self._refresh_model_display()
-        profile = profiles[name]
-        await self._mount_event(
-            TimelineItem(
-                "success",
-                f"Provider switched to [bold #f2ede1]{name}[/] ({profile.provider} · "
-                f"{profile.base_url or 'provider default'}) · saved to config\n"
-                f"Run [bold #f2ede1]/model[/] to pick one of its models.",
-            )
-        )
-
-    async def _show_permissions(self, _: str = "") -> None:
-        lines = [f"[bold #f2ede1]{cmd}[/] requires approval" for cmd in APPROVAL_REQUIRED_COMMANDS]
-        lines.append("")
-        lines.append("Tool risk registry:")
-        for name, info in sorted(TOOL_RISK_REGISTRY.items()):
-            approval = "needs approval" if info.needs_approval else "no approval"
-            lines.append(f"  {name}: risk={info.risk_level} scope={info.effect_scope} ({approval})")
-        await self._mount_event(OutputPanel("Permissions", "\n".join(lines)))
-
-    # -- Planning / running ------------------------------------------------
 
     def _new_run_context(self, user_input: str) -> JenAIRunContext:
         run = self.run_store.create_run(self.session.session_id, user_input)
@@ -1061,384 +790,8 @@ class JenAITuiApp(App[None]):
 
     # -- ROS2 ---------------------------------------------------------------
 
-    async def _show_ros_topics(self, _: str = "") -> None:
-        output = await ros_topics(self.config)
-        if not output.topics:
-            await self._mount_event(TimelineItem("warn", "No topics found."))
-            return
-        rows = [f"{item.name}  [#9c9689]({item.kind_hint})[/]" for item in output.topics]
-        await self._mount_event(OutputPanel("ROS2 topics", "\n".join(rows)))
-
-    async def _show_ros_topic_info(self, arg: str) -> None:
-        if not arg:
-            await self._mount_event(TimelineItem("warn", "Usage: /ros topic-info <topic>"))
-            return
-
-        output = await ros_topic_info(self.config, arg)
-        if not output.message_type:
-            await self._mount_event(TimelineItem("warn", output.summary))
-            return
-
-        lines = [
-            f"Message type: [bold #f2ede1]{output.message_type}[/]",
-            f"Publishers ({output.publisher_count}): {', '.join(output.publishers) or '—'}",
-            f"Subscribers ({output.subscriber_count}): {', '.join(output.subscribers) or '—'}",
-        ]
-        await self._mount_event(OutputPanel(f"Topic info: {arg}", "\n".join(lines)))
-
-    async def _show_ros_echo(self, arg: str) -> None:
-        parts = arg.split()
-        if not parts:
-            await self._mount_event(TimelineItem("warn", "Usage: /ros echo <topic> [count]"))
-            return
-        topic = parts[0]
-        limit = 1
-        if len(parts) > 1 and parts[1].isdigit():
-            limit = max(1, int(parts[1]))
-
-        output = await ros_echo(self.config, topic, limit=limit)
-        if not output.messages:
-            await self._mount_event(TimelineItem("warn", output.summary))
-            return
-        rendered = "\n\n".join(
-            json.dumps(msg, ensure_ascii=False, indent=2) for msg in output.messages
-        )
-        await self._mount_event(OutputPanel(f"Echo: {topic}", rendered))
-
-    async def _show_ros_schema(self, arg: str) -> None:
-        if not arg:
-            await self._mount_event(TimelineItem("warn", "Usage: /ros schema <topic>"))
-            return
-
-        output = await ros_schema(self.config, arg)
-        lines = [f"Message type: [bold #f2ede1]{output.message_type}[/]", ""]
-        for field in output.field_summary:
-            lines.append(
-                f"[bold #f2ede1]{field.field_name}[/] ({field.field_type}): {field.description}"
-            )
-        await self._mount_event(OutputPanel(f"Schema: {arg}", "\n".join(lines)))
-
-    async def _show_ros_pub(self, arg: str) -> None:
-        parts = arg.split(maxsplit=1)
-        if len(parts) != 2:
-            await self._mount_event(TimelineItem("warn", "Usage: /ros pub <topic> <json payload>"))
-            return
-
-        topic, payload_json = parts
-        try:
-            payload = json.loads(payload_json)
-        except json.JSONDecodeError as exc:
-            await self._mount_event(TimelineItem("error", f"Invalid JSON payload: {exc}"))
-            return
-
-        validation = await ros_pub_validate(topic, payload)
-        if not validation.ok:
-            message = validation.error.message if validation.error else "Validation failed."
-            await self._mount_event(TimelineItem("error", message))
-            return
-
-        ctx = self._new_run_context(f"/ros pub {arg}")
-        tool_call = ToolCallRecord(
-            tool_name="ros_pub_execute_tool",
-            category=ToolCallCategory.ROS2,
-            input_summary=f"publish to {topic}",
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-        )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        if "ros_pub" in self._auto_approved:
-            await self._execute_direct(
-                {
-                    "kind": "ros_pub",
-                    "ctx": ctx,
-                    "topic": topic,
-                    "message_type": validation.message_type,
-                    "payload": payload,
-                }
-            )
-            return
-        approval = ApprovalRequest(
-            run_id=ctx.run.run_id,
-            tool_call_id=tool_call.tool_call_id,
-            title=f"Publish to {topic}",
-            summary=f"Send a {validation.message_type} message to {topic}.",
-            raw_action=f'ros2 topic pub --once {topic} {validation.message_type} "{payload}"',
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-            justification="Requested via /ros pub.",
-        )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-
-        self._pending_direct_approvals[approval.tool_call_id] = {
-            "kind": "ros_pub",
-            "ctx": ctx,
-            "topic": topic,
-            "message_type": validation.message_type,
-            "payload": payload,
-        }
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
-
-    async def _show_ros_drive(self, arg: str) -> None:
-        # /ros drive <topic> <json payload> [seconds]
-        parts = arg.split()
-        if len(parts) < 2:
-            await self._mount_event(
-                TimelineItem("warn", "Usage: /ros drive <topic> <json payload> [seconds]")
-            )
-            return
-        duration = 1.0
-        if len(parts) >= 3 and _is_number(parts[-1]):
-            duration = float(parts[-1])
-            payload_json = " ".join(parts[1:-1])
-        else:
-            payload_json = " ".join(parts[1:])
-        topic = parts[0]
-        try:
-            payload = json.loads(payload_json)
-        except json.JSONDecodeError as exc:
-            await self._mount_event(TimelineItem("error", f"Invalid JSON payload: {exc}"))
-            return
-
-        validation = await ros_pub_validate(topic, payload)
-        if not validation.ok:
-            message = validation.error.message if validation.error else "Validation failed."
-            await self._mount_event(TimelineItem("error", message))
-            return
-
-        ctx = self._new_run_context(f"/ros drive {arg}")
-        tool_call = ToolCallRecord(
-            tool_name="ros_drive_execute_tool",
-            category=ToolCallCategory.ROS2,
-            input_summary=f"drive {topic} for {duration}s",
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-        )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        pending = {
-            "kind": "drive",
-            "ctx": ctx,
-            "topic": topic,
-            "message_type": validation.message_type,
-            "payload": payload,
-            "duration": duration,
-        }
-        if "drive" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
-        approval = ApprovalRequest(
-            run_id=ctx.run.run_id,
-            tool_call_id=tool_call.tool_call_id,
-            tool_name="ros_drive_execute_tool",
-            title=f"Drive {topic} for {duration}s",
-            summary=f"Publish a {validation.message_type} to {topic} for {duration}s, then stop.",
-            raw_action=f"ros2 topic pub --rate 10 {topic} … for {duration}s, then zero-stop",
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-            justification="Requested via /ros drive.",
-        )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
-
-    async def _show_drive(self, arg: str) -> None:
-        # Natural-language driving: "前進兩秒", "turn left", "slowly reverse".
-        if not arg:
-            await self._mount_event(
-                TimelineItem("warn", "Usage: /drive <plain language>, e.g. /drive 前進兩秒")
-            )
-            return
-
-        intent = await extract_drive_command(self.config, arg)
-        if intent is None:
-            await self._mount_event(
-                TimelineItem("warn", f"Could not understand '{arg}' as a drive command.")
-            )
-            return
-
-        topic = "/cmd_vel"
-        message_type = "geometry_msgs/msg/Twist"
-        ctx = self._new_run_context(f"/drive {arg}")
-        tool_call = ToolCallRecord(
-            tool_name="ros_drive_execute_tool",
-            category=ToolCallCategory.ROS2,
-            input_summary=intent.description,
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-        )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        pending = {
-            "kind": "drive",
-            "ctx": ctx,
-            "topic": topic,
-            "message_type": message_type,
-            "payload": intent.to_payload(),
-            "duration": intent.duration_s,
-        }
-        if "drive" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
-        approval = ApprovalRequest(
-            run_id=ctx.run.run_id,
-            tool_call_id=tool_call.tool_call_id,
-            tool_name="ros_drive_execute_tool",
-            title=f"Drive: {intent.description}",
-            summary=f"Interpreted '{arg}' as: {intent.description}.",
-            raw_action=(
-                f"{topic} linear.x={intent.linear_x:g} angular.z={intent.angular_z:g} "
-                f"for {intent.duration_s:g}s (continuous, then stop)"
-            ),
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-            justification=f"Requested via /drive: {arg}",
-        )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
-
-    async def _show_mission(self, arg: str) -> None:
-        # /mission kitchen, drive turn left, lobby  → a supervised multi-step run.
-        if not arg:
-            await self._mount_event(
-                TimelineItem("warn", "Usage: /mission <place>, <place>, … (or 'drive <motion>')")
-            )
-            return
-        steps = parse_mission(arg)
-        if not steps:
-            await self._mount_event(TimelineItem("warn", "No mission steps recognized."))
-            return
-
-        plan = " → ".join(f"{s.kind} {s.target}" for s in steps)
-        ctx = self._new_run_context(f"/mission {arg}")
-        tool_call = ToolCallRecord(
-            tool_name="mission",
-            category=ToolCallCategory.ROS2,
-            input_summary=plan,
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-        )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        pending = {
-            "kind": "mission",
-            "ctx": ctx,
-            "steps": steps,
-            "locations": self._load_locations(),
-        }
-        if "mission" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
-        approval = ApprovalRequest(
-            run_id=ctx.run.run_id,
-            tool_call_id=tool_call.tool_call_id,
-            tool_name="mission",
-            title=f"Run mission · {len(steps)} steps",
-            summary=f"The robot will carry out: {plan}.",
-            raw_action=plan,
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-            justification=f"Requested via /mission: {arg}",
-        )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
-
-    # -- Route / locations ----------------------------------------------------
-
     def _locations_path(self) -> Path | None:
         return self.config.resolved_locations_path(self.config_path)
-
-    def _load_locations(self) -> list[Location]:
-        path = self._locations_path()
-        if path is None:
-            return []
-        try:
-            ensure_locations_file(path)
-            return load_locations(path)
-        except LocationsFileError:
-            return []
-
-    async def _show_route(self, arg: str) -> None:
-        if not arg:
-            await self._mount_event(
-                TimelineItem("warn", "Usage: /route <natural language request>")
-            )
-            return
-
-        locations = self._load_locations()
-        output = await route_preview(self.config, locations, arg)
-        if not output.outgoing_action:
-            await self._mount_event(TimelineItem("warn", output.route_preview))
-            return
-
-        ctx = self._new_run_context(f"/route {arg}")
-        tool_call = ToolCallRecord(
-            tool_name="route_execute_tool",
-            category=ToolCallCategory.ROUTE,
-            input_summary=output.route_preview,
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-        )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        if "route" in self._auto_approved:
-            await self._execute_direct(
-                {"kind": "route", "ctx": ctx, "outgoing_action": output.outgoing_action}
-            )
-            return
-        approval = ApprovalRequest(
-            run_id=ctx.run.run_id,
-            tool_call_id=tool_call.tool_call_id,
-            title="Send navigation route",
-            summary=output.route_preview,
-            raw_action=str(output.outgoing_action),
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
-            justification="Requested via /route.",
-        )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-
-        self._pending_direct_approvals[approval.tool_call_id] = {
-            "kind": "route",
-            "ctx": ctx,
-            "outgoing_action": output.outgoing_action,
-        }
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
-
-    async def _show_vision(self, arg: str) -> None:
-        # Accept both "/vision image <path>" and "/vision <path>".
-        parts = arg.split(maxsplit=1)
-        if parts and parts[0] == "image":
-            path = parts[1].strip() if len(parts) > 1 else ""
-        else:
-            path = arg.strip()
-        if not path:
-            await self._mount_event(TimelineItem("warn", "Usage: /vision image <path>"))
-            return
-
-        try:
-            output = await analyze_image(self.config, path)
-        except VisionError as exc:
-            await self._mount_event(TimelineItem("error", str(exc)))
-            return
-
-        lines = [output.summary]
-        if output.objects:
-            lines.append(f"[bold #f2ede1]Objects:[/] {', '.join(output.objects)}")
-        if output.anomalies:
-            lines.append(f"[bold #f2ede1]Anomalies:[/] {', '.join(output.anomalies)}")
-        if output.next_action_suggestions:
-            lines.append(
-                "[bold #f2ede1]Suggested next:[/] " + "; ".join(output.next_action_suggestions)
-            )
-        await self._mount_event(OutputPanel(f"Vision: {output.source}", "\n".join(lines)))
 
     async def _show_shell(self, arg: str) -> None:
         command = arg.strip()
@@ -1480,50 +833,6 @@ class JenAITuiApp(App[None]):
         }
         await self._mount_event(ApprovalCard(approval))
         self._scroll_to_bottom()
-
-    async def _show_loc_list(self, _: str = "") -> None:
-        locations = self._load_locations()
-        if not locations:
-            await self._mount_event(
-                TimelineItem("warn", "No locations configured. Add entries to locations.toml.")
-            )
-            return
-        rows = [
-            f"[bold #f2ede1]{loc.name}[/] · {', '.join(loc.aliases) or 'no aliases'}"
-            for loc in locations
-        ]
-        await self._mount_event(OutputPanel("Locations", "\n".join(rows)))
-
-    async def _show_loc_show(self, arg: str) -> None:
-        if not arg:
-            await self._mount_event(TimelineItem("warn", "Usage: /loc show <name>"))
-            return
-
-        locations = self._load_locations()
-        try:
-            location = find_location(locations, arg)
-        except LocationNotFoundError as exc:
-            if exc.candidates:
-                names = ", ".join(loc.name for loc in exc.candidates)
-                await self._mount_event(
-                    TimelineItem("warn", f"Location '{arg}' not found. Did you mean: {names}?")
-                )
-            else:
-                await self._mount_event(TimelineItem("warn", f"Location '{arg}' not found."))
-            return
-
-        lines = [
-            f"Name: [bold #f2ede1]{location.name}[/]",
-            f"Aliases: {', '.join(location.aliases) or '(none)'}",
-            f"Frame: {location.frame_id}",
-            f"Pose: x={location.pose.x}, y={location.pose.y}, yaw={location.pose.yaw}",
-            f"Tags: {', '.join(location.tags) or '(none)'}",
-        ]
-        if location.description:
-            lines.append(f"Description: {location.description}")
-        await self._mount_event(OutputPanel(f"Location: {location.name}", "\n".join(lines)))
-
-    # -- Approval decisions ---------------------------------------------------
 
     async def on_approval_card_decision(self, message: ApprovalCard.Decision) -> None:
         # Two approval sources share one card + message: deterministic slash
@@ -1594,7 +903,35 @@ class JenAITuiApp(App[None]):
             self._scroll_to_bottom()
             return
 
-        await self._execute_direct(pending)
+        # Run the approved action as the active task so long executions (live
+        # Nav2 goals, missions) show the working spinner and stop on Esc.
+        if self._active_task is not None and not self._active_task.done():
+            await self._execute_direct(pending)  # already inside a task
+            return
+        self._active_task = asyncio.create_task(self._run_direct_task(pending))
+
+    async def _run_direct_task(self, pending: dict) -> None:
+        self._start_spinner("Executing")
+        ctx: JenAIRunContext = pending["ctx"]
+        try:
+            await self._execute_direct(pending)
+        except asyncio.CancelledError:
+            # Esc: nav_live already cancelled the Nav2 goal; close out the run.
+            if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
+                self.run_store.finish(
+                    ctx.run, status=RunStatus.BLOCKED, final_output="interrupted"
+                )
+            if self.is_running:
+                try:
+                    await self._mount_event(
+                        TimelineItem("warn", "Interrupted — the action was cancelled.")
+                    )
+                    self._scroll_to_bottom()
+                except NoMatches:
+                    pass
+        finally:
+            self._stop_spinner()
+            self._active_task = None
 
     async def _execute_direct(self, pending: dict) -> None:
         """Run an approved direct command, finalising the run even on failure.
@@ -1642,7 +979,7 @@ class JenAITuiApp(App[None]):
                 )
             )
         elif pending["kind"] == "route":
-            output = await route_execute(self.config, pending["outgoing_action"])
+            output = await self._execute_route_action(pending["outgoing_action"])
             sent = output.execution_status == "succeeded"
             self.run_store.finish(
                 ctx.run,
@@ -1665,7 +1002,11 @@ class JenAITuiApp(App[None]):
                 self._scroll_to_bottom()
 
             report = await run_mission(
-                self.config, pending["locations"], pending["steps"], on_step=_on_step
+                self.config,
+                pending["locations"],
+                pending["steps"],
+                on_step=_on_step,
+                navigate=self._execute_route_action,
             )
             ok = all(r.status == "succeeded" for r in report.results)
             self.run_store.finish(
@@ -1793,284 +1134,3 @@ class JenAITuiApp(App[None]):
         return f"[bold {status_color(value)}]{value}[/]"
 
 
-class WelcomePanel(Container):
-    """Orange hero card shown at the top of the transcript."""
-
-    def __init__(
-        self,
-        *,
-        version: str,
-        provider_name: str,
-        provider_kind: str,
-        model_name: str,
-        config_path: Path,
-        doctor_result: DoctorResult | None,
-    ) -> None:
-        super().__init__(id="welcome")
-        self.version = version
-        self.provider_name = provider_name
-        self.provider_kind = provider_kind
-        self.model_name = model_name
-        self.config_path = config_path
-        self.doctor_result = doctor_result
-
-    def compose(self) -> ComposeResult:
-        # Single, centred column so it never crushes on a narrow (mobile) terminal.
-        # The mascot is decorative and is hidden below a width threshold (see the
-        # app's on_resize -> `narrow` class) rather than being squished.
-        self.border_title = f"JenAI v{self.version}"
-        yield Static(pixel_mark(), id="pixel-mark")
-        yield Static("Robot workflow console", classes="heading")
-        yield Static("Plan, inspect, and drive robot tasks from one terminal.", classes="meta")
-        yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
-        yield Static(self._doctor_summary(), id="welcome-doctor-status", classes="meta")
-
-    def update_doctor_result(self, doctor_result: DoctorResult | None) -> None:
-        self.doctor_result = doctor_result
-        self.query_one("#welcome-doctor-status", Static).update(self._doctor_summary())
-
-    def update_model(
-        self,
-        model_name: str,
-        *,
-        provider_name: str | None = None,
-        provider_kind: str | None = None,
-    ) -> None:
-        self.model_name = model_name
-        if provider_name is not None:
-            self.provider_name = provider_name
-        if provider_kind is not None:
-            self.provider_kind = provider_kind
-        self.query_one("#welcome-provider-meta", Static).update(self._provider_meta())
-
-    def _provider_meta(self) -> str:
-        return (
-            f"{self.model_name} · {self.provider_kind}\n"
-            f"{self.provider_name} · {self.config_path.parent}"
-        )
-
-    def _doctor_summary(self) -> Text:
-        if self.doctor_result is None:
-            return Text("Not checked", style=MUTED)
-
-        text = Text()
-        status = DoctorStatus(self.doctor_result.overall)
-        text.append(status.value, style=f"bold {status_color(status)}")
-
-        fails = sum(item.status == DoctorStatus.FAIL for item in self.doctor_result.items)
-        warns = sum(item.status == DoctorStatus.WARN for item in self.doctor_result.items)
-        text.append(f" · {fails} fail · {warns} warn", style=MUTED)
-        return text
-
-
-# Claude Code-style markers: a filled bullet for each transcript entry and an
-# elbow connector for the indented result/detail lines beneath it.
-BULLET = "⏺"
-ELBOW = "⎿"
-
-_MARKER_COLOR = {
-    "command": BLUE,
-    "success": GREEN,
-    "warn": ACCENT,
-    "error": ERROR,
-    "muted": MUTED,
-    "assistant": ACCENT,
-}
-
-
-def _bullet_markup(variant: str, body: str) -> str:
-    color = _MARKER_COLOR.get(variant, ACCENT)
-    return f"[{color}]{BULLET}[/] {body}"
-
-
-def _detail_markup(lines: list[str]) -> str:
-    """Render detail lines under a bullet as Claude Code elbow-indented text."""
-    out: list[str] = []
-    for i, line in enumerate(lines):
-        prefix = f"  [{MUTED}]{ELBOW}[/] " if i == 0 else "     "
-        out.append(f"{prefix}[{MUTED}]{line}[/]")
-    return "\n".join(out)
-
-
-class PromptPill(Static):
-    """Echo of the user's submitted line, shown as a muted `>` prompt."""
-
-    def __init__(self, text: str) -> None:
-        super().__init__(f"[{MUTED}]>[/] [#d9d3c7]{text}[/]", classes="prompt-line")
-
-
-class TimelineItem(Static):
-    """A single Claude Code-style bullet line (⏺ marker + body markup)."""
-
-    def __init__(self, variant: str, body: str) -> None:
-        super().__init__(_bullet_markup(variant, body), classes="bullet-line")
-        self.variant = variant
-        self.body = body
-
-
-class OutputPanel(Static):
-    """A bullet with a title line and elbow-indented body lines (no box)."""
-
-    def __init__(self, title: str, body: str, *, variant: str = "assistant") -> None:
-        detail = _detail_markup(body.split("\n")) if body else ""
-        markup = _bullet_markup(variant, f"[bold #f2ede1]{title}[/]")
-        if detail:
-            markup = f"{markup}\n{detail}"
-        super().__init__(markup, classes="bullet-line")
-        self.title = title
-        self.body = body
-
-
-class CommandPalette(Static):
-    # Rows shown at once; the window scrolls to follow the selection so every
-    # matching command is reachable without a hard cap.
-    WINDOW = 12
-
-    def update_matches(
-        self,
-        matches: list[SlashCommand],
-        selected_index: int,
-    ) -> None:
-        if not matches:
-            self.update("[#9c9689]No matching commands[/]")
-            return
-
-        total = len(matches)
-        # Centre the window on the selection, then clamp so it never runs past
-        # either end of the list (keeps the selected row visible while scrolling).
-        if total <= self.WINDOW:
-            start = 0
-        else:
-            start = min(max(selected_index - self.WINDOW // 2, 0), total - self.WINDOW)
-        end = min(start + self.WINDOW, total)
-
-        text = Text()
-        text.append(f"Commands  ({selected_index + 1}/{total})\n", style=f"bold {ACCENT}")
-        if start > 0:
-            text.append(f"  ↑ {start} more\n", style=MUTED)
-        for index in range(start, end):
-            command = matches[index]
-            selected = index == selected_index
-            arrow_style = GREEN if selected else MUTED
-            line_style = "bold #f2ede1" if selected else "#d9d3c7"
-            text.append("❯ " if selected else "  ", style=arrow_style)
-            text.append(command.name.ljust(16), style=line_style)
-            text.append(command.description, style=MUTED)
-            text.append("\n")
-        if end < total:
-            text.append(f"  ↓ {total - end} more", style=MUTED)
-        text.rstrip()
-        self.update(text)
-
-
-def _is_number(text: str) -> bool:
-    try:
-        float(text)
-        return True
-    except ValueError:
-        return False
-
-
-def _short_cwd() -> str:
-    """Home-relative, abbreviated cwd for the status line (e.g. ~/JenAI)."""
-    cwd = Path.cwd()
-    try:
-        return "~/" + str(cwd.relative_to(Path.home()))
-    except ValueError:
-        return str(cwd)
-
-
-
-def pixel_mark() -> Text:
-    colors = {
-        "body": "#d98c69",
-        "belly": "#e8a987",
-        "dark": "#ad6248",
-        "black": "#34241d",
-        "white": "#fdf5ef",
-        "cheek": "#e89a9a",
-        "collar": "#5fb1c0",
-        "tag": "#f0c84e",
-    }
-    cells: dict[tuple[int, int], str] = {}
-
-    def fill(x0: int, y0: int, x1: int, y1: int, color: str) -> None:
-        for y in range(y0, y1 + 1):
-            for x in range(x0, x1 + 1):
-                cells[(x, y)] = color
-
-    def put(x: int, y: int, color: str) -> None:
-        cells[(x, y)] = color
-
-    def delete(x: int, y: int) -> None:
-        cells.pop((x, y), None)
-
-    fill(9, 2, 11, 9, colors["dark"])
-    put(10, 10, colors["dark"])
-    fill(11, 1, 18, 7, colors["body"])
-    delete(11, 1)
-    delete(18, 1)
-    fill(16, 5, 20, 7, colors["body"])
-    delete(20, 7)
-    put(20, 5, colors["black"])
-    put(20, 6, colors["black"])
-    put(19, 6, colors["black"])
-    put(18, 7, colors["black"])
-    fill(14, 3, 15, 4, colors["black"])
-    put(15, 3, colors["white"])
-    put(17, 6, colors["cheek"])
-    fill(-1, 7, 13, 10, colors["body"])
-    delete(-1, 7)
-    fill(0, 10, 12, 10, colors["belly"])
-    put(-2, 6, colors["body"])
-    put(-3, 5, colors["body"])
-    put(-3, 4, colors["body"])
-    put(-2, 4, colors["body"])
-    fill(0, 11, 1, 13, colors["body"])
-    fill(3, 11, 4, 13, colors["body"])
-    fill(10, 11, 11, 13, colors["body"])
-    fill(13, 11, 14, 13, colors["body"])
-    # Collar/tag is drawn last: the body fills above cover this region.
-    fill(11, 7, 12, 9, colors["collar"])
-    put(12, 10, colors["tag"])
-
-    min_x = min(x for x, _ in cells)
-    max_x = max(x for x, _ in cells)
-    min_y = min(y for _, y in cells)
-    max_y = max(y for _, y in cells)
-
-    text = Text()
-    for y in range(min_y, max_y + 1, 2):
-        for x in range(min_x, max_x + 1):
-            top = cells.get((x, y))
-            bottom = cells.get((x, y + 1))
-            if top and bottom:
-                text.append("█" if top == bottom else "▀", style=f"{top} on {bottom}")
-            elif top:
-                text.append("▀", style=top)
-            elif bottom:
-                text.append("▄", style=bottom)
-            else:
-                text.append(" ")
-        if y + 1 < max_y:
-            text.append("\n")
-    return text
-
-def status_color(status: DoctorStatus | str) -> str:
-    try:
-        status = DoctorStatus(status)
-    except ValueError:
-        return MUTED
-    return {
-        DoctorStatus.PASS: GREEN,
-        DoctorStatus.WARN: ACCENT,
-        DoctorStatus.FAIL: ERROR,
-    }.get(status, MUTED)
-
-
-def format_doctor_item(item: DoctorCheckItem) -> str:
-    fix = f"\n[#9c9689]  fix:[/] {item.fix_suggestion}" if item.fix_suggestion else ""
-    return (
-        f"[bold {status_color(item.status)}]{item.status}[/] "
-        f"{item.section}.{item.check_name}: {item.message}{fix}"
-    )

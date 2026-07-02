@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -231,9 +232,32 @@ async def ask_vision_json(
         content = response.choices[0].message.content if response.choices else None
         if not content:
             return None
-        return json.loads(content)
-    except (OpenAIError, json.JSONDecodeError):
+        return parse_json_reply(content)
+    except OpenAIError:
         return None
+
+
+def parse_json_reply(content: str) -> Any | None:
+    """Parse a model reply as JSON, tolerating markdown fences and prose padding.
+
+    Thinking/chatty models (qwen3.6, nemotron…) often wrap the JSON in
+    ```json fences or lead with commentary; requiring a bare object would
+    turn every such reply into a false 'model unavailable'.
+    """
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+    return None
 
 
 async def ask_json(config: AppConfig, prompt: str, *, binding: str = "chat") -> Any | None:
@@ -260,6 +284,6 @@ async def ask_json(config: AppConfig, prompt: str, *, binding: str = "chat") -> 
         content = response.choices[0].message.content if response.choices else None
         if not content:
             return None
-        return json.loads(content)
-    except (OpenAIError, json.JSONDecodeError):
+        return parse_json_reply(content)
+    except OpenAIError:
         return None

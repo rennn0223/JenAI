@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from jenai.adapters.locations import LocationNotFoundError, find_location
 from jenai.config.models import AppConfig
-from jenai.schemas import Location
+from jenai.schemas import Location, RouteOutput
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.ros2_core import ros_drive
 from jenai.tools.route_core import route_execute
@@ -63,16 +63,21 @@ async def run_mission(
     steps: list[MissionStep],
     *,
     on_step: Callable[[StepResult], Awaitable[None]] | None = None,
+    navigate: Callable[[dict], Awaitable[RouteOutput]] | None = None,
 ) -> MissionReport:
     """Run a mission as a deterministic sequence (no LLM loop, so it is reliable
     and testable). Each step reuses the existing, safety-clamped tools; results
     are collected into a report. `on_step` streams progress to the UI if given.
+
+    `navigate` overrides how goto steps are executed (the TUI injects the live
+    rclpy-bridge navigator when Nav2 + the bridge are available); the default
+    stays the blocking route_execute adapter path.
     """
     report = MissionReport()
     for step in steps:
         try:
             if step.kind == "goto":
-                result = await _goto(config, locations, step.target)
+                result = await _goto(config, locations, step.target, navigate=navigate)
             elif step.kind == "drive":
                 result = await _drive(config, step.target)
             else:
@@ -87,14 +92,21 @@ async def run_mission(
     return report
 
 
-async def _goto(config: AppConfig, locations: list[Location], target: str) -> StepResult:
+async def _goto(
+    config: AppConfig,
+    locations: list[Location],
+    target: str,
+    *,
+    navigate: Callable[[dict], Awaitable[RouteOutput]] | None = None,
+) -> StepResult:
     try:
         location = find_location(locations, target)
     except LocationNotFoundError as exc:
         hint = ", ".join(c.name for c in exc.candidates)
         detail = f"unknown location (near: {hint})" if hint else "unknown location"
         return StepResult("goto", target, "failed", detail)
-    out = await route_execute(config, {"goal": location.model_dump(mode="json")})
+    action = {"goal": location.model_dump(mode="json")}
+    out = await navigate(action) if navigate is not None else await route_execute(config, action)
     return StepResult("goto", location.name, out.execution_status, out.route_preview)
 
 

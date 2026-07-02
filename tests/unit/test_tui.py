@@ -15,7 +15,7 @@ from jenai.schemas import (
 )
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
-from jenai.tui.app import pixel_mark
+from jenai.tui.panels import pixel_mark
 from jenai.tui.widgets import ApprovalCard
 
 
@@ -141,7 +141,7 @@ def test_tui_ros_topics_command(monkeypatch) -> None:
     async def fake_ros_topics(config):
         return RosTopicsOutput(topics=[TopicItem(name="/cmd_vel", kind_hint="control")])
 
-    monkeypatch.setattr("jenai.tui.app.ros_topics", fake_ros_topics)
+    monkeypatch.setattr("jenai.tui.robot_commands.ros_topics", fake_ros_topics)
 
     async def run() -> None:
         app = _app()
@@ -160,7 +160,7 @@ def test_tui_ros_schema_command(monkeypatch) -> None:
             topic=topic, message_type="geometry_msgs/msg/Twist", raw_interface="..."
         )
 
-    monkeypatch.setattr("jenai.tui.app.ros_schema", fake_ros_schema)
+    monkeypatch.setattr("jenai.tui.robot_commands.ros_schema", fake_ros_schema)
 
     async def run() -> None:
         app = _app()
@@ -181,7 +181,7 @@ def test_tui_ros_topic_info_command(monkeypatch) -> None:
             name=topic, message_type="geometry_msgs/msg/Twist", publisher_count=1
         )
 
-    monkeypatch.setattr("jenai.tui.app.ros_topic_info", fake_topic_info)
+    monkeypatch.setattr("jenai.tui.robot_commands.ros_topic_info", fake_topic_info)
 
     async def run() -> None:
         app = _app()
@@ -239,7 +239,7 @@ def test_tui_ros_drive_shows_card_and_executes_on_approve(monkeypatch) -> None:
             execution_status="succeeded", result_message="drove then stopped",
         )
 
-    monkeypatch.setattr("jenai.tui.app.ros_pub_validate", fake_validate)
+    monkeypatch.setattr("jenai.tui.robot_commands.ros_pub_validate", fake_validate)
     monkeypatch.setattr("jenai.tui.app.ros_drive", fake_drive)
 
     async def run() -> None:
@@ -265,7 +265,7 @@ def test_tui_ros_echo_command(monkeypatch) -> None:
         assert topic == "/chatter"
         return RosEchoOutput(topic=topic, messages=[{"raw": "data: hi"}], summary="1 message")
 
-    monkeypatch.setattr("jenai.tui.app.ros_echo", fake_echo)
+    monkeypatch.setattr("jenai.tui.robot_commands.ros_echo", fake_echo)
 
     async def run() -> None:
         app = _app()
@@ -284,7 +284,7 @@ def test_tui_vision_command(monkeypatch) -> None:
         assert path == "/tmp/frame.png"
         return VisionOutput(source=path, summary="a robot", objects=["robot"])
 
-    monkeypatch.setattr("jenai.tui.app.analyze_image", fake_analyze)
+    monkeypatch.setattr("jenai.tui.robot_commands.analyze_image", fake_analyze)
 
     async def run() -> None:
         app = _app()
@@ -392,7 +392,7 @@ def test_tui_mission_shows_card_and_runs(monkeypatch) -> None:
 
     ran = {}
 
-    async def fake_run_mission(config, locations, steps, *, on_step=None):
+    async def fake_run_mission(config, locations, steps, *, on_step=None, navigate=None):
         ran["steps"] = len(steps)
         result = StepResult("goto", "kitchen", "succeeded", "arrived")
         if on_step:
@@ -411,6 +411,9 @@ def test_tui_mission_shows_card_and_runs(monkeypatch) -> None:
 
             await pilot.press("enter")
             await pilot.pause()
+            # Approved actions now run as the cancellable active task.
+            if app._active_task is not None:
+                await app._active_task
             assert ran["steps"] == 2
             assert list(app.query(ApprovalCard)) == []
 
@@ -564,7 +567,7 @@ def test_tui_ros_pub_shows_card_and_resolves_on_approve(monkeypatch) -> None:
             result_message="published",
         )
 
-    monkeypatch.setattr("jenai.tui.app.ros_pub_validate", fake_validate)
+    monkeypatch.setattr("jenai.tui.robot_commands.ros_pub_validate", fake_validate)
     monkeypatch.setattr("jenai.tui.app.ros_pub_execute", fake_execute)
 
     async def run() -> None:
@@ -594,7 +597,7 @@ def test_tui_ros_pub_rejects_on_escape(monkeypatch) -> None:
         executed.append(topic)
         return RosPubOutput(topic=topic, message_type=message_type)
 
-    monkeypatch.setattr("jenai.tui.app.ros_pub_validate", fake_validate)
+    monkeypatch.setattr("jenai.tui.robot_commands.ros_pub_validate", fake_validate)
     monkeypatch.setattr("jenai.tui.app.ros_pub_execute", fake_execute)
 
     async def run() -> None:
@@ -641,8 +644,8 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
             route_preview="No navigation backend — the goal was NOT sent.",
         )
 
-    monkeypatch.setattr("jenai.tui.app.route_preview", fake_route_preview)
-    monkeypatch.setattr("jenai.tui.app.route_execute", fake_route_execute)
+    monkeypatch.setattr("jenai.tui.robot_commands.route_preview", fake_route_preview)
+    monkeypatch.setattr("jenai.tui.robot_commands.route_execute", fake_route_execute)
 
     async def run() -> None:
         app = _app(tmp_path)

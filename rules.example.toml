@@ -1,0 +1,28 @@
+# Example JenAI daemon rules. Copy to ~/.config/jenai/rules.toml and edit, then:
+#
+#   jenai daemon            # or: uv run JenAI daemon
+#
+# Each rule watches one topic field and fires when the condition holds.
+# SAFETY: `action = "notify"` only reports. A rule that moves the robot
+# ("goto <location>") must ALSO set `auto_approve = true`, and the config's
+# route_adapter must be "nav2" — otherwise the daemon reports what it *would*
+# have done and stays put.
+
+[[rules]]
+name = "battery-low-return-to-dock"
+topic = "/battery_state"
+msg_type = "sensor_msgs/msg/BatteryState"
+field = "percentage"            # dotted path into the message (e.g. "pose.pose.position.x")
+below = 0.25                    # fire when value < 0.25 (also: above = X, equals = value)
+cooldown_s = 600                # never refire within 10 minutes
+action = "goto Dock"            # location name from locations.toml
+auto_approve = false            # flip to true only when you trust this rule
+
+[[rules]]
+name = "e-stop-pressed"
+topic = "/e_stop"
+msg_type = "std_msgs/msg/Bool"
+field = "data"
+equals = true
+cooldown_s = 30
+action = "notify"

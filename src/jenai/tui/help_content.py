@@ -24,11 +24,11 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="Route",
-        commands=["/route <text>", "/loc list", "/loc show <name>"],
+        commands=["/route <text>", "/loc list", "/loc show <name>", "/loc add here <name>"],
     ),
     CommandGroup(
         name="Vision",
-        commands=["/vision image <path>"],
+        commands=["/vision image <path>", "/vision camera [topic]"],
     ),
     CommandGroup(
         name="System",

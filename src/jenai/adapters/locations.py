@@ -79,6 +79,19 @@ def ensure_locations_file(path: Path) -> Path:
     return path
 
 
+def append_location(location: Location, path: Path) -> list[Location]:
+    """Add one location to the file, refusing names/aliases that already exist."""
+    locations = load_locations(path) if path.exists() else []
+    taken = {loc.name.strip().lower() for loc in locations}
+    for loc in locations:
+        taken.update(alias.strip().lower() for alias in loc.aliases)
+    if location.name.strip().lower() in taken:
+        raise LocationsFileError(f"A location named '{location.name}' already exists.")
+    locations.append(location)
+    save_locations(locations, path)
+    return locations
+
+
 def find_location(locations: list[Location], query: str, *, limit: int = 5) -> Location:
     normalized = query.strip().lower()
     if normalized:

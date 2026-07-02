@@ -1,0 +1,575 @@
+"""Robot-facing slash-command handlers for the JenAI TUI.
+
+Mixin for JenAITuiApp: everything that touches ROS — topic inspection,
+driving, navigation (with the live rclpy bridge), locations, and camera
+vision. Approval plumbing and app state come from the host class.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+from jenai.adapters.locations import (
+    LocationNotFoundError,
+    LocationsFileError,
+    append_location,
+    ensure_locations_file,
+    find_location,
+    load_locations,
+)
+from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.schemas import (
+    ApprovalRequest,
+    EffectScope,
+    Location,
+    Pose2D,
+    RiskLevel,
+    RunStatus,
+    ToolCallCategory,
+    ToolCallRecord,
+)
+from jenai.tools.drive_core import extract_drive_command
+from jenai.tools.mission_core import parse_mission
+from jenai.tools.nav_live import navigate_live
+from jenai.tools.ros2_core import (
+    ros_echo,
+    ros_pub_validate,
+    ros_schema,
+    ros_topic_info,
+    ros_topics,
+)
+from jenai.tools.route_core import route_execute, route_preview
+from jenai.tools.vision_core import VisionError, analyze_image
+from jenai.tui.panels import MUTED, OutputPanel, TimelineItem, _is_number
+from jenai.tui.widgets import ApprovalCard
+
+
+class RobotCommandsMixin:
+    async def _show_ros_topics(self, _: str = "") -> None:
+        output = await ros_topics(self.config)
+        if not output.topics:
+            await self._mount_event(TimelineItem("warn", "No topics found."))
+            return
+        rows = [f"{item.name}  [#9c9689]({item.kind_hint})[/]" for item in output.topics]
+        await self._mount_event(OutputPanel("ROS2 topics", "\n".join(rows)))
+
+    async def _show_ros_topic_info(self, arg: str) -> None:
+        if not arg:
+            await self._mount_event(TimelineItem("warn", "Usage: /ros topic-info <topic>"))
+            return
+
+        output = await ros_topic_info(self.config, arg)
+        if not output.message_type:
+            await self._mount_event(TimelineItem("warn", output.summary))
+            return
+
+        lines = [
+            f"Message type: [bold #f2ede1]{output.message_type}[/]",
+            f"Publishers ({output.publisher_count}): {', '.join(output.publishers) or '—'}",
+            f"Subscribers ({output.subscriber_count}): {', '.join(output.subscribers) or '—'}",
+        ]
+        await self._mount_event(OutputPanel(f"Topic info: {arg}", "\n".join(lines)))
+
+    async def _show_ros_schema(self, arg: str) -> None:
+        if not arg:
+            await self._mount_event(TimelineItem("warn", "Usage: /ros schema <topic>"))
+            return
+
+        output = await ros_schema(self.config, arg)
+        lines = [f"Message type: [bold #f2ede1]{output.message_type}[/]", ""]
+        for field in output.field_summary:
+            lines.append(
+                f"[bold #f2ede1]{field.field_name}[/] ({field.field_type}): {field.description}"
+            )
+        await self._mount_event(OutputPanel(f"Schema: {arg}", "\n".join(lines)))
+
+    async def _show_ros_echo(self, arg: str) -> None:
+        parts = arg.split()
+        if not parts:
+            await self._mount_event(TimelineItem("warn", "Usage: /ros echo <topic> [count]"))
+            return
+        topic = parts[0]
+        limit = 1
+        if len(parts) > 1 and parts[1].isdigit():
+            limit = max(1, int(parts[1]))
+
+        output = await ros_echo(self.config, topic, limit=limit)
+        if not output.messages:
+            await self._mount_event(TimelineItem("warn", output.summary))
+            return
+        rendered = "\n\n".join(
+            json.dumps(msg, ensure_ascii=False, indent=2) for msg in output.messages
+        )
+        await self._mount_event(OutputPanel(f"Echo: {topic}", rendered))
+
+    async def _show_ros_pub(self, arg: str) -> None:
+        parts = arg.split(maxsplit=1)
+        if len(parts) != 2:
+            await self._mount_event(TimelineItem("warn", "Usage: /ros pub <topic> <json payload>"))
+            return
+
+        topic, payload_json = parts
+        try:
+            payload = json.loads(payload_json)
+        except json.JSONDecodeError as exc:
+            await self._mount_event(TimelineItem("error", f"Invalid JSON payload: {exc}"))
+            return
+
+        validation = await ros_pub_validate(topic, payload)
+        if not validation.ok:
+            message = validation.error.message if validation.error else "Validation failed."
+            await self._mount_event(TimelineItem("error", message))
+            return
+
+        ctx = self._new_run_context(f"/ros pub {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="ros_pub_execute_tool",
+            category=ToolCallCategory.ROS2,
+            input_summary=f"publish to {topic}",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        if "ros_pub" in self._auto_approved:
+            await self._execute_direct(
+                {
+                    "kind": "ros_pub",
+                    "ctx": ctx,
+                    "topic": topic,
+                    "message_type": validation.message_type,
+                    "payload": payload,
+                }
+            )
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            title=f"Publish to {topic}",
+            summary=f"Send a {validation.message_type} message to {topic}.",
+            raw_action=f'ros2 topic pub --once {topic} {validation.message_type} "{payload}"',
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="Requested via /ros pub.",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+
+        self._pending_direct_approvals[approval.tool_call_id] = {
+            "kind": "ros_pub",
+            "ctx": ctx,
+            "topic": topic,
+            "message_type": validation.message_type,
+            "payload": payload,
+        }
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_ros_drive(self, arg: str) -> None:
+        # /ros drive <topic> <json payload> [seconds]
+        parts = arg.split()
+        if len(parts) < 2:
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /ros drive <topic> <json payload> [seconds]")
+            )
+            return
+        duration = 1.0
+        if len(parts) >= 3 and _is_number(parts[-1]):
+            duration = float(parts[-1])
+            payload_json = " ".join(parts[1:-1])
+        else:
+            payload_json = " ".join(parts[1:])
+        topic = parts[0]
+        try:
+            payload = json.loads(payload_json)
+        except json.JSONDecodeError as exc:
+            await self._mount_event(TimelineItem("error", f"Invalid JSON payload: {exc}"))
+            return
+
+        validation = await ros_pub_validate(topic, payload)
+        if not validation.ok:
+            message = validation.error.message if validation.error else "Validation failed."
+            await self._mount_event(TimelineItem("error", message))
+            return
+
+        ctx = self._new_run_context(f"/ros drive {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="ros_drive_execute_tool",
+            category=ToolCallCategory.ROS2,
+            input_summary=f"drive {topic} for {duration}s",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        pending = {
+            "kind": "drive",
+            "ctx": ctx,
+            "topic": topic,
+            "message_type": validation.message_type,
+            "payload": payload,
+            "duration": duration,
+        }
+        if "drive" in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="ros_drive_execute_tool",
+            title=f"Drive {topic} for {duration}s",
+            summary=f"Publish a {validation.message_type} to {topic} for {duration}s, then stop.",
+            raw_action=f"ros2 topic pub --rate 10 {topic} … for {duration}s, then zero-stop",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="Requested via /ros drive.",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_drive(self, arg: str) -> None:
+        # Natural-language driving: "前進兩秒", "turn left", "slowly reverse".
+        if not arg:
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /drive <plain language>, e.g. /drive 前進兩秒")
+            )
+            return
+
+        intent = await extract_drive_command(self.config, arg)
+        if intent is None:
+            await self._mount_event(
+                TimelineItem("warn", f"Could not understand '{arg}' as a drive command.")
+            )
+            return
+
+        topic = "/cmd_vel"
+        message_type = "geometry_msgs/msg/Twist"
+        ctx = self._new_run_context(f"/drive {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="ros_drive_execute_tool",
+            category=ToolCallCategory.ROS2,
+            input_summary=intent.description,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        pending = {
+            "kind": "drive",
+            "ctx": ctx,
+            "topic": topic,
+            "message_type": message_type,
+            "payload": intent.to_payload(),
+            "duration": intent.duration_s,
+        }
+        if "drive" in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="ros_drive_execute_tool",
+            title=f"Drive: {intent.description}",
+            summary=f"Interpreted '{arg}' as: {intent.description}.",
+            raw_action=(
+                f"{topic} linear.x={intent.linear_x:g} angular.z={intent.angular_z:g} "
+                f"for {intent.duration_s:g}s (continuous, then stop)"
+            ),
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification=f"Requested via /drive: {arg}",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_mission(self, arg: str) -> None:
+        # /mission kitchen, drive turn left, lobby  → a supervised multi-step run.
+        if not arg:
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /mission <place>, <place>, … (or 'drive <motion>')")
+            )
+            return
+        steps = parse_mission(arg)
+        if not steps:
+            await self._mount_event(TimelineItem("warn", "No mission steps recognized."))
+            return
+
+        plan = " → ".join(f"{s.kind} {s.target}" for s in steps)
+        ctx = self._new_run_context(f"/mission {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="mission",
+            category=ToolCallCategory.ROS2,
+            input_summary=plan,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        pending = {
+            "kind": "mission",
+            "ctx": ctx,
+            "steps": steps,
+            "locations": self._load_locations(),
+        }
+        if "mission" in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="mission",
+            title=f"Run mission · {len(steps)} steps",
+            summary=f"The robot will carry out: {plan}.",
+            raw_action=plan,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification=f"Requested via /mission: {arg}",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    # -- Route / locations ----------------------------------------------------
+
+    async def _show_route(self, arg: str) -> None:
+        if not arg:
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /route <natural language request>")
+            )
+            return
+
+        locations = self._load_locations()
+        output = await route_preview(self.config, locations, arg)
+        if not output.outgoing_action:
+            await self._mount_event(TimelineItem("warn", output.route_preview))
+            return
+
+        ctx = self._new_run_context(f"/route {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="route_execute_tool",
+            category=ToolCallCategory.ROUTE,
+            input_summary=output.route_preview,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        if "route" in self._auto_approved:
+            await self._execute_direct(
+                {"kind": "route", "ctx": ctx, "outgoing_action": output.outgoing_action}
+            )
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            title="Send navigation route",
+            summary=output.route_preview,
+            raw_action=str(output.outgoing_action),
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="Requested via /route.",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+
+        self._pending_direct_approvals[approval.tool_call_id] = {
+            "kind": "route",
+            "ctx": ctx,
+            "outgoing_action": output.outgoing_action,
+        }
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_loc_list(self, _: str = "") -> None:
+        locations = self._load_locations()
+        if not locations:
+            await self._mount_event(
+                TimelineItem("warn", "No locations configured. Add entries to locations.toml.")
+            )
+            return
+        rows = [
+            f"[bold #f2ede1]{loc.name}[/] · {', '.join(loc.aliases) or 'no aliases'}"
+            for loc in locations
+        ]
+        await self._mount_event(OutputPanel("Locations", "\n".join(rows)))
+
+    async def _show_loc_add(self, arg: str) -> None:
+        name = arg.strip()
+        if name.lower().startswith("here "):  # "/loc add here Kitchen" and "/loc add Kitchen"
+            name = name[5:].strip()
+        elif name.lower() == "here":  # bare "/loc add here" has no name to save
+            name = ""
+        if not name or name.startswith("<"):
+            await self._mount_event(
+                TimelineItem("warn", "Usage: [bold #f2ede1]/loc add here <name>[/]")
+            )
+            return
+
+        locations_path = self.config.resolved_locations_path(self.config_path)
+        if locations_path is None:
+            await self._mount_event(
+                TimelineItem("warn", "No locations_path is configured — add one to the config.")
+            )
+            return
+
+        try:
+            bridge = await self._get_bridge()
+            pose = await bridge.get_pose(timeout=3.0)
+        except BridgeError as exc:
+            await self._mount_event(
+                TimelineItem("warn", f"Could not read the robot's position: {exc}")
+            )
+            return
+
+        location = Location(
+            name=name,
+            frame_id=pose.frame_id,
+            pose=Pose2D(x=round(pose.x, 3), y=round(pose.y, 3), yaw=round(pose.yaw, 3)),
+        )
+        try:
+            await asyncio.to_thread(append_location, location, locations_path)
+        except LocationsFileError as exc:
+            await self._mount_event(TimelineItem("warn", str(exc)))
+            return
+
+        note = ""
+        if pose.source == "/odom":
+            note = (
+                f"\n[{MUTED}]Caution: pose came from /odom (no localization) — coordinates are "
+                "in the odom frame and drift over time. Start AMCL for map-frame poses.[/]"
+            )
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Saved [bold #f2ede1]{name}[/] at x={location.pose.x} y={location.pose.y} "
+                f"yaw={location.pose.yaw} ({pose.frame_id}, from {pose.source}) · "
+                f"try [bold #f2ede1]/route from here to {name}[/]{note}",
+            )
+        )
+
+    async def _show_loc_show(self, arg: str) -> None:
+        if not arg:
+            await self._mount_event(TimelineItem("warn", "Usage: /loc show <name>"))
+            return
+
+        locations = self._load_locations()
+        try:
+            location = find_location(locations, arg)
+        except LocationNotFoundError as exc:
+            if exc.candidates:
+                names = ", ".join(loc.name for loc in exc.candidates)
+                await self._mount_event(
+                    TimelineItem("warn", f"Location '{arg}' not found. Did you mean: {names}?")
+                )
+            else:
+                await self._mount_event(TimelineItem("warn", f"Location '{arg}' not found."))
+            return
+
+        lines = [
+            f"Name: [bold #f2ede1]{location.name}[/]",
+            f"Aliases: {', '.join(location.aliases) or '(none)'}",
+            f"Frame: {location.frame_id}",
+            f"Pose: x={location.pose.x}, y={location.pose.y}, yaw={location.pose.yaw}",
+            f"Tags: {', '.join(location.tags) or '(none)'}",
+        ]
+        if location.description:
+            lines.append(f"Description: {location.description}")
+        await self._mount_event(OutputPanel(f"Location: {location.name}", "\n".join(lines)))
+
+    # -- Approval decisions ---------------------------------------------------
+
+    async def _show_vision(self, arg: str) -> None:
+        # Accept "/vision image <path>", "/vision <path>", and "/vision camera [topic]".
+        parts = arg.split(maxsplit=1)
+        if parts and parts[0] == "camera":
+            topic = parts[1].strip() if len(parts) > 1 else "/camera/image_raw"
+            await self._show_vision_camera(topic)
+            return
+        if parts and parts[0] == "image":
+            path = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            path = arg.strip()
+        if not path:
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /vision image <path> · /vision camera [topic]")
+            )
+            return
+
+        await self._analyze_and_render(path)
+
+    async def _show_vision_camera(self, topic: str) -> None:
+        """Grab one frame from a camera topic and run it through the VLM."""
+        self._spinner_label = f"Capturing {topic}"
+        try:
+            bridge = await self._get_bridge()
+            frame_path = await bridge.capture_frame(topic, timeout=5.0)
+        except BridgeError as exc:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"Could not capture from [bold #f2ede1]{topic}[/]: {exc}\n"
+                    f"[{MUTED}]List image topics with /ros topics.[/]",
+                )
+            )
+            return
+        self._spinner_label = "Analyzing frame"
+        await self._analyze_and_render(str(frame_path), source_label=topic)
+
+    async def _analyze_and_render(self, path: str, *, source_label: str | None = None) -> None:
+        try:
+            output = await analyze_image(self.config, path)
+        except VisionError as exc:
+            await self._mount_event(TimelineItem("error", str(exc)))
+            return
+
+        lines = [output.summary]
+        if output.objects:
+            lines.append(f"[bold #f2ede1]Objects:[/] {', '.join(output.objects)}")
+        if output.anomalies:
+            lines.append(f"[bold #f2ede1]Anomalies:[/] {', '.join(output.anomalies)}")
+        if output.next_action_suggestions:
+            lines.append(
+                "[bold #f2ede1]Suggested next:[/] " + "; ".join(output.next_action_suggestions)
+            )
+        title = source_label or output.source
+        await self._mount_event(OutputPanel(f"Vision: {title}", "\n".join(lines)))
+
+    async def _get_bridge(self) -> RosBridgeClient:
+        """Start (or reuse) the rclpy bridge; raises BridgeError when ROS is absent."""
+        if self._bridge is None:
+            self._bridge = RosBridgeClient()
+        if not self._bridge.running:
+            await self._bridge.start()
+        return self._bridge
+
+    async def _execute_route_action(self, outgoing_action: dict):
+        """Execute a navigation action: live bridge (feedback + Esc cancel) when
+        Nav2 is configured and ROS is present, otherwise the honest CLI adapter."""
+        if self.config.route_adapter == "nav2" and RosBridgeClient.available():
+            try:
+                bridge = await self._get_bridge()
+
+                def _progress(p) -> None:
+                    self._spinner_label = (
+                        f"Navigating · {p.distance_remaining:.1f} m left · {p.elapsed:.0f}s"
+                        + (f" · {p.recoveries} recoveries" if p.recoveries else "")
+                    )
+
+                return await navigate_live(bridge, outgoing_action, on_progress=_progress)
+            except BridgeError:
+                pass  # bridge could not start — fall through to the CLI path
+        return await route_execute(self.config, outgoing_action)
+
+    def _load_locations(self) -> list[Location]:
+        path = self._locations_path()
+        if path is None:
+            return []
+        try:
+            ensure_locations_file(path)
+            return load_locations(path)
+        except LocationsFileError:
+            return []
