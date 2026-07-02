@@ -13,10 +13,14 @@ runner = CliRunner()
 
 
 def test_version_command() -> None:
+    from jenai import __version__
+
     result = runner.invoke(app, ["version"])
 
     assert result.exit_code == 0
-    assert "JenAI 0.1.0" in result.stdout
+    # Assert against the real package version so this can't drift on a bump.
+    assert f"JenAI {__version__}" in result.stdout
+    assert __version__ != "0.0.0+dev"  # metadata resolved (package is installed)
 
 
 def test_doctor_json_command(tmp_path: Path) -> None:
