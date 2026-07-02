@@ -101,6 +101,28 @@ async def ask_provider(
     )
 
 
+async def list_provider_models(config: AppConfig) -> list[str]:
+    """List model ids available on the active provider endpoint.
+
+    Works against any OpenAI-compatible `/v1/models` — including a local
+    Ollama server — so /model can offer real, currently-installed choices.
+    """
+    profile = _active_profile(config)
+    api_key = _api_key(profile)
+
+    try:
+        async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
+            page = await client.models.list()
+    except (APIConnectionError, APITimeoutError) as exc:
+        raise ProviderChatError(f"Could not reach provider endpoint: {exc}") from exc
+    except APIStatusError as exc:
+        raise ProviderChatError(f"Provider API error ({exc.status_code}): {exc}") from exc
+    except OpenAIError as exc:
+        raise ProviderChatError(f"Provider request failed: {exc}") from exc
+
+    return sorted({model.id for model in page.data})
+
+
 def _active_profile(config: AppConfig) -> ProviderProfile:
     if config.active_provider is None:
         raise ProviderChatError("No active provider is configured.")
