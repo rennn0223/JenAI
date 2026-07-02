@@ -34,6 +34,25 @@ uv run JenAI doctor
 uv run JenAI web
 ```
 
+### 在新機器上安裝（fresh clone）
+
+repo 本身可攜：依賴鎖在 `uv.lock`（含 aarch64／x86_64／macOS wheel），原始碼沒有寫死任何機器路徑。有三個檔案**不在 repo 裡**（使用者設定／機密），換機器後要重建：
+
+| 檔案（`~/.config/jenai/`） | 怎麼來 |
+|---|---|
+| `config.toml`（provider／model） | 首次 `uv run JenAI` 自動跑 setup wizard 建立 |
+| `.env`（API 金鑰） | 手動一行（見下方「一鍵啟動」） |
+| `locations.toml`（地點） | 依 [`locations.example.toml`](locations.example.toml) 填 |
+
+```bash
+git clone <repo-url> ~/JenAI && cd ~/JenAI
+uv sync                 # 依 uv.lock 裝依賴（需要時 uv 會自動裝 Python 3.12+）
+uv run JenAI            # 首次 → setup wizard → 進 TUI
+```
+
+- **ROS2 是選配**：沒裝 ROS 的機器，`/ros*`、`/drive`、`/route` 會誠實回報 unavailable（不會崩），聊天／`/plan` 照常；控真車才需要 ROS2 Jazzy + Nav2。
+- 需要網路 + 金鑰（或本機 Ollama）才能實際呼叫模型；純離線無法。
+
 ### 一鍵啟動（含 ROS2）
 
 啟動腳本 [`scripts/jenai`](scripts/jenai) 會先 source ROS2 Jazzy（確認 `ros2` 真的在

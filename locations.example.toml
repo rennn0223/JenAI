@@ -1,0 +1,32 @@
+# Example JenAI locations file.
+#
+# Copy to ~/.config/jenai/locations.toml (next to config.toml) and edit for your
+# map, then use them with /route and /loc:
+#
+#   cp locations.example.toml ~/.config/jenai/locations.toml
+#
+# Coordinates are in your Nav2 map frame: x/y in metres, yaw in radians. Get real
+# values from `ros2 topic echo /odom`, or by picking points in RViz / Isaac Sim.
+# The two entries below are illustrative — replace them with your own places.
+
+[[locations]]
+name = "Kitchen"
+aliases = ["廚房", "kitchen"]   # optional alternate names / nicknames
+frame_id = "map"                # the TF frame the pose is expressed in
+tags = ["room"]                 # optional, for grouping
+
+[locations.pose]
+x = 2.0
+y = 1.5
+yaw = 0.0
+
+[[locations]]
+name = "Lobby"
+aliases = ["大廳", "lobby", "entrance"]
+frame_id = "map"
+tags = ["room"]
+
+[locations.pose]
+x = 0.0
+y = 0.0
+yaw = 0.0
