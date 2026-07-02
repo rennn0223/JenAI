@@ -243,6 +243,15 @@ main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .
 .updated{color:var(--muted); font-size:12px; text-align:right; margin-top:4px}
 footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted); font-size:12.5px}
 
+/* Map (live pose + saved locations) */
+#map{width:100%; height:280px; background:linear-gradient(180deg,#faf6ef,#f3ede2);
+  border:1px solid var(--line); border-radius:12px; display:block}
+#map .loc-dot{fill:#8a7f6f}
+#map .loc-label{fill:#6b6254; font:600 3.2px ui-sans-serif,system-ui; letter-spacing:.02em}
+#map .robot{fill:var(--accent)}
+#map .robot-ring{fill:none; stroke:var(--accent); stroke-opacity:.35; stroke-width:.6}
+#map .grid{stroke:#e5dccb; stroke-width:.25}
+
 /* Console (interactive command area) */
 #console{max-width:960px; margin:0 auto 8px}
 #transcript{max-height:340px; overflow-y:auto; margin-bottom:12px}
@@ -332,6 +341,10 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
     <button type="submit" id="cmdsend">Send</button>
   </form>
 </section>
+<section id="mapcard" class="card">
+  <div class="card-head"><h2>Map</h2><span class="dim" id="map-meta">waiting for robot pose…</span></div>
+  <svg id="map" viewBox="0 0 100 60" preserveAspectRatio="xMidYMid meet"></svg>
+</section>
 <main>__MAIN__</main>
 <footer>Actions that move the robot always ask you to confirm first · served by <span class="mono">jenai web</span> (localhost).</footer>
 <script>
@@ -383,6 +396,48 @@ form.addEventListener('submit', async (e) => {
   catch(err){ block('error', el('out', '<p>Network error.</p>')); }
   finally { send.disabled=false; send.textContent='Send'; input.focus(); }
 });
+
+const mapSvg = document.getElementById('map');
+const mapMeta = document.getElementById('map-meta');
+function mapDraw(data){
+  const pts = data.locations.map(l => [l.x, l.y]);
+  if(data.pose) pts.push([data.pose.x, data.pose.y]);
+  if(!pts.length){ mapMeta.textContent = 'no locations yet — save one with /loc add here <name> in the TUI'; return; }
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  const pad = Math.max(1.0, (Math.max(...xs)-Math.min(...xs))*0.15, (Math.max(...ys)-Math.min(...ys))*0.15);
+  const x0 = Math.min(...xs)-pad, x1 = Math.max(...xs)+pad;
+  const y0 = Math.min(...ys)-pad, y1 = Math.max(...ys)+pad;
+  const W = 100, H = 60;
+  const sc = Math.min(W/(x1-x0), H/(y1-y0));
+  // world → svg: x right, y UP (RViz convention), centred
+  const ox = (W - (x1-x0)*sc)/2, oy = (H - (y1-y0)*sc)/2;
+  const X = wx => ox + (wx - x0)*sc;
+  const Y = wy => H - (oy + (wy - y0)*sc);
+  let out = '';
+  for(let gx = Math.ceil(x0); gx <= Math.floor(x1); gx++)
+    out += `<line class="grid" x1="${X(gx)}" y1="0" x2="${X(gx)}" y2="${H}"/>`;
+  for(let gy = Math.ceil(y0); gy <= Math.floor(y1); gy++)
+    out += `<line class="grid" x1="0" y1="${Y(gy)}" x2="${W}" y2="${Y(gy)}"/>`;
+  for(const l of data.locations){
+    out += `<circle class="loc-dot" cx="${X(l.x)}" cy="${Y(l.y)}" r="1.1"/>`;
+    out += `<text class="loc-label" x="${X(l.x)+1.8}" y="${Y(l.y)+1.1}">${esc(l.name)}</text>`;
+  }
+  if(data.pose){
+    const px = X(data.pose.x), py = Y(data.pose.y);
+    const deg = -data.pose.yaw * 180 / Math.PI;
+    out += `<circle class="robot-ring" cx="${px}" cy="${py}" r="2.6"/>`;
+    out += `<polygon class="robot" points="2.4,0 -1.4,1.4 -1.4,-1.4" transform="translate(${px},${py}) rotate(${deg})"/>`;
+    mapMeta.textContent = `robot at (${data.pose.x.toFixed(2)}, ${data.pose.y.toFixed(2)}) · ${data.pose.frame_id} · ${data.pose.source}`;
+  } else {
+    mapMeta.textContent = data.ros ? 'no live pose (is the robot publishing /amcl_pose or /odom?)' : 'ROS2 not available on this host';
+  }
+  mapSvg.innerHTML = out;
+}
+async function pollMap(){
+  try{ const r = await fetch('api/map', {cache:'no-store'}); if(r.ok) mapDraw(await r.json()); }
+  catch(e){ /* keep last drawing */ }
+}
+pollMap(); setInterval(pollMap, 2000);
 
 async function refresh(){
   try{

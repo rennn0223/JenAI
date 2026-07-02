@@ -188,3 +188,46 @@ def test_webui_server_serves_dashboard_html(tmp_path: Path) -> None:
     finally:
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_api_map_payload_includes_locations_and_handles_no_pose(tmp_path) -> None:
+    from jenai.adapters.locations import save_locations
+    from jenai.config.store import build_minimal_config, save_config
+    from jenai.schemas import Location, Pose2D
+    from jenai.webui.server import build_map_payload
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config_path = tmp_path / "config.toml"
+    save_config(config, config_path)
+    save_locations(
+        [Location(name="Kitchen", pose=Pose2D(x=2, y=1, yaw=0))], tmp_path / "locations.toml"
+    )
+
+    payload = build_map_payload(config, config_path, pose_cache=None)
+
+    assert payload["locations"] == [{"name": "Kitchen", "x": 2.0, "y": 1.0, "frame_id": "map"}]
+    assert payload["pose"] is None
+
+
+def test_api_map_pose_staleness(tmp_path) -> None:
+    import time
+
+    from jenai.config.store import build_minimal_config, save_config
+    from jenai.webui.server import PoseCache, build_map_payload
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config_path = tmp_path / "config.toml"
+    save_config(config, config_path)
+
+    cache = PoseCache()
+    cache._started = True  # don't spawn a bridge in tests
+    cache.latest = {"x": 1.0, "y": 2.0, "yaw": 0.0, "frame_id": "map", "source": "/odom",
+                    "ts": time.time()}
+    assert build_map_payload(config, config_path, cache)["pose"] is not None
+
+    cache.latest["ts"] = time.time() - 60  # stale → treated as no pose
+    assert build_map_payload(config, config_path, cache)["pose"] is None

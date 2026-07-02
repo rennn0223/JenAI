@@ -4,11 +4,14 @@ import asyncio
 import json
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 from jenai.adapters import ros2_adapter
+from jenai.adapters.locations import LocationsFileError, load_locations
+from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
 from jenai.providers.chat import chat_model_name
@@ -48,6 +51,73 @@ class _PendingConfirms:
             return None
         with self._lock:
             return self._items.pop(token, None)
+
+
+class PoseCache:
+    """Latest robot pose, refreshed by a daemon thread owning one bridge client.
+
+    The HTTP handlers are sync and per-request (`asyncio.run`), so they cannot
+    share a loop-bound RosBridgeClient. One background thread runs its own
+    event loop + bridge and publishes the latest pose here; /api/map just reads.
+    """
+
+    def __init__(self, refresh_s: float = 1.0) -> None:
+        self.latest: dict[str, Any] | None = None
+        self._refresh_s = refresh_s
+        self._started = False
+        self._lock = threading.Lock()
+
+    def ensure_started(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+        if not RosBridgeClient.available():
+            return
+        threading.Thread(target=lambda: asyncio.run(self._loop()), daemon=True).start()
+
+    async def _loop(self) -> None:
+        client = RosBridgeClient()
+        try:
+            await client.start()
+        except BridgeError:
+            return
+        while True:
+            try:
+                pose = await client.get_pose(timeout=2.0)
+                self.latest = {
+                    "x": pose.x,
+                    "y": pose.y,
+                    "yaw": pose.yaw,
+                    "frame_id": pose.frame_id,
+                    "source": pose.source,
+                    "ts": time.time(),
+                }
+            except BridgeError:
+                self.latest = None
+            await asyncio.sleep(self._refresh_s)
+
+
+def build_map_payload(
+    config: AppConfig, config_path: Path, pose_cache: PoseCache | None
+) -> dict[str, Any]:
+    if pose_cache is not None:
+        pose_cache.ensure_started()
+    locations: list[dict[str, Any]] = []
+    locations_path = config.resolved_locations_path(config_path)
+    if locations_path is not None and locations_path.exists():
+        try:
+            locations = [
+                {"name": loc.name, "x": loc.pose.x, "y": loc.pose.y, "frame_id": loc.frame_id}
+                for loc in load_locations(locations_path)
+            ]
+        except LocationsFileError:
+            pass
+    pose = pose_cache.latest if pose_cache is not None else None
+    # A pose older than 5s is stale (bridge hiccup / robot stopped publishing).
+    if pose is not None and time.time() - pose.get("ts", 0) > 5.0:
+        pose = None
+    return {"locations": locations, "pose": pose, "ros": RosBridgeClient.available()}
 
 
 def _ros_snapshot() -> dict[str, Any]:
@@ -130,6 +200,7 @@ class _Handler(BaseHTTPRequestHandler):
     config_path: Path
     run_store: RunStore | None = None
     pending: _PendingConfirms | None = None
+    pose_cache: PoseCache | None = None
 
     def log_message(self, *args: Any) -> None:  # silence default stderr logging
         pass
@@ -152,6 +223,9 @@ class _Handler(BaseHTTPRequestHandler):
                 json.dumps(self._status(), ensure_ascii=False),
                 "application/json; charset=utf-8",
             )
+        elif path == "/api/map":
+            payload = build_map_payload(self.config, self.config_path, self.pose_cache)
+            self._send(json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/fragment":
             self._send(render_main(self._status()), "text/html; charset=utf-8")
         else:
@@ -205,6 +279,7 @@ def make_server(
             "config_path": config_path,
             "run_store": run_store,
             "pending": _PendingConfirms(),
+            "pose_cache": PoseCache(),
         },
     )
     return ThreadingHTTPServer((host, port), handler)
