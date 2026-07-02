@@ -34,15 +34,46 @@ uv run JenAI doctor
 uv run JenAI web
 ```
 
-### 一鍵啟動（含 ROS2）
+### 在新機器上安裝（fresh clone）
 
-`~/.local/bin/jenai` 啟動腳本會先 source ROS2 Jazzy、確保 uv，再用 `uv run` 啟動：
+repo 本身可攜：依賴鎖在 `uv.lock`（含 aarch64／x86_64／macOS wheel），原始碼沒有寫死任何機器路徑。有三個檔案**不在 repo 裡**（使用者設定／機密），換機器後要重建：
+
+| 檔案（`~/.config/jenai/`） | 怎麼來 |
+|---|---|
+| `config.toml`（provider／model） | 首次 `uv run JenAI` 自動跑 setup wizard 建立 |
+| `.env`（API 金鑰） | 手動一行（見下方「一鍵啟動」） |
+| `locations.toml`（地點） | 依 [`locations.example.toml`](locations.example.toml) 填 |
 
 ```bash
+git clone <repo-url> ~/JenAI && cd ~/JenAI
+uv sync                 # 依 uv.lock 裝依賴（需要時 uv 會自動裝 Python 3.12+）
+uv run JenAI            # 首次 → setup wizard → 進 TUI
+```
+
+- **ROS2 是選配**：沒裝 ROS 的機器，`/ros*`、`/drive`、`/route` 會誠實回報 unavailable（不會崩），聊天／`/plan` 照常；控真車才需要 ROS2 Jazzy + Nav2。
+- 需要網路 + 金鑰（或本機 Ollama）才能實際呼叫模型；純離線無法。
+
+### 一鍵啟動（含 ROS2）
+
+啟動腳本 [`scripts/jenai`](scripts/jenai) 會先 source ROS2 Jazzy（確認 `ros2` 真的在
+PATH 上，而不只看 `ROS_DISTRO`）、確保 uv、載入 `.env`（見下），再用 `uv run` 啟動。
+安裝方式是連結到 PATH 上：
+
+```bash
+ln -sf "$PWD/scripts/jenai" ~/.local/bin/jenai   # 一次性安裝
 jenai            # source ROS2 → 進 TUI
-jenai doctor     # 環境檢查（ros2 會是 pass）
+jenai doctor     # 環境檢查
 jenai web        # WebUI 儀表板
 # 覆寫路徑：JENAI_DIR=/path/to/JenAI  ROS_SETUP=/opt/ros/humble/setup.bash jenai
+```
+
+**API 金鑰用 `.env`（建議）**：把 provider 金鑰放在 `~/.config/jenai/.env`
+（`chmod 600`），啟動腳本會用 `uv run --env-file` 載入。這比寫在 `.bashrc` 好——
+不受「互動 shell 才載入」限制，任何啟動情境都吃得到：
+
+```bash
+printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.config/jenai/.env
+# 覆寫路徑：JENAI_ENV_FILE=/path/to/.env jenai
 ```
 
 ### 使用本地 Ollama

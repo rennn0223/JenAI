@@ -70,3 +70,31 @@ def test_doctor_reports_provider_and_models_from_config(tmp_path: Path, monkeypa
         for item in result.items
     )
 
+
+def test_doctor_none_config_path_resolves_locations_against_config_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # run_doctor(None) must resolve the locations file against the real config
+    # dir (default_config_path), not the current working directory.
+    from jenai.doctor import checks
+
+    monkeypatch.setenv("JENAI_TEST_API_KEY", "test-key")
+    cfg_path = tmp_path / "config.toml"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="gpt-test",
+            api_key_env="JENAI_TEST_API_KEY",
+        ),
+        cfg_path,
+    )
+    (tmp_path / "locations.toml").write_text("# empty\n", encoding="utf-8")
+    monkeypatch.setattr(checks, "default_config_path", lambda: cfg_path)
+
+    result = run_doctor(None)  # None must fall back to default_config_path()
+
+    loc = next(i for i in result.items if i.check_name == "locations_file")
+    assert loc.status == "pass"
+    assert str(tmp_path) in loc.message  # resolved via config dir, not cwd
+

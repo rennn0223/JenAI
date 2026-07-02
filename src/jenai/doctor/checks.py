@@ -7,11 +7,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from jenai.config import AppConfig, ConfigError, load_config
+from jenai.config import AppConfig, ConfigError, default_config_path, load_config
 from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
 
 
 def run_doctor(config_path: Path | None = None) -> DoctorResult:
+    # Resolve the default location once so every check (config load AND the
+    # locations-file check) agrees on the real config dir, instead of some
+    # falling back to the current working directory.
+    config_path = config_path or default_config_path()
     items: list[DoctorCheckItem] = []
     items.extend(_check_python())
     items.extend(_check_uv())
