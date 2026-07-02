@@ -10,10 +10,13 @@ JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人
 
 - **自然語言任務規劃與執行**：以 `/plan` 與 `/run` 驅動 agent 完成多步驟任務
 - **ROS2 整合**：topics 探索、schema 解析、echo 監看、pub 控制
-- **自然語言路由**：以地點名稱描述起終點，自動解析成導航指令
-- **視覺理解**：接受圖片輸入，由 VLM 分析場景並產出結構化觀察
+- **即時導航**：`/route`、`/mission` 走 Nav2，剩餘距離即時顯示、Esc 真的取消 goal（rclpy bridge）
+- **地點管理**：`/loc add here <名字>` 抓機器人當下位置存檔，邊走邊建地圖點位
+- **視覺理解**：`/vision image <路徑>` 分析圖片；`/vision camera` 直接抓相機畫面問「你看到什麼」
+- **模型雲地隨切**：`/provider`、`/model` 即時切換 NVIDIA 雲端／本機 Ollama，含編號快選
 - **Human-in-the-loop 批准機制**：敏感操作一律暫停等待人工核准，Enter 批准、Esc 拒絕
-- **TUI + WebUI 雙介面**：terminal 優先操作，WebUI 提供監控與視覺化
+- **TUI + WebUI 雙介面**：terminal 優先；WebUI 有對話 console、即時地圖、手機批准
+- **daemon 常駐模式**：`jenai daemon` 規則觸發（如電量低回充），預設只通報、明確授權才動作
 
 ---
 
@@ -93,6 +96,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 | 文件 | 說明 |
 |---|---|
+| [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（新人先讀這份） |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | CLI + slash 命令完整規格 |
 | [docs/FEATURES.md](docs/FEATURES.md) | 14 個核心功能可實作規格 |
 | [docs/UX.md](docs/UX.md) | TUI/WebUI 互動設計規格 |
