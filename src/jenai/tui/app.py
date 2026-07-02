@@ -17,6 +17,7 @@ from jenai import __version__
 from jenai.adapters.locations import (
     LocationNotFoundError,
     LocationsFileError,
+    append_location,
     ensure_locations_file,
     find_location,
     load_locations,
@@ -43,6 +44,7 @@ from jenai.schemas import (
     DoctorStatus,
     EffectScope,
     Location,
+    Pose2D,
     RiskLevel,
     RunRecord,
     RunStatus,
@@ -130,6 +132,9 @@ SLASH_COMMANDS = [
         "/route", "Resolve and send a navigation route (needs approval)", "/route <text>"
     ),
     SlashCommand("/loc list", "List known locations"),
+    SlashCommand(
+        "/loc add", "Save the robot's current position as a location", "/loc add here <name>"
+    ),
     SlashCommand("/loc show", "Show a location's details", "/loc show <name>"),
     SlashCommand("/vision image", "Analyze a local image with the VLM", "/vision image <path>"),
     SlashCommand("/shell", "Run a host shell command (needs approval)", "/shell <cmd>"),
@@ -621,6 +626,7 @@ class JenAITuiApp(App[None]):
             subcommand, _, rest = arg.partition(" ")
             loc_handlers = {
                 "list": self._show_loc_list,
+                "add": self._show_loc_add,
                 "show": self._show_loc_show,
             }
             return loc_handlers.get(subcommand), rest.strip()
@@ -1519,6 +1525,60 @@ class JenAITuiApp(App[None]):
         }
         await self._mount_event(ApprovalCard(approval))
         self._scroll_to_bottom()
+
+    async def _show_loc_add(self, arg: str) -> None:
+        name = arg.strip()
+        if name.lower().startswith("here "):  # "/loc add here Kitchen" and "/loc add Kitchen"
+            name = name[5:].strip()
+        elif name.lower() == "here":  # bare "/loc add here" has no name to save
+            name = ""
+        if not name or name.startswith("<"):
+            await self._mount_event(
+                TimelineItem("warn", "Usage: [bold #f2ede1]/loc add here <name>[/]")
+            )
+            return
+
+        locations_path = self.config.resolved_locations_path(self.config_path)
+        if locations_path is None:
+            await self._mount_event(
+                TimelineItem("warn", "No locations_path is configured — add one to the config.")
+            )
+            return
+
+        try:
+            bridge = await self._get_bridge()
+            pose = await bridge.get_pose(timeout=3.0)
+        except BridgeError as exc:
+            await self._mount_event(
+                TimelineItem("warn", f"Could not read the robot's position: {exc}")
+            )
+            return
+
+        location = Location(
+            name=name,
+            frame_id=pose.frame_id,
+            pose=Pose2D(x=round(pose.x, 3), y=round(pose.y, 3), yaw=round(pose.yaw, 3)),
+        )
+        try:
+            await asyncio.to_thread(append_location, location, locations_path)
+        except LocationsFileError as exc:
+            await self._mount_event(TimelineItem("warn", str(exc)))
+            return
+
+        note = ""
+        if pose.source == "/odom":
+            note = (
+                f"\n[{MUTED}]Caution: pose came from /odom (no localization) — coordinates are "
+                "in the odom frame and drift over time. Start AMCL for map-frame poses.[/]"
+            )
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Saved [bold #f2ede1]{name}[/] at x={location.pose.x} y={location.pose.y} "
+                f"yaw={location.pose.yaw} ({pose.frame_id}, from {pose.source}) · "
+                f"try [bold #f2ede1]/route from here to {name}[/]{note}",
+            )
+        )
 
     async def _show_loc_list(self, _: str = "") -> None:
         locations = self._load_locations()

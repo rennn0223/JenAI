@@ -24,7 +24,7 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="Route",
-        commands=["/route <text>", "/loc list", "/loc show <name>"],
+        commands=["/route <text>", "/loc list", "/loc show <name>", "/loc add here <name>"],
     ),
     CommandGroup(
         name="Vision",
