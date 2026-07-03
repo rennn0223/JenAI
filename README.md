@@ -146,6 +146,8 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > ✅ **介面**：Claude 風格 TUI、WebUI（console+手機批准+即時地圖+STOP）、MCP server、daemon 常駐。全部走同一套共用原語（導航調度、急停、相機分析、地點載入各只有一份）。
 >
-> ✅ **工程**：271 測試（無 ROS 的 CI 可全跑）、rclpy bridge 協定有純 stdlib fake、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：305 測試（無 ROS 的 CI 可全跑）、rclpy bridge 協定有純 stdlib fake、誠實回報原則貫穿每條路徑。
 >
-> 🚧 **進行中**（見 [PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md)）：M5 onboarding（建圖到首航手把手）、M3 Twin Gate（Isaac Sim 數位孿生逐指令預演閘門，論文核心）。
+> ✅ **Twin Gate**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：導航目標先在數位孿生（獨立 ROS_DOMAIN_ID）預演，G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗 → pass／block／refer；`[twin]` 一行開關，所有導航入口與 daemon 全部過閘，daemon 自主路徑 refer 一律視同 block。
+>
+> 🚧 **進行中**（見 [PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md)）：M3 Isaac Sim 孿生場景建置（工作站作業，見 TWIN_SETUP.md）、M6 自主決策迴圈（論文主軸）。

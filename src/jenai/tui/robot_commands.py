@@ -730,8 +730,11 @@ class RobotCommandsMixin:
                 + (f" · {p.recoveries} recoveries" if p.recoveries else "")
             )
 
+        def _gate(message: str) -> None:
+            self._spinner_label = message
+
         return await navigate_with_fallback(
-            self.config, self._get_bridge, outgoing_action, on_progress=_progress
+            self.config, self._get_bridge, outgoing_action, on_progress=_progress, on_gate=_gate
         )
 
     def _load_locations(self) -> list[Location]:

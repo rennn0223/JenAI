@@ -155,7 +155,7 @@ ROS topics 就能算,不用碰 Isaac 內部 API,增量成本可控。
 |---|---|---|---|---|
 | M1 | **E-stop / watchdog** | 客戶 | ✅ **v0.7** | `/stop`、WebUI STOP 鈕、MCP stop、daemon halt;bridge watchdog 斷線自主停車 |
 | M2 | **Vehicle profile 抽象** | 工程師 | ✅ **v0.7** | config `[vehicle]`:cmd_vel topic、硬限速、相機 topic → 換載具改設定不改程式 |
-| M3 | **Isaac Sim twin 場景 + Twin Gate pipeline** | PM | 🚧 | 論文核心 = 產品差異化,G1–G5 判準、pass/block/refer,可整段關閉。前置:孿生改獨立 ROS_DOMAIN_ID(現與實車共用 0) |
+| M3 | **Isaac Sim twin 場景 + Twin Gate pipeline** | PM | 🚧 **pipeline ✅** | 論文核心 = 產品差異化。Gate pipeline 已完成:G1–G5 判準、pass/block/refer、孿生獨立 ROS_DOMAIN_ID、`[twin]` 設定、doctor `twin` 檢查,掛在導航唯一出口(所有入口 + daemon 全過閘)。剩 Isaac Sim 場景建置(工作站作業,見 [TWIN_SETUP.md](TWIN_SETUP.md)) |
 | M4 | **任務級技能:patrol / return_to_dock** | 客戶 | ✅ **v0.8** | `/patrol A, B x3 photo`(循環+每點 VLM 觀察)、`/dock`;follow_route 由 `/mission` 涵蓋 |
 | M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | 🚧 | 建圖、定位、cmd_vel 檢查的手把手流程(doctor 擴充 + 文件) |
 | M6 | **自主決策迴圈(論文主軸)** | PM(論文) | 🚧 | 感知→情境快照(pose/電量/VLM 摘要)→ LLM 於有界動作集(navigate/patrol/dock/wait/report/refer)決策 → 孿生預演(M3)→ 執行 → 回饋。daemon(事件)+ agent(決策)+ skills(動作)+ Gate(預演)串成迴圈;人工指令與自主觸發共用同一條 |

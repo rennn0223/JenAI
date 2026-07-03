@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -33,11 +34,16 @@ def is_available() -> bool:
     return shutil.which("ros2") is not None
 
 
-def _run(args: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+def _run(
+    args: list[str], *, timeout: float, domain_id: int | None = None
+) -> subprocess.CompletedProcess[str]:
     if not is_available():
         raise Ros2NotAvailableError(
             "ros2 command was not found on PATH. Install ROS2 Jazzy and source its setup script."
         )
+    # A domain override talks to that domain's own ros2 daemon (the CLI keeps
+    # one per ROS_DOMAIN_ID), so probing the twin never disturbs the robot's.
+    env = {**os.environ, "ROS_DOMAIN_ID": str(domain_id)} if domain_id is not None else None
     try:
         return subprocess.run(
             ["ros2", *args],
@@ -45,13 +51,14 @@ def _run(args: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Ros2CommandError(f"ros2 {' '.join(args)} could not run: {exc}") from exc
 
 
-def list_topics(*, timeout: float = 5.0) -> list[str]:
-    completed = _run(["topic", "list"], timeout=timeout)
+def list_topics(*, timeout: float = 5.0, domain_id: int | None = None) -> list[str]:
+    completed = _run(["topic", "list"], timeout=timeout, domain_id=domain_id)
     if completed.returncode != 0:
         raise Ros2CommandError(
             f"ros2 topic list exited with code {completed.returncode}: {completed.stderr.strip()}",
@@ -62,13 +69,13 @@ def list_topics(*, timeout: float = 5.0) -> list[str]:
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
-def list_actions(*, timeout: float = 5.0) -> list[str]:
+def list_actions(*, timeout: float = 5.0, domain_id: int | None = None) -> list[str]:
     """Names of action servers on the graph (`ros2 action list`).
 
     Action topics are hidden from `ros2 topic list`, so this is the only
     honest way to detect e.g. a running Nav2 (/navigate_to_pose).
     """
-    completed = _run(["action", "list"], timeout=timeout)
+    completed = _run(["action", "list"], timeout=timeout, domain_id=domain_id)
     if completed.returncode != 0:
         raise Ros2CommandError(
             f"ros2 action list exited with code {completed.returncode}: "

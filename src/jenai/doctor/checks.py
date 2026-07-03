@@ -61,6 +61,7 @@ def run_doctor(config_path: Path | None = None, *, include_nav: bool = True) -> 
     items.extend(_check_ros2())
     if include_nav:
         items.extend(_check_nav_stack(config))
+        items.extend(_check_twin(config))
     items.extend(_check_provider(config))
     items.extend(_check_locations(config, config_path))
     items.extend(_check_webui_assets())
@@ -285,6 +286,80 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
             f"A controller subscribes to {cmd_vel}.",
             f"Nothing subscribes to {cmd_vel} — the robot would ignore velocity commands.",
             "Start the base/motor controller (docs/ONBOARDING.md §2).",
+        )
+    )
+    return items
+
+
+def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
+    """Twin Gate readiness, probed on the twin's own ROS_DOMAIN_ID.
+
+    Silent when the gate is disabled (the twin is optional equipment);
+    WARN-level when enabled but not reachable — the gate itself will refer
+    every goal to a human rather than pass it, so this is a heads-up, not a
+    safety hole.
+    """
+    if config is None or not config.twin.enabled:
+        return []
+    if shutil.which("ros2") is None:
+        return []  # ros2_cli already reports the root cause
+
+    from jenai.adapters import ros2_adapter
+
+    twin = config.twin
+    fix = "Start the Isaac Sim twin scene (docs/TWIN_SETUP.md) or set [twin] enabled = false."
+    try:
+        # First call may also spawn this domain's ros2 daemon — give it headroom.
+        topics = set(ros2_adapter.list_topics(timeout=15.0, domain_id=twin.domain_id))
+    except ros2_adapter.Ros2AdapterError:
+        return [
+            DoctorCheckItem(
+                section="twin",
+                check_name="twin_graph",
+                status=DoctorStatus.WARN,
+                message=f"Could not reach the twin ROS graph (domain {twin.domain_id}).",
+                fix_suggestion=fix,
+            )
+        ]
+
+    items = [
+        DoctorCheckItem(
+            section="twin",
+            check_name="twin_graph",
+            status=DoctorStatus.PASS,
+            message=f"Twin ROS graph is up on domain {twin.domain_id} ({len(topics)} topics).",
+        )
+    ]
+
+    try:
+        actions = ros2_adapter.list_actions(timeout=5.0, domain_id=twin.domain_id)
+    except ros2_adapter.Ros2AdapterError:
+        actions = []
+    nav_ok = "/navigate_to_pose" in actions
+    items.append(
+        DoctorCheckItem(
+            section="twin",
+            check_name="twin_nav2",
+            status=DoctorStatus.PASS if nav_ok else DoctorStatus.WARN,
+            message="Twin Nav2 NavigateToPose action is available."
+            if nav_ok
+            else "Twin graph is up but Nav2 is not — every rehearsal will refer to a human.",
+            fix_suggestion=None if nav_ok else fix,
+        )
+    )
+
+    contact_ok = twin.collision_topic in topics
+    items.append(
+        DoctorCheckItem(
+            section="twin",
+            check_name="twin_contact_sensor",
+            status=DoctorStatus.PASS if contact_ok else DoctorStatus.WARN,
+            message=f"Twin contact sensor is publishing ({twin.collision_topic})."
+            if contact_ok
+            else f"No {twin.collision_topic} topic — G1 collision will be skipped.",
+            fix_suggestion=None
+            if contact_ok
+            else "Add a contact sensor to the twin scene (docs/TWIN_SETUP.md §3).",
         )
     )
     return items

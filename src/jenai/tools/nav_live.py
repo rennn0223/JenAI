@@ -123,16 +123,33 @@ async def navigate_with_fallback(
     outgoing_action: dict,
     *,
     on_progress: Callable[[NavProgress], None] | None = None,
+    on_gate: Callable[[str], None] | None = None,
 ) -> RouteOutput:
     """Execute a navigation action: live bridge (feedback + cancellation) when
     Nav2 is configured and ROS is present, otherwise the honest CLI adapter.
 
     This dispatch decides when a goal reaches real hardware — it lives here
     once so every surface (TUI, MCP, future callers) applies the same policy.
+    That includes the Twin Gate: with `[twin] enabled = true` the goal is
+    rehearsed in the digital twin first, and only a `pass` verdict reaches
+    the robot. Gate progress streams to `on_gate` when given.
     """
     # Imported here: route_core pulls in the provider stack, which nav_live's
     # other callers (daemon, bridge tests) shouldn't need at import time.
     from jenai.tools.route_core import route_execute
+
+    if config.twin.enabled:
+        from jenai.twin import rehearse_goal
+
+        report = await rehearse_goal(config.twin, outgoing_action, on_status=on_gate)
+        if report.verdict != "pass":
+            return RouteOutput(
+                input_text="",
+                outgoing_action=outgoing_action,
+                approval_status="approved",
+                execution_status="failed",
+                route_preview=f"{report.summary} — the real robot was NOT moved.",
+            )
 
     if config.route_adapter == "nav2" and RosBridgeClient.available():
         try:

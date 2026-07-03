@@ -12,6 +12,7 @@ from jenai.daemon.engine import Decision, Rule, RuleEngine
 from jenai.tools.nav_live import navigate_live
 from jenai.tools.perception import PerceptionLoop
 from jenai.tools.safety import arm_watchdog, halt_robot
+from jenai.twin import rehearse_goal
 
 PERCEPTION_TOPIC = "@perception"  # rule.topic sentinel: trigger on camera VLM analyses
 
@@ -102,8 +103,16 @@ async def run_daemon(
             except LocationNotFoundError:
                 on_status(f"'{decision.rule.name}': unknown location '{decision.navigate_to}'")
                 return
+            goal_action = {"goal": location.model_dump(mode="json")}
+            if config.twin.enabled:
+                # Autonomous path: there is no human to refer to, so anything
+                # short of a clean pass keeps the robot parked.
+                report = await rehearse_goal(config.twin, goal_action, on_status=on_status)
+                if report.verdict != "pass":
+                    on_status(f"'{decision.rule.name}': {report.summary} — robot NOT moved")
+                    return
             on_status(f"'{decision.rule.name}': navigating to {location.name}")
-            output = await navigate_live(bridge, {"goal": location.model_dump(mode="json")})
+            output = await navigate_live(bridge, goal_action)
             on_status(
                 f"'{decision.rule.name}': {output.execution_status} — {output.route_preview}"
             )
