@@ -1,7 +1,9 @@
 # JenAI 命令規格
 
+> 對應版本:v0.7 系列(2026-07)。
+
 JenAI 的命令分為兩層：
-1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭
+1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
 2. **Slash 指令**：在 TUI/WebUI 輸入框中使用，以 `/` 開頭
 
 ---
@@ -11,13 +13,15 @@ JenAI 的命令分為兩層：
 | 命令 | 說明 |
 |---|---|
 | `JenAI` | 主入口。首次使用進入 setup wizard，已設定則直接進 TUI |
-| `JenAI web` | 啟動 WebUI 監控中心 |
-| `JenAI doctor` | 檢查 ROS2、provider、model、vision、locations、環境 |
-| `JenAI config` | 顯示或編輯設定 |
-| `JenAI providers` | 顯示 provider 清單與健康狀態 |
-| `JenAI models` | 顯示已配置模型與能力綁定 |
-| `JenAI route "<text>"` | 非互動式 route 任務 |
-| `JenAI loc <subcommand>` | 非互動式 location 管理 |
+| `JenAI web` | 啟動 WebUI 監控中心（`--host` / `--port`，預設 127.0.0.1:8760） |
+| `JenAI mcp` | MCP stdio server：把機器人工具開放給 Claude Code/Desktop 等 client。預設唯讀，`--allow-actions` 才註冊 `navigate_to` |
+| `JenAI daemon` | 常駐規則引擎：監看 topics 觸發規則（`--rules` 指定檔案，預設 `~/.config/jenai/rules.toml`） |
+| `JenAI doctor` | 檢查 ROS2、provider、model、locations、環境（`--json` 機器可讀） |
+| `JenAI config` | 顯示目前設定（JSON） |
+| `JenAI providers` | 顯示 provider 清單 |
+| `JenAI models` | 顯示 model 綁定 |
+| `JenAI route "<text>"` | 非互動式 route 任務（互動確認後送出） |
+| `JenAI loc list` / `loc show <名>` | 非互動式 location 查詢 |
 | `JenAI version` | 顯示版本資訊 |
 
 ### 關於 `JenAI` 主入口行為
@@ -25,34 +29,41 @@ JenAI 的命令分為兩層：
 ```
 JenAI 啟動流程：
 
-1. 讀取設定檔
+1. 讀取 ~/.config/jenai/.env（API 金鑰;shell 已 export 者優先）
+2. 讀取設定檔
    ├─ 找不到 or 不完整 → 進入 setup wizard
    └─ 完整
-       ├─ provider/model 可用 → 進入 TUI 主畫面
-       └─ 環境異常 → 提示執行 JenAI doctor
+       ├─ 啟動健檢通過 → 進入 TUI 主畫面
+       └─ config/provider 異常 → 提示執行 JenAI doctor
 ```
 
 ---
 
 ## Slash 指令總表
 
+### Safety
+
+| 指令 | 說明 | 範例 |
+|---|---|---|
+| `/stop` | **緊急停止**：取消 Nav2 goal + 連發零速度。**免批准**；任務執行中輸入也會搶佔（先取消進行中任務再停車） | `/stop` |
+
+> 對應介面:WebUI 右上角紅色 **STOP** 鈕（免確認）、MCP `stop` 工具（唯讀模式也有）、daemon `action = "halt"` 規則。另有 bridge 端 watchdog:導航中 client 斷線/卡死超過 6 秒,bridge 自主停車。
+
 ### Session
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
-| `/help` | 顯示指令簡介、分類、範例與快捷鍵 | `/help` or `/help ros` |
-| `/status` | 顯示目前 session 狀態、provider、model、ROS 連線 | `/status` |
+| `/help` | 顯示指令簡介、分類、範例與快捷鍵 | `/help` |
+| `/status` | 顯示 provider、model、config、doctor 摘要 | `/status` |
 | `/clear` | 清除目前對話畫面**與跨重啟記憶** | `/clear` |
-| `/compact` | 壓縮對話歷史以節省 context（🚧 規劃中，v0.1.0 未實作） | `/compact` |
-| `/theme` | 切換顯示主題（🚧 規劃中，v0.1.0 未實作） | `/theme dark` |
-| `/resume` | 恢復上一個被中斷的 run（🚧 規劃中，v0.1.0 未實作） | `/resume` |
+| `/quit` / `/exit` | 離開 JenAI | `/quit` |
 
 ### Planning
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
 | `/plan <task>` | 規劃任務，不執行 side effects | `/plan 導航到機械系館並回報電量` |
-| `/run <task>` | 執行任務：Supervisor agent 依需求 handoff 給 ROS/Motion/Navigation/Perception 專職 agent（多-agent） | `/run 帶我到應科大樓` |
+| `/run <task>` | 執行任務：Supervisor agent 依需求 handoff 給 ROS/Motion/Navigation/Perception 專職 agent | `/run 帶我到應科大樓` |
 | `/why` | 解釋 agent 目前決策原因 | `/why` |
 | `/review` | 重新檢視目前 plan 並建議修改 | `/review` |
 | `/abort` | 中止目前 run | `/abort` |
@@ -61,50 +72,57 @@ JenAI 啟動流程：
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
-| `/provider` | 顯示目前使用的 provider | `/provider` |
-| `/model` | 顯示目前使用的 model | `/model` |
-| `/models` | 列出所有可用 model | `/models` |
-| `/permissions` | 顯示目前工具權限設定 | `/permissions` |
+| `/provider [名]` | 顯示/切換 active provider（含編號快選），即時生效並持久化 | `/provider local` |
+| `/providers` | 列出所有 provider profiles | `/providers` |
+| `/model [名\|編號]` | 列出端點上真實可用的模型（含 Ollama）並切換 chat 綁定 | `/model qwen3:8b` 或 `/model 2` |
+| `/models` | 顯示 model 綁定（chat/plan/vision/route/default） | `/models` |
+| `/permissions` | 顯示哪些指令需要批准 | `/permissions` |
+| `/config` | 顯示 config 檔重點 | `/config` |
+| `/doctor` | 在 TUI 內跑健檢 | `/doctor` |
 
 ### ROS2
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
-| `/ros topics` | 列出目前 ROS2 graph 中的 topics | `/ros topics` |
+| `/ros topics` | 列出目前 ROS2 graph 中的 topics（含類型提示） | `/ros topics` |
 | `/ros topic-info <topic>` | 查詢 topic 的 type、publishers、subscribers | `/ros topic-info /cmd_vel` |
-| `/ros schema <topic>` | 解析 topic message type 並以人話摘要欄位 | `/ros schema /cmd_vel` |
-| `/ros echo <topic>` | 即時監看 topic 訊息流 | `/ros echo /scan` |
-| `/ros pub <topic> <payload>` | 向 topic 發送訊息（需批准） | `/ros pub /cmd_vel {"linear":{"x":0.5}}` |
+| `/ros schema <topic>` | 解析 message type 並以人話摘要欄位 | `/ros schema /cmd_vel` |
+| `/ros echo <topic> [count]` | 擷取 N 筆訊息快照（snapshot 模式） | `/ros echo /scan 3` |
+| `/ros pub <topic> <payload>` | 向 topic 發送訊息（需批准；速度過 `[vehicle]` 硬限速） | `/ros pub /cmd_vel {"linear":{"x":0.5}}` |
 | `/ros drive <topic> <payload> [秒]` | 定頻發布 N 秒後自動送 0 停車（需批准） | `/ros drive /cmd_vel {"linear":{"x":0.5}} 2` |
-| `/ros state` | 觀察機器人當下狀態（/odom + /scan 快照，閉環感知） | `/ros state` |
-| `/ros graph` | 顯示 node/topic 連線關係圖（🚧 規劃中，未實作） | `/ros graph` |
+| `/ros state` | 機器人當下狀態快照（/odom + /scan，閉環感知） | `/ros state` |
 
-> `/ros echo` 目前為 snapshot 模式：擷取 N 筆訊息（`/ros echo <topic> [count]`）後結束，尚未支援連續 streaming。
-
-### Route
+### Route / 地點
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
-| `/route <text>` | 自然語言路由，解析目的地並送出導航（需批准）。Nav2 從機器人**當前位置**出發，故起點僅供辨識、不作為出發點 | `/route 從應科大樓到機械系館` |
-| `/drive <自然語言>` | 說人話控車：解析成速度指令後定時發布（需批准） | `/drive 前進兩秒` |
-| `/mission <地點, …>` | 多步巡邏任務：依序前進/導航各點並回報結果（需批准一次） | `/mission 廚房, drive 左轉, 大廳` |
-| `/loc list` | 列出所有可用地點 | `/loc list` |
-| `/loc show <name>` | 顯示特定地點詳細資料 | `/loc show 應科大樓` |
-| `/loc add` | 新增地點（互動式）（🚧 規劃中，v0.1.0 未實作） | `/loc add` |
+| `/route <text>` | 自然語言路由，解析目的地並送出導航（需批准）。Nav2 模式下即時顯示剩餘距離、Esc 真的取消 goal | `/route 從應科大樓到機械系館` |
+| `/drive <自然語言>` | 說人話控車：解析成速度指令後定時發布（需批准；發到 `vehicle.cmd_vel_topic`） | `/drive 前進兩秒` |
+| `/loc list` | 列出所有地點 | `/loc list` |
+| `/loc show <名>` | 顯示地點詳細資料 | `/loc show 應科大樓` |
+| `/loc add here <名>` | **抓機器人當下位置**存成地點（讀 /amcl_pose，退回 /odom） | `/loc add here 走廊測試點` |
+
+### Skills（任務技能）
+
+| 指令 | 說明 | 範例 |
+|---|---|---|
+| `/mission <地點, …>` | 多步任務：依序導航/移動各點並回報（批准一次跑整趟；`drive <動作>` 段落可混排） | `/mission 廚房, drive 左轉, 大廳` |
+| `/patrol <地點, …> [xN] [photo]` | **循環巡邏**：點位 × 圈數；`photo` 時每個到達點抓相機幀給 VLM 並即時回報觀察。一點失敗記錄後續行 | `/patrol A, B x3 photo` |
+| `/dock` | 回充：導航到 `tags = ["dock"]` 的地點（名字/別名是 Dock、充電站也認得） | `/dock` |
 
 ### Vision
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
-| `/vision image <path>` | 分析圖片並輸出結構化觀察 | `/vision image /tmp/scene.jpg` |
-| `/vision camera` | 擷取目前 camera topic 並分析（🚧 規劃中，v0.1.0 未實作） | `/vision camera` |
+| `/vision image <path>` | 分析本機圖片並輸出結構化觀察 | `/vision image /tmp/scene.jpg` |
+| `/vision camera [topic]` | 抓一張相機幀給 VLM 分析；不帶 topic 用 `vehicle.camera_topic` | `/vision camera /rgb` |
 
 ### System
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
 | `/shell <cmd>` | 執行 shell 命令（需批准） | `/shell ls -la /var/log` |
-| `!<cmd>` | Bash 模式：以 `!` 開頭的輸入直接當 `/shell` 執行（仍需批准） | `!ls -la` |
+| `!<cmd>` | Bash 模式：以 `!` 開頭直接當 `/shell` 執行（仍需批准） | `!ls -la` |
 
 ---
 
@@ -114,7 +132,7 @@ JenAI 啟動流程：
 |---|---|
 | `Enter` | 送出輸入 / 選定 approval 目前選項 |
 | `!` | 以 `!` 開頭 → 該行當 shell 命令執行 |
-| `Esc` | 中斷執行中的任務 / 拒絕 approval / 關閉 palette |
+| `Esc` | 中斷執行中的任務（**Nav2 goal 真的會取消**）/ 拒絕 approval / 關閉 palette |
 | `1` `2` `3` | 直接選 approval 選項（Yes / Yes 並記住 / No） |
 | `Tab` | 補全命令名稱或模板 |
 | `↑` `↓` | 歷史輸入、slash palette 選項、或 approval 選項 |
@@ -123,12 +141,14 @@ JenAI 啟動流程：
 
 ## 需批准的指令（Approval Required）
 
-以下指令在執行前一律進入 `awaiting_approval` 狀態，顯示 approval card：
+以下指令在執行前一律顯示 approval card：
 
-- `/ros pub`
-- `/route`
+- `/ros pub`、`/ros drive`、`/drive`
+- `/route`、`/mission`、`/patrol`、`/dock`
 - `/shell`（含 `!` bash 模式）
 - `/run` 內部觸發的任何 side-effect tool
+
+**例外:`/stop` 永遠不需批准** —— 停下來永遠是安全的。
 
 Approval card 為 Claude Code 風格的**編號選項**，可用 `↑/↓`+`Enter` 或直接按數字鍵：
 
@@ -136,3 +156,12 @@ Approval card 為 Claude Code 風格的**編號選項**，可用 `↑/↓`+`Ente
 2. **Yes, and don't ask again this session** — 批准並在本 session 自動核准同類指令
 3. **No**（或 `Esc`）— 拒絕，並可告訴 JenAI 改用別的做法
 
+---
+
+## daemon 規則動作（rules.toml）
+
+| action | 批准需求 | 行為 |
+|---|---|---|
+| `"notify"`（預設） | 無 | 只通報，不動作 |
+| `"halt"` | **無**（停車永遠安全） | 緊急停止：取消進行中導航 + 零速度 |
+| `"goto <地點>"` | `auto_approve = true` **且** `route_adapter = "nav2"` | 導航到地點；條件不足時印出「本來會做什麼」 |

@@ -1,5 +1,8 @@
 # JenAI v0.1.0 功能優先級（MoSCoW）
 
+> 📜 **設計期文件**(v0.1 規劃階段)。實際實作已演進,現況以 [TECHNICAL_GUIDE.md](TECHNICAL_GUIDE.md)、[COMMANDS.md](COMMANDS.md) 與程式碼為準;方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
+
+
 ## Must Have — 沒有這些就無法驗收
 
 | 功能 | 說明 |

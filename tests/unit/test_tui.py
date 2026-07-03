@@ -1027,3 +1027,89 @@ def test_tui_stop_preempts_running_task(monkeypatch, tmp_path) -> None:
             assert any("halted" in b.lower() for b in bodies)
 
     asyncio.run(run())
+
+
+def test_tui_patrol_shows_card_and_runs(monkeypatch) -> None:
+    from jenai.tools.skills import PatrolReport, PatrolStepResult
+
+    ran = {}
+
+    async def fake_run_patrol(config, locations, spec, *, navigate, on_step=None, observe=None):
+        ran["spec"] = spec
+        ran["observe"] = observe
+        result = PatrolStepResult(1, "A", "succeeded", "arrived")
+        if on_step:
+            await on_step(result)
+        return PatrolReport(spec, [result])
+
+    monkeypatch.setattr("jenai.tui.app.run_patrol", fake_run_patrol)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/patrol A, B x2 photo")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert "4 waypoints" in cards[0].approval.title  # 2 points × 2 loops
+
+            await pilot.press("enter")
+            await pilot.pause()
+            if app._active_task is not None:
+                await app._active_task
+            assert ran["spec"].points == ["A", "B"]
+            assert ran["spec"].loops == 2
+            assert ran["observe"] is not None  # photo flag wired the camera in
+
+    asyncio.run(run())
+
+
+def test_tui_dock_without_dock_location_warns(tmp_path) -> None:
+    async def run() -> None:
+        app = _app(tmp_path)  # locations file exists but holds no dock
+        async with app.run_test():
+            await app.handle_user_text("/dock")
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("No dock location" in b for b in bodies)
+            assert list(app.query(ApprovalCard)) == []  # nothing to approve
+
+    asyncio.run(run())
+
+
+def test_tui_dock_routes_to_tagged_location(monkeypatch, tmp_path) -> None:
+    from jenai.schemas import Location, Pose2D, RouteOutput
+
+    sent = {}
+
+    async def fake_execute_route(action):
+        sent["goal"] = action["goal"]["name"]
+        return RouteOutput(
+            input_text="", outgoing_action=action,
+            execution_status="succeeded", route_preview="arrived at dock",
+        )
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        monkeypatch.setattr(
+            app,
+            "_load_locations",
+            lambda: [
+                Location(
+                    name="Charger", tags=["dock"],
+                    frame_id="map", pose=Pose2D(x=9, y=9, yaw=0),
+                )
+            ],
+        )
+        monkeypatch.setattr(app, "_execute_route_action", fake_execute_route)
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/dock")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert "Charger" in cards[0].approval.title
+
+            await pilot.press("enter")
+            await pilot.pause()
+            if app._active_task is not None:
+                await app._active_task
+            assert sent["goal"] == "Charger"
+
+    asyncio.run(run())

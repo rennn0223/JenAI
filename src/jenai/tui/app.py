@@ -38,6 +38,8 @@ from jenai.tools.ros2_core import (
     ros_pub_execute,
 )
 from jenai.tools.shell_core import assess_command, preview_command, run_shell
+from jenai.tools.skills import run_patrol
+from jenai.tools.vision_core import capture_and_analyze
 from jenai.tui.info_commands import InfoCommandsMixin
 from jenai.tui.panels import (
     CommandPalette,
@@ -91,8 +93,14 @@ SLASH_COMMANDS = [
         "/drive", "Drive by plain language (needs approval)", "/drive 前進兩秒"
     ),
     SlashCommand(
-        "/mission", "Run a multi-step patrol mission (needs approval)", "/mission kitchen, lobby"
+        "/mission", "Run a multi-step mission (needs approval)", "/mission kitchen, lobby"
     ),
+    SlashCommand(
+        "/patrol",
+        "Loop waypoints, optional photo report (needs approval)",
+        "/patrol A, B x2 photo",
+    ),
+    SlashCommand("/dock", "Return to the charging dock (needs approval)"),
     SlashCommand(
         "/route", "Resolve and send a navigation route (needs approval)", "/route <text>"
     ),
@@ -670,6 +678,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "/route": self._show_route,
             "/drive": self._show_drive,
             "/mission": self._show_mission,
+            "/patrol": self._show_patrol,
+            "/dock": self._show_dock,
             "/vision": self._show_vision,
             "/shell": self._show_shell,
             "/quit": self._quit_from_command,
@@ -1075,6 +1085,41 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 final_output=report.summary,
             )
             await self._mount_event(OutputPanel("Mission report", report.summary))
+        elif pending["kind"] == "patrol":
+            spec = pending["spec"]
+
+            async def _on_patrol_step(result):
+                loop_tag = f" (loop {result.loop})" if spec.loops > 1 else ""
+                body = f"{result.point}{loop_tag}: {result.status} — {result.detail}"
+                if result.observation:
+                    body += f"\n[#9c9689]👁 {result.observation}[/]"
+                await self._mount_event(
+                    TimelineItem("success" if result.status == "succeeded" else "warn", body)
+                )
+                self._scroll_to_bottom()
+
+            async def _observe() -> str | None:
+                bridge = await self._get_bridge()
+                output = await capture_and_analyze(
+                    self.config, bridge, self.config.vehicle.camera_topic
+                )
+                return output.summary
+
+            report = await run_patrol(
+                self.config,
+                pending["locations"],
+                spec,
+                navigate=self._execute_route_action,
+                on_step=_on_patrol_step,
+                observe=_observe if spec.photo else None,
+            )
+            ok = all(r.status == "succeeded" for r in report.results)
+            self.run_store.finish(
+                ctx.run,
+                status=RunStatus.COMPLETED if ok else RunStatus.BLOCKED,
+                final_output=report.summary,
+            )
+            await self._mount_event(OutputPanel("Patrol report", report.summary))
         elif pending["kind"] == "shell":
             shell_output = await run_shell(pending["command"])
             ok = shell_output.exit_code == 0
