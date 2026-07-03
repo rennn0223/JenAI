@@ -13,6 +13,7 @@ JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人
 - **即時導航**：`/route`、`/mission` 走 Nav2，剩餘距離即時顯示、Esc 真的取消 goal（rclpy bridge）
 - **地點管理**：`/loc add here <名字>` 抓機器人當下位置存檔，邊走邊建地圖點位
 - **視覺理解**：`/vision image <路徑>` 分析圖片；`/vision camera` 直接抓相機畫面問「你看到什麼」
+- **持續感知**：`/perception start` 相機→VLM 定頻迴圈，輸出結構化場景分析（affordances 可觸發 daemon 規則；只觀察，動作一律走批准）
 - **模型雲地隨切**：`/provider`、`/model` 即時切換 NVIDIA 雲端／本機 Ollama，含編號快選
 - **緊急停止**：TUI `/stop`、WebUI 紅色 STOP 鈕、MCP `stop` 工具——取消導航 + 送零速度,不需批准、忙碌中也能搶佔；bridge 端 watchdog 在 client 斷線時自動停車
 - **Human-in-the-loop 批准機制**：敏感操作一律暫停等待人工核准，Enter 批准、Esc 拒絕
@@ -92,8 +93,9 @@ type = "ackermann"          # ackermann | diff | quadruped
 cmd_vel_topic = "/cmd_vel"
 cmd_vel_stamped = false     # true 時發 TwistStamped
 camera_topic = "/camera/image_raw"   # /vision camera 與 MCP camera_look 預設
-max_linear = 2.0            # m/s — 執行期硬限速(LLM/使用者給再大都會被夾住)
-max_angular = 0.53          # rad/s
+max_linear = 1.0            # m/s — 執行期硬限速(LLM/使用者給再大都會被夾住)。
+max_angular = 2.0           # rad/s — 以上為安全預設;依你的車實測後再調
+                            # (例:Leatherback 用 2.0 / 0.53)
 ```
 
 ### 使用本地 Ollama
@@ -113,6 +115,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 | 文件 | 說明 |
 |---|---|
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（新人先讀這份） |
+| [docs/ONBOARDING.md](docs/ONBOARDING.md) | **機器人上線手把手**：裸 ROS2 → 建圖 → 定位 → Nav2 → 第一次 `/route`（`jenai doctor` 的 nav 檢查就是進度條） |
 | [docs/PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md) | **專案方向**：三方視角收斂的六層架構、功能優先序（必做 M1–M5）與可用性評估 |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | CLI + slash 命令完整規格 |
 | [docs/FEATURES.md](docs/FEATURES.md) | 設計期文件：14 個核心功能規格 |

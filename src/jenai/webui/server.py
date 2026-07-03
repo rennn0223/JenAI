@@ -70,6 +70,26 @@ class PoseCache:
         self._started = False
         self._last_exit: float | None = None
         self._lock = threading.Lock()
+        # Live loop + client refs while _loop runs: lets /api/stop submit the
+        # halt to the ALREADY-RUNNING bridge instead of paying a 1–3s bridge
+        # cold start in the middle of an emergency.
+        self._loop_ref: asyncio.AbstractEventLoop | None = None
+        self._client_ref: RosBridgeClient | None = None
+
+    def submit(self, coro_factory, timeout: float = 10.0):
+        """Run `coro_factory(client)` on the cache's live bridge loop.
+
+        Returns the result, or None when no live bridge is available (caller
+        falls back to its own path). Thread-safe: called from HTTP threads.
+        """
+        loop, client = self._loop_ref, self._client_ref
+        if loop is None or client is None or not loop.is_running():
+            return None
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro_factory(client), loop)
+            return future.result(timeout)
+        except Exception:
+            return None
 
     def ensure_started(self) -> None:
         if not RosBridgeClient.available():
@@ -106,6 +126,8 @@ class PoseCache:
         client = RosBridgeClient()
         try:
             await client.start()
+            self._loop_ref = asyncio.get_running_loop()
+            self._client_ref = client
             while True:
                 try:
                     pose = await client.get_pose(timeout=2.0)
@@ -123,6 +145,8 @@ class PoseCache:
         except BridgeError:
             pass
         finally:
+            self._loop_ref = None
+            self._client_ref = None
             await client.stop()
 
 
@@ -183,7 +207,8 @@ def build_status_payload(
     live ROS2 graph. The transcript is drawn from a RunStore when one is passed
     (a stand-alone `jenai web` process starts with none).
     """
-    doctor = run_doctor(config_path)
+    # 5s-polled path: skip the nav-stack probes (seconds of ros2 CLI each).
+    doctor = run_doctor(config_path, include_nav=False)
     profile = config.active_profile()
     runs = list(run_store.list_runs()) if run_store is not None else []
     transcript = [
@@ -221,8 +246,16 @@ def build_status_payload(
     }
 
 
-def _do_stop(config: AppConfig) -> dict[str, Any]:
-    """Halt the robot from a sync HTTP handler (fresh loop + fresh bridge)."""
+def _do_stop(config: AppConfig, pose_cache: PoseCache | None = None) -> dict[str, Any]:
+    """Halt the robot from a sync HTTP handler.
+
+    Fast path: submit the halt to the PoseCache's already-running bridge —
+    no cold start in the middle of an emergency. Fallback: fresh bridge.
+    """
+    if pose_cache is not None:
+        message = pose_cache.submit(lambda client: halt_robot(config, client))
+        if message is not None:
+            return {"kind": "result", "html": f"<p>🛑 {message}</p>"}
 
     async def run() -> str:
         bridge = RosBridgeClient()
@@ -308,7 +341,7 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/stop":
             # EMERGENCY STOP: no confirm token — stopping is always safe and
             # must never queue behind a dialog.
-            result = _do_stop(self.config)
+            result = _do_stop(self.config, self.pose_cache)
         else:
             result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")

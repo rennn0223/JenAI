@@ -113,6 +113,12 @@ SLASH_COMMANDS = [
     SlashCommand(
         "/vision camera", "Capture a camera frame and describe it", "/vision camera [topic]"
     ),
+    SlashCommand(
+        "/perception start",
+        "Continuous camera→VLM scene analysis (observe only)",
+        "/perception start [topic] [hz]",
+    ),
+    SlashCommand("/perception stop", "Stop the perception loop"),
     SlashCommand("/shell", "Run a host shell command (needs approval)", "/shell <cmd>"),
     SlashCommand("/clear", "Clear the output area"),
     SlashCommand("/quit", "Exit JenAI"),
@@ -296,6 +302,11 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self._pending_direct_approvals: dict[str, dict] = {}
         # Claude Code-style working indicator + interruptible execution.
         self._active_task: asyncio.Task | None = None
+        # True while the active task IS the emergency stop — Esc must not
+        # cancel it, and a preempted task must not clear its spinner.
+        self._active_task_is_stop = False
+        # Continuous camera→VLM loop (started via /perception start).
+        self._perception = None
         self._spinner_timer = None
         self._spinner_frame = 0
         self._spinner_started = 0.0
@@ -365,13 +376,27 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self._hide_command_palette()
         if not value:
             return
+        # Recognize any spelling of the stop command ('/STOP', '/stop now'):
+        # in an emergency the operator must not need the exact five characters.
+        is_stop = value.split()[0].lower() == "/stop"
+        if is_stop:
+            value = "/stop"
         if self._active_task is not None and not self._active_task.done():
-            if value != "/stop":
-                return  # busy; ignore new submissions until the current one finishes
+            if not is_stop:
+                # Busy: don't swallow the input silently — the user must know
+                # their submission was ignored and how to interrupt.
+                await self._mount_event(
+                    TimelineItem(
+                        "muted", "Busy — press Esc to interrupt, or /stop to halt the robot."
+                    )
+                )
+                self._scroll_to_bottom()
+                return
             # /stop must never queue behind the thing it is stopping: cancel the
             # in-flight task (which cancels its Nav2 goal) and run the halt now.
             self._active_task.cancel()
         self._active_task = asyncio.create_task(self._run_user_text(value))
+        self._active_task_is_stop = is_stop
 
     async def _run_user_text(self, value: str) -> None:
         """Run one submission with a working spinner; cancellable via Esc."""
@@ -391,11 +416,13 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 except NoMatches:
                     pass
         finally:
-            self._stop_spinner()
             # A /stop submission may have replaced us as the active task —
-            # only clear the slot if it is still ours, or Esc loses its target.
+            # then the spinner AND the slot belong to the stop task now:
+            # touching either would blank the STOPPING indicator mid-halt.
             if self._active_task is asyncio.current_task():
+                self._stop_spinner()
                 self._active_task = None
+                self._active_task_is_stop = False
 
     def _finalize_interrupted_run(self) -> None:
         """Mark an in-flight run as stopped so an Esc interrupt doesn't leave it
@@ -413,6 +440,13 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # palette owns up/down/tab while open, (3) up/down otherwise walks the
         # input history. Each branch stops the event so only one thing reacts.
         if event.key == "escape" and self._active_task is not None and not self._active_task.done():
+            if self._active_task_is_stop:
+                # Esc must never abort the emergency stop itself — the reflex
+                # 'Esc interrupts everything' would otherwise kill the halt
+                # before it reaches the bridge.
+                event.prevent_default()
+                event.stop()
+                return
             self._active_task.cancel()
             event.prevent_default()
             event.stop()
@@ -681,6 +715,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "/patrol": self._show_patrol,
             "/dock": self._show_dock,
             "/vision": self._show_vision,
+            "/perception": self._show_perception,
             "/shell": self._show_shell,
             "/quit": self._quit_from_command,
             "/exit": self._quit_from_command,
@@ -688,6 +723,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         return handlers.get(command), arg
 
     async def on_unmount(self) -> None:
+        if self._perception is not None:
+            await self._perception.stop()
         if self._bridge is not None:
             await self._bridge.stop()
 
@@ -901,10 +938,13 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # commands (/ros pub, /route, /shell) tracked in _pending_direct_approvals,
         # and agent-driven /run interruptions tracked in _pending_approvals.
         if message.tool_call_id in self._pending_direct_approvals:
-            # Option 2 ("don't ask again") remembers this command kind so future
-            # cards of the same kind are auto-approved for the session.
+            # Option 2 ("don't ask again") remembers this command so future
+            # cards of the same command are auto-approved for the session.
+            # auto_key (not kind): /dock reuses the route execution kind, but
+            # approval memory must never leak between distinct commands.
             if message.approved and message.remember:
-                kind = self._pending_direct_approvals[message.tool_call_id]["kind"]
+                pending = self._pending_direct_approvals[message.tool_call_id]
+                kind = pending.get("auto_key", pending["kind"])
                 self._auto_approved.add(kind)
                 await self._mount_event(
                     TimelineItem("muted", f"Auto-approving '{kind}' for the rest of this session.")
@@ -992,9 +1032,15 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 except NoMatches:
                     pass
         finally:
-            self._stop_spinner()
             if self._active_task is asyncio.current_task():
+                self._stop_spinner()
                 self._active_task = None
+                self._active_task_is_stop = False
+
+    async def _mount_step_line(self, status: str, body: str) -> None:
+        """One rendering for every skill/mission step — success green, rest warn."""
+        await self._mount_event(TimelineItem("success" if status == "succeeded" else "warn", body))
+        self._scroll_to_bottom()
 
     async def _execute_direct(self, pending: dict) -> None:
         """Run an approved direct command, finalising the run even on failure.
@@ -1063,13 +1109,10 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         elif pending["kind"] == "mission":
 
             async def _on_step(result):
-                await self._mount_event(
-                    TimelineItem(
-                        "success" if result.status == "succeeded" else "warn",
-                        f"{result.kind} {result.target}: {result.status} — {result.detail}",
-                    )
+                await self._mount_step_line(
+                    result.status,
+                    f"{result.kind} {result.target}: {result.status} — {result.detail}",
                 )
-                self._scroll_to_bottom()
 
             report = await run_mission(
                 self.config,
@@ -1093,10 +1136,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 body = f"{result.point}{loop_tag}: {result.status} — {result.detail}"
                 if result.observation:
                     body += f"\n[#9c9689]👁 {result.observation}[/]"
-                await self._mount_event(
-                    TimelineItem("success" if result.status == "succeeded" else "warn", body)
-                )
-                self._scroll_to_bottom()
+                await self._mount_step_line(result.status, body)
 
             async def _observe() -> str | None:
                 bridge = await self._get_bridge()
@@ -1190,6 +1230,11 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         return "Thinking"
 
     def _start_spinner(self, label: str) -> None:
+        if self._spinner_timer is not None:
+            # A preempted task's spinner may still be ticking — stop its
+            # timer before overwriting the reference, or it leaks and keeps
+            # repainting forever.
+            self._spinner_timer.stop()
         self._spinner_label = label
         self._spinner_started = time.monotonic()
         self._spinner_frame = 0

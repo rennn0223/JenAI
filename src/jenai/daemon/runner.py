@@ -10,7 +10,10 @@ from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.daemon.engine import Decision, Rule, RuleEngine
 from jenai.tools.nav_live import navigate_live
+from jenai.tools.perception import PerceptionLoop
 from jenai.tools.safety import arm_watchdog, halt_robot
+
+PERCEPTION_TOPIC = "@perception"  # rule.topic sentinel: trigger on camera VLM analyses
 
 
 async def run_daemon(
@@ -29,8 +32,10 @@ async def run_daemon(
     """
     engine = RuleEngine(rules, nav_allowed=config.route_adapter == "nav2")
     bridge = RosBridgeClient()
+    # Registered before start: every (re)spawn arms the watchdog, so a dead
+    # daemon can never leave the robot driving — even after a bridge crash.
+    await arm_watchdog(config, bridge)
     await bridge.start()
-    await arm_watchdog(config, bridge)  # dead daemon must not leave the robot driving
     on_status(f"bridge up · watching {len(rules)} rule(s)")
 
     loop = asyncio.get_running_loop()
@@ -40,7 +45,10 @@ async def run_daemon(
     nav_task: asyncio.Task | None = None
     queue: asyncio.Queue[tuple[Rule, dict]] = asyncio.Queue()
 
-    for rule in rules:
+    topic_rules = [rule for rule in rules if rule.topic != PERCEPTION_TOPIC]
+    perception_rules = [rule for rule in rules if rule.topic == PERCEPTION_TOPIC]
+
+    for rule in topic_rules:
         def _make_handler(r: Rule) -> Callable[[dict], None]:
             # Bridge events arrive on the reader task; hop through a queue so
             # rule handling (and navigation) happens in this task, in order.
@@ -48,6 +56,34 @@ async def run_daemon(
 
         await bridge.watch(rule.topic, rule.msg_type, _make_handler(rule), throttle=rule.throttle_s)
         on_status(f"watching {rule.topic} ({rule.fld}) for '{rule.name}'")
+
+    perception: PerceptionLoop | None = None
+    if perception_rules:
+        # One camera loop feeds every @perception rule; each SceneAnalysis is
+        # queued per rule and evaluated by the SAME engine (same cooldowns,
+        # same action gating) as numeric threshold rules — perception never
+        # gets a shortcut around the approval machinery.
+        async def _on_analysis(analysis) -> None:
+            data = analysis.model_dump(mode="json")
+            for rule in perception_rules:
+                queue.put_nowait((rule, data))
+
+        async def _perception_status(message: str) -> None:
+            on_status(message)
+
+        tick_s = min(rule.throttle_s for rule in perception_rules)
+        perception = PerceptionLoop(
+            config,
+            bridge,
+            hz=1.0 / max(0.1, tick_s),
+            on_analysis=_on_analysis,
+            on_status=_perception_status,
+        )
+        await perception.start()
+        names = ", ".join(f"'{rule.name}'" for rule in perception_rules)
+        on_status(
+            f"perception loop up · {perception.topic} @ {1.0 / max(0.1, tick_s):.1f}Hz for {names}"
+        )
 
     locations_path = config.resolved_locations_path(config_path)
 
@@ -100,6 +136,8 @@ async def run_daemon(
     except asyncio.CancelledError:
         raise
     finally:
+        if perception is not None:
+            await perception.stop()
         # Stop an in-flight navigation first (cancels the Nav2 goal, so the
         # robot actually halts), then tear down the bridge.
         if nav_task is not None and not nav_task.done():

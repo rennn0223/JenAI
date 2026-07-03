@@ -116,6 +116,8 @@ JenAI 啟動流程：
 |---|---|---|
 | `/vision image <path>` | 分析本機圖片並輸出結構化觀察 | `/vision image /tmp/scene.jpg` |
 | `/vision camera [topic]` | 抓一張相機幀給 VLM 分析；不帶 topic 用 `vehicle.camera_topic` | `/vision camera /rgb` |
+| `/perception start [topic] [hz]` | **持續感知迴圈**：定頻抓幀 → VLM 結構化分析（場景/物件/affordances/建議動作）。只觀察不動作；建議動作標示「需批准」 | `/perception start /rgb 1` |
+| `/perception stop` | 停止感知迴圈並回報分析幀數 | `/perception stop` |
 
 ### System
 
@@ -165,3 +167,16 @@ Approval card 為 Claude Code 風格的**編號選項**，可用 `↑/↓`+`Ente
 | `"notify"`（預設） | 無 | 只通報，不動作 |
 | `"halt"` | **無**（停車永遠安全） | 緊急停止：取消進行中導航 + 零速度 |
 | `"goto <地點>"` | `auto_approve = true` **且** `route_adapter = "nav2"` | 導航到地點；條件不足時印出「本來會做什麼」 |
+
+### 感知規則（`topic = "@perception"`）
+
+規則的觸發條件除了數值閾值（below/above/equals），也可以是相機 VLM 的 **affordance**：
+
+```toml
+[[rules]]
+name = "blocked-path-notify"
+topic = "@perception"           # daemon 會啟動相機→VLM 迴圈（頻率 = throttle_s）
+affordance = "path_blocked"     # SceneAnalysis.affordances 含此字串時觸發
+min_confidence = 0.6            # 低信心的辨識不觸發
+action = "notify"               # 動作 gating 與數值規則完全相同，無捷徑
+```

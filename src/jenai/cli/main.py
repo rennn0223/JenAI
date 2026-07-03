@@ -76,7 +76,9 @@ def main(
         console.print(f"Config written to {written}")
         raise typer.Exit(0)
 
-    doctor_result = run_doctor(config_path)
+    # Startup gate: skip the nav-stack probes (seconds of ros2 CLI) — those
+    # belong to the explicit `jenai doctor`, not to every launch.
+    doctor_result = run_doctor(config_path, include_nav=False)
     blocking = [
         item
         for item in doctor_result.items

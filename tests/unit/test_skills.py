@@ -94,3 +94,23 @@ def test_find_dock_by_tag_then_name() -> None:
     assert find_dock(named).name == "充電站"
 
     assert find_dock([_locs()[0]]) is None  # plain location isn't a dock
+
+
+def test_parse_patrol_preserves_token_like_names() -> None:
+    # Interior words must never be consumed as flags (review finding).
+    spec = parse_patrol("Photo Lab, B")
+    assert spec.points == ["Photo Lab", "B"]
+    assert spec.photo is False
+
+    spec = parse_patrol("X2 Hall, Dock")
+    assert spec.points == ["X2 Hall", "Dock"]
+    assert spec.loops == 1
+
+    # Tokens still work at the tail — trailing the last point or standalone.
+    spec = parse_patrol("Photo Lab, B x2 photo")
+    assert spec.points == ["Photo Lab", "B"]
+    assert spec.loops == 2 and spec.photo is True
+
+    spec = parse_patrol("A, B, x3, photo")
+    assert spec.points == ["A", "B"]
+    assert spec.loops == 3 and spec.photo is True

@@ -27,3 +27,17 @@ equals = true
 cooldown_s = 5
 action = "halt"                 # emergency stop: cancel nav + zero velocity.
                                 # No auto_approve needed — stopping is always safe.
+
+# Perception rule: triggers on the camera VLM's affordances instead of a
+# numeric topic field. `topic = "@perception"` makes the daemon run a
+# camera→VLM loop (rate = throttle_s) and match each SceneAnalysis.
+# Same safety gating as every other rule: notify by default; "goto"
+# still needs auto_approve + nav2; "halt" is always allowed.
+[[rules]]
+name = "blocked-path-notify"
+topic = "@perception"
+affordance = "path_blocked"     # fires when this appears in the analysis
+min_confidence = 0.6            # ignore low-confidence reads
+cooldown_s = 30
+throttle_s = 2.0                # one frame every 2s
+action = "notify"

@@ -62,6 +62,24 @@ def list_topics(*, timeout: float = 5.0) -> list[str]:
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
+def list_actions(*, timeout: float = 5.0) -> list[str]:
+    """Names of action servers on the graph (`ros2 action list`).
+
+    Action topics are hidden from `ros2 topic list`, so this is the only
+    honest way to detect e.g. a running Nav2 (/navigate_to_pose).
+    """
+    completed = _run(["action", "list"], timeout=timeout)
+    if completed.returncode != 0:
+        raise Ros2CommandError(
+            f"ros2 action list exited with code {completed.returncode}: "
+            f"{completed.stderr.strip()}",
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            returncode=completed.returncode,
+        )
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+
 @dataclass
 class TopicInfo:
     name: str

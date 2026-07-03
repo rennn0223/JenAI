@@ -92,6 +92,29 @@ async def run_mission(
     return report
 
 
+async def resolve_and_navigate(
+    config: AppConfig,
+    locations: list[Location],
+    target: str,
+    *,
+    navigate: Callable[[dict], Awaitable[RouteOutput]] | None = None,
+) -> tuple[str, str, str]:
+    """Resolve a location name and navigate to it: (name, status, detail).
+
+    The one place the goal-dict schema and the not-found UX live — missions
+    and patrols both build on this, so they can never drift apart.
+    """
+    try:
+        location = find_location(locations, target)
+    except LocationNotFoundError as exc:
+        hint = ", ".join(c.name for c in exc.candidates)
+        detail = f"unknown location (near: {hint})" if hint else "unknown location"
+        return target, "failed", detail
+    action = {"goal": location.model_dump(mode="json")}
+    out = await navigate(action) if navigate is not None else await route_execute(config, action)
+    return location.name, out.execution_status, out.route_preview
+
+
 async def _goto(
     config: AppConfig,
     locations: list[Location],
@@ -99,15 +122,10 @@ async def _goto(
     *,
     navigate: Callable[[dict], Awaitable[RouteOutput]] | None = None,
 ) -> StepResult:
-    try:
-        location = find_location(locations, target)
-    except LocationNotFoundError as exc:
-        hint = ", ".join(c.name for c in exc.candidates)
-        detail = f"unknown location (near: {hint})" if hint else "unknown location"
-        return StepResult("goto", target, "failed", detail)
-    action = {"goal": location.model_dump(mode="json")}
-    out = await navigate(action) if navigate is not None else await route_execute(config, action)
-    return StepResult("goto", location.name, out.execution_status, out.route_preview)
+    name, status, detail = await resolve_and_navigate(
+        config, locations, target, navigate=navigate
+    )
+    return StepResult("goto", name, status, detail)
 
 
 async def _drive(config: AppConfig, target: str) -> StepResult:

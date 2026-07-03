@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+from rich.markup import escape
+
 from jenai.adapters.locations import (
     LocationNotFoundError,
     LocationsFileError,
@@ -31,6 +33,7 @@ from jenai.schemas import (
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.mission_core import parse_mission
 from jenai.tools.nav_live import navigate_with_fallback
+from jenai.tools.perception import PerceptionLoop
 from jenai.tools.ros2_core import (
     ros_echo,
     ros_pub_validate,
@@ -47,6 +50,20 @@ from jenai.tui.widgets import ApprovalCard
 
 
 class RobotCommandsMixin:
+    async def _request_direct_approval(self, ctx, tool_call, pending: dict, approval) -> None:
+        """The one approval pipeline for direct (non-agent) actuating commands:
+        record the tool call, honor session auto-approval (auto_key falls back
+        to the execution kind), otherwise raise the card and park the action."""
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        if pending.get("auto_key", pending["kind"]) in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
     async def _show_ros_topics(self, _: str = "") -> None:
         output = await ros_topics(self.config)
         if not output.topics:
@@ -131,18 +148,13 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        if "ros_pub" in self._auto_approved:
-            await self._execute_direct(
-                {
-                    "kind": "ros_pub",
-                    "ctx": ctx,
-                    "topic": topic,
-                    "message_type": validation.message_type,
-                    "payload": payload,
-                }
-            )
-            return
+        pending = {
+            "kind": "ros_pub",
+            "ctx": ctx,
+            "topic": topic,
+            "message_type": validation.message_type,
+            "payload": payload,
+        }
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -153,18 +165,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /ros pub.",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-
-        self._pending_direct_approvals[approval.tool_call_id] = {
-            "kind": "ros_pub",
-            "ctx": ctx,
-            "topic": topic,
-            "message_type": validation.message_type,
-            "payload": payload,
-        }
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_ros_drive(self, arg: str) -> None:
         # /ros drive <topic> <json payload> [seconds]
@@ -201,7 +202,6 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
         pending = {
             "kind": "drive",
             "ctx": ctx,
@@ -210,9 +210,6 @@ class RobotCommandsMixin:
             "payload": payload,
             "duration": duration,
         }
-        if "drive" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -224,11 +221,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /ros drive.",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_drive(self, arg: str) -> None:
         # Natural-language driving: "前進兩秒", "turn left", "slowly reverse".
@@ -255,7 +248,6 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
         pending = {
             "kind": "drive",
             "ctx": ctx,
@@ -264,9 +256,6 @@ class RobotCommandsMixin:
             "payload": intent.to_payload(),
             "duration": intent.duration_s,
         }
-        if "drive" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -281,11 +270,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification=f"Requested via /drive: {arg}",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_mission(self, arg: str) -> None:
         # /mission kitchen, drive turn left, lobby  → a supervised multi-step run.
@@ -308,16 +293,12 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
         pending = {
             "kind": "mission",
             "ctx": ctx,
             "steps": steps,
             "locations": self._load_locations(),
         }
-        if "mission" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -329,11 +310,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification=f"Requested via /mission: {arg}",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_patrol(self, arg: str) -> None:
         # /patrol A, B, C x3 photo → loop the waypoints, optional VLM report.
@@ -354,16 +331,12 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
         pending = {
             "kind": "patrol",
             "ctx": ctx,
             "spec": spec,
             "locations": self._load_locations(),
         }
-        if "patrol" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -375,11 +348,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification=f"Requested via /patrol: {arg}",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_dock(self, _: str = "") -> None:
         # /dock → navigate to the location tagged 'dock' (or named like one).
@@ -402,16 +371,15 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        # A dock run is just a route to a known goal — reuse the route pipeline.
+        # A dock run reuses the route execution pipeline (kind), but keeps its
+        # own approval identity (auto_key): remembering /route must not
+        # silently auto-approve /dock, nor the reverse.
         pending = {
             "kind": "route",
+            "auto_key": "dock",
             "ctx": ctx,
             "outgoing_action": {"goal": dock.model_dump(mode="json")},
         }
-        if "route" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -426,11 +394,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /dock",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     # -- Route / locations ----------------------------------------------------
 
@@ -455,12 +419,7 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        if "route" in self._auto_approved:
-            await self._execute_direct(
-                {"kind": "route", "ctx": ctx, "outgoing_action": output.outgoing_action}
-            )
-            return
+        pending = {"kind": "route", "ctx": ctx, "outgoing_action": output.outgoing_action}
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -471,16 +430,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /route.",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-
-        self._pending_direct_approvals[approval.tool_call_id] = {
-            "kind": "route",
-            "ctx": ctx,
-            "outgoing_action": output.outgoing_action,
-        }
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_loc_list(self, _: str = "") -> None:
         locations = self._load_locations()
@@ -650,12 +600,112 @@ class RobotCommandsMixin:
         """Start (or reuse) the rclpy bridge; raises BridgeError when ROS is absent."""
         if self._bridge is None:
             self._bridge = RosBridgeClient()
+            # Register the dead-client watchdog config once; every (re)spawn
+            # arms it inside start(), so a hung or killed TUI can never leave
+            # the robot driving unsupervised — even after a bridge crash.
+            await arm_watchdog(self.config, self._bridge)
         if not self._bridge.running:
             await self._bridge.start()
-            # Freshly started bridge: arm the dead-client watchdog so a hung or
-            # killed TUI can never leave the robot driving unsupervised.
-            await arm_watchdog(self.config, self._bridge)
         return self._bridge
+
+    async def _show_perception(self, arg: str) -> None:
+        """/perception start [topic] [hz] · stop · status — continuous camera→VLM.
+
+        Perception only OBSERVES: suggested actions are rendered for the
+        human (or matched by daemon rules) and always go through the existing
+        approval machinery — nothing here actuates.
+        """
+        sub, _, rest = arg.strip().partition(" ")
+        sub = sub.strip().lower()
+
+        if sub == "start":
+            loop = getattr(self, "_perception", None)
+            if loop is not None and loop.running:
+                await self._mount_event(
+                    TimelineItem(
+                        "warn", "Perception loop already running — /perception stop first."
+                    )
+                )
+                return
+            topic = None
+            hz = 1.0
+            for token in rest.split():
+                if token.startswith("/"):
+                    topic = token
+                elif _is_number(token):
+                    hz = max(0.05, float(token))
+            try:
+                bridge = await self._get_bridge()
+            except BridgeError as exc:
+                await self._mount_event(
+                    TimelineItem("warn", f"Perception unavailable (no ROS bridge): {exc}")
+                )
+                return
+
+            async def _on_analysis(analysis) -> None:
+                parts = [escape(analysis.scene_context or "(no description)")]
+                if analysis.affordances:
+                    tags = " ".join(f"#{escape(a)}" for a in analysis.affordances)
+                    parts.append(f"[#9c9689]{tags}[/]")
+                if analysis.suggested_action:
+                    note = (
+                        " [#9c9689](suggestion only — needs approval)[/]"
+                        if analysis.requires_approval
+                        else ""
+                    )
+                    parts.append(f"[bold #f2ede1]→ {escape(analysis.suggested_action)}[/]{note}")
+                parts.append(f"[#9c9689]{analysis.confidence:.0%}[/]")
+                await self._mount_event(TimelineItem("muted", "👁 " + " · ".join(parts)))
+                self._scroll_to_bottom()
+
+            async def _on_status(message: str) -> None:
+                await self._mount_event(TimelineItem("warn", escape(message)))
+                self._scroll_to_bottom()
+
+            self._perception = PerceptionLoop(
+                self.config,
+                bridge,
+                topic=topic,
+                hz=hz,
+                on_analysis=_on_analysis,
+                on_status=_on_status,
+            )
+            await self._perception.start()
+            await self._mount_event(
+                TimelineItem(
+                    "success",
+                    f"Perception loop started · {self._perception.topic} @ {hz:g}Hz "
+                    "(/perception stop to end)",
+                )
+            )
+            return
+
+        if sub == "stop":
+            loop = getattr(self, "_perception", None)
+            if loop is None or not loop.running:
+                await self._mount_event(TimelineItem("warn", "Perception loop is not running."))
+                return
+            frames = loop.frames
+            await loop.stop()
+            await self._mount_event(
+                TimelineItem("success", f"Perception loop stopped ({frames} frames analyzed).")
+            )
+            return
+
+        loop = getattr(self, "_perception", None)
+        if loop is not None and loop.running:
+            latest = loop.latest
+            detail = f" · last: {escape(latest.scene_context)}" if latest is not None else ""
+            await self._mount_event(
+                TimelineItem(
+                    "muted",
+                    f"Perception running · {loop.topic} · {loop.frames} frames{detail}",
+                )
+            )
+        else:
+            await self._mount_event(
+                TimelineItem("muted", "Perception idle. Usage: /perception start [topic] [hz]")
+            )
 
     async def _show_stop(self, _: str = "") -> None:
         """EMERGENCY STOP — no approval gate: stopping is always safe."""

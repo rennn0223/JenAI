@@ -25,12 +25,17 @@ class Rule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    topic: str
-    msg_type: str
-    fld: str  # dotted path into the message dict, e.g. "percentage"
+    topic: str  # ROS topic, or "@perception" to trigger on camera VLM analyses
+    msg_type: str = ""  # unused for @perception rules
+    fld: str = "affordances"  # dotted path into the message dict, e.g. "percentage"
     below: float | None = None
     above: float | None = None
     equals: Any | None = None
+    # Perception condition: fires when this affordance (e.g. "path_blocked")
+    # appears in the extracted list AND the analysis confidence reaches
+    # min_confidence. Peer of the numeric thresholds above.
+    affordance: str | None = None
+    min_confidence: float = 0.0
     cooldown_s: float = 300.0
     action: str = "notify"
     auto_approve: bool = False
@@ -38,8 +43,13 @@ class Rule(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> Rule:
-        if self.below is None and self.above is None and self.equals is None:
-            raise ValueError(f"rule '{self.name}' needs one of below/above/equals")
+        if (
+            self.below is None
+            and self.above is None
+            and self.equals is None
+            and self.affordance is None
+        ):
+            raise ValueError(f"rule '{self.name}' needs one of below/above/equals/affordance")
         if not (
             self.action in ("notify", "halt") or self.action.startswith("goto ")
         ):
@@ -82,12 +92,23 @@ def extract_field(data: dict, dotted: str) -> Any | None:
     return cur
 
 
-def condition_met(rule: Rule, value: Any) -> bool:
+def condition_met(rule: Rule, value: Any, data: dict | None = None) -> bool:
     """True when the extracted value crosses the rule's threshold.
 
     Missing or non-numeric values never fire — a sensor dropout must not
-    trigger an action.
+    trigger an action. Affordance rules fire on membership in the extracted
+    list, gated by the analysis confidence when the rule demands one.
     """
+    if rule.affordance is not None:
+        if not isinstance(value, list) or rule.affordance not in value:
+            return False
+        if rule.min_confidence > 0:
+            try:
+                confidence = float((data or {}).get("confidence", 0.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            return confidence >= rule.min_confidence
+        return True
     if value is None:
         return False
     if rule.equals is not None:
@@ -132,7 +153,7 @@ class RuleEngine:
         """
         now = time.monotonic() if now is None else now
         value = extract_field(data, rule.fld)
-        if not condition_met(rule, value):
+        if not condition_met(rule, value, data):
             return Decision(rule, value, fired=False, reason="condition not met")
 
         last = self._last_fired.get(rule.name)

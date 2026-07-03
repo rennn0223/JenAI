@@ -17,7 +17,10 @@ from jenai.config import (
 from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
 
 
-def run_doctor(config_path: Path | None = None) -> DoctorResult:
+def run_doctor(config_path: Path | None = None, *, include_nav: bool = True) -> DoctorResult:
+    """Full health check. `include_nav=False` skips the navigation-stack
+    probes (a few seconds of ros2 CLI calls) — used on the TUI startup path,
+    where doctor must stay fast; `jenai doctor` always runs everything."""
     # Resolve the default location once so every check (config load AND the
     # locations-file check) agrees on the real config dir, instead of some
     # falling back to the current working directory.
@@ -56,6 +59,8 @@ def run_doctor(config_path: Path | None = None) -> DoctorResult:
 
     items.extend(_check_env_file())
     items.extend(_check_ros2())
+    if include_nav:
+        items.extend(_check_nav_stack(config))
     items.extend(_check_provider(config))
     items.extend(_check_locations(config, config_path))
     items.extend(_check_webui_assets())
@@ -184,6 +189,105 @@ def _check_ros2() -> list[DoctorCheckItem]:
             else "Verify the ROS2 environment is sourced in this terminal.",
         )
     ]
+
+
+def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
+    """Navigation-readiness checks: is there a map, localization, a laser,
+    a listening velocity controller, and Nav2 itself?
+
+    Everything here is WARN-level — a machine without a running robot is a
+    normal state, and these checks exist to walk a newcomer through
+    docs/ONBOARDING.md, not to block startup.
+    """
+    if shutil.which("ros2") is None:
+        return []  # ros2_cli already reports the root cause
+
+    from jenai.adapters import ros2_adapter
+
+    try:
+        # First call may also spawn the ros2 daemon — give it headroom.
+        topics = set(ros2_adapter.list_topics(timeout=15.0))
+    except ros2_adapter.Ros2AdapterError:
+        return [
+            DoctorCheckItem(
+                section="nav",
+                check_name="ros_graph",
+                status=DoctorStatus.WARN,
+                message="Could not list ROS2 topics (daemon slow or graph unreachable).",
+                fix_suggestion="Try `ros2 topic list` manually; is the robot/simulator up?",
+            )
+        ]
+
+    def _item(name: str, ok: bool, ok_msg: str, warn_msg: str, fix: str) -> DoctorCheckItem:
+        return DoctorCheckItem(
+            section="nav",
+            check_name=name,
+            status=DoctorStatus.PASS if ok else DoctorStatus.WARN,
+            message=ok_msg if ok else warn_msg,
+            fix_suggestion=None if ok else fix,
+        )
+
+    items = [
+        _item(
+            "map",
+            "/map" in topics,
+            "A map is being published (/map).",
+            "No /map topic — no map server or SLAM running.",
+            "Build a map first: docs/ONBOARDING.md §3 (slam_toolbox), then serve it.",
+        ),
+        _item(
+            "localization",
+            "/amcl_pose" in topics,
+            "AMCL localization is up (/amcl_pose).",
+            "No /amcl_pose — robot pose will fall back to raw odometry.",
+            "Start Nav2 localization with your saved map: docs/ONBOARDING.md §4.",
+        ),
+        _item(
+            "laser",
+            "/scan" in topics,
+            "Laser scan is publishing (/scan).",
+            "No /scan topic — SLAM/AMCL and obstacle avoidance need a laser.",
+            "Check the LiDAR driver (docs/ONBOARDING.md §2).",
+        ),
+    ]
+
+    # Nav2 detection MUST use `ros2 action list`: action topics are hidden
+    # topics that `ros2 topic list` omits, so grepping topics warns forever
+    # even while Nav2 is actively navigating.
+    try:
+        actions = ros2_adapter.list_actions(timeout=5.0)
+    except ros2_adapter.Ros2AdapterError:
+        actions = []
+    items.append(
+        _item(
+            "nav2",
+            "/navigate_to_pose" in actions,
+            "Nav2 NavigateToPose action is available.",
+            "Nav2 is not running — /route will honestly report unavailable.",
+            "Launch Nav2 (docs/ONBOARDING.md §5).",
+        )
+    )
+
+    # Someone must be listening on cmd_vel, or every motion command is a no-op.
+    # The adapter's tolerant parser handles the count-label variations across
+    # distros; the daemon is warm by now, so a short timeout suffices.
+    cmd_vel = config.vehicle.cmd_vel_topic if config is not None else "/cmd_vel"
+    subscribed = False
+    if cmd_vel in topics:
+        try:
+            subscribed = ros2_adapter.topic_info(cmd_vel, timeout=5.0).subscriber_count > 0
+        except ros2_adapter.Ros2AdapterError:
+            subscribed = False
+    items.append(
+        _item(
+            "cmd_vel",
+            subscribed,
+            f"A controller subscribes to {cmd_vel}.",
+            f"Nothing subscribes to {cmd_vel} — the robot would ignore velocity commands.",
+            "Start the base/motor controller (docs/ONBOARDING.md §2).",
+        )
+    )
+    return items
 
 
 def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:

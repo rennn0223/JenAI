@@ -57,7 +57,18 @@ class BridgeNode(Node):
         super().__init__("jenai_bridge")
         self._nav_client: ActionClient | None = None
         self._nav_goal_handle = None
+        # True from nav_send until the acceptance callback runs: a goal in
+        # this window has no handle yet but MUST still count as active, or a
+        # halt/EOF right after nav_send would skip the cancel entirely.
+        self._nav_pending = False
+        self._cancel_on_accept = False
         self._watches: dict[int, object] = {}  # watch_id -> subscription
+        # halt is callable from the stdin loop AND the watchdog thread; the
+        # lock serializes them (rclpy entity churn from two non-executor
+        # threads at once is not safe). Publishers are cached so an emergency
+        # pulse never races DDS discovery on a freshly created publisher.
+        self._halt_lock = threading.Lock()
+        self._halt_publishers: dict[tuple[str, bool], object] = {}
 
     # -- pose ---------------------------------------------------------------
 
@@ -137,14 +148,23 @@ class BridgeNode(Node):
                 }
             )
 
+        self._nav_pending = True
+        self._cancel_on_accept = False
         send_future = self._nav_client.send_goal_async(goal, feedback_callback=_feedback)
 
         def _on_accepted(fut) -> None:
             handle = fut.result()
             if not handle.accepted:
+                self._nav_pending = False
                 _emit({"event": "nav_result", "tag": tag, "status": "rejected"})
                 return
             self._nav_goal_handle = handle
+            self._nav_pending = False
+            if self._cancel_on_accept:
+                # A halt arrived while the goal was still in flight to the
+                # server — cancel it the moment we can address it.
+                self._cancel_on_accept = False
+                handle.cancel_goal_async()
             result_future = handle.get_result_async()
 
             def _on_result(rfut) -> None:
@@ -161,17 +181,70 @@ class BridgeNode(Node):
         return {"sent": True}
 
     def nav_cancel(self) -> dict:
+        """Cancel our own goal AND everything else on the Nav2 action server.
+
+        The own-handle path alone is not an emergency stop: a goal sent by a
+        DIFFERENT process's bridge (TUI goal, WebUI stop) is invisible here,
+        and Nav2's controller would keep streaming cmd_vel after our zero
+        pulses. The server-side cancel-all covers every owner.
+        """
+        canceled = False
+        if self._nav_pending:
+            self._cancel_on_accept = True
+            canceled = True
         handle = self._nav_goal_handle
-        if handle is None:
+        if handle is not None:
+            handle.cancel_goal_async()
+            canceled = True
+        if self._cancel_all_nav_goals():
+            canceled = True
+        if not canceled:
             return {"canceled": False, "detail": "no active navigation goal"}
-        handle.cancel_goal_async()
         return {"canceled": True}
+
+    def _cancel_all_nav_goals(self, timeout: float = 2.0) -> bool:
+        """Ask the Nav2 action server to cancel ALL goals (zeroed goal id),
+        waiting bounded for the reply so shutdown paths can't cut it off."""
+        from action_msgs.srv import CancelGoal
+
+        client = self.create_client(CancelGoal, "/navigate_to_pose/_action/cancel_goal")
+        try:
+            if not client.wait_for_service(timeout_sec=timeout):
+                return False  # no Nav2 → nothing to cancel
+            future = client.call_async(CancelGoal.Request())  # zeroed = cancel all
+            done = threading.Event()
+            future.add_done_callback(lambda _f: done.set())
+            done.wait(timeout)
+            response = future.result() if future.done() else None
+            return bool(response is not None and response.goals_canceling)
+        except Exception:
+            return False
+        finally:
+            self.destroy_client(client)
 
     @property
     def nav_active(self) -> bool:
-        return self._nav_goal_handle is not None
+        return self._nav_goal_handle is not None or self._nav_pending
 
     # -- emergency stop -------------------------------------------------------
+
+    def ensure_halt_publisher(self, cmd_vel_topic: str, stamped: bool):
+        """Create (once) and cache the zero-velocity publisher.
+
+        Called eagerly when the watchdog is configured so DDS discovery has
+        completed long before an emergency needs it — a freshly created
+        publisher can silently drop every pulse published before its first
+        subscriber match.
+        """
+        key = (cmd_vel_topic, stamped)
+        pub = self._halt_publishers.get(key)
+        if pub is None:
+            from geometry_msgs.msg import Twist, TwistStamped
+
+            msg_type = TwistStamped if stamped else Twist
+            pub = self.create_publisher(msg_type, cmd_vel_topic, 10)
+            self._halt_publishers[key] = pub
+        return pub
 
     def halt(
         self,
@@ -184,22 +257,28 @@ class BridgeNode(Node):
 
         Zero is pulsed (not sent once) because a single message can lose the
         race against a controller that is still streaming motion commands.
+        Serialized under a lock: the stdin loop and the watchdog thread may
+        both call this, and concurrent rclpy entity churn is not safe.
         """
-        canceled = self.nav_cancel().get("canceled", False)
+        with self._halt_lock:
+            canceled = self.nav_cancel().get("canceled", False)
 
-        from geometry_msgs.msg import Twist, TwistStamped
+            from geometry_msgs.msg import Twist, TwistStamped
 
-        msg_type = TwistStamped if stamped else Twist
-        pub = self.create_publisher(msg_type, cmd_vel_topic, 10)
-        try:
+            pub = self.ensure_halt_publisher(cmd_vel_topic, stamped)
+            # Best effort: give a cold publisher a moment to match its
+            # subscriber instead of pulsing into the void.
+            for _ in range(20):
+                if pub.get_subscription_count() > 0:
+                    break
+                time.sleep(0.05)
+            msg_type = TwistStamped if stamped else Twist
             for _ in range(max(1, pulses)):
                 msg = msg_type()  # all-zero twist
                 if stamped:
                     msg.header.stamp = self.get_clock().now().to_msg()
                 pub.publish(msg)
                 time.sleep(1.0 / rate_hz)
-        finally:
-            self.destroy_publisher(pub)
         return {"halted": True, "nav_canceled": canceled}
 
     # -- camera -------------------------------------------------------------
@@ -299,9 +378,12 @@ class WatchdogState:
     read-only uses of the bridge never publish anything.
     """
 
+    RETRY_S = 2.0  # re-halt cadence while the client stays dead and nav stays active
+
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.last_rx = time.monotonic()
+        self.last_halt: float | None = None
         self.timeout_s = 0.0
         self.cmd_vel_topic = "/cmd_vel"
         self.stamped = False
@@ -309,6 +391,7 @@ class WatchdogState:
     def touch(self) -> None:
         with self.lock:
             self.last_rx = time.monotonic()
+            self.last_halt = None  # client is back — watchdog state resets
 
     def configure(self, req: dict) -> dict:
         with self.lock:
@@ -317,20 +400,28 @@ class WatchdogState:
             self.stamped = bool(req.get("stamped", False))
         return {"watchdog_s": self.timeout_s}
 
-    def expired(self) -> bool:
+    def should_halt(self) -> bool:
+        """Expired, and either never halted or the retry cadence elapsed —
+        an unacknowledged cancel must be retried in seconds, not timeout_s."""
         with self.lock:
-            return self.timeout_s > 0 and time.monotonic() - self.last_rx > self.timeout_s
+            if self.timeout_s <= 0 or time.monotonic() - self.last_rx <= self.timeout_s:
+                return False
+            return self.last_halt is None or time.monotonic() - self.last_halt > self.RETRY_S
+
+    def mark_halted(self) -> None:
+        with self.lock:
+            self.last_halt = time.monotonic()
 
 
 def _watchdog_loop(node: BridgeNode, state: WatchdogState, stop: threading.Event) -> None:
     while not stop.wait(0.5):
-        if node.nav_active and state.expired():
+        if node.nav_active and state.should_halt():
             try:
                 node.halt(state.cmd_vel_topic, state.stamped)
                 _emit({"event": "watchdog_halt", "reason": "client went quiet mid-navigation"})
             except Exception as exc:
                 _emit({"event": "watchdog_halt", "reason": f"halt failed: {exc}"})
-            state.touch()  # one halt per silence, not one per 0.5s
+            state.mark_halted()
 
 
 def _handle(node: BridgeNode, op: str, req: dict, watchdog: WatchdogState) -> dict:
@@ -350,7 +441,12 @@ def _handle(node: BridgeNode, op: str, req: dict, watchdog: WatchdogState) -> di
             bool(req.get("stamped", False)),
         )
     if op == "watchdog":
-        return watchdog.configure(req)
+        result = watchdog.configure(req)
+        # Pre-create the zero-velocity publisher NOW so DDS discovery is done
+        # long before an emergency halt needs it.
+        with node._halt_lock:
+            node.ensure_halt_publisher(watchdog.cmd_vel_topic, watchdog.stamped)
+        return result
     if op == "capture_frame":
         return node.capture_frame(req["topic"], float(req.get("timeout", 5.0)))
     if op == "watch":
@@ -378,6 +474,18 @@ def main() -> None:
 
     _emit({"event": "ready"})
 
+    # Ops that block for seconds must not hold up the request loop: an
+    # emergency halt queued behind a camera capture would arrive seconds
+    # late. They are read-only, so running them on worker threads is safe;
+    # responses are matched by id client-side, order doesn't matter.
+    slow_ops = {"capture_frame", "pose"}
+
+    def _serve(req_id, op, req) -> None:
+        try:
+            _emit({"id": req_id, "ok": True, "result": _handle(node, op, req, watchdog)})
+        except Exception as exc:  # keep serving; report the failure to the client
+            _emit({"id": req_id, "ok": False, "error": str(exc)})
+
     for line in sys.stdin:  # EOF (parent died/closed) ends the bridge
         line = line.strip()
         if not line:
@@ -390,8 +498,11 @@ def main() -> None:
             if op == "shutdown":
                 _emit({"id": req_id, "ok": True, "result": {}})
                 break
-            _emit({"id": req_id, "ok": True, "result": _handle(node, op, req, watchdog)})
-        except Exception as exc:  # keep serving; report the failure to the client
+            if op in slow_ops:
+                threading.Thread(target=_serve, args=(req_id, op, req), daemon=True).start()
+            else:
+                _serve(req_id, op, req)
+        except Exception as exc:  # malformed line — report, keep serving
             _emit({"id": req_id, "ok": False, "error": str(exc)})
 
     watchdog_stop.set()
