@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v0.7 系列(2026-07)。專案方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
+> 對應版本:v0.9 系列(2026-07)。專案方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
 
 ## 1. JenAI 是什麼
 
