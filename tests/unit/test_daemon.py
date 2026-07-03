@@ -209,3 +209,268 @@ def test_action_validator_accepts_halt_rejects_junk() -> None:
             name="bad", topic="/t", msg_type="std_msgs/msg/Bool", fld="data",
             equals=True, action="explode",
         )
+
+
+# --- fault injection: the autonomous goto path (A3/A4) ----------------------
+
+
+_DOCK_LOCATIONS = """\
+[[locations]]
+name = "Dock"
+tags = ["dock"]
+
+[locations.pose]
+x = 1.0
+y = 2.0
+yaw = 0.0
+"""
+
+
+def _goto_rule() -> Rule:
+    return Rule(
+        name="low-battery",
+        topic="/battery",
+        msg_type="sensor_msgs/msg/BatteryState",
+        fld="percentage",
+        below=0.5,
+        action="goto Dock",
+        auto_approve=True,
+        cooldown_s=0.0,
+    )
+
+
+def _run_daemon_until(
+    tmp_path, monkeypatch, *, marker: str, locations: str | None, mutate_config=None
+) -> list[str]:
+    """Drive run_daemon with the fake bridge until `marker` shows in statuses."""
+    import asyncio
+    import contextlib
+    import sys
+
+    from jenai.bridge import RosBridgeClient
+    from jenai.bridge import client as client_module
+    from jenai.config.store import build_minimal_config
+    from jenai.daemon.runner import run_daemon
+
+    monkeypatch.setattr(
+        client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py"
+    )
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "nav2"
+    if mutate_config is not None:
+        mutate_config(config)
+    config_path = tmp_path / "config.toml"
+    if locations is not None:
+        (tmp_path / "locations.toml").write_text(locations, encoding="utf-8")
+
+    statuses: list[str] = []
+
+    async def run() -> None:
+        task = asyncio.create_task(
+            run_daemon(
+                config,
+                config_path,
+                [_goto_rule()],
+                on_decision=lambda d: None,
+                on_status=statuses.append,
+            )
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if any(marker in s for s in statuses):
+                break
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    return statuses
+
+
+def test_daemon_twin_refer_blocks_autonomous_goto(tmp_path: Path, monkeypatch) -> None:
+    """Autonomous path has no human to refer to: anything short of a clean
+    twin pass must keep the robot parked, and say so."""
+    from types import SimpleNamespace
+
+    import jenai.daemon.runner as runner_module
+
+    moved: list[dict] = []
+
+    async def fake_rehearse(twin, action, on_status=None):
+        return SimpleNamespace(verdict="refer", summary="G2 timeout in the twin")
+
+    async def fake_navigate(bridge, action):
+        moved.append(action)
+        return SimpleNamespace(execution_status="succeeded", route_preview="")
+
+    monkeypatch.setattr(runner_module, "rehearse_goal", fake_rehearse)
+    monkeypatch.setattr(runner_module, "navigate_live", fake_navigate)
+
+    def enable_twin(cfg) -> None:
+        cfg.twin.enabled = True
+
+    statuses = _run_daemon_until(
+        tmp_path,
+        monkeypatch,
+        marker="NOT moved",
+        locations=_DOCK_LOCATIONS,
+        mutate_config=enable_twin,
+    )
+    assert any("NOT moved" in s for s in statuses)
+    assert moved == []  # the gate held: navigate_live was never reached
+
+
+def test_daemon_goto_unknown_location_is_reported(tmp_path: Path, monkeypatch) -> None:
+    statuses = _run_daemon_until(
+        tmp_path,
+        monkeypatch,
+        marker="unknown location",
+        locations='[[locations]]\nname = "Lab"\n\n[locations.pose]\nx = 0.0\ny = 0.0\nyaw = 0.0\n',
+    )
+    assert any("unknown location" in s for s in statuses)
+
+
+def test_daemon_goto_without_locations_file_is_reported(tmp_path: Path, monkeypatch) -> None:
+    statuses = _run_daemon_until(tmp_path, monkeypatch, marker="no locations file", locations=None)
+    assert any("no locations file" in s for s in statuses)
+
+
+def test_load_rules_missing_file_and_bad_toml_raise_rule_error(tmp_path: Path) -> None:
+    import pytest
+
+    from jenai.daemon.engine import RuleError, load_rules
+
+    with pytest.raises(RuleError, match="not found"):
+        load_rules(tmp_path / "nope.toml")
+    bad = tmp_path / "bad.toml"
+    bad.write_text("not = [valid", encoding="utf-8")
+    with pytest.raises(RuleError, match="not valid TOML"):
+        load_rules(bad)
+
+
+def test_perception_rule_non_numeric_confidence_does_not_fire() -> None:
+    """A VLM that answers confidence='high' must count as 0.0 — below any
+    threshold — not crash the engine or fire the rule."""
+    from jenai.daemon.engine import condition_met
+
+    rule = _rule(
+        topic="@perception",
+        below=None,
+        affordance="path_blocked",
+        min_confidence=0.6,
+    )
+    data = {"affordances": ["path_blocked"], "confidence": "high"}
+    assert condition_met(rule, None, data) is False
+
+
+def _halt_rule() -> Rule:
+    return Rule(
+        name="estop-battery",
+        topic="/battery",
+        msg_type="sensor_msgs/msg/BatteryState",
+        fld="percentage",
+        below=0.5,
+        action="halt",
+        cooldown_s=0.0,
+    )
+
+
+def test_daemon_halt_rule_halts_and_reports(tmp_path: Path, monkeypatch) -> None:
+    """The halt action must reach the bridge and its outcome must be spoken."""
+    import asyncio
+    import contextlib
+    import sys
+
+    from jenai.bridge import RosBridgeClient
+    from jenai.bridge import client as client_module
+    from jenai.config.store import build_minimal_config
+    from jenai.daemon.runner import run_daemon
+
+    monkeypatch.setattr(
+        client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py"
+    )
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    statuses: list[str] = []
+
+    async def run() -> None:
+        task = asyncio.create_task(
+            run_daemon(
+                config,
+                tmp_path / "config.toml",
+                [_halt_rule()],
+                on_decision=lambda d: None,
+                on_status=statuses.append,
+            )
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if any("estop-battery" in s for s in statuses):
+                break
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert any("estop-battery" in s for s in statuses)
+
+
+def test_daemon_halt_failure_is_reported_not_silent(tmp_path: Path, monkeypatch) -> None:
+    """If even the halt fails, the operator must hear it immediately."""
+    import jenai.daemon.runner as runner_module
+    from jenai.bridge import BridgeError
+
+    async def broken_halt(config, bridge):
+        raise BridgeError("halt pipe broke")
+
+    monkeypatch.setattr(runner_module, "halt_robot", broken_halt)
+
+    import asyncio
+    import contextlib
+    import sys
+
+    from jenai.bridge import RosBridgeClient
+    from jenai.bridge import client as client_module
+    from jenai.config.store import build_minimal_config
+    from jenai.daemon.runner import run_daemon
+
+    monkeypatch.setattr(
+        client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py"
+    )
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    statuses: list[str] = []
+
+    async def run() -> None:
+        task = asyncio.create_task(
+            run_daemon(
+                config,
+                tmp_path / "config.toml",
+                [_halt_rule()],
+                on_decision=lambda d: None,
+                on_status=statuses.append,
+            )
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if any("halt failed" in s for s in statuses):
+                break
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert any("halt failed" in s for s in statuses)

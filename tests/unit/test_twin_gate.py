@@ -292,3 +292,36 @@ def test_forbidden_zone_contains() -> None:
     assert zone.contains(0, 0)
     assert zone.contains(1, 1)  # boundary is inside: err on the safe side
     assert not zone.contains(1.01, 0)
+
+
+# --- fault paths (A4): the gate must refer, never crash or pass -------------
+
+
+def test_bridge_error_mid_rehearsal_refers() -> None:
+    class NavErrorBridge(FakeTwinBridge):
+        async def nav_send(self, x, y, yaw=0.0, frame_id="map", tag="") -> None:
+            raise BridgeError("twin DDS died")
+
+    report = _rehearse(_twin(), NavErrorBridge())
+    assert report.verdict == "refer"
+    assert "mid-rehearsal" in report.reason or "twin" in report.reason
+
+
+def test_pose_unavailable_after_success_skips_g4_and_passes() -> None:
+    class NoPoseBridge(FakeTwinBridge):
+        async def get_pose(self, timeout: float = 3.0):
+            raise BridgeError("no pose on the twin domain")
+
+    # Nav2 succeeded but the twin can't report a final pose: G4 (endpoint
+    # deviation) is skipped rather than guessed — the other criteria decide.
+    report = _rehearse(_twin(), NoPoseBridge(nav_status="succeeded"))
+    assert report.verdict == "pass"
+
+
+def test_unwatch_failure_is_swallowed_not_fatal() -> None:
+    class UnwatchErrorBridge(FakeTwinBridge):
+        async def unwatch(self, watch_id: int) -> None:
+            raise BridgeError("watch already gone")
+
+    report = _rehearse(_twin(), UnwatchErrorBridge(nav_status="succeeded"))
+    assert report.verdict == "pass"  # cleanup hiccups must not veto a verdict

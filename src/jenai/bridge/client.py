@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -128,7 +129,13 @@ class RosBridgeClient:
                 await proc.stdin.drain()
                 await asyncio.wait_for(proc.wait(), 3.0)
             except (TimeoutError, OSError, ConnectionResetError):
-                proc.kill()
+                # kill() races the process's own exit — already-dead is fine.
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                # Reap the killed process — otherwise its transport lingers
+                # until GC (zombie + "Exception ignored in __del__" noise).
+                with contextlib.suppress(TimeoutError, OSError):
+                    await asyncio.wait_for(proc.wait(), 2.0)
 
     async def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None

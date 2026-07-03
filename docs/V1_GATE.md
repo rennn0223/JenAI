@@ -15,8 +15,8 @@
 |---|---|---|---|
 | A1 | semver 契約文件 | 明列 public surface(config schema、rules.toml、MCP 工具、CLI、locations.toml),版本政策 + config 遷移方案 → docs/VERSIONING.md | ✅ v0.10 |
 | A2 | WebUI auth | token 認證(Bearer/cookie/`?token=`,STOP 免認證)+ docs/THREAT_MODEL.md | ✅ v0.10 |
-| A3 | 安全鏈覆蓋率 | estop/watchdog/gate/approval 路徑覆蓋 → ~100%,CI 標記不可倒退 | ☐ |
-| A4 | 故障注入測試 | bridge 導航中死亡、provider 斷線、DDS 斷連、topic 停更 → 每項證明誠實降級 | ☐ |
+| A3 | 安全鏈覆蓋率 | safety 100%、engine 98%、gate 94%、bridge client 93%、runner 76%(整體 84%→92%;剩 runner 感知接線與 CI 倒退防護) | 🚧 v0.11 |
+| A4 | 故障注入測試 | bridge 永不 ready / watchdog 武裝失敗 / 串流垃圾行 / twin 預演中斷→refer / pose 失聯→G4 跳過 / halt 失敗誠實回報 / 未知地點 / 無地點檔 → 全部證明誠實降級 | ✅ v0.11 |
 | A5 | 架構鐵律 CI 防護 | import-linter/架構測試:技能層以上無載具字眼、LLM 不進即時迴路 | ☐ |
 | A6 | 24h soak 腳本 | daemon + perception 跑 24h,記憶體/觸發統計自動報告 | ☐ |
 | A7 | Safety case 草稿 | HARA-lite:危害清單 → 對應防護層 → 殘餘風險;場域細節留白給客戶補 | ☐ |

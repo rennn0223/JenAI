@@ -114,3 +114,83 @@ def test_bridge_halt_and_watchdog_roundtrip(fake_bridge) -> None:
         await client.stop()
 
     asyncio.run(run())
+
+
+# --- fault injection (A4): start/stream failure modes ------------------------
+
+
+def _script(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "bad_bridge.py"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_bridge_never_ready_times_out_and_cleans_up(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        client_module,
+        "_BRIDGE_SCRIPT",
+        _script(tmp_path, "import time\ntime.sleep(30)\n"),
+    )
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    async def run() -> None:
+        client = RosBridgeClient()
+        with pytest.raises(BridgeError, match="did not become ready"):
+            await client.start(timeout=0.5)
+        assert not client.running  # no zombie sidecar left behind
+
+    asyncio.run(run())
+
+
+def test_bridge_watchdog_arming_failure_fails_the_start(tmp_path, monkeypatch) -> None:
+    """A bridge that can't arm its watchdog must never be handed out — an
+    unprotected bridge can actuate with no dead-client failsafe."""
+    body = (
+        "import json, sys\n"
+        'sys.stdout.write(json.dumps({"event": "ready"}) + "\\n")\n'
+        "sys.stdout.flush()\n"
+        "for line in sys.stdin:\n"
+        "    req = json.loads(line)\n"
+        '    sys.stdout.write(json.dumps('
+        '{"id": req["id"], "ok": False, "error": "no watchdog"}) + "\\n")\n'
+        "    sys.stdout.flush()\n"
+    )
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", _script(tmp_path, body))
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    async def run() -> None:
+        client = RosBridgeClient()
+        await client.configure_safety(watchdog_s=5.0, cmd_vel_topic="/cmd_vel")
+        with pytest.raises(BridgeError):
+            await client.start()
+        assert not client.running
+
+    asyncio.run(run())
+
+
+def test_bridge_garbage_stream_lines_are_ignored(tmp_path, monkeypatch) -> None:
+    body = (
+        "import json, sys\n"
+        'sys.stdout.write("this is not json\\n")\n'
+        'sys.stdout.write(json.dumps({"event": "ready"}) + "\\n")\n'
+        "sys.stdout.flush()\n"
+        "for line in sys.stdin:\n"
+        "    req = json.loads(line)\n"
+        '    sys.stdout.write("<<garbage>>\\n")\n'
+        '    sys.stdout.write(json.dumps('
+        '{"id": req["id"], "ok": True, "result": {"pong": True}}) + "\\n")\n'
+        "    sys.stdout.flush()\n"
+    )
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", _script(tmp_path, body))
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    async def run() -> None:
+        client = RosBridgeClient()
+        await client.start()
+        assert await client.ping()  # garbage between frames never poisons real replies
+        await client.stop()
+
+    asyncio.run(run())
