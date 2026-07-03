@@ -40,6 +40,7 @@ from jenai.tools.ros2_core import (
 )
 from jenai.tools.route_core import route_preview
 from jenai.tools.safety import arm_watchdog, halt_robot
+from jenai.tools.skills import find_dock, parse_patrol
 from jenai.tools.vision_core import VisionError, analyze_image, capture_and_analyze
 from jenai.tui.panels import MUTED, OutputPanel, TimelineItem, _is_number
 from jenai.tui.widgets import ApprovalCard
@@ -327,6 +328,103 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
             justification=f"Requested via /mission: {arg}",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_patrol(self, arg: str) -> None:
+        # /patrol A, B, C x3 photo → loop the waypoints, optional VLM report.
+        spec = parse_patrol(arg) if arg else None
+        if spec is None:
+            await self._mount_event(
+                TimelineItem("warn", "Usage: /patrol <place>, <place>, … [xN] [photo]")
+            )
+            return
+
+        plan = spec.describe()
+        total = len(spec.points) * spec.loops
+        ctx = self._new_run_context(f"/patrol {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="patrol",
+            category=ToolCallCategory.ROS2,
+            input_summary=plan,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        pending = {
+            "kind": "patrol",
+            "ctx": ctx,
+            "spec": spec,
+            "locations": self._load_locations(),
+        }
+        if "patrol" in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="patrol",
+            title=f"Patrol · {total} waypoints",
+            summary=f"The robot will patrol: {plan}.",
+            raw_action=plan,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification=f"Requested via /patrol: {arg}",
+        )
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
+    async def _show_dock(self, _: str = "") -> None:
+        # /dock → navigate to the location tagged 'dock' (or named like one).
+        dock = find_dock(self._load_locations())
+        if dock is None:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "No dock location found. Tag one in locations.toml "
+                    '(tags = ["dock"]) or save it: /loc add here Dock',
+                )
+            )
+            return
+
+        ctx = self._new_run_context("/dock")
+        tool_call = ToolCallRecord(
+            tool_name="route_execute_tool",
+            category=ToolCallCategory.ROUTE,
+            input_summary=f"return to dock '{dock.name}'",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        # A dock run is just a route to a known goal — reuse the route pipeline.
+        pending = {
+            "kind": "route",
+            "ctx": ctx,
+            "outgoing_action": {"goal": dock.model_dump(mode="json")},
+        }
+        if "route" in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="route_execute_tool",
+            title=f"Return to dock · {dock.name}",
+            summary=(
+                f"The robot will navigate to '{dock.name}' "
+                f"({dock.pose.x:.2f}, {dock.pose.y:.2f})."
+            ),
+            raw_action=f"goto {dock.name}",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="Requested via /dock",
         )
         self.run_store.add_interruption(ctx.run, approval)
         self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)

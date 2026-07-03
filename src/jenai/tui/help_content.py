@@ -31,6 +31,14 @@ _COMMAND_GROUPS = [
         commands=["/route <text>", "/loc list", "/loc show <name>", "/loc add here <name>"],
     ),
     CommandGroup(
+        name="Skills",
+        commands=[
+            "/mission <place>, <place>, …",
+            "/patrol <place>, <place> [xN] [photo]",
+            "/dock",
+        ],
+    ),
+    CommandGroup(
         name="Vision",
         commands=["/vision image <path>", "/vision camera [topic]"],
     ),
