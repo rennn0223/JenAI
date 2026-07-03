@@ -29,8 +29,10 @@ async def run_daemon(
     """
     engine = RuleEngine(rules, nav_allowed=config.route_adapter == "nav2")
     bridge = RosBridgeClient()
+    # Registered before start: every (re)spawn arms the watchdog, so a dead
+    # daemon can never leave the robot driving — even after a bridge crash.
+    await arm_watchdog(config, bridge)
     await bridge.start()
-    await arm_watchdog(config, bridge)  # dead daemon must not leave the robot driving
     on_status(f"bridge up · watching {len(rules)} rule(s)")
 
     loop = asyncio.get_running_loop()

@@ -44,14 +44,16 @@ def build_mcp_server(
     )
     # One lazily-started rclpy bridge shared by pose/camera/navigation tools.
     bridge = RosBridgeClient()
+    safety_registered = False
 
     async def _get_bridge() -> RosBridgeClient:
-        newly_started = not bridge.running
-        await bridge.start()  # idempotent; raises BridgeError when ROS is absent
-        if newly_started:
-            # Dead-client watchdog: a killed MCP client must not leave the
-            # robot driving unsupervised.
+        nonlocal safety_registered
+        if not safety_registered:
+            # Register once; start() arms the watchdog on every (re)spawn, so
+            # a killed MCP client can never leave the robot driving.
             await arm_watchdog(config, bridge)
+            safety_registered = True
+        await bridge.start()  # idempotent; raises BridgeError when ROS is absent
         return bridge
 
     def _locations_or_error() -> tuple[list, str | None]:

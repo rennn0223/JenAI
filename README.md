@@ -92,8 +92,9 @@ type = "ackermann"          # ackermann | diff | quadruped
 cmd_vel_topic = "/cmd_vel"
 cmd_vel_stamped = false     # true 時發 TwistStamped
 camera_topic = "/camera/image_raw"   # /vision camera 與 MCP camera_look 預設
-max_linear = 2.0            # m/s — 執行期硬限速(LLM/使用者給再大都會被夾住)
-max_angular = 0.53          # rad/s
+max_linear = 1.0            # m/s — 執行期硬限速(LLM/使用者給再大都會被夾住)。
+max_angular = 2.0           # rad/s — 以上為安全預設;依你的車實測後再調
+                            # (例:Leatherback 用 2.0 / 0.53)
 ```
 
 ### 使用本地 Ollama

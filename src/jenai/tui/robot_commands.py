@@ -47,6 +47,20 @@ from jenai.tui.widgets import ApprovalCard
 
 
 class RobotCommandsMixin:
+    async def _request_direct_approval(self, ctx, tool_call, pending: dict, approval) -> None:
+        """The one approval pipeline for direct (non-agent) actuating commands:
+        record the tool call, honor session auto-approval (auto_key falls back
+        to the execution kind), otherwise raise the card and park the action."""
+        self.run_store.add_tool_call(ctx.run, tool_call)
+        if pending.get("auto_key", pending["kind"]) in self._auto_approved:
+            await self._execute_direct(pending)
+            return
+        self.run_store.add_interruption(ctx.run, approval)
+        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
+        self._pending_direct_approvals[approval.tool_call_id] = pending
+        await self._mount_event(ApprovalCard(approval))
+        self._scroll_to_bottom()
+
     async def _show_ros_topics(self, _: str = "") -> None:
         output = await ros_topics(self.config)
         if not output.topics:
@@ -131,18 +145,13 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        if "ros_pub" in self._auto_approved:
-            await self._execute_direct(
-                {
-                    "kind": "ros_pub",
-                    "ctx": ctx,
-                    "topic": topic,
-                    "message_type": validation.message_type,
-                    "payload": payload,
-                }
-            )
-            return
+        pending = {
+            "kind": "ros_pub",
+            "ctx": ctx,
+            "topic": topic,
+            "message_type": validation.message_type,
+            "payload": payload,
+        }
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -153,18 +162,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /ros pub.",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-
-        self._pending_direct_approvals[approval.tool_call_id] = {
-            "kind": "ros_pub",
-            "ctx": ctx,
-            "topic": topic,
-            "message_type": validation.message_type,
-            "payload": payload,
-        }
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_ros_drive(self, arg: str) -> None:
         # /ros drive <topic> <json payload> [seconds]
@@ -201,7 +199,6 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
         pending = {
             "kind": "drive",
             "ctx": ctx,
@@ -210,9 +207,6 @@ class RobotCommandsMixin:
             "payload": payload,
             "duration": duration,
         }
-        if "drive" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -224,11 +218,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /ros drive.",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_drive(self, arg: str) -> None:
         # Natural-language driving: "前進兩秒", "turn left", "slowly reverse".
@@ -255,7 +245,6 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
         pending = {
             "kind": "drive",
             "ctx": ctx,
@@ -264,9 +253,6 @@ class RobotCommandsMixin:
             "payload": intent.to_payload(),
             "duration": intent.duration_s,
         }
-        if "drive" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -281,11 +267,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification=f"Requested via /drive: {arg}",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_mission(self, arg: str) -> None:
         # /mission kitchen, drive turn left, lobby  → a supervised multi-step run.
@@ -308,16 +290,12 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
         pending = {
             "kind": "mission",
             "ctx": ctx,
             "steps": steps,
             "locations": self._load_locations(),
         }
-        if "mission" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -329,11 +307,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification=f"Requested via /mission: {arg}",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_patrol(self, arg: str) -> None:
         # /patrol A, B, C x3 photo → loop the waypoints, optional VLM report.
@@ -354,16 +328,12 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
         pending = {
             "kind": "patrol",
             "ctx": ctx,
             "spec": spec,
             "locations": self._load_locations(),
         }
-        if "patrol" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -375,11 +345,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification=f"Requested via /patrol: {arg}",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_dock(self, _: str = "") -> None:
         # /dock → navigate to the location tagged 'dock' (or named like one).
@@ -402,16 +368,15 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        # A dock run is just a route to a known goal — reuse the route pipeline.
+        # A dock run reuses the route execution pipeline (kind), but keeps its
+        # own approval identity (auto_key): remembering /route must not
+        # silently auto-approve /dock, nor the reverse.
         pending = {
             "kind": "route",
+            "auto_key": "dock",
             "ctx": ctx,
             "outgoing_action": {"goal": dock.model_dump(mode="json")},
         }
-        if "route" in self._auto_approved:
-            await self._execute_direct(pending)
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -426,11 +391,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /dock",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-        self._pending_direct_approvals[approval.tool_call_id] = pending
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     # -- Route / locations ----------------------------------------------------
 
@@ -455,12 +416,7 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        self.run_store.add_tool_call(ctx.run, tool_call)
-        if "route" in self._auto_approved:
-            await self._execute_direct(
-                {"kind": "route", "ctx": ctx, "outgoing_action": output.outgoing_action}
-            )
-            return
+        pending = {"kind": "route", "ctx": ctx, "outgoing_action": output.outgoing_action}
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -471,16 +427,7 @@ class RobotCommandsMixin:
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /route.",
         )
-        self.run_store.add_interruption(ctx.run, approval)
-        self.run_store.set_status(ctx.run, RunStatus.AWAITING_APPROVAL)
-
-        self._pending_direct_approvals[approval.tool_call_id] = {
-            "kind": "route",
-            "ctx": ctx,
-            "outgoing_action": output.outgoing_action,
-        }
-        await self._mount_event(ApprovalCard(approval))
-        self._scroll_to_bottom()
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_loc_list(self, _: str = "") -> None:
         locations = self._load_locations()
@@ -650,11 +597,12 @@ class RobotCommandsMixin:
         """Start (or reuse) the rclpy bridge; raises BridgeError when ROS is absent."""
         if self._bridge is None:
             self._bridge = RosBridgeClient()
+            # Register the dead-client watchdog config once; every (re)spawn
+            # arms it inside start(), so a hung or killed TUI can never leave
+            # the robot driving unsupervised — even after a bridge crash.
+            await arm_watchdog(self.config, self._bridge)
         if not self._bridge.running:
             await self._bridge.start()
-            # Freshly started bridge: arm the dead-client watchdog so a hung or
-            # killed TUI can never leave the robot driving unsupervised.
-            await arm_watchdog(self.config, self._bridge)
         return self._bridge
 
     async def _show_stop(self, _: str = "") -> None:

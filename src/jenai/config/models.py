@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -35,7 +36,9 @@ class VehicleProfile(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: str = "ackermann"  # ackermann | diff | quadruped — informational for now
+    # Literal so a typo ("ackerman") fails at config load, not months later
+    # when the first type-aware consumer appears.
+    type: Literal["ackermann", "diff", "quadruped"] = "ackermann"
     cmd_vel_topic: str = "/cmd_vel"
     cmd_vel_stamped: bool = False  # publish TwistStamped instead of Twist
     camera_topic: str = "/camera/image_raw"  # default for /vision camera & MCP camera_look

@@ -81,8 +81,8 @@ type = "ackermann"                 # ackermann | diff | quadruped
 cmd_vel_topic = "/cmd_vel"
 cmd_vel_stamped = false            # true 時發 TwistStamped
 camera_topic = "/camera/image_raw" # /vision camera、patrol photo、MCP camera_look 預設
-max_linear = 2.0                   # 執行期硬限速(m/s)——LLM/使用者給再大都會被夾住
-max_angular = 0.53                 # rad/s
+max_linear = 1.0                   # 執行期硬限速(m/s)——LLM/使用者給再大都會被夾住
+max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherback:2.0/0.53)
 ```
 
 ## 3. 日常使用

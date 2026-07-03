@@ -43,6 +43,11 @@ class RosBridgeClient:
         self._watch_handlers: dict[int, Callable[[dict], None]] = {}
         self._ready = asyncio.Event()
         self._start_lock = asyncio.Lock()
+        # Safety config survives the process: once set, EVERY spawn re-arms
+        # the watchdog — including silent respawns via request(). Without
+        # this, a crashed bridge would come back disarmed and no caller
+        # would notice.
+        self._safety: dict | None = None
 
     @staticmethod
     def available() -> bool:
@@ -90,6 +95,15 @@ class RosBridgeClient:
         except TimeoutError:
             await self.stop()
             raise BridgeError("ROS bridge did not become ready (rclpy missing?).") from None
+        if self._safety is not None:
+            # Arm the dead-client watchdog on the fresh process. A failure
+            # here means the bridge is already broken — fail the start rather
+            # than hand out an unprotected, actuating bridge.
+            try:
+                await self._send_request("watchdog", params=self._safety)
+            except BridgeError:
+                await self.stop()
+                raise
 
     async def stop(self) -> None:
         """Shut the bridge down cleanly, failing any in-flight requests."""
@@ -162,7 +176,13 @@ class RosBridgeClient:
         a client timeout comfortably larger than the bridge one.
         """
         if not self.running:
-            await self.start()
+            await self.start()  # respawn re-arms the watchdog (see _spawn)
+        return await self._send_request(op, timeout, params)
+
+    async def _send_request(
+        self, op: str, timeout: float = 10.0, params: dict | None = None
+    ) -> dict:
+        """request() without the auto-start — used inside start itself."""
         self._next_id += 1
         req_id = self._next_id
         future: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -228,15 +248,19 @@ class RosBridgeClient:
     ) -> None:
         """Arm the bridge-side watchdog: if the client goes quiet for
         `watchdog_s` while a Nav2 goal is active, the bridge halts the robot
-        on its own. navigate_live's heartbeat keeps a healthy client alive."""
-        await self.request(
-            "watchdog",
-            params={
-                "timeout": watchdog_s,
-                "cmd_vel_topic": cmd_vel_topic,
-                "stamped": stamped,
-            },
-        )
+        on its own. navigate_live's heartbeat keeps a healthy client alive.
+
+        The config persists on this client: every (re)spawn re-arms
+        automatically, so a crashed-and-respawned bridge can never silently
+        run disarmed. Callers may invoke this before or after start().
+        """
+        self._safety = {
+            "timeout": watchdog_s,
+            "cmd_vel_topic": cmd_vel_topic,
+            "stamped": stamped,
+        }
+        if self.running:
+            await self._send_request("watchdog", params=self._safety)
 
     async def capture_frame(self, topic: str, timeout: float = 5.0) -> Path:
         result = await self.request(

@@ -11,9 +11,9 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from jenai.adapters.locations import LocationNotFoundError, find_location
 from jenai.config.models import AppConfig
 from jenai.schemas import Location, RouteOutput
+from jenai.tools.mission_core import resolve_and_navigate
 
 _LOOPS_TOKEN = re.compile(r"^[x×](\d{1,3})$", re.IGNORECASE)
 _PHOTO_TOKENS = {"photo", "photos", "拍照"}
@@ -58,28 +58,33 @@ class PatrolReport:
 def parse_patrol(text: str) -> PatrolSpec | None:
     """Parse '/patrol A, B, C x3 photo' → points, loop count, photo flag.
 
-    The loop token (x3/×3) and the photo flag may trail the last point or
-    stand alone after a comma; everything else is a location name.
+    The loop token (x3/×3) and the photo flag are recognized ONLY at the
+    tail of the command — trailing the last point or standing alone after
+    the final comma. Interior words are never consumed: a waypoint literally
+    named 'Photo Lab' or 'X2 Hall' stays intact.
     """
-    points: list[str] = []
+    segments = [seg.strip() for seg in text.split(",") if seg.strip()]
     loops = 1
     photo = False
-    for raw in text.split(","):
-        words = raw.strip().split()
-        kept: list[str] = []
-        for word in words:
-            match = _LOOPS_TOKEN.match(word)
+    while segments:
+        words = segments[-1].split()
+        while words:
+            match = _LOOPS_TOKEN.match(words[-1])
             if match:
                 loops = max(1, int(match.group(1)))
-            elif word.lower() in _PHOTO_TOKENS:
+                words.pop()
+            elif words[-1].lower() in _PHOTO_TOKENS:
                 photo = True
+                words.pop()
             else:
-                kept.append(word)
-        if kept:
-            points.append(" ".join(kept))
-    if not points:
+                break
+        if words:
+            segments[-1] = " ".join(words)
+            break
+        segments.pop()  # segment was tokens only — keep stripping the new tail
+    if not segments:
         return None
-    return PatrolSpec(points=points, loops=loops, photo=photo)
+    return PatrolSpec(points=segments, loops=loops, photo=photo)
 
 
 async def run_patrol(
@@ -101,19 +106,12 @@ async def run_patrol(
     for loop in range(1, spec.loops + 1):
         for point in spec.points:
             try:
-                location = find_location(locations, point)
-            except LocationNotFoundError as exc:
-                hint = ", ".join(c.name for c in exc.candidates)
-                detail = f"unknown location (near: {hint})" if hint else "unknown location"
-                result = PatrolStepResult(loop, point, "failed", detail)
-            else:
-                try:
-                    out = await navigate({"goal": location.model_dump(mode="json")})
-                    result = PatrolStepResult(
-                        loop, location.name, out.execution_status, out.route_preview
-                    )
-                except Exception as exc:  # noqa: BLE001 — record and continue
-                    result = PatrolStepResult(loop, location.name, "failed", f"error: {exc}")
+                name, status, detail = await resolve_and_navigate(
+                    config, locations, point, navigate=navigate
+                )
+                result = PatrolStepResult(loop, name, status, detail)
+            except Exception as exc:  # noqa: BLE001 — record and continue
+                result = PatrolStepResult(loop, point, "failed", f"error: {exc}")
             if (
                 spec.photo
                 and observe is not None

@@ -101,27 +101,28 @@ def test_doctor_none_config_path_resolves_locations_against_config_dir(
 
 
 def test_nav_stack_checks_read_the_graph(monkeypatch, tmp_path) -> None:
-    """nav checks: PASS items when the graph has the nav stack, WARN with an
-    ONBOARDING pointer when it doesn't; all WARN-level (never blocks startup)."""
-    import subprocess
-    from types import SimpleNamespace
-
+    """nav checks: PASS when the graph has the nav stack (Nav2 detected via
+    `ros2 action list` — action topics are hidden from `ros2 topic list`),
+    WARN with an ONBOARDING pointer when it doesn't; never FAIL."""
     from jenai.doctor.checks import _check_nav_stack
 
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
+    monkeypatch.setattr(
+        "jenai.adapters.ros2_adapter.list_topics",
+        lambda *, timeout=5.0: ["/map", "/amcl_pose", "/scan", "/cmd_vel"],
+    )
+    monkeypatch.setattr(
+        "jenai.adapters.ros2_adapter.list_actions",
+        lambda *, timeout=5.0: ["/navigate_to_pose"],
+    )
 
-    def fake_run(args, **kwargs):
-        if args[:3] == ["ros2", "topic", "list"]:
-            out = "/map\n/amcl_pose\n/scan\n/cmd_vel\n/navigate_to_pose/_action/status\n"
-            return SimpleNamespace(returncode=0, stdout=out, stderr="")
-        if args[:3] == ["ros2", "topic", "info"]:
-            return SimpleNamespace(
-                returncode=0, stdout="Type: ...\nPublisher count: 1\nSubscription count: 2\n",
-                stderr="",
-            )
-        raise AssertionError(f"unexpected command {args}")
+    from jenai.adapters.ros2_adapter import TopicInfo
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "jenai.adapters.ros2_adapter.topic_info",
+        lambda topic, *, timeout=5.0: TopicInfo(name=topic, subscriber_count=2),
+    )
+
     items = _check_nav_stack(None)
 
     assert [i.check_name for i in items] == ["map", "localization", "laser", "nav2", "cmd_vel"]
@@ -129,18 +130,15 @@ def test_nav_stack_checks_read_the_graph(monkeypatch, tmp_path) -> None:
 
 
 def test_nav_stack_warns_and_points_at_onboarding(monkeypatch) -> None:
-    import subprocess
-    from types import SimpleNamespace
-
     from jenai.doctor.checks import _check_nav_stack
 
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
     monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda args, **kw: SimpleNamespace(
-            returncode=0, stdout="/rosout\n/parameter_events\n", stderr=""
-        ),
+        "jenai.adapters.ros2_adapter.list_topics",
+        lambda *, timeout=5.0: ["/rosout", "/parameter_events"],
+    )
+    monkeypatch.setattr(
+        "jenai.adapters.ros2_adapter.list_actions", lambda *, timeout=5.0: []
     )
 
     items = _check_nav_stack(None)

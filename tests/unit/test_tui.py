@@ -962,16 +962,20 @@ def test_tui_palette_completes_bare_command_with_trailing_space() -> None:
     asyncio.run(run())
 
 
+class FakeHaltBridge:
+    """Shared in-process bridge fake for the /stop tests (halt only)."""
+
+    def __init__(self, nav_canceled: bool = False) -> None:
+        self.nav_canceled = nav_canceled
+        self.halts: list[str] = []
+
+    async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
+        self.halts.append(cmd_vel_topic)
+        return self.nav_canceled
+
+
 def test_tui_stop_command_halts_robot(monkeypatch, tmp_path) -> None:
-    class FakeBridge:
-        def __init__(self) -> None:
-            self.halts: list[str] = []
-
-        async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
-            self.halts.append(cmd_vel_topic)
-            return True  # a nav goal was canceled
-
-    fake = FakeBridge()
+    fake = FakeHaltBridge(nav_canceled=True)
 
     async def fake_get_bridge():
         return fake
@@ -994,12 +998,8 @@ def test_tui_stop_preempts_running_task(monkeypatch, tmp_path) -> None:
     lets it through, cancelling the in-flight task first."""
     from types import SimpleNamespace
 
-    class FakeBridge:
-        async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
-            return False
-
     async def fake_get_bridge():
-        return FakeBridge()
+        return FakeHaltBridge()
 
     async def run() -> None:
         app = _app(tmp_path)
@@ -1111,5 +1111,112 @@ def test_tui_dock_routes_to_tagged_location(monkeypatch, tmp_path) -> None:
             if app._active_task is not None:
                 await app._active_task
             assert sent["goal"] == "Charger"
+
+    asyncio.run(run())
+
+
+def test_tui_stop_variants_preempt_and_busy_gives_feedback(monkeypatch, tmp_path) -> None:
+    """'/STOP' must preempt like '/stop'; other input while busy must not be
+    silently swallowed (review findings)."""
+    from types import SimpleNamespace
+
+    async def fake_get_bridge():
+        return FakeHaltBridge()
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        async with app.run_test() as pilot:
+            hang_started = asyncio.Event()
+
+            async def hang() -> None:
+                hang_started.set()
+                await asyncio.sleep(30)
+
+            hang_task = asyncio.create_task(hang())
+            app._active_task = hang_task
+            await hang_started.wait()
+
+            # Non-stop input while busy: visible feedback, task untouched.
+            await app.on_input_submitted(
+                SimpleNamespace(value="/status", input=SimpleNamespace(value=""))
+            )
+            await pilot.pause()
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("Busy" in b for b in bodies)
+            assert not hang_task.cancelled()
+
+            # A shouty stop variant still preempts.
+            await app.on_input_submitted(
+                SimpleNamespace(value="/STOP", input=SimpleNamespace(value=""))
+            )
+            stop_task = app._active_task
+            assert stop_task is not hang_task
+            await stop_task
+            await pilot.pause()
+            assert hang_task.cancelled()
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("halted" in b.lower() for b in bodies)
+
+    asyncio.run(run())
+
+
+def test_tui_escape_does_not_cancel_the_stop_task(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    release = None
+
+    class SlowHaltBridge:
+        async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
+            await release.wait()
+            return False
+
+    async def fake_get_bridge():
+        return SlowHaltBridge()
+
+    async def run() -> None:
+        nonlocal release
+        release = asyncio.Event()
+        app = _app(tmp_path)
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        async with app.run_test() as pilot:
+            await app.on_input_submitted(
+                SimpleNamespace(value="/stop", input=SimpleNamespace(value=""))
+            )
+            stop_task = app._active_task
+            assert app._active_task_is_stop
+
+            await pilot.press("escape")  # the reflex must NOT abort the halt
+            assert not stop_task.cancelled()
+
+            release.set()
+            await stop_task
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("halted" in b.lower() for b in bodies)
+
+    asyncio.run(run())
+
+
+def test_tui_dock_and_route_approval_memory_are_isolated(monkeypatch, tmp_path) -> None:
+    """Remembering /route must not auto-approve /dock (review finding)."""
+    from jenai.schemas import Location, Pose2D
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        monkeypatch.setattr(
+            app,
+            "_load_locations",
+            lambda: [
+                Location(
+                    name="Charger", tags=["dock"],
+                    frame_id="map", pose=Pose2D(x=9, y=9, yaw=0),
+                )
+            ],
+        )
+        async with app.run_test():
+            app._auto_approved.add("route")  # user remembered an ordinary /route
+            await app.handle_user_text("/dock")
+            # /dock must still raise its own card, not silently execute.
+            assert len(list(app.query(ApprovalCard))) == 1
 
     asyncio.run(run())

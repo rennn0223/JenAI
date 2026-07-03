@@ -202,18 +202,12 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
     if shutil.which("ros2") is None:
         return []  # ros2_cli already reports the root cause
 
-    def _run(args: list[str], timeout: float = 15.0) -> str | None:
-        # First call may also spawn the ros2 daemon — give it headroom.
-        try:
-            completed = subprocess.run(
-                args, check=False, capture_output=True, text=True, timeout=timeout
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        return completed.stdout if completed.returncode == 0 else None
+    from jenai.adapters import ros2_adapter
 
-    topics_out = _run(["ros2", "topic", "list"])
-    if topics_out is None:
+    try:
+        # First call may also spawn the ros2 daemon — give it headroom.
+        topics = set(ros2_adapter.list_topics(timeout=15.0))
+    except ros2_adapter.Ros2AdapterError:
         return [
             DoctorCheckItem(
                 section="nav",
@@ -223,7 +217,6 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
                 fix_suggestion="Try `ros2 topic list` manually; is the robot/simulator up?",
             )
         ]
-    topics = set(topics_out.split())
 
     def _item(name: str, ok: bool, ok_msg: str, warn_msg: str, fix: str) -> DoctorCheckItem:
         return DoctorCheckItem(
@@ -256,19 +249,35 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
             "No /scan topic — SLAM/AMCL and obstacle avoidance need a laser.",
             "Check the LiDAR driver (docs/ONBOARDING.md §2).",
         ),
+    ]
+
+    # Nav2 detection MUST use `ros2 action list`: action topics are hidden
+    # topics that `ros2 topic list` omits, so grepping topics warns forever
+    # even while Nav2 is actively navigating.
+    try:
+        actions = ros2_adapter.list_actions(timeout=5.0)
+    except ros2_adapter.Ros2AdapterError:
+        actions = []
+    items.append(
         _item(
             "nav2",
-            any(t.startswith("/navigate_to_pose") for t in topics),
+            "/navigate_to_pose" in actions,
             "Nav2 NavigateToPose action is available.",
             "Nav2 is not running — /route will honestly report unavailable.",
             "Launch Nav2 (docs/ONBOARDING.md §5).",
-        ),
-    ]
+        )
+    )
 
     # Someone must be listening on cmd_vel, or every motion command is a no-op.
+    # The adapter's tolerant parser handles the count-label variations across
+    # distros; the daemon is warm by now, so a short timeout suffices.
     cmd_vel = config.vehicle.cmd_vel_topic if config is not None else "/cmd_vel"
-    info_out = _run(["ros2", "topic", "info", cmd_vel]) if cmd_vel in topics else None
-    subscribed = bool(info_out) and "Subscription count: 0" not in info_out
+    subscribed = False
+    if cmd_vel in topics:
+        try:
+            subscribed = ros2_adapter.topic_info(cmd_vel, timeout=5.0).subscriber_count > 0
+        except ros2_adapter.Ros2AdapterError:
+            subscribed = False
     items.append(
         _item(
             "cmd_vel",
