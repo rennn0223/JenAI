@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from pathlib import Path
 from typing import Annotated
 
@@ -206,6 +207,10 @@ def web(
     config: ConfigOption = None,
     host: Annotated[str, typer.Option("--host", help="Bind address.")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", help="Bind port.")] = 8760,
+    token: Annotated[
+        str | None,
+        typer.Option("--token", help="Access token (auto-generated per run when omitted)."),
+    ] = None,
 ) -> None:
     config_path = config or default_config_path()
     try:
@@ -216,8 +221,14 @@ def web(
 
     from jenai.webui import serve
 
-    console.print(f"[green]JenAI WebUI serving at http://{host}:{port}[/green] (Ctrl-C to stop)")
-    serve(loaded, config_path, host=host, port=port)
+    # Auth is always on: the WebUI can approve robot actions, and --host may
+    # expose it to the LAN. Only the emergency STOP endpoint skips the token.
+    access_token = token or secrets.token_urlsafe(24)
+    console.print(
+        f"[green]JenAI WebUI serving at http://{host}:{port}/?token={access_token}[/green]\n"
+        "Open that exact URL (the token is required; STOP works without it). Ctrl-C to stop."
+    )
+    serve(loaded, config_path, host=host, port=port, token=access_token)
 
 
 @app.command()

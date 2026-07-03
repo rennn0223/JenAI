@@ -108,6 +108,8 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 
 Console(chat + slash + **確認按鈕**,手機可批准)、Status 卡片(5 秒自動更新)、**Map 卡片**(已存地點 + 機器人即時位置與朝向,2 秒更新)。動作類指令一律回 confirm token,由伺服器端一次性持有 —— 瀏覽器無法偽造或重放。
 
+**Token 認證**(v0.10+):啟動時自動生成 token 並印出帶 `?token=…` 的網址(`--token` 可固定);Bearer header、cookie、query 三種攜帶方式,首次 query 驗證通過即種 session cookie。唯一免認證端點 **`/api/stop`** —— 停車永遠安全(見 docs/THREAT_MODEL.md)。
+
 ### 3.3 MCP server(`jenai mcp`)
 
 把 JenAI 的機器人工具以 [MCP](https://modelcontextprotocol.io) stdio 服務開放給任何 MCP client(Claude Code、Claude Desktop⋯):

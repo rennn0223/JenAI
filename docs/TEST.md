@@ -55,7 +55,8 @@
 | ✅ | `JenAI loc list` | 地點表;無地點時 `No locations configured.` |
 | ✅ | `JenAI loc show <名>` | 該地點座標/別名/tags;不存在時誠實報錯 |
 | 🔶 | `JenAI route "<text>"` | 解析目的地 → 互動確認 → 送 Nav2;**前置:Nav2 + 地圖 + 地點**。現在會誠實報 Nav2 unavailable |
-| ✅ | `JenAI web` | WebUI 起在 127.0.0.1:8760,手機可開;含 STOP 鈕、地圖、批准卡 |
+| ✅ | `JenAI web` | 印出帶 `?token=…` 的網址;WebUI 起在 127.0.0.1:8760;含 STOP 鈕、地圖、批准卡 |
+| ✅ | WebUI auth | 無 token / 錯 token → 401;`?token=` 開頁 → 200 並種 session cookie;`Authorization: Bearer` 亦可;**POST `/api/stop` 免 token 照樣 200** |
 | ✅ | `JenAI mcp` | MCP stdio server 起動,Claude Code/Desktop 可接;預設唯讀,`--allow-actions` 才有 `navigate_to` |
 | ✅ | `JenAI daemon --rules <toml>` | 常駐規則引擎;規則觸發時 notify/halt/goto(goto 需 `auto_approve` + nav2) |
 | ✅ | `JenAI`(主入口) | 已設定 → 直接進 TUI;未設定 → setup wizard |

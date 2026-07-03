@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -273,3 +274,97 @@ def test_pose_cache_backs_off_after_bridge_failure(monkeypatch) -> None:
     cache._last_exit = _time.monotonic() - 31.0  # window elapsed
     cache.ensure_started()
     assert len(spawned) == 2  # retried after backoff
+
+
+# --- token auth -------------------------------------------------------------
+
+
+def _tokened_server(tmp_path: Path, n_requests: int):
+    server = make_server(_config(), tmp_path / "config.toml", port=0, token="s3cret")
+    threads = [threading.Thread(target=server.handle_request) for _ in range(n_requests)]
+    for t in threads:
+        t.start()
+    host, port = server.server_address
+    return server, threads, f"http://{host}:{port}"
+
+
+def _get(url: str, headers: dict | None = None) -> tuple[int, dict[str, str], bytes]:
+    req = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except urllib.error.HTTPError as err:
+        return err.code, dict(err.headers), err.read()
+
+
+def test_webui_auth_rejects_missing_and_wrong_token(tmp_path: Path) -> None:
+    server, threads, base = _tokened_server(tmp_path, 3)
+    try:
+        assert _get(f"{base}/")[0] == 401
+        assert _get(f"{base}/api/status")[0] == 401
+        assert _get(f"{base}/?token=wrong")[0] == 401
+    finally:
+        for t in threads:
+            t.join(timeout=5)
+        server.server_close()
+
+
+def test_webui_auth_accepts_bearer_cookie_and_query(tmp_path: Path) -> None:
+    server, threads, base = _tokened_server(tmp_path, 3)
+    try:
+        status, _, _ = _get(f"{base}/api/status", {"Authorization": "Bearer s3cret"})
+        assert status == 200
+        status, _, _ = _get(f"{base}/api/status", {"Cookie": "jenai_token=s3cret"})
+        assert status == 200
+        # Query token authorizes the page AND grants the session cookie the
+        # dashboard's /api fetches rely on.
+        status, headers, _ = _get(f"{base}/?token=s3cret")
+        assert status == 200
+        assert "jenai_token=s3cret" in headers.get("Set-Cookie", "")
+    finally:
+        for t in threads:
+            t.join(timeout=5)
+        server.server_close()
+
+
+def test_webui_stop_works_without_token(monkeypatch, tmp_path: Path) -> None:
+    import jenai.webui.server as srv
+
+    monkeypatch.setattr(srv, "_do_stop", lambda *a, **k: {"kind": "info", "html": "stopped"})
+    server, threads, base = _tokened_server(tmp_path, 1)
+    try:
+        req = urllib.request.Request(f"{base}/api/stop", data=b"{}", method="POST")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            assert json.loads(resp.read())["kind"] == "info"
+    finally:
+        for t in threads:
+            t.join(timeout=5)
+        server.server_close()
+
+
+def test_webui_no_token_configured_stays_open(tmp_path: Path) -> None:
+    # token=None (unit-test/backwards-compat mode) must not demand auth.
+    server = make_server(_config(), tmp_path / "config.toml", port=0)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    try:
+        host, port = server.server_address
+        assert _get(f"http://{host}:{port}/api/status")[0] == 200
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_webui_wrong_query_token_gets_no_cookie(tmp_path: Path) -> None:
+    # Regression: the 401 path must never Set-Cookie — that would hand the
+    # real token to whoever guessed wrong.
+    server, threads, base = _tokened_server(tmp_path, 1)
+    try:
+        status, headers, _ = _get(f"{base}/?token=wrong")
+        assert status == 401
+        assert "Set-Cookie" not in headers
+    finally:
+        for t in threads:
+            t.join(timeout=5)
+        server.server_close()
