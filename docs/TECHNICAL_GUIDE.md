@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v0.7 系列(2026-07)。專案方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
+> 對應版本:v0.9 系列(2026-07)。專案方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
 
 ## 1. JenAI 是什麼
 
@@ -203,7 +203,7 @@ env -u PYTHONPATH uv run ruff check src tests
 ```
 
 - **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test`(ruff + pytest,coverage 寫入 job summary)、`build`(`uv build` + `uvx` 全新環境裝 wheel 跑 `jenai --help`,抓漏列的依賴)
-- **Release**(`.github/workflows/release.yml`):推 `vX.Y.Z` tag 觸發 —— 驗 tag 與 pyproject 版本一致、重跑 lint+測試、`uv build`,建**草稿** release(自動產生的 notes + wheel/sdist 附件);手寫 notes 後 `gh release edit vX.Y.Z --notes-file … --draft=false` 發佈。tag 已有 release 時只補上傳附件
+- **Release**(`.github/workflows/release.yml`):推 `vX.Y.Z` tag 觸發 —— 驗 tag 與 pyproject 版本一致、重跑 lint+測試、`uv build` + wheel 冒煙測試,建**草稿** release(自動產生的 notes + wheel/sdist 附件);手寫 notes 後 `gh release edit vX.Y.Z --notes-file … --draft=false` 發佈。tag 已有 release 時只補上傳附件
 - **TUI 測試**:Textual `app.run_test()` + `handle_user_text()`;monkeypatch 目標在 handler 所在模組(如 `jenai.tui.robot_commands.route_execute`)
 - **本機 E2E 手法**(開發時驗真鏈路):`scratchpad` 裡跑假節點 —— fake Nav2 action server、fake camera publisher、fake battery —— 全是真 rclpy、真協定,TUI/daemon 分不出真假。參考 git log 中各功能 commit 的驗證描述
 

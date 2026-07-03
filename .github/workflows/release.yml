@@ -13,6 +13,12 @@ on:
 permissions:
   contents: write
 
+# One run per tag: a delete-and-re-push cancels the stale run instead of
+# letting it clobber the corrected artifacts or double-draft.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -42,6 +48,11 @@ jobs:
 
       - name: Build wheel and sdist
         run: uv build
+
+      - name: Smoke-test the wheel (install, deps, entry point)
+        # Same gate as ci.yml's build job — these are the artifacts being
+        # released, so they get at least the same validation as PR artifacts.
+        run: uvx --from ./dist/jenai-*-py3-none-any.whl jenai --help
 
       - name: Draft release with artifacts (or attach to an existing release)
         env:
