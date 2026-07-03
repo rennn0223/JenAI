@@ -131,11 +131,14 @@ def build_mcp_server(
         )
 
     @mcp.tool()
-    async def camera_look(topic: str = "/camera/image_raw") -> str:
-        """Capture one camera frame and describe it with the vision model."""
+    async def camera_look(topic: str = "") -> str:
+        """Capture one camera frame and describe it with the vision model.
+        Omit `topic` to use the vehicle's configured camera."""
         try:
             client = await _get_bridge()
-            output = await capture_and_analyze(config, client, topic, timeout=5.0)
+            output = await capture_and_analyze(
+                config, client, topic or config.vehicle.camera_topic, timeout=5.0
+            )
         except BridgeError as exc:
             return f"unavailable: {exc}"
         except VisionError as exc:

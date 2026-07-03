@@ -222,7 +222,7 @@ async def _drive_nl(config: AppConfig, rest: str) -> dict:
         ),
         {
             "type": "drive",
-            "topic": "/cmd_vel",
+            "topic": config.vehicle.cmd_vel_topic,
             "message_type": TWIST,
             "payload": intent.to_payload(),
             "duration": intent.duration_s,
@@ -282,11 +282,17 @@ async def run_web_confirm(config: AppConfig, action: dict) -> dict:
                 action["message_type"],
                 action["payload"],
                 duration_s=float(action.get("duration", 1.0)),
+                max_linear=config.vehicle.max_linear,
+                max_angular=config.vehicle.max_angular,
             )
             return _result(_p(out.result_message or "done"))
         if kind == "pub":
             out = await ros2_core.ros_pub_execute(
-                action["topic"], action["message_type"], action["payload"]
+                action["topic"],
+                action["message_type"],
+                action["payload"],
+                max_linear=config.vehicle.max_linear,
+                max_angular=config.vehicle.max_angular,
             )
             return _result(_p(out.result_message or "done"))
         if kind == "route":

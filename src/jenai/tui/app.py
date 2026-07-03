@@ -1007,16 +1007,23 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         ctx: JenAIRunContext = pending["ctx"]
         self.run_store.set_status(ctx.run, RunStatus.RUNNING)
         if pending["kind"] in ("ros_pub", "drive"):
+            vehicle = self.config.vehicle
             if pending["kind"] == "drive":
                 output = await ros_drive(
                     pending["topic"],
                     pending["message_type"],
                     pending["payload"],
                     duration_s=pending["duration"],
+                    max_linear=vehicle.max_linear,
+                    max_angular=vehicle.max_angular,
                 )
             else:
                 output = await ros_pub_execute(
-                    pending["topic"], pending["message_type"], pending["payload"]
+                    pending["topic"],
+                    pending["message_type"],
+                    pending["payload"],
+                    max_linear=vehicle.max_linear,
+                    max_angular=vehicle.max_angular,
                 )
             self.run_store.finish(
                 ctx.run,

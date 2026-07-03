@@ -146,7 +146,14 @@ async def ros_pub_execute_tool(
             "execution_status": "failed",
             "result_message": f"payload_json is not valid JSON: {exc}",
         }
-    output = await ros2_core.ros_pub_execute(topic, message_type, payload)
+    vehicle = ctx.context.config.vehicle
+    output = await ros2_core.ros_pub_execute(
+        topic,
+        message_type,
+        payload,
+        max_linear=vehicle.max_linear,
+        max_angular=vehicle.max_angular,
+    )
     _finish_call(
         ctx, call, ok=output.execution_status == "succeeded", summary=output.result_message
     )
@@ -178,8 +185,14 @@ async def ros_drive_execute_tool(
             "execution_status": "failed",
             "result_message": f"payload_json is not valid JSON: {exc}",
         }
+    vehicle = ctx.context.config.vehicle
     output = await ros2_core.ros_drive(
-        topic, message_type, payload, duration_s=duration_seconds
+        topic,
+        message_type,
+        payload,
+        duration_s=duration_seconds,
+        max_linear=vehicle.max_linear,
+        max_angular=vehicle.max_angular,
     )
     _finish_call(
         ctx, call, ok=output.execution_status == "succeeded", summary=output.result_message

@@ -244,7 +244,7 @@ class RobotCommandsMixin:
             )
             return
 
-        topic = "/cmd_vel"
+        topic = self.config.vehicle.cmd_vel_topic
         message_type = "geometry_msgs/msg/Twist"
         ctx = self._new_run_context(f"/drive {arg}")
         tool_call = ToolCallRecord(
@@ -486,7 +486,7 @@ class RobotCommandsMixin:
         # Accept "/vision image <path>", "/vision <path>", and "/vision camera [topic]".
         parts = arg.split(maxsplit=1)
         if parts and parts[0] == "camera":
-            topic = parts[1].strip() if len(parts) > 1 else "/camera/image_raw"
+            topic = parts[1].strip() if len(parts) > 1 else self.config.vehicle.camera_topic
             await self._show_vision_camera(topic)
             return
         if parts and parts[0] == "image":

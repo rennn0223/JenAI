@@ -323,3 +323,17 @@ def test_example_payload_survives_type_only_comment_line() -> None:
     # `<type> #comment` (no field name) must not crash the schema parser.
     raw = "float64 # reserved\nfloat64 x"
     assert ros2_core._naive_example_payload(raw) == {"x": 0.0}
+
+
+def test_safety_clamp_uses_vehicle_limits() -> None:
+    from jenai.tools.ros2_core import _safety_clamp
+
+    payload = {"linear": {"x": 5.0}, "angular": {"z": -3.0}}
+
+    # Default (fallback) limits: 1.0 / 2.0.
+    default = _safety_clamp(payload)
+    assert default["linear"]["x"] == 1.0 and default["angular"]["z"] == -2.0
+
+    # Vehicle profile limits (e.g. Leatherback: 2.0 m/s, 0.53 rad/s).
+    vehicle = _safety_clamp(payload, 2.0, 0.53)
+    assert vehicle["linear"]["x"] == 2.0 and vehicle["angular"]["z"] == -0.53

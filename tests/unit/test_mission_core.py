@@ -33,7 +33,7 @@ def test_run_mission_goto_and_drive(monkeypatch) -> None:
     async def fake_extract(config, text):
         return DriveIntent(0.0, 0.6, 2.0, "turn left")
 
-    async def fake_drive(topic, mt, payload, *, duration_s=1.0):
+    async def fake_drive(topic, mt, payload, *, duration_s=1.0, **limits):
         return RosPubOutput(
             topic=topic, message_type=mt, execution_status="succeeded", result_message="drove"
         )

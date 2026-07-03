@@ -82,6 +82,20 @@ printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.confi
 # 覆寫路徑：JENAI_ENV_FILE=/path/to/.env jenai
 ```
 
+### 載具設定（`[vehicle]`）
+
+載具差異（topic、速限）唯一的家——換車/換狗只改這段,不改程式:
+
+```toml
+[vehicle]
+type = "ackermann"          # ackermann | diff | quadruped
+cmd_vel_topic = "/cmd_vel"
+cmd_vel_stamped = false     # true 時發 TwistStamped
+camera_topic = "/camera/image_raw"   # /vision camera 與 MCP camera_look 預設
+max_linear = 2.0            # m/s — 執行期硬限速(LLM/使用者給再大都會被夾住)
+max_angular = 0.53          # rad/s
+```
+
 ### 使用本地 Ollama
 
 Ollama 提供 OpenAI 相容端點，設定要點：

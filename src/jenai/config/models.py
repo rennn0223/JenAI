@@ -38,9 +38,11 @@ class VehicleProfile(BaseModel):
     type: str = "ackermann"  # ackermann | diff | quadruped — informational for now
     cmd_vel_topic: str = "/cmd_vel"
     cmd_vel_stamped: bool = False  # publish TwistStamped instead of Twist
-    # Safety limits — wired into guardrails/drive in M2; halt doesn't need them.
-    max_linear: float = 0.5  # m/s
-    max_angular: float = 1.0  # rad/s
+    camera_topic: str = "/camera/image_raw"  # default for /vision camera & MCP camera_look
+    # Hard velocity clamp applied at execution time, regardless of what the
+    # model or user asked. Defaults match the historical built-in limits.
+    max_linear: float = 1.0  # m/s
+    max_angular: float = 2.0  # rad/s
 
 
 class AppConfig(BaseModel):

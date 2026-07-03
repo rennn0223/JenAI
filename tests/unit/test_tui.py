@@ -283,7 +283,7 @@ def test_tui_drive_natural_language_shows_card_and_executes(monkeypatch) -> None
 
     executed = {}
 
-    async def fake_drive(topic, message_type, payload, *, duration_s=1.0):
+    async def fake_drive(topic, message_type, payload, *, duration_s=1.0, **limits):
         executed.update(payload=payload, duration=duration_s)
         return RosPubOutput(
             topic=topic, message_type=message_type,
@@ -317,7 +317,7 @@ def test_tui_ros_drive_shows_card_and_executes_on_approve(monkeypatch) -> None:
     async def fake_validate(topic, payload):
         return Ros2PubValidation(ok=True, message_type="geometry_msgs/msg/Twist")
 
-    async def fake_drive(topic, message_type, payload, *, duration_s=1.0):
+    async def fake_drive(topic, message_type, payload, *, duration_s=1.0, **limits):
         executed.update(topic=topic, duration=duration_s)
         return RosPubOutput(
             topic=topic, message_type=message_type,
@@ -644,7 +644,7 @@ def test_tui_ros_pub_shows_card_and_resolves_on_approve(monkeypatch) -> None:
             ok=True, message_type="geometry_msgs/msg/Twist", payload_preview=payload
         )
 
-    async def fake_execute(topic, message_type, payload):
+    async def fake_execute(topic, message_type, payload, **limits):
         return RosPubOutput(
             topic=topic,
             message_type=message_type,
@@ -678,7 +678,7 @@ def test_tui_ros_pub_rejects_on_escape(monkeypatch) -> None:
 
     executed = []
 
-    async def fake_execute(topic, message_type, payload):
+    async def fake_execute(topic, message_type, payload, **limits):
         executed.append(topic)
         return RosPubOutput(topic=topic, message_type=message_type)
 

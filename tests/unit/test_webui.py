@@ -111,7 +111,7 @@ def test_web_confirm_executes_drive(monkeypatch, tmp_path: Path) -> None:
 
     called = {}
 
-    async def fake_drive(topic, message_type, payload, *, duration_s=1.0):
+    async def fake_drive(topic, message_type, payload, *, duration_s=1.0, **limits):
         called["duration"] = duration_s
         return RosPubOutput(
             topic=topic, message_type=message_type,
