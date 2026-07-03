@@ -12,6 +12,8 @@ build/
 venv/
 .env
 *.log
+.coverage
+coverage.xml
 .DS_Store
 
 # Personal thesis planning (not part of the project)
