@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+from rich.markup import escape
+
 from jenai.adapters.locations import (
     LocationNotFoundError,
     LocationsFileError,
@@ -31,6 +33,7 @@ from jenai.schemas import (
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.mission_core import parse_mission
 from jenai.tools.nav_live import navigate_with_fallback
+from jenai.tools.perception import PerceptionLoop
 from jenai.tools.ros2_core import (
     ros_echo,
     ros_pub_validate,
@@ -604,6 +607,105 @@ class RobotCommandsMixin:
         if not self._bridge.running:
             await self._bridge.start()
         return self._bridge
+
+    async def _show_perception(self, arg: str) -> None:
+        """/perception start [topic] [hz] · stop · status — continuous camera→VLM.
+
+        Perception only OBSERVES: suggested actions are rendered for the
+        human (or matched by daemon rules) and always go through the existing
+        approval machinery — nothing here actuates.
+        """
+        sub, _, rest = arg.strip().partition(" ")
+        sub = sub.strip().lower()
+
+        if sub == "start":
+            loop = getattr(self, "_perception", None)
+            if loop is not None and loop.running:
+                await self._mount_event(
+                    TimelineItem(
+                        "warn", "Perception loop already running — /perception stop first."
+                    )
+                )
+                return
+            topic = None
+            hz = 1.0
+            for token in rest.split():
+                if token.startswith("/"):
+                    topic = token
+                elif _is_number(token):
+                    hz = max(0.05, float(token))
+            try:
+                bridge = await self._get_bridge()
+            except BridgeError as exc:
+                await self._mount_event(
+                    TimelineItem("warn", f"Perception unavailable (no ROS bridge): {exc}")
+                )
+                return
+
+            async def _on_analysis(analysis) -> None:
+                parts = [escape(analysis.scene_context or "(no description)")]
+                if analysis.affordances:
+                    tags = " ".join(f"#{escape(a)}" for a in analysis.affordances)
+                    parts.append(f"[#9c9689]{tags}[/]")
+                if analysis.suggested_action:
+                    note = (
+                        " [#9c9689](suggestion only — needs approval)[/]"
+                        if analysis.requires_approval
+                        else ""
+                    )
+                    parts.append(f"[bold #f2ede1]→ {escape(analysis.suggested_action)}[/]{note}")
+                parts.append(f"[#9c9689]{analysis.confidence:.0%}[/]")
+                await self._mount_event(TimelineItem("muted", "👁 " + " · ".join(parts)))
+                self._scroll_to_bottom()
+
+            async def _on_status(message: str) -> None:
+                await self._mount_event(TimelineItem("warn", escape(message)))
+                self._scroll_to_bottom()
+
+            self._perception = PerceptionLoop(
+                self.config,
+                bridge,
+                topic=topic,
+                hz=hz,
+                on_analysis=_on_analysis,
+                on_status=_on_status,
+            )
+            await self._perception.start()
+            await self._mount_event(
+                TimelineItem(
+                    "success",
+                    f"Perception loop started · {self._perception.topic} @ {hz:g}Hz "
+                    "(/perception stop to end)",
+                )
+            )
+            return
+
+        if sub == "stop":
+            loop = getattr(self, "_perception", None)
+            if loop is None or not loop.running:
+                await self._mount_event(TimelineItem("warn", "Perception loop is not running."))
+                return
+            frames = loop.frames
+            await loop.stop()
+            await self._mount_event(
+                TimelineItem("success", f"Perception loop stopped ({frames} frames analyzed).")
+            )
+            return
+
+        loop = getattr(self, "_perception", None)
+        if loop is not None and loop.running:
+            latest = loop.latest
+            detail = f" · last: {escape(latest.scene_context)}" if latest is not None else ""
+            await self._mount_event(
+                TimelineItem(
+                    "muted",
+                    f"Perception running · {loop.topic} · {loop.frames} frames{detail}",
+                )
+            )
+        else:
+            await self._mount_event(
+                TimelineItem("muted", "Perception idle. Usage: /perception start [topic] [hz]")
+            )
 
     async def _show_stop(self, _: str = "") -> None:
         """EMERGENCY STOP — no approval gate: stopping is always safe."""

@@ -41,6 +41,7 @@ from jenai.schemas.outputs import (
     RosTopicsOutput,
     RouteOutput,
     RunOutput,
+    SceneAnalysis,
     ShellOutput,
     TopicItem,
     VisionOutput,
@@ -87,6 +88,7 @@ __all__ = [
     "ToolCallRecord",
     "ToolCallStatus",
     "TopicItem",
+    "SceneAnalysis",
     "VisionOutput",
 ]
 

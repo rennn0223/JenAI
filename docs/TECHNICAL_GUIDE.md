@@ -10,6 +10,7 @@
 - **TUI 優先**(Textual):聊天(串流回覆)、`/plan`/`/run` 代理任務、`/ros` 檢查、`/route`/`/mission` 導航、`/vision` 視覺
 - **緊急停止**:`/stop`(TUI)、紅色 STOP 鈕(WebUI)、`stop` 工具(MCP)、`halt` 規則(daemon)——免批准、忙碌中可搶佔;bridge 端 watchdog 在 client 斷線/卡死時**自主停車**
 - **任務技能**:`/patrol`(循環巡邏 + 每點拍照 VLM 回報)、`/dock`(回充)、`/mission`(多步任務)
+- **持續感知**:`/perception start` 定頻相機→VLM 結構化分析;affordance 可作 daemon 規則觸發條件(與數值閾值並列),動作照走既有批准
 - **誠實回報**:沒有 ROS、沒有 Nav2、沒有金鑰時明確說 unavailable,絕不假裝成功
 - **危險動作要批准**:所有會動到機器人的操作(pub、drive、route、patrol、shell)先出審批卡
 - **載具設定 `[vehicle]`**:cmd_vel topic、硬限速、相機 topic 集中一處——換載具改設定不改程式
@@ -161,6 +162,7 @@ jenai daemon                                        # Ctrl-C 停止
 | `tools/nav_live.py` | 143 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback`(nav2-vs-CLI 調度的唯一出處,TUI/MCP 共用)** |
 | `tools/skills.py` | 145 | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
 | `tools/safety.py` | 32 | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
+| `tools/perception.py` | ~180 | **PerceptionLoop**:持續相機→VLM→結構化 `SceneAnalysis`(場景/物件/affordances/建議動作);TUI `/perception`、daemon `@perception` 規則共用;只觀察不動作 |
 | `mcp_server/server.py` | 183 | FastMCP stdio server:唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |
 | `agent/orchestrator.py` 等 | ~600 | /run 代理:規劃、specialist 工具、批准中斷、guardrails、tracing |
 | `providers/chat.py` | 337 | OpenAI 相容呼叫:`ask_provider`、**`stream_provider`(串流)**、`ask_json`、`ask_vision_json`、`list_provider_models`;`_provider_errors` 共用例外映射;`parse_json_reply`(寬容解析,thinking 模型必備) |

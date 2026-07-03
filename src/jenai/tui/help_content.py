@@ -40,7 +40,12 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="Vision",
-        commands=["/vision image <path>", "/vision camera [topic]"],
+        commands=[
+            "/vision image <path>",
+            "/vision camera [topic]",
+            "/perception start [topic] [hz]",
+            "/perception stop",
+        ],
     ),
     CommandGroup(
         name="System",

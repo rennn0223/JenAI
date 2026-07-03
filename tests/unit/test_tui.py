@@ -1220,3 +1220,65 @@ def test_tui_dock_and_route_approval_memory_are_isolated(monkeypatch, tmp_path) 
             assert len(list(app.query(ApprovalCard))) == 1
 
     asyncio.run(run())
+
+
+def test_tui_perception_start_and_stop(monkeypatch, tmp_path) -> None:
+    from jenai.schemas import SceneAnalysis
+
+    class FakeBridge:
+        async def capture_frame(self, topic, timeout=5.0):
+            raise AssertionError("loop is faked; capture must not run")
+
+    async def fake_get_bridge():
+        return FakeBridge()
+
+    started = {}
+
+    class FakePerceptionLoop:
+        def __init__(self, config, bridge, *, topic=None, hz=1.0, on_analysis=None, on_status=None):
+            self.topic = topic or config.vehicle.camera_topic
+            self.frames = 0
+            self.latest = None
+            self._running = False
+            self._on_analysis = on_analysis
+            started["topic"] = self.topic
+            started["hz"] = hz
+
+        @property
+        def running(self):
+            return self._running
+
+        async def start(self):
+            self._running = True
+            # Deliver one analysis so the rendering path is exercised.
+            self.latest = SceneAnalysis(
+                scene_context="hallway [with brackets]",
+                affordances=["path_clear"],
+                suggested_action="proceed",
+                confidence=0.9,
+            )
+            self.frames = 1
+            if self._on_analysis:
+                await self._on_analysis(self.latest)
+
+        async def stop(self):
+            self._running = False
+
+    monkeypatch.setattr("jenai.tui.robot_commands.PerceptionLoop", FakePerceptionLoop)
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        async with app.run_test():
+            await app.handle_user_text("/perception start /rgb 2")
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("Perception loop started" in b for b in bodies)
+            assert any("hallway" in b for b in bodies)  # analysis rendered
+            assert any("suggestion only" in b for b in bodies)  # approval note
+            assert started == {"topic": "/rgb", "hz": 2.0}
+
+            await app.handle_user_text("/perception stop")
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("Perception loop stopped" in b for b in bodies)
+
+    asyncio.run(run())

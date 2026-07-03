@@ -124,6 +124,22 @@ class VisionOutput(JenAIModel):
     next_action_suggestions: list[str] = Field(default_factory=list)
 
 
+class SceneAnalysis(JenAIModel):
+    """One structured VLM read of a camera frame (the PerceptionLoop unit).
+
+    `requires_approval` defaults True: an analysis that doesn't explicitly
+    say an action is safe to suggest must stay behind the human gate.
+    """
+
+    scene_context: str = ""
+    objects: list[str] = Field(default_factory=list)
+    affordances: list[str] = Field(default_factory=list)  # e.g. "path_clear", "door_open"
+    suggested_action: str = ""
+    confidence: float = 0.0  # 0.0–1.0
+    requires_approval: bool = True
+    ts: float = 0.0  # capture wall-clock time
+
+
 class ShellOutput(JenAIModel):
     command: str
     working_directory: str = ""

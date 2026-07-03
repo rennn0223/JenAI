@@ -13,6 +13,7 @@ JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人
 - **即時導航**：`/route`、`/mission` 走 Nav2，剩餘距離即時顯示、Esc 真的取消 goal（rclpy bridge）
 - **地點管理**：`/loc add here <名字>` 抓機器人當下位置存檔，邊走邊建地圖點位
 - **視覺理解**：`/vision image <路徑>` 分析圖片；`/vision camera` 直接抓相機畫面問「你看到什麼」
+- **持續感知**：`/perception start` 相機→VLM 定頻迴圈，輸出結構化場景分析（affordances 可觸發 daemon 規則；只觀察，動作一律走批准）
 - **模型雲地隨切**：`/provider`、`/model` 即時切換 NVIDIA 雲端／本機 Ollama，含編號快選
 - **緊急停止**：TUI `/stop`、WebUI 紅色 STOP 鈕、MCP `stop` 工具——取消導航 + 送零速度,不需批准、忙碌中也能搶佔；bridge 端 watchdog 在 client 斷線時自動停車
 - **Human-in-the-loop 批准機制**：敏感操作一律暫停等待人工核准，Enter 批准、Esc 拒絕

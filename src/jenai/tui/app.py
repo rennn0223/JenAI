@@ -113,6 +113,12 @@ SLASH_COMMANDS = [
     SlashCommand(
         "/vision camera", "Capture a camera frame and describe it", "/vision camera [topic]"
     ),
+    SlashCommand(
+        "/perception start",
+        "Continuous camera→VLM scene analysis (observe only)",
+        "/perception start [topic] [hz]",
+    ),
+    SlashCommand("/perception stop", "Stop the perception loop"),
     SlashCommand("/shell", "Run a host shell command (needs approval)", "/shell <cmd>"),
     SlashCommand("/clear", "Clear the output area"),
     SlashCommand("/quit", "Exit JenAI"),
@@ -299,6 +305,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # True while the active task IS the emergency stop — Esc must not
         # cancel it, and a preempted task must not clear its spinner.
         self._active_task_is_stop = False
+        # Continuous camera→VLM loop (started via /perception start).
+        self._perception = None
         self._spinner_timer = None
         self._spinner_frame = 0
         self._spinner_started = 0.0
@@ -707,6 +715,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "/patrol": self._show_patrol,
             "/dock": self._show_dock,
             "/vision": self._show_vision,
+            "/perception": self._show_perception,
             "/shell": self._show_shell,
             "/quit": self._quit_from_command,
             "/exit": self._quit_from_command,
@@ -714,6 +723,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         return handlers.get(command), arg
 
     async def on_unmount(self) -> None:
+        if self._perception is not None:
+            await self._perception.stop()
         if self._bridge is not None:
             await self._bridge.stop()
 

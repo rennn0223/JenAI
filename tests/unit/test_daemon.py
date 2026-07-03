@@ -106,14 +106,16 @@ field = "data"
 """,
         encoding="utf-8",
     )
-    with pytest.raises(RuleError, match="below/above/equals"):
+    with pytest.raises(RuleError, match="below/above/equals/affordance"):
         load_rules(rules_file)
 
 
 def test_example_rules_file_parses() -> None:
     rules = load_rules(Path(__file__).parents[2] / "rules.example.toml")
-    assert len(rules) == 2
+    assert len(rules) == 3
     assert all(not r.auto_approve for r in rules)  # example must ship safe
+    perception = [r for r in rules if r.topic == "@perception"]
+    assert len(perception) == 1 and perception[0].affordance == "path_blocked"
 
 
 def test_daemon_navigate_failure_is_reported_not_silent(tmp_path: Path, monkeypatch) -> None:
