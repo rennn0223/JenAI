@@ -6,9 +6,11 @@ import json
 import secrets
 import threading
 import time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from jenai.adapters import ros2_adapter
 from jenai.adapters.locations import LocationsFileError, load_locations
@@ -32,7 +34,7 @@ class _PendingConfirms:
     release an action the server already previewed and validated — and (b) a
     blind POST to ``/api/confirm`` without a valid, unused id does nothing. This
     turns the confirm step into a real server-side gate rather than a cosmetic
-    button, without adding auth to what is still a localhost tool.
+    button — a second layer under the session token auth (see THREAT_MODEL.md).
     """
 
     def __init__(self, max_entries: int = 32) -> None:
@@ -281,6 +283,7 @@ class _Handler(BaseHTTPRequestHandler):
     run_store: RunStore | None = None
     pending: _PendingConfirms | None = None
     pose_cache: PoseCache | None = None
+    token: str | None = None  # None = auth disabled (unit tests); CLI always sets one
 
     def log_message(self, *args: Any) -> None:  # silence default stderr logging
         pass
@@ -288,16 +291,67 @@ class _Handler(BaseHTTPRequestHandler):
     def _status(self) -> dict[str, Any]:
         return build_status_payload(self.config, self.config_path, run_store=self.run_store)
 
-    def _send(self, body: str, content_type: str) -> None:
+    def _send(self, body: str, content_type: str, status: int = 200) -> None:
         encoded = body.encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(encoded)))
+        # A token that arrived in the URL gets promoted to a session cookie so
+        # the dashboard's /api fetches (which carry no query string) stay
+        # authorized after the initial tokened link is opened.
+        if getattr(self, "_grant_cookie", False):
+            self.send_header(
+                "Set-Cookie", f"jenai_token={self.token}; HttpOnly; SameSite=Strict; Path=/"
+            )
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _route(self) -> str:
+        return urlsplit(self.path).path.rstrip("/") or "/"
+
+    def _presented_token(self) -> tuple[str, bool]:
+        """Return (token the client presented, whether it came from the URL)."""
+        bearer = self.headers.get("Authorization") or ""
+        if bearer.startswith("Bearer "):
+            return bearer[len("Bearer ") :], False
+        try:
+            cookies = SimpleCookie(self.headers.get("Cookie") or "")
+        except Exception:  # malformed cookie header from an untrusted client
+            cookies = SimpleCookie()
+        if "jenai_token" in cookies:
+            return cookies["jenai_token"].value, False
+        query = parse_qs(urlsplit(self.path).query)
+        if query.get("token"):
+            return query["token"][0], True
+        return "", False
+
+    def _authorized(self) -> bool:
+        if self.token is None:
+            return True
+        presented, from_query = self._presented_token()
+        ok = secrets.compare_digest(presented.encode(), self.token.encode())
+        # Promote to cookie ONLY on success — a Set-Cookie on the 401 path
+        # would hand the real token to whoever guessed wrong.
+        self._grant_cookie = ok and from_query
+        return ok
+
+    def _reject(self) -> None:
+        # Same minimal body for missing and wrong tokens — nothing to enumerate.
+        if self._route().startswith("/api/"):
+            self._send('{"kind": "error", "html": "<p>Unauthorized.</p>"}',
+                       "application/json; charset=utf-8", status=401)
+        else:
+            self._send(
+                "<h1>401</h1><p>Open the tokened URL printed by <code>JenAI web</code>.</p>",
+                "text/html; charset=utf-8",
+                status=401,
+            )
+
     def do_GET(self) -> None:  # noqa: N802 (http.server naming)
-        path = self.path.rstrip("/") or "/"
+        if not self._authorized():
+            self._reject()
+            return
+        path = self._route()
         if path == "/api/status":
             self._send(
                 json.dumps(self._status(), ensure_ascii=False),
@@ -321,7 +375,13 @@ class _Handler(BaseHTTPRequestHandler):
         return data if isinstance(data, dict) else {}
 
     def do_POST(self) -> None:  # noqa: N802 (http.server naming)
-        path = self.path.rstrip("/") or "/"
+        path = self._route()
+        # EMERGENCY STOP is the one unauthenticated endpoint: stopping is
+        # always safe, and a phone with a stale/lost cookie must still be able
+        # to halt the robot. Worst case for an attacker is stopping it too.
+        if path != "/api/stop" and not self._authorized():
+            self._reject()
+            return
         body = self._read_json()
         if path == "/api/command":
             result = asyncio.run(run_web_command(self.config, self.config_path, body.get("text", "")))
@@ -354,6 +414,7 @@ def make_server(
     host: str = "127.0.0.1",
     port: int = 8760,
     run_store: RunStore | None = None,
+    token: str | None = None,
 ) -> ThreadingHTTPServer:
     handler = type(
         "JenAIWebHandler",
@@ -364,6 +425,7 @@ def make_server(
             "run_store": run_store,
             "pending": _PendingConfirms(),
             "pose_cache": PoseCache(),
+            "token": token,
         },
     )
     return ThreadingHTTPServer((host, port), handler)
@@ -375,8 +437,9 @@ def serve(
     *,
     host: str = "127.0.0.1",
     port: int = 8760,
+    token: str | None = None,
 ) -> None:  # pragma: no cover - blocking network loop
-    server = make_server(config, config_path, host=host, port=port)
+    server = make_server(config, config_path, host=host, port=port, token=token)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

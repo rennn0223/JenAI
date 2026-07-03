@@ -13,8 +13,8 @@
 
 | # | 項目 | 內容 | 狀態 |
 |---|---|---|---|
-| A1 | semver 契約文件 | 明列 public surface(config schema、rules.toml、MCP 工具、CLI、locations.toml),版本政策 + config 遷移方案 | ☐ |
-| A2 | WebUI auth | LAN 曝露的手機批准介面加 token 認證;威脅模型一頁(信任邊界:`/shell`、MCP `--allow-actions`) | ☐ |
+| A1 | semver 契約文件 | 明列 public surface(config schema、rules.toml、MCP 工具、CLI、locations.toml),版本政策 + config 遷移方案 → docs/VERSIONING.md | ✅ v0.10 |
+| A2 | WebUI auth | token 認證(Bearer/cookie/`?token=`,STOP 免認證)+ docs/THREAT_MODEL.md | ✅ v0.10 |
 | A3 | 安全鏈覆蓋率 | estop/watchdog/gate/approval 路徑覆蓋 → ~100%,CI 標記不可倒退 | ☐ |
 | A4 | 故障注入測試 | bridge 導航中死亡、provider 斷線、DDS 斷連、topic 停更 → 每項證明誠實降級 | ☐ |
 | A5 | 架構鐵律 CI 防護 | import-linter/架構測試:技能層以上無載具字眼、LLM 不進即時迴路 | ☐ |
