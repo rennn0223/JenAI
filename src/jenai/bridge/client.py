@@ -32,9 +32,14 @@ class RosBridgeClient:
     sourced, completely outside the uv venv — that sidesteps the
     PYTHONPATH-shadowing problem while giving us live feedback streams the
     `ros2` CLI cannot provide.
+
+    `domain_id` pins the bridge to that ROS_DOMAIN_ID, letting a second client
+    talk to an isolated ROS graph (the digital twin) while the default client
+    keeps whatever domain the environment has (the real robot).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, domain_id: int | None = None) -> None:
+        self._domain_id = domain_id
         self._proc: asyncio.subprocess.Process | None = None
         self._pending: dict[int, asyncio.Future] = {}
         self._next_id = 0
@@ -79,6 +84,8 @@ class RosBridgeClient:
         # parent process already has the ROS environment.
         command = f'source "{ros_setup}" 2>/dev/null; exec "{python}" "{_BRIDGE_SCRIPT}"'
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
+        if self._domain_id is not None:
+            env["ROS_DOMAIN_ID"] = str(self._domain_id)
         self._proc = await asyncio.create_subprocess_exec(
             "bash",
             "-c",

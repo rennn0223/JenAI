@@ -48,6 +48,42 @@ class VehicleProfile(BaseModel):
     max_angular: float = 2.0  # rad/s
 
 
+class ForbiddenZone(BaseModel):
+    """Axis-aligned rectangle in the map frame the twin trajectory must not enter."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = "zone"
+    x_min: float
+    y_min: float
+    x_max: float
+    y_max: float
+
+    def contains(self, x: float, y: float) -> bool:
+        return self.x_min <= x <= self.x_max and self.y_min <= y <= self.y_max
+
+
+class TwinProfile(BaseModel):
+    """Digital-twin gate (Twin-Gated Execution): rehearse a navigation goal in
+    the Isaac Sim twin scene before the real robot moves.
+
+    Off by default and fully optional — with `enabled = false` no twin bridge
+    is ever spawned and navigation behaves exactly as before. The twin runs on
+    its own ROS_DOMAIN_ID so its Nav2 stack can never cross-talk with the
+    real robot's graph.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    domain_id: int = 42  # twin's isolated ROS graph; real robot keeps the env default
+    nav_timeout_s: float = 180.0  # G2: twin rehearsal must finish within this
+    goal_tolerance_m: float = 0.5  # G4: max endpoint deviation from the goal
+    collision_topic: str = "/twin/collision"  # G1: std_msgs/Bool from a contact sensor
+    pose_sample_s: float = 0.5  # G3: twin trajectory sampling period
+    forbidden_zones: list[ForbiddenZone] = Field(default_factory=list)
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -58,6 +94,7 @@ class AppConfig(BaseModel):
     locations_path: str | None = None
     route_adapter: str = "stub"
     vehicle: VehicleProfile = Field(default_factory=VehicleProfile)
+    twin: TwinProfile = Field(default_factory=TwinProfile)
     created_by_setup: bool = False
 
     def is_complete(self) -> bool:

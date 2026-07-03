@@ -28,6 +28,8 @@ from jenai.schemas.models import (
 from jenai.schemas.outputs import (
     CommandGroup,
     FieldSummary,
+    GateCriterion,
+    GateReport,
     HelpOutput,
     KeyboardShortcut,
     LocationSummary,
@@ -57,6 +59,8 @@ __all__ = [
     "EffectScope",
     "ErrorType",
     "FieldSummary",
+    "GateCriterion",
+    "GateReport",
     "HelpOutput",
     "JenAIError",
     "KeyboardShortcut",

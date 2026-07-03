@@ -140,6 +140,39 @@ class SceneAnalysis(JenAIModel):
     ts: float = 0.0  # capture wall-clock time
 
 
+class GateCriterion(JenAIModel):
+    """One Twin Gate check (G1 collision, G2 timeout, G3 forbidden zone,
+    G4 endpoint deviation, G5 Nav2 failure)."""
+
+    criterion_id: Literal["G1", "G2", "G3", "G4", "G5"]
+    name: str
+    status: Literal["pass", "fail", "skipped"]
+    detail: str = ""
+
+
+class GateReport(JenAIModel):
+    """Outcome of rehearsing one goal in the digital twin.
+
+    `block` = a hard safety criterion failed (collision, forbidden zone) — the
+    real robot must not move. `refer` = the rehearsal was infeasible or
+    inconclusive (timeout, Nav2 failure, endpoint drift, twin unreachable) —
+    a human decides; autonomous callers must treat refer as block.
+    """
+
+    verdict: Literal["pass", "block", "refer"]
+    reason: str = ""
+    criteria: list[GateCriterion] = Field(default_factory=list)
+    twin_elapsed_s: float = 0.0
+
+    @property
+    def summary(self) -> str:
+        failed = ", ".join(
+            f"{c.criterion_id} {c.name}: {c.detail}" for c in self.criteria if c.status == "fail"
+        )
+        base = f"Twin Gate {self.verdict}" + (f" — {self.reason}" if self.reason else "")
+        return f"{base} ({failed})" if failed else base
+
+
 class ShellOutput(JenAIModel):
     command: str
     working_directory: str = ""
