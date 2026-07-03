@@ -98,3 +98,72 @@ def test_doctor_none_config_path_resolves_locations_against_config_dir(
     assert loc.status == "pass"
     assert str(tmp_path) in loc.message  # resolved via config dir, not cwd
 
+
+
+def test_nav_stack_checks_read_the_graph(monkeypatch, tmp_path) -> None:
+    """nav checks: PASS items when the graph has the nav stack, WARN with an
+    ONBOARDING pointer when it doesn't; all WARN-level (never blocks startup)."""
+    import subprocess
+    from types import SimpleNamespace
+
+    from jenai.doctor.checks import _check_nav_stack
+
+    monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
+
+    def fake_run(args, **kwargs):
+        if args[:3] == ["ros2", "topic", "list"]:
+            out = "/map\n/amcl_pose\n/scan\n/cmd_vel\n/navigate_to_pose/_action/status\n"
+            return SimpleNamespace(returncode=0, stdout=out, stderr="")
+        if args[:3] == ["ros2", "topic", "info"]:
+            return SimpleNamespace(
+                returncode=0, stdout="Type: ...\nPublisher count: 1\nSubscription count: 2\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command {args}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    items = _check_nav_stack(None)
+
+    assert [i.check_name for i in items] == ["map", "localization", "laser", "nav2", "cmd_vel"]
+    assert all(str(i.status) == "pass" for i in items)
+
+
+def test_nav_stack_warns_and_points_at_onboarding(monkeypatch) -> None:
+    import subprocess
+    from types import SimpleNamespace
+
+    from jenai.doctor.checks import _check_nav_stack
+
+    monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda args, **kw: SimpleNamespace(
+            returncode=0, stdout="/rosout\n/parameter_events\n", stderr=""
+        ),
+    )
+
+    items = _check_nav_stack(None)
+
+    assert all(str(i.status) == "warn" for i in items)  # never FAIL: must not block
+    assert any("ONBOARDING" in (i.fix_suggestion or "") for i in items)
+
+
+def test_nav_stack_skipped_without_ros2(monkeypatch) -> None:
+    from jenai.doctor.checks import _check_nav_stack
+
+    monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: None)
+    assert _check_nav_stack(None) == []
+
+
+def test_run_doctor_include_nav_flag(monkeypatch, tmp_path) -> None:
+    from jenai.doctor.checks import run_doctor
+
+    called = []
+    monkeypatch.setattr(
+        "jenai.doctor.checks._check_nav_stack", lambda config: called.append(1) or []
+    )
+    run_doctor(tmp_path / "config.toml", include_nav=False)
+    assert called == []
+    run_doctor(tmp_path / "config.toml")
+    assert called == [1]

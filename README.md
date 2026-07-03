@@ -113,6 +113,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 | 文件 | 說明 |
 |---|---|
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（新人先讀這份） |
+| [docs/ONBOARDING.md](docs/ONBOARDING.md) | **機器人上線手把手**：裸 ROS2 → 建圖 → 定位 → Nav2 → 第一次 `/route`（`jenai doctor` 的 nav 檢查就是進度條） |
 | [docs/PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md) | **專案方向**：三方視角收斂的六層架構、功能優先序（必做 M1–M5）與可用性評估 |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | CLI + slash 命令完整規格 |
 | [docs/FEATURES.md](docs/FEATURES.md) | 設計期文件：14 個核心功能規格 |

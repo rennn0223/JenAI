@@ -183,7 +183,8 @@ def build_status_payload(
     live ROS2 graph. The transcript is drawn from a RunStore when one is passed
     (a stand-alone `jenai web` process starts with none).
     """
-    doctor = run_doctor(config_path)
+    # 5s-polled path: skip the nav-stack probes (seconds of ros2 CLI each).
+    doctor = run_doctor(config_path, include_nav=False)
     profile = config.active_profile()
     runs = list(run_store.list_runs()) if run_store is not None else []
     transcript = [

@@ -17,7 +17,10 @@ from jenai.config import (
 from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
 
 
-def run_doctor(config_path: Path | None = None) -> DoctorResult:
+def run_doctor(config_path: Path | None = None, *, include_nav: bool = True) -> DoctorResult:
+    """Full health check. `include_nav=False` skips the navigation-stack
+    probes (a few seconds of ros2 CLI calls) — used on the TUI startup path,
+    where doctor must stay fast; `jenai doctor` always runs everything."""
     # Resolve the default location once so every check (config load AND the
     # locations-file check) agrees on the real config dir, instead of some
     # falling back to the current working directory.
@@ -56,6 +59,8 @@ def run_doctor(config_path: Path | None = None) -> DoctorResult:
 
     items.extend(_check_env_file())
     items.extend(_check_ros2())
+    if include_nav:
+        items.extend(_check_nav_stack(config))
     items.extend(_check_provider(config))
     items.extend(_check_locations(config, config_path))
     items.extend(_check_webui_assets())
@@ -184,6 +189,96 @@ def _check_ros2() -> list[DoctorCheckItem]:
             else "Verify the ROS2 environment is sourced in this terminal.",
         )
     ]
+
+
+def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
+    """Navigation-readiness checks: is there a map, localization, a laser,
+    a listening velocity controller, and Nav2 itself?
+
+    Everything here is WARN-level — a machine without a running robot is a
+    normal state, and these checks exist to walk a newcomer through
+    docs/ONBOARDING.md, not to block startup.
+    """
+    if shutil.which("ros2") is None:
+        return []  # ros2_cli already reports the root cause
+
+    def _run(args: list[str], timeout: float = 15.0) -> str | None:
+        # First call may also spawn the ros2 daemon — give it headroom.
+        try:
+            completed = subprocess.run(
+                args, check=False, capture_output=True, text=True, timeout=timeout
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return completed.stdout if completed.returncode == 0 else None
+
+    topics_out = _run(["ros2", "topic", "list"])
+    if topics_out is None:
+        return [
+            DoctorCheckItem(
+                section="nav",
+                check_name="ros_graph",
+                status=DoctorStatus.WARN,
+                message="Could not list ROS2 topics (daemon slow or graph unreachable).",
+                fix_suggestion="Try `ros2 topic list` manually; is the robot/simulator up?",
+            )
+        ]
+    topics = set(topics_out.split())
+
+    def _item(name: str, ok: bool, ok_msg: str, warn_msg: str, fix: str) -> DoctorCheckItem:
+        return DoctorCheckItem(
+            section="nav",
+            check_name=name,
+            status=DoctorStatus.PASS if ok else DoctorStatus.WARN,
+            message=ok_msg if ok else warn_msg,
+            fix_suggestion=None if ok else fix,
+        )
+
+    items = [
+        _item(
+            "map",
+            "/map" in topics,
+            "A map is being published (/map).",
+            "No /map topic — no map server or SLAM running.",
+            "Build a map first: docs/ONBOARDING.md §3 (slam_toolbox), then serve it.",
+        ),
+        _item(
+            "localization",
+            "/amcl_pose" in topics,
+            "AMCL localization is up (/amcl_pose).",
+            "No /amcl_pose — robot pose will fall back to raw odometry.",
+            "Start Nav2 localization with your saved map: docs/ONBOARDING.md §4.",
+        ),
+        _item(
+            "laser",
+            "/scan" in topics,
+            "Laser scan is publishing (/scan).",
+            "No /scan topic — SLAM/AMCL and obstacle avoidance need a laser.",
+            "Check the LiDAR driver (docs/ONBOARDING.md §2).",
+        ),
+        _item(
+            "nav2",
+            any(t.startswith("/navigate_to_pose") for t in topics),
+            "Nav2 NavigateToPose action is available.",
+            "Nav2 is not running — /route will honestly report unavailable.",
+            "Launch Nav2 (docs/ONBOARDING.md §5).",
+        ),
+    ]
+
+    # Someone must be listening on cmd_vel, or every motion command is a no-op.
+    cmd_vel = config.vehicle.cmd_vel_topic if config is not None else "/cmd_vel"
+    info_out = _run(["ros2", "topic", "info", cmd_vel]) if cmd_vel in topics else None
+    subscribed = bool(info_out) and "Subscription count: 0" not in info_out
+    items.append(
+        _item(
+            "cmd_vel",
+            subscribed,
+            f"A controller subscribes to {cmd_vel}.",
+            f"Nothing subscribes to {cmd_vel} — the robot would ignore velocity commands.",
+            "Start the base/motor controller (docs/ONBOARDING.md §2).",
+        )
+    )
+    return items
 
 
 def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:
