@@ -10,6 +10,7 @@ from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.daemon.engine import Decision, Rule, RuleEngine
 from jenai.tools.nav_live import navigate_live
+from jenai.tools.safety import arm_watchdog, halt_robot
 
 
 async def run_daemon(
@@ -29,6 +30,7 @@ async def run_daemon(
     engine = RuleEngine(rules, nav_allowed=config.route_adapter == "nav2")
     bridge = RosBridgeClient()
     await bridge.start()
+    await arm_watchdog(config, bridge)  # dead daemon must not leave the robot driving
     on_status(f"bridge up · watching {len(rules)} rule(s)")
 
     loop = asyncio.get_running_loop()
@@ -80,6 +82,16 @@ async def run_daemon(
             decision = engine.handle_event(rule, data)
             if decision.fired:
                 on_decision(decision)
+            if decision.halt:
+                # Emergency stop outranks everything: kill any in-flight
+                # navigation task, then send the halt itself.
+                if nav_task is not None and not nav_task.done():
+                    nav_task.cancel()
+                try:
+                    on_status(f"'{rule.name}': {await halt_robot(config, bridge)}")
+                except BridgeError as exc:
+                    on_status(f"'{rule.name}': halt failed — {exc}")
+                continue
             if decision.navigate_to:
                 if nav_task is not None and not nav_task.done():
                     on_status(f"'{rule.name}': navigation already in progress — skipped")

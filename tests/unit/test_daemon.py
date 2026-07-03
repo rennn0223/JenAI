@@ -177,3 +177,33 @@ def test_daemon_navigate_failure_is_reported_not_silent(tmp_path: Path, monkeypa
     asyncio.run(run())
 
     assert any("navigation failed" in s for s in statuses)
+
+
+def test_halt_action_fires_without_auto_approve() -> None:
+    # Stopping is always safe: no auto_approve, no nav2 requirement.
+    rule = Rule(
+        name="estop",
+        topic="/e_stop",
+        msg_type="std_msgs/msg/Bool",
+        fld="data",
+        equals=True,
+        action="halt",
+    )
+    engine = RuleEngine([rule], nav_allowed=False)
+
+    decision = engine.handle_event(rule, {"data": True}, now=0.0)
+
+    assert decision.fired and decision.halt
+    assert decision.navigate_to is None
+
+
+def test_action_validator_accepts_halt_rejects_junk() -> None:
+    Rule(
+        name="ok", topic="/t", msg_type="std_msgs/msg/Bool", fld="data",
+        equals=True, action="halt",
+    )
+    with pytest.raises(ValueError):
+        Rule(
+            name="bad", topic="/t", msg_type="std_msgs/msg/Bool", fld="data",
+            equals=True, action="explode",
+        )

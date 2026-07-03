@@ -102,3 +102,30 @@ def test_parse_json_reply_tolerates_fences_and_prose() -> None:
     assert parse_json_reply('```\n{"a": 1}\n```') == {"a": 1}
     assert parse_json_reply('Here is the result:\n{"a": 1}\nHope that helps!') == {"a": 1}
     assert parse_json_reply("no json here") is None
+
+
+def test_vision_camera_default_topic_comes_from_vehicle_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"fake")
+
+    async def fake_analyze(config, path, task_context=""):
+        return VisionOutput(source=str(path), summary="ok")
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.vehicle.camera_topic = "/rgb"  # e.g. the Isaac Sim camera
+        fake = _FakeBridge(frame)
+
+        async def fake_get_bridge():
+            return fake
+
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        monkeypatch.setattr("jenai.tools.vision_core.analyze_image", fake_analyze)
+        async with app.run_test():
+            await app.handle_user_text("/vision camera")
+
+        assert fake.requested_topics == ["/rgb"]
+
+    asyncio.run(run())

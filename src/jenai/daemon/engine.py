@@ -18,7 +18,8 @@ class Rule(BaseModel):
 
     Safety: `action` defaults to notify-only. A rule that moves the robot
     ("goto <location>") additionally requires `auto_approve = true` — an
-    unattended daemon must never actuate on an implicit default.
+    unattended daemon must never actuate on an implicit default. "halt"
+    (emergency stop) needs no approval: stopping is always safe.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -39,8 +40,12 @@ class Rule(BaseModel):
     def _check(self) -> Rule:
         if self.below is None and self.above is None and self.equals is None:
             raise ValueError(f"rule '{self.name}' needs one of below/above/equals")
-        if not (self.action == "notify" or self.action.startswith("goto ")):
-            raise ValueError(f"rule '{self.name}': action must be 'notify' or 'goto <location>'")
+        if not (
+            self.action in ("notify", "halt") or self.action.startswith("goto ")
+        ):
+            raise ValueError(
+                f"rule '{self.name}': action must be 'notify', 'halt', or 'goto <location>'"
+            )
         return self
 
 
@@ -103,6 +108,7 @@ class Decision:
     fired: bool
     reason: str
     navigate_to: str | None = None  # location name, only when actually allowed to move
+    halt: bool = False  # emergency stop — no approval gate, stopping is always safe
 
 
 @dataclass
@@ -135,6 +141,8 @@ class RuleEngine:
             return Decision(rule, value, fired=False, reason=f"cooldown ({remaining:.0f}s left)")
 
         self._last_fired[rule.name] = now
+        if rule.action == "halt":
+            return Decision(rule, value, fired=True, reason="emergency stop", halt=True)
         if rule.action.startswith("goto "):
             target = rule.action[5:].strip()
             if not rule.auto_approve:

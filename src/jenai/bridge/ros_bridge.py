@@ -167,6 +167,41 @@ class BridgeNode(Node):
         handle.cancel_goal_async()
         return {"canceled": True}
 
+    @property
+    def nav_active(self) -> bool:
+        return self._nav_goal_handle is not None
+
+    # -- emergency stop -------------------------------------------------------
+
+    def halt(
+        self,
+        cmd_vel_topic: str = "/cmd_vel",
+        stamped: bool = False,
+        pulses: int = 5,
+        rate_hz: float = 20.0,
+    ) -> dict:
+        """EMERGENCY STOP: cancel any Nav2 goal, then pulse zero velocity.
+
+        Zero is pulsed (not sent once) because a single message can lose the
+        race against a controller that is still streaming motion commands.
+        """
+        canceled = self.nav_cancel().get("canceled", False)
+
+        from geometry_msgs.msg import Twist, TwistStamped
+
+        msg_type = TwistStamped if stamped else Twist
+        pub = self.create_publisher(msg_type, cmd_vel_topic, 10)
+        try:
+            for _ in range(max(1, pulses)):
+                msg = msg_type()  # all-zero twist
+                if stamped:
+                    msg.header.stamp = self.get_clock().now().to_msg()
+                pub.publish(msg)
+                time.sleep(1.0 / rate_hz)
+        finally:
+            self.destroy_publisher(pub)
+        return {"halted": True, "nav_canceled": canceled}
+
     # -- camera -------------------------------------------------------------
 
     def capture_frame(self, topic: str, timeout: float = 5.0) -> dict:
@@ -257,7 +292,48 @@ class BridgeNode(Node):
         return {"removed": sub is not None}
 
 
-def _handle(node: BridgeNode, op: str, req: dict) -> dict:
+class WatchdogState:
+    """Client-liveness watchdog: halt the robot when the client goes quiet.
+
+    Disabled (timeout 0) until the client opts in via the `watchdog` op, so
+    read-only uses of the bridge never publish anything.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.last_rx = time.monotonic()
+        self.timeout_s = 0.0
+        self.cmd_vel_topic = "/cmd_vel"
+        self.stamped = False
+
+    def touch(self) -> None:
+        with self.lock:
+            self.last_rx = time.monotonic()
+
+    def configure(self, req: dict) -> dict:
+        with self.lock:
+            self.timeout_s = float(req.get("timeout", 0.0))
+            self.cmd_vel_topic = str(req.get("cmd_vel_topic", "/cmd_vel"))
+            self.stamped = bool(req.get("stamped", False))
+        return {"watchdog_s": self.timeout_s}
+
+    def expired(self) -> bool:
+        with self.lock:
+            return self.timeout_s > 0 and time.monotonic() - self.last_rx > self.timeout_s
+
+
+def _watchdog_loop(node: BridgeNode, state: WatchdogState, stop: threading.Event) -> None:
+    while not stop.wait(0.5):
+        if node.nav_active and state.expired():
+            try:
+                node.halt(state.cmd_vel_topic, state.stamped)
+                _emit({"event": "watchdog_halt", "reason": "client went quiet mid-navigation"})
+            except Exception as exc:
+                _emit({"event": "watchdog_halt", "reason": f"halt failed: {exc}"})
+            state.touch()  # one halt per silence, not one per 0.5s
+
+
+def _handle(node: BridgeNode, op: str, req: dict, watchdog: WatchdogState) -> dict:
     if op == "ping":
         return {"pong": True}
     if op == "pose":
@@ -268,6 +344,13 @@ def _handle(node: BridgeNode, op: str, req: dict) -> dict:
         )
     if op == "nav_cancel":
         return node.nav_cancel()
+    if op == "halt":
+        return node.halt(
+            req.get("cmd_vel_topic", "/cmd_vel"),
+            bool(req.get("stamped", False)),
+        )
+    if op == "watchdog":
+        return watchdog.configure(req)
     if op == "capture_frame":
         return node.capture_frame(req["topic"], float(req.get("timeout", 5.0)))
     if op == "watch":
@@ -287,12 +370,19 @@ def main() -> None:
     spin = threading.Thread(target=executor.spin, daemon=True)
     spin.start()
 
+    watchdog = WatchdogState()
+    watchdog_stop = threading.Event()
+    threading.Thread(
+        target=_watchdog_loop, args=(node, watchdog, watchdog_stop), daemon=True
+    ).start()
+
     _emit({"event": "ready"})
 
     for line in sys.stdin:  # EOF (parent died/closed) ends the bridge
         line = line.strip()
         if not line:
             continue
+        watchdog.touch()
         req_id = None
         try:
             req = json.loads(line)
@@ -300,9 +390,18 @@ def main() -> None:
             if op == "shutdown":
                 _emit({"id": req_id, "ok": True, "result": {}})
                 break
-            _emit({"id": req_id, "ok": True, "result": _handle(node, op, req)})
+            _emit({"id": req_id, "ok": True, "result": _handle(node, op, req, watchdog)})
         except Exception as exc:  # keep serving; report the failure to the client
             _emit({"id": req_id, "ok": False, "error": str(exc)})
+
+    watchdog_stop.set()
+    # The client is gone (EOF or shutdown). A robot still executing a goal must
+    # not keep driving unsupervised — same contract as the in-band watchdog.
+    if node.nav_active:
+        try:
+            node.halt(watchdog.cmd_vel_topic, watchdog.stamped)
+        except Exception:
+            pass
 
     executor.shutdown()
     node.destroy_node()

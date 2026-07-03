@@ -266,7 +266,8 @@ async def ros_pub_validate(topic: str, payload: dict) -> Ros2PubValidation:
 
 # Deterministic safety limits for velocity commands (m/s and rad/s). Applied at
 # execution regardless of what the model or user asked — a hard floor under the
-# LLM-side guardrails so a bad number can never send the robot flying.
+# LLM-side guardrails so a bad number can never send the robot flying. These
+# are the fallback; callers with a config pass the vehicle profile's limits.
 MAX_LINEAR = 1.0
 MAX_ANGULAR = 2.0
 
@@ -281,7 +282,9 @@ def _clamp(value, limit):
     return max(-limit, min(limit, value))
 
 
-def _clamp_velocities(node) -> None:
+def _clamp_velocities(
+    node, max_linear: float = MAX_LINEAR, max_angular: float = MAX_ANGULAR
+) -> None:
     """Recursively clamp every ``linear``/``angular`` velocity dict found anywhere
     in the payload, mutating in place.
 
@@ -293,20 +296,22 @@ def _clamp_velocities(node) -> None:
     can interpret rather than pretend to bound arbitrary message types.
     """
     if isinstance(node, dict):
-        for key, limit in (("linear", MAX_LINEAR), ("angular", MAX_ANGULAR)):
+        for key, limit in (("linear", max_linear), ("angular", max_angular)):
             axes = node.get(key)
             if isinstance(axes, dict):
                 for axis in ("x", "y", "z"):
                     if axis in axes:
                         axes[axis] = _clamp(axes[axis], limit)
         for value in node.values():
-            _clamp_velocities(value)
+            _clamp_velocities(value, max_linear, max_angular)
     elif isinstance(node, list):
         for item in node:
-            _clamp_velocities(item)
+            _clamp_velocities(item, max_linear, max_angular)
 
 
-def _safety_clamp(payload: dict) -> dict:
+def _safety_clamp(
+    payload: dict, max_linear: float = MAX_LINEAR, max_angular: float = MAX_ANGULAR
+) -> dict:
     """Return a copy of a Twist-family payload with linear/angular velocities
     clamped to the safe limits. Non-Twist payloads pass through unchanged.
     """
@@ -315,12 +320,19 @@ def _safety_clamp(payload: dict) -> dict:
     clamped = copy.deepcopy(payload)  # copy.deepcopy, not a JSON round-trip:
     # the payload may hold non-JSON-native values and a round-trip would raise
     # or silently coerce types inside what must be a transparent copy-and-clamp.
-    _clamp_velocities(clamped)
+    _clamp_velocities(clamped, max_linear, max_angular)
     return clamped
 
 
-async def ros_pub_execute(topic: str, message_type: str, payload: dict) -> RosPubOutput:
-    payload = _safety_clamp(payload)
+async def ros_pub_execute(
+    topic: str,
+    message_type: str,
+    payload: dict,
+    *,
+    max_linear: float = MAX_LINEAR,
+    max_angular: float = MAX_ANGULAR,
+) -> RosPubOutput:
+    payload = _safety_clamp(payload, max_linear, max_angular)
     payload_yaml = _payload_to_yaml(payload)
     result = await asyncio.to_thread(ros2_adapter.topic_pub, topic, message_type, payload_yaml)
     return RosPubOutput(
@@ -340,13 +352,15 @@ async def ros_drive(
     *,
     duration_s: float = 1.0,
     rate_hz: float = 10.0,
+    max_linear: float = MAX_LINEAR,
+    max_angular: float = MAX_ANGULAR,
 ) -> RosPubOutput:
     """Publish `payload` continuously for `duration_s` seconds, then send a zeroed
     message so the robot stops. Use this for "move for N seconds" requests where a
     single publish would only nudge the robot before the controller watchdog stops it.
     """
     duration_s = max(0.0, min(duration_s, 30.0))  # clamp to a safe window
-    payload = _safety_clamp(payload)
+    payload = _safety_clamp(payload, max_linear, max_angular)
     payload_yaml = _payload_to_yaml(payload)
     stop_yaml = _payload_to_yaml(_zero_like(payload))
     result = await asyncio.to_thread(

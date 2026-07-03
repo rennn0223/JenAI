@@ -16,6 +16,7 @@ from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.tools import ros2_core
 from jenai.tools.nav_live import navigate_with_fallback
+from jenai.tools.safety import arm_watchdog, halt_robot
 from jenai.tools.vision_core import VisionError, capture_and_analyze
 
 
@@ -45,7 +46,12 @@ def build_mcp_server(
     bridge = RosBridgeClient()
 
     async def _get_bridge() -> RosBridgeClient:
+        newly_started = not bridge.running
         await bridge.start()  # idempotent; raises BridgeError when ROS is absent
+        if newly_started:
+            # Dead-client watchdog: a killed MCP client must not leave the
+            # robot driving unsupervised.
+            await arm_watchdog(config, bridge)
         return bridge
 
     def _locations_or_error() -> tuple[list, str | None]:
@@ -100,6 +106,18 @@ def build_mcp_server(
         )
 
     @mcp.tool()
+    async def stop() -> str:
+        """EMERGENCY STOP: cancel navigation and command zero velocity.
+
+        Always available (even read-only servers) — stopping is always safe.
+        """
+        try:
+            client = await _get_bridge()
+            return await halt_robot(config, client)
+        except BridgeError as exc:
+            return f"unavailable: {exc}"
+
+    @mcp.tool()
     async def robot_pose() -> str:
         """The robot's current position (x, y, yaw) from AMCL or odometry."""
         try:
@@ -113,11 +131,14 @@ def build_mcp_server(
         )
 
     @mcp.tool()
-    async def camera_look(topic: str = "/camera/image_raw") -> str:
-        """Capture one camera frame and describe it with the vision model."""
+    async def camera_look(topic: str = "") -> str:
+        """Capture one camera frame and describe it with the vision model.
+        Omit `topic` to use the vehicle's configured camera."""
         try:
             client = await _get_bridge()
-            output = await capture_and_analyze(config, client, topic, timeout=5.0)
+            output = await capture_and_analyze(
+                config, client, topic or config.vehicle.camera_topic, timeout=5.0
+            )
         except BridgeError as exc:
             return f"unavailable: {exc}"
         except VisionError as exc:

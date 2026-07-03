@@ -41,3 +41,23 @@ def test_incomplete_config_is_not_complete(tmp_path: Path) -> None:
 
     assert loaded.is_complete() is False
 
+
+
+def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    # Defaults: an existing config without [vehicle] behaves like before.
+    assert config.vehicle.type == "ackermann"
+    assert config.vehicle.cmd_vel_topic == "/cmd_vel"
+    assert config.vehicle.cmd_vel_stamped is False
+
+    config.vehicle.cmd_vel_topic = "/leatherback/cmd_vel"
+    config.vehicle.max_linear = 1.2
+    path = tmp_path / "config.toml"
+    save_config(config, path)
+    loaded = load_config(path)
+
+    assert loaded.vehicle.cmd_vel_topic == "/leatherback/cmd_vel"
+    assert loaded.vehicle.max_linear == 1.2
+    assert loaded.vehicle.type == "ackermann"

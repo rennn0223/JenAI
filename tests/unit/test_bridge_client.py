@@ -104,3 +104,13 @@ def test_bridge_process_death_fails_pending_requests(fake_bridge) -> None:
             await client.request("ping", timeout=2.0)
 
     asyncio.run(run())
+
+
+def test_bridge_halt_and_watchdog_roundtrip(fake_bridge) -> None:
+    async def run() -> None:
+        client = RosBridgeClient()
+        await client.configure_safety(watchdog_s=5.0, cmd_vel_topic="/cmd_vel")
+        assert await client.halt() is False  # fake: halted, but no nav goal to cancel
+        await client.stop()
+
+    asyncio.run(run())

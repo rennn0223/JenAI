@@ -115,6 +115,11 @@ async def _drive(config: AppConfig, target: str) -> StepResult:
     if intent is None:
         return StepResult("drive", target, "failed", "could not understand the motion")
     out = await ros_drive(
-        "/cmd_vel", TWIST, intent.to_payload(), duration_s=intent.duration_s
+        config.vehicle.cmd_vel_topic,
+        TWIST,
+        intent.to_payload(),
+        duration_s=intent.duration_s,
+        max_linear=config.vehicle.max_linear,
+        max_angular=config.vehicle.max_angular,
     )
     return StepResult("drive", intent.description, out.execution_status, out.result_message)

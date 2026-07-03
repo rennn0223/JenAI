@@ -127,3 +127,19 @@ def test_navigate_to_refuses_concurrent_goals(tmp_path: Path, monkeypatch) -> No
         assert "succeeded" in _text(await first)
 
     asyncio.run(run())
+
+
+def test_stop_tool_is_always_available(tmp_path: Path) -> None:
+    # Stopping is always safe — the tool exists even on read-only servers.
+    config, config_path = _setup(tmp_path)
+
+    ro_names = {t.name for t in asyncio.run(build_mcp_server(config, config_path).list_tools())}
+    act_names = {
+        t.name
+        for t in asyncio.run(
+            build_mcp_server(config, config_path, allow_actions=True).list_tools()
+        )
+    }
+
+    assert "stop" in ro_names
+    assert "stop" in act_names

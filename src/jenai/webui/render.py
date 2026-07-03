@@ -190,6 +190,12 @@ body{
   font-weight:600; font-size:34px; letter-spacing:-.01em; margin:0;
 }
 .tagline{margin:2px 0 0; color:var(--muted); font-size:13.5px; letter-spacing:.02em}
+.hero-right{display:flex; align-items:center; gap:14px}
+#estop{background:#8c2f28; color:#fff; border:1px solid #b1443b; border-radius:10px;
+  padding:10px 18px; font-weight:700; font-size:14px; letter-spacing:.08em; cursor:pointer;
+  box-shadow:0 2px 10px rgba(140,47,40,.45)}
+#estop:hover{background:#a83a31}
+#estop:disabled{opacity:.6; cursor:wait}
 .live{display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12.5px;
   text-transform:uppercase; letter-spacing:.08em}
 .live .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);
@@ -327,7 +333,10 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
     <span class="logo">&#10043;</span>
     <div><h1>JenAI</h1><p class="tagline">ROS2 Agent Console</p></div>
   </div>
-  <div class="live"><span class="dot"></span>live</div>
+  <div class="hero-right">
+    <button id="estop" title="Emergency stop: cancel navigation, zero velocity">STOP</button>
+    <div class="live"><span class="dot"></span>live</div>
+  </div>
 </header>
 <nav id="tabs">
   <button class="tab active" data-view="console">Console</button>
@@ -382,6 +391,16 @@ function render(res){
     block(res.kind === 'error' ? 'error' : 'result', el('out', res.html));
   }
 }
+
+const estop = document.getElementById('estop');
+estop.addEventListener('click', async () => {
+  // No confirm dialog: an emergency stop must be one tap, always.
+  estop.disabled = true; estop.textContent = '…';
+  block('you', el('you-line', '<span class="you-mark">›</span> EMERGENCY STOP'));
+  try { render(await post('api/stop', {})); }
+  catch(err){ block('error', el('out', '<p>Network error.</p>')); }
+  finally { estop.disabled = false; estop.textContent = 'STOP'; }
+});
 
 const form = document.getElementById('cmdform');
 const input = document.getElementById('cmdinput');

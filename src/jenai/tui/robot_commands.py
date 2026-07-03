@@ -39,6 +39,7 @@ from jenai.tools.ros2_core import (
     ros_topics,
 )
 from jenai.tools.route_core import route_preview
+from jenai.tools.safety import arm_watchdog, halt_robot
 from jenai.tools.vision_core import VisionError, analyze_image, capture_and_analyze
 from jenai.tui.panels import MUTED, OutputPanel, TimelineItem, _is_number
 from jenai.tui.widgets import ApprovalCard
@@ -243,7 +244,7 @@ class RobotCommandsMixin:
             )
             return
 
-        topic = "/cmd_vel"
+        topic = self.config.vehicle.cmd_vel_topic
         message_type = "geometry_msgs/msg/Twist"
         ctx = self._new_run_context(f"/drive {arg}")
         tool_call = ToolCallRecord(
@@ -485,7 +486,7 @@ class RobotCommandsMixin:
         # Accept "/vision image <path>", "/vision <path>", and "/vision camera [topic]".
         parts = arg.split(maxsplit=1)
         if parts and parts[0] == "camera":
-            topic = parts[1].strip() if len(parts) > 1 else "/camera/image_raw"
+            topic = parts[1].strip() if len(parts) > 1 else self.config.vehicle.camera_topic
             await self._show_vision_camera(topic)
             return
         if parts and parts[0] == "image":
@@ -553,7 +554,23 @@ class RobotCommandsMixin:
             self._bridge = RosBridgeClient()
         if not self._bridge.running:
             await self._bridge.start()
+            # Freshly started bridge: arm the dead-client watchdog so a hung or
+            # killed TUI can never leave the robot driving unsupervised.
+            await arm_watchdog(self.config, self._bridge)
         return self._bridge
+
+    async def _show_stop(self, _: str = "") -> None:
+        """EMERGENCY STOP — no approval gate: stopping is always safe."""
+        self._spinner_label = "STOPPING"
+        try:
+            bridge = await self._get_bridge()
+            message = await halt_robot(self.config, bridge)
+        except BridgeError as exc:
+            await self._mount_event(
+                TimelineItem("warn", f"Stop unavailable (no ROS bridge): {exc}")
+            )
+            return
+        await self._mount_event(TimelineItem("success", message))
 
     async def _execute_route_action(self, outgoing_action: dict):
         """Execute a navigation action: live bridge (feedback + Esc cancel) when
