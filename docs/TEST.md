@@ -26,7 +26,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | `305 passed`(v0.9.0 基準,約 13s,無 ROS 環境也全過) |
+| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | `324 passed`(v0.11.0 基準,約 24s,無 ROS 環境也全過);含安全鏈故障注入(bridge 啟動失敗/watchdog 武裝失敗/twin 預演中斷/halt 失敗誠實回報) |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job(ruff+pytest,coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
 | Release gate | 推 `vX.Y.Z` tag | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → 草稿 release 附 wheel/sdist |
@@ -59,7 +59,7 @@
 | ✅ | WebUI auth | 無 token / 錯 token → 401;`?token=` 開頁 → 200 並種 session cookie;`Authorization: Bearer` 亦可;**POST `/api/stop` 免 token 照樣 200** |
 | ✅ | `JenAI mcp` | MCP stdio server 起動,Claude Code/Desktop 可接;預設唯讀,`--allow-actions` 才有 `navigate_to` |
 | ✅ | `JenAI daemon --rules <toml>` | 常駐規則引擎;規則觸發時 notify/halt/goto(goto 需 `auto_approve` + nav2) |
-| ✅ | `JenAI`(主入口) | 已設定 → 直接進 TUI;未設定 → setup wizard |
+| ✅ | `JenAI`(主入口) | 已設定 → 直接進 TUI;未設定 → setup wizard:ASCII banner → 3 步驟(供應商預設選單 local/NVIDIA/OpenAI/custom → 連線細節逐欄附範例 → 地點檔)→ 綠色摘要卡 + 金鑰放置提示 + 下一步指引 |
 
 ## Slash 指令(TUI/WebUI 輸入框)
 
