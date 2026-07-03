@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,16 +58,37 @@ def _status_error(exc: APIStatusError, profile: ProviderProfile, model: str) -> 
     if exc.status_code == 404:
         hint = ""
         if profile.provider.lower() == "nvidia":
-            hint = (
-                " For NVIDIA, use full model ids like "
-                "'nvidia/nemotron-3-nano-30b-a3b' or "
-                "'qwen/qwen3-coder-480b-a35b-instruct'."
-            )
+            # Derive the examples from the alias table so the hint can never
+            # recommend ids the resolver itself no longer knows about.
+            ids = list(dict.fromkeys(NVIDIA_MODEL_ALIASES.values()))
+            hint = f" For NVIDIA, use full model ids like '{ids[0]}' or '{ids[-1]}'."
         return ProviderChatError(
             "Provider returned 404. Check the model id and base URL. "
             f"Sent model '{model}' to '{profile.base_url or 'provider default'}'.{hint}"
         )
     return ProviderChatError(f"Provider API error ({exc.status_code}): {exc}")
+
+
+@contextmanager
+def _provider_errors(profile: ProviderProfile, model: str | None = None) -> Iterator[None]:
+    """Map OpenAI SDK exceptions to ProviderChatError — the one place the
+    ladder lives, shared by chat, streaming, and model listing.
+
+    `model` enables the 404 model-id hint; pass None for requests that don't
+    send a model (listing), where a 404 just means the base URL is wrong.
+    """
+    try:
+        yield
+    except (APIConnectionError, APITimeoutError) as exc:
+        raise ProviderChatError(f"Could not reach provider endpoint: {exc}") from exc
+    except APIStatusError as exc:
+        if model is not None:
+            raise _status_error(exc, profile, model) from exc
+        raise ProviderChatError(f"Provider API error ({exc.status_code}): {exc}") from exc
+    except APIError as exc:
+        raise ProviderChatError(f"Provider API error: {exc}") from exc
+    except OpenAIError as exc:
+        raise ProviderChatError(f"Provider request failed: {exc}") from exc
 
 
 async def stream_provider(
@@ -84,7 +106,7 @@ async def stream_provider(
     model = _chat_model(config, profile)
     api_key = _api_key(profile)
 
-    try:
+    with _provider_errors(profile, model):
         async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
             stream = await client.chat.completions.create(
                 model=model,
@@ -93,17 +115,11 @@ async def stream_provider(
                 stream=True,
             )
             async for chunk in stream:
-                delta = chunk.choices[0].delta.content if chunk.choices else None
-                if delta:
-                    yield delta
-    except (APIConnectionError, APITimeoutError) as exc:
-        raise ProviderChatError(f"Could not reach provider endpoint: {exc}") from exc
-    except APIStatusError as exc:
-        raise _status_error(exc, profile, model) from exc
-    except APIError as exc:
-        raise ProviderChatError(f"Provider API error: {exc}") from exc
-    except OpenAIError as exc:
-        raise ProviderChatError(f"Provider request failed: {exc}") from exc
+                # Streaming chunks skip pydantic validation, so a nonconforming
+                # server can send delta: null — guard it, don't AttributeError.
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta is not None and delta.content:
+                    yield delta.content
 
 
 async def ask_provider(
@@ -118,7 +134,7 @@ async def ask_provider(
 
     messages = _chat_messages(prompt, system_prompt)
 
-    try:
+    with _provider_errors(profile, model):
         # A fresh client per call keeps this safe across separate asyncio event
         # loops (the underlying httpx client is loop-bound) and closes its
         # connection pool immediately via `async with` instead of leaking it.
@@ -128,14 +144,6 @@ async def ask_provider(
                 messages=messages,
                 temperature=0.2,
             )
-    except (APIConnectionError, APITimeoutError) as exc:
-        raise ProviderChatError(f"Could not reach provider endpoint: {exc}") from exc
-    except APIStatusError as exc:
-        raise _status_error(exc, profile, model) from exc
-    except APIError as exc:
-        raise ProviderChatError(f"Provider API error: {exc}") from exc
-    except OpenAIError as exc:
-        raise ProviderChatError(f"Provider request failed: {exc}") from exc
 
     content = response.choices[0].message.content if response.choices else None
     if not content:
@@ -157,15 +165,9 @@ async def list_provider_models(config: AppConfig) -> list[str]:
     profile = _active_profile(config)
     api_key = _api_key(profile)
 
-    try:
+    with _provider_errors(profile):
         async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
             page = await client.models.list()
-    except (APIConnectionError, APITimeoutError) as exc:
-        raise ProviderChatError(f"Could not reach provider endpoint: {exc}") from exc
-    except APIStatusError as exc:
-        raise ProviderChatError(f"Provider API error ({exc.status_code}): {exc}") from exc
-    except OpenAIError as exc:
-        raise ProviderChatError(f"Provider request failed: {exc}") from exc
 
     return sorted({model.id for model in page.data})
 

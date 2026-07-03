@@ -121,6 +121,11 @@ _MARKER_COLOR = {
     "assistant": ACCENT,
 }
 
+# Variants whose multi-line bodies render airy (blank line between logical
+# lines). A property of the variant, not the callsite, so every future place
+# that mounts an assistant reply gets the same rhythm automatically.
+_SPACED_VARIANTS = {"assistant"}
+
 
 def _bullet_markup(variant: str, body: str) -> str:
     color = _MARKER_COLOR.get(variant, ACCENT)
@@ -159,22 +164,24 @@ class PromptPill(Static):
 class TimelineItem(Static):
     """A single Claude Code-style bullet line (⏺ marker + body markup).
 
-    `spaced` opens up a multi-line body with blank lines between logical lines
-    (used for assistant replies so answers breathe instead of packing tight).
+    Multi-line bodies of _SPACED_VARIANTS render with blank lines between
+    logical lines, so assistant replies breathe instead of packing tight.
     """
 
-    def __init__(self, variant: str, body: str, *, spaced: bool = False) -> None:
-        self._spaced = spaced
-        rendered = _spaced_body(body) if spaced else body
-        super().__init__(_bullet_markup(variant, rendered), classes="bullet-line")
+    def __init__(self, variant: str, body: str) -> None:
         self.variant = variant
+        super().__init__(self._render_body(body), classes="bullet-line")
         self.body = body
+
+    def _render_body(self, body: str) -> str:
+        # Not named `_render`: that would shadow textual.Widget's internal hook.
+        rendered = _spaced_body(body) if self.variant in _SPACED_VARIANTS else body
+        return _bullet_markup(self.variant, rendered)
 
     def set_body(self, body: str) -> None:
         """Replace the body in place — this is how a streaming reply grows."""
         self.body = body
-        rendered = _spaced_body(body) if self._spaced else body
-        self.update(_bullet_markup(self.variant, rendered))
+        self.update(self._render_body(body))
 
 
 class OutputPanel(Static):

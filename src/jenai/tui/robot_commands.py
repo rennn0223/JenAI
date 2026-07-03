@@ -14,9 +14,8 @@ from jenai.adapters.locations import (
     LocationNotFoundError,
     LocationsFileError,
     append_location,
-    ensure_locations_file,
     find_location,
-    load_locations,
+    load_locations_tolerant,
 )
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.schemas import (
@@ -31,7 +30,7 @@ from jenai.schemas import (
 )
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.mission_core import parse_mission
-from jenai.tools.nav_live import navigate_live
+from jenai.tools.nav_live import navigate_with_fallback
 from jenai.tools.ros2_core import (
     ros_echo,
     ros_pub_validate,
@@ -39,8 +38,8 @@ from jenai.tools.ros2_core import (
     ros_topic_info,
     ros_topics,
 )
-from jenai.tools.route_core import route_execute, route_preview
-from jenai.tools.vision_core import VisionError, analyze_image
+from jenai.tools.route_core import route_preview
+from jenai.tools.vision_core import VisionError, analyze_image, capture_and_analyze
 from jenai.tui.panels import MUTED, OutputPanel, TimelineItem, _is_number
 from jenai.tui.widgets import ApprovalCard
 
@@ -504,9 +503,15 @@ class RobotCommandsMixin:
     async def _show_vision_camera(self, topic: str) -> None:
         """Grab one frame from a camera topic and run it through the VLM."""
         self._spinner_label = f"Capturing {topic}"
+
+        def _on_captured() -> None:
+            self._spinner_label = "Analyzing frame"
+
         try:
             bridge = await self._get_bridge()
-            frame_path = await bridge.capture_frame(topic, timeout=5.0)
+            output = await capture_and_analyze(
+                self.config, bridge, topic, timeout=5.0, on_captured=_on_captured
+            )
         except BridgeError as exc:
             await self._mount_event(
                 TimelineItem(
@@ -516,11 +521,10 @@ class RobotCommandsMixin:
                 )
             )
             return
-        self._spinner_label = "Analyzing frame"
-        try:
-            await self._analyze_and_render(str(frame_path), source_label=topic)
-        finally:
-            frame_path.unlink(missing_ok=True)  # one-shot capture; don't litter /tmp
+        except VisionError as exc:
+            await self._mount_event(TimelineItem("error", str(exc)))
+            return
+        await self._render_vision_output(output, source_label=topic)
 
     async def _analyze_and_render(self, path: str, *, source_label: str | None = None) -> None:
         try:
@@ -528,7 +532,9 @@ class RobotCommandsMixin:
         except VisionError as exc:
             await self._mount_event(TimelineItem("error", str(exc)))
             return
+        await self._render_vision_output(output, source_label=source_label)
 
+    async def _render_vision_output(self, output, *, source_label: str | None = None) -> None:
         lines = [output.summary]
         if output.objects:
             lines.append(f"[bold #f2ede1]Objects:[/] {', '.join(output.objects)}")
@@ -552,27 +558,17 @@ class RobotCommandsMixin:
     async def _execute_route_action(self, outgoing_action: dict):
         """Execute a navigation action: live bridge (feedback + Esc cancel) when
         Nav2 is configured and ROS is present, otherwise the honest CLI adapter."""
-        if self.config.route_adapter == "nav2" and RosBridgeClient.available():
-            try:
-                bridge = await self._get_bridge()
 
-                def _progress(p) -> None:
-                    self._spinner_label = (
-                        f"Navigating · {p.distance_remaining:.1f} m left · {p.elapsed:.0f}s"
-                        + (f" · {p.recoveries} recoveries" if p.recoveries else "")
-                    )
+        def _progress(p) -> None:
+            self._spinner_label = (
+                f"Navigating · {p.distance_remaining:.1f} m left · {p.elapsed:.0f}s"
+                + (f" · {p.recoveries} recoveries" if p.recoveries else "")
+            )
 
-                return await navigate_live(bridge, outgoing_action, on_progress=_progress)
-            except BridgeError:
-                pass  # bridge could not start — fall through to the CLI path
-        return await route_execute(self.config, outgoing_action)
+        return await navigate_with_fallback(
+            self.config, self._get_bridge, outgoing_action, on_progress=_progress
+        )
 
     def _load_locations(self) -> list[Location]:
-        path = self._locations_path()
-        if path is None:
-            return []
-        try:
-            ensure_locations_file(path)
-            return load_locations(path)
-        except LocationsFileError:
-            return []
+        locations, _error = load_locations_tolerant(self._locations_path())
+        return locations

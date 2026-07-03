@@ -43,3 +43,54 @@ def test_nvidia_model_alias_is_resolved() -> None:
     profile = config.provider_profiles["test"]
 
     assert _chat_model(config, profile) == "nvidia/nemotron-3-nano-30b-a3b"
+
+
+def test_stream_provider_tolerates_null_delta(monkeypatch) -> None:
+    # Streaming chunks skip pydantic validation, so a nonconforming server can
+    # send `"delta": null` in its finish chunk — that must not AttributeError.
+    import asyncio
+    from types import SimpleNamespace
+
+    from jenai.config.store import build_minimal_config
+    from jenai.providers.chat import stream_provider
+
+    chunks = [
+        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi"))]),
+        SimpleNamespace(choices=[]),  # keep-alive chunk without choices
+        SimpleNamespace(choices=[SimpleNamespace(delta=None)]),  # nonconforming finish
+    ]
+
+    class FakeStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not chunks:
+                raise StopAsyncIteration
+            return chunks.pop(0)
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            return FakeStream()
+
+    class FakeClient:
+        chat = SimpleNamespace(completions=FakeCompletions())
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("jenai.providers.chat.AsyncOpenAI", FakeClient)
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+
+    async def collect() -> list[str]:
+        return [d async for d in stream_provider(config, "hello")]
+
+    assert asyncio.run(collect()) == ["hi"]

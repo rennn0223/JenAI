@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from jenai.adapters.locations import LocationNotFoundError, find_location, load_locations
+from jenai.adapters.locations import (
+    LocationNotFoundError,
+    find_location,
+    load_locations_tolerant,
+)
+from jenai.adapters.ros2_adapter import Ros2NotAvailableError
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.tools import ros2_core
-from jenai.tools.nav_live import navigate_live
-from jenai.tools.route_core import route_execute
-from jenai.tools.vision_core import VisionError, analyze_image
+from jenai.tools.nav_live import navigate_with_fallback
+from jenai.tools.vision_core import VisionError, capture_and_analyze
 
 
 def build_mcp_server(
@@ -39,21 +44,20 @@ def build_mcp_server(
     # One lazily-started rclpy bridge shared by pose/camera/navigation tools.
     bridge = RosBridgeClient()
 
-    async def _bridge_ready() -> RosBridgeClient:
-        if not bridge.running:
-            await bridge.start()
+    async def _get_bridge() -> RosBridgeClient:
+        await bridge.start()  # idempotent; raises BridgeError when ROS is absent
         return bridge
 
     def _locations_or_error() -> tuple[list, str | None]:
-        locations_path = config.resolved_locations_path(config_path)
-        if locations_path is None or not locations_path.exists():
-            return [], "No locations file is configured (locations.toml)."
-        return load_locations(locations_path), None
+        return load_locations_tolerant(config.resolved_locations_path(config_path))
 
     @mcp.tool()
     async def ros_topics() -> str:
         """List ROS2 topics currently on the graph, with a kind hint each."""
-        out = await ros2_core.ros_topics(config)
+        try:
+            out = await ros2_core.ros_topics(config)
+        except Ros2NotAvailableError as exc:
+            return f"unavailable: {exc}"
         if not out.topics:
             return "No topics on the graph (is ROS2 running?)."
         return "\n".join(f"{t.name} ({t.kind_hint})" for t in out.topics)
@@ -61,7 +65,10 @@ def build_mcp_server(
     @mcp.tool()
     async def ros_topic_info(topic: str) -> str:
         """Show a topic's message type, publishers, and subscribers."""
-        out = await ros2_core.ros_topic_info(config, topic)
+        try:
+            out = await ros2_core.ros_topic_info(config, topic)
+        except Ros2NotAvailableError as exc:
+            return f"unavailable: {exc}"
         return (
             f"type: {out.message_type}\npublishers: {out.publisher_count}\n"
             f"subscribers: {out.subscriber_count}"
@@ -70,7 +77,10 @@ def build_mcp_server(
     @mcp.tool()
     async def ros_echo(topic: str, count: int = 3) -> str:
         """Snapshot up to `count` recent messages from a topic."""
-        out = await ros2_core.ros_echo(config, topic, limit=count)
+        try:
+            out = await ros2_core.ros_echo(config, topic, limit=count)
+        except Ros2NotAvailableError as exc:
+            return f"unavailable: {exc}"
         if not out.messages:
             return "No messages received."
         return "\n---\n".join(json.dumps(m, ensure_ascii=False, default=str) for m in out.messages)
@@ -93,7 +103,7 @@ def build_mcp_server(
     async def robot_pose() -> str:
         """The robot's current position (x, y, yaw) from AMCL or odometry."""
         try:
-            client = await _bridge_ready()
+            client = await _get_bridge()
             pose = await client.get_pose(timeout=3.0)
         except BridgeError as exc:
             return f"unavailable: {exc}"
@@ -106,24 +116,26 @@ def build_mcp_server(
     async def camera_look(topic: str = "/camera/image_raw") -> str:
         """Capture one camera frame and describe it with the vision model."""
         try:
-            client = await _bridge_ready()
-            frame = await client.capture_frame(topic, timeout=5.0)
+            client = await _get_bridge()
+            output = await capture_and_analyze(config, client, topic, timeout=5.0)
         except BridgeError as exc:
             return f"unavailable: {exc}"
-        try:
-            output = await analyze_image(config, str(frame))
         except VisionError as exc:
             return f"vision error: {exc}"
-        finally:
-            frame.unlink(missing_ok=True)
         parts = [output.summary]
         if output.objects:
             parts.append("objects: " + ", ".join(output.objects))
         if output.anomalies:
             parts.append("anomalies: " + ", ".join(output.anomalies))
+        if output.next_action_suggestions:
+            parts.append("suggested next: " + "; ".join(output.next_action_suggestions))
         return "\n".join(parts)
 
     if allow_actions:
+        # One goal at a time: MCP clients retry after their own tool timeouts
+        # and can issue parallel calls — without this guard a second call would
+        # silently preempt the first Nav2 goal and corrupt its cancel/result.
+        nav_busy = asyncio.Lock()
 
         @mcp.tool()
         async def navigate_to(location: str) -> str:
@@ -132,23 +144,19 @@ def build_mcp_server(
             This MOVES THE ROBOT. Only present because the operator started the
             server with --allow-actions.
             """
-            locations, error = _locations_or_error()
-            if error:
-                return error
-            try:
-                target = find_location(locations, location)
-            except LocationNotFoundError as exc:
-                hint = ", ".join(c.name for c in exc.candidates) or "no close matches"
-                return f"Unknown location '{location}' (near: {hint})."
-            action = {"goal": target.model_dump(mode="json")}
-            if config.route_adapter == "nav2" and RosBridgeClient.available():
+            if nav_busy.locked():
+                return "busy: a navigation goal is already in progress — one goal at a time."
+            async with nav_busy:
+                locations, error = _locations_or_error()
+                if error:
+                    return error
                 try:
-                    client = await _bridge_ready()
-                    output = await navigate_live(client, action)
-                except BridgeError:
-                    output = await route_execute(config, action)
-            else:
-                output = await route_execute(config, action)
-            return f"{output.execution_status}: {output.route_preview}"
+                    target = find_location(locations, location)
+                except LocationNotFoundError as exc:
+                    hint = ", ".join(c.name for c in exc.candidates) or "no close matches"
+                    return f"Unknown location '{location}' (near: {hint})."
+                action = {"goal": target.model_dump(mode="json")}
+                output = await navigate_with_fallback(config, _get_bridge, action)
+                return f"{output.execution_status}: {output.route_preview}"
 
     return mcp
