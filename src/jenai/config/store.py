@@ -172,6 +172,13 @@ def _to_toml(data: dict[str, Any]) -> str:
         for key, value in model_bindings.items():
             lines.append(f"{key} = {_format_toml_value(value)}")
 
+    vehicle = data.get("vehicle")
+    if vehicle:
+        lines.append("")
+        lines.append("[vehicle]")
+        for key, value in vehicle.items():
+            lines.append(f"{key} = {_format_toml_value(value)}")
+
     return "\n".join(lines) + "\n"
 
 

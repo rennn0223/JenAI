@@ -60,6 +60,7 @@ MODEL_BINDING_NAMES = ("chat", "plan", "vision", "route", "default")
 SLASH_COMMANDS = [
     SlashCommand("/help", "Show available JenAI commands"),
     SlashCommand("/status", "Show provider, model, config, and doctor state"),
+    SlashCommand("/stop", "EMERGENCY STOP: cancel navigation and zero velocity"),
     SlashCommand("/doctor", "Run setup and environment checks"),
     SlashCommand("/providers", "List configured provider profiles"),
     SlashCommand("/model", "List provider models and switch (Ollama etc.)", "/model <name|number>"),
@@ -357,7 +358,11 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         if not value:
             return
         if self._active_task is not None and not self._active_task.done():
-            return  # busy; ignore new submissions until the current one finishes
+            if value != "/stop":
+                return  # busy; ignore new submissions until the current one finishes
+            # /stop must never queue behind the thing it is stopping: cancel the
+            # in-flight task (which cancels its Nav2 goal) and run the halt now.
+            self._active_task.cancel()
         self._active_task = asyncio.create_task(self._run_user_text(value))
 
     async def _run_user_text(self, value: str) -> None:
@@ -379,7 +384,10 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                     pass
         finally:
             self._stop_spinner()
-            self._active_task = None
+            # A /stop submission may have replaced us as the active task —
+            # only clear the slot if it is still ours, or Esc loses its target.
+            if self._active_task is asyncio.current_task():
+                self._active_task = None
 
     def _finalize_interrupted_run(self) -> None:
         """Mark an in-flight run as stopped so an Esc interrupt doesn't leave it
@@ -644,6 +652,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             return loc_handlers.get(subcommand), rest.strip()
 
         handlers = {
+            "/stop": self._show_stop,
             "/help": self._show_help,
             "/status": self._show_status,
             "/doctor": self._show_doctor,
@@ -974,7 +983,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                     pass
         finally:
             self._stop_spinner()
-            self._active_task = None
+            if self._active_task is asyncio.current_task():
+                self._active_task = None
 
     async def _execute_direct(self, pending: dict) -> None:
         """Run an approved direct command, finalising the run even on failure.

@@ -24,6 +24,25 @@ class ProviderProfile(BaseModel):
         return stripped
 
 
+class VehicleProfile(BaseModel):
+    """What JenAI must know about the vehicle it commands.
+
+    The single place vehicle differences are allowed to live: everything above
+    the bridge (skills, safety, guardrails) reads these fields instead of
+    hardcoding topics or limits, so switching Ackermann car ⇄ quadruped is a
+    config edit, not a code change.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = "ackermann"  # ackermann | diff | quadruped — informational for now
+    cmd_vel_topic: str = "/cmd_vel"
+    cmd_vel_stamped: bool = False  # publish TwistStamped instead of Twist
+    # Safety limits — wired into guardrails/drive in M2; halt doesn't need them.
+    max_linear: float = 0.5  # m/s
+    max_angular: float = 1.0  # rad/s
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -33,6 +52,7 @@ class AppConfig(BaseModel):
     model_bindings: ModelBindings | None = None
     locations_path: str | None = None
     route_adapter: str = "stub"
+    vehicle: VehicleProfile = Field(default_factory=VehicleProfile)
     created_by_setup: bool = False
 
     def is_complete(self) -> bool:

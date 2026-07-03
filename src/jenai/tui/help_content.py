@@ -5,6 +5,10 @@ from jenai.schemas import CommandGroup, HelpOutput, KeyboardShortcut
 
 _COMMAND_GROUPS = [
     CommandGroup(
+        name="Safety",
+        commands=["/stop  (EMERGENCY STOP — works even while a task is running)"],
+    ),
+    CommandGroup(
         name="Session",
         commands=["/help", "/status", "/doctor", "/clear"],
     ),

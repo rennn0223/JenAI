@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import secrets
 import threading
@@ -17,6 +18,7 @@ from jenai.doctor import run_doctor
 from jenai.providers.chat import chat_model_name
 from jenai.state.runs import RunStore
 from jenai.tools.ros2_core import _kind_hint
+from jenai.tools.safety import halt_robot
 from jenai.webui.commands import run_web_command, run_web_confirm
 from jenai.webui.render import render_dashboard_html, render_main
 
@@ -219,6 +221,25 @@ def build_status_payload(
     }
 
 
+def _do_stop(config: AppConfig) -> dict[str, Any]:
+    """Halt the robot from a sync HTTP handler (fresh loop + fresh bridge)."""
+
+    async def run() -> str:
+        bridge = RosBridgeClient()
+        try:
+            await bridge.start()
+            return await halt_robot(config, bridge)
+        finally:
+            with contextlib.suppress(BridgeError):
+                await bridge.stop()
+
+    try:
+        message = asyncio.run(run())
+    except BridgeError as exc:
+        return {"kind": "error", "html": f"<p>Stop unavailable (no ROS bridge): {exc}</p>"}
+    return {"kind": "result", "html": f"<p>🛑 {message}</p>"}
+
+
 # -- HTML rendering -----------------------------------------------------------
 
 class _Handler(BaseHTTPRequestHandler):
@@ -284,6 +305,10 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             else:
                 result = asyncio.run(run_web_confirm(self.config, action))
+        elif path == "/api/stop":
+            # EMERGENCY STOP: no confirm token — stopping is always safe and
+            # must never queue behind a dialog.
+            result = _do_stop(self.config)
         else:
             result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")

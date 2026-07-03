@@ -960,3 +960,70 @@ def test_tui_palette_completes_bare_command_with_trailing_space() -> None:
             assert composer.cursor_position == len(composer.value)
 
     asyncio.run(run())
+
+
+def test_tui_stop_command_halts_robot(monkeypatch, tmp_path) -> None:
+    class FakeBridge:
+        def __init__(self) -> None:
+            self.halts: list[str] = []
+
+        async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
+            self.halts.append(cmd_vel_topic)
+            return True  # a nav goal was canceled
+
+    fake = FakeBridge()
+
+    async def fake_get_bridge():
+        return fake
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        async with app.run_test():
+            await app.handle_user_text("/stop")
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("halted" in b.lower() for b in bodies)
+
+    asyncio.run(run())
+
+    assert fake.halts == ["/cmd_vel"]
+
+
+def test_tui_stop_preempts_running_task(monkeypatch, tmp_path) -> None:
+    """/stop must never queue behind the task it is stopping: the busy gate
+    lets it through, cancelling the in-flight task first."""
+    from types import SimpleNamespace
+
+    class FakeBridge:
+        async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
+            return False
+
+    async def fake_get_bridge():
+        return FakeBridge()
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        async with app.run_test() as pilot:
+            hang_started = asyncio.Event()
+
+            async def hang() -> None:
+                hang_started.set()
+                await asyncio.sleep(30)
+
+            hang_task = asyncio.create_task(hang())
+            app._active_task = hang_task
+            await hang_started.wait()
+
+            event = SimpleNamespace(value="/stop", input=SimpleNamespace(value=""))
+            await app.on_input_submitted(event)
+            stop_task = app._active_task
+            assert stop_task is not hang_task  # /stop replaced the hung task
+            await stop_task
+            await pilot.pause()
+
+            assert hang_task.cancelled()
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("halted" in b.lower() for b in bodies)
+
+    asyncio.run(run())

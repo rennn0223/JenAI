@@ -58,8 +58,19 @@ async def navigate_live(
         if _mine(event) and not result_future.done():
             result_future.set_result(str(event.get("status", "failed")))
 
+    async def _heartbeat() -> None:
+        # Feed the bridge-side watchdog while we wait: if this client hangs or
+        # dies instead, the bridge halts the robot on its own.
+        while True:
+            await asyncio.sleep(2.0)
+            try:
+                await bridge.ping()
+            except BridgeError:
+                return
+
     bridge.on_event("nav_feedback", _on_feedback)
     bridge.on_event("nav_result", _on_result)
+    heartbeat = asyncio.create_task(_heartbeat())
     try:
         await bridge.nav_send(
             x=float(pose.get("x", 0.0)),
@@ -86,6 +97,7 @@ async def navigate_live(
         await _cancel_quietly(bridge)
         raise
     finally:
+        heartbeat.cancel()
         bridge.off_event("nav_feedback", _on_feedback)
         bridge.off_event("nav_result", _on_result)
 

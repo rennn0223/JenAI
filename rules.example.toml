@@ -24,5 +24,6 @@ topic = "/e_stop"
 msg_type = "std_msgs/msg/Bool"
 field = "data"
 equals = true
-cooldown_s = 30
-action = "notify"
+cooldown_s = 5
+action = "halt"                 # emergency stop: cancel nav + zero velocity.
+                                # No auto_approve needed — stopping is always safe.

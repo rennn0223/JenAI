@@ -211,6 +211,33 @@ class RosBridgeClient:
         result = await self.request("nav_cancel", timeout=5.0)
         return bool(result.get("canceled"))
 
+    async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
+        """EMERGENCY STOP: cancel any Nav2 goal and pulse zero velocity.
+        Returns whether a navigation goal was canceled in the process."""
+        result = await self.request(
+            "halt", timeout=8.0, params={"cmd_vel_topic": cmd_vel_topic, "stamped": stamped}
+        )
+        return bool(result.get("nav_canceled"))
+
+    async def configure_safety(
+        self,
+        *,
+        watchdog_s: float = 6.0,
+        cmd_vel_topic: str = "/cmd_vel",
+        stamped: bool = False,
+    ) -> None:
+        """Arm the bridge-side watchdog: if the client goes quiet for
+        `watchdog_s` while a Nav2 goal is active, the bridge halts the robot
+        on its own. navigate_live's heartbeat keeps a healthy client alive."""
+        await self.request(
+            "watchdog",
+            params={
+                "timeout": watchdog_s,
+                "cmd_vel_topic": cmd_vel_topic,
+                "stamped": stamped,
+            },
+        )
+
     async def capture_frame(self, topic: str, timeout: float = 5.0) -> Path:
         result = await self.request(
             "capture_frame", timeout=timeout + 3.0, params={"topic": topic, "timeout": timeout}
