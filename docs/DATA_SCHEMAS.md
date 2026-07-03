@@ -1,5 +1,8 @@
 # JenAI 共用資料結構
 
+> 📜 **設計期文件**(v0.1 規劃階段)。實際實作已演進,現況以 [TECHNICAL_GUIDE.md](TECHNICAL_GUIDE.md)、[COMMANDS.md](COMMANDS.md) 與程式碼為準;方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
+
+
 所有核心模組（TUI、WebUI、agent、adapters）共用以下資料物件定義。
 v0.1.0 使用 Python dataclass 或 Pydantic BaseModel 實作。
 

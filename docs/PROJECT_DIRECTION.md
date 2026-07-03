@@ -151,13 +151,13 @@ ROS topics 就能算,不用碰 Isaac 內部 API,增量成本可控。
 
 ### 必做(三方一致,缺一個就撐不起「真的可用」)
 
-| # | 功能 | 誰最堅持 | 說明 |
-|---|---|---|---|
-| M1 | **E-stop / watchdog** | 客戶 | 任一介面一鍵全停;bridge 心跳斷線自動停車。安全鏈的地基,比 twin gate 更先 |
-| M2 | **Vehicle profile 抽象** | 工程師 | `vehicle.toml`:cmd_vel topic、速限、footprint、載具類型 → 狗/車一檔切換 |
-| M3 | **Isaac Sim twin 場景 + Twin Gate pipeline** | PM | 論文核心 = 產品差異化,G1–G5 判準、pass/block/refer,可整段關閉 |
-| M4 | **任務級技能:patrol / return_to_dock / follow_route** | 客戶 | 「去 B 棟看一下」需要的是任務,不是單點導航 |
-| M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | 建圖、定位、cmd_vel 檢查的手把手流程(doctor 擴充 + 文件) |
+| # | 功能 | 誰最堅持 | 狀態 | 說明 |
+|---|---|---|---|---|
+| M1 | **E-stop / watchdog** | 客戶 | ✅ **v0.7** | `/stop`、WebUI STOP 鈕、MCP stop、daemon halt;bridge watchdog 斷線自主停車 |
+| M2 | **Vehicle profile 抽象** | 工程師 | ✅ **v0.7** | config `[vehicle]`:cmd_vel topic、硬限速、相機 topic → 換載具改設定不改程式 |
+| M3 | **Isaac Sim twin 場景 + Twin Gate pipeline** | PM | 🚧 | 論文核心 = 產品差異化,G1–G5 判準、pass/block/refer,可整段關閉。前置:孿生改獨立 ROS_DOMAIN_ID(現與實車共用 0) |
+| M4 | **任務級技能:patrol / return_to_dock** | 客戶 | ✅ **v0.8** | `/patrol A, B x3 photo`(循環+每點 VLM 觀察)、`/dock`;follow_route 由 `/mission` 涵蓋 |
+| M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | 🚧 | 建圖、定位、cmd_vel 檢查的手把手流程(doctor 擴充 + 文件) |
 
 ### 可做(有明確價值,排在必做之後)
 

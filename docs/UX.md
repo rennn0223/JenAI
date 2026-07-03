@@ -1,5 +1,8 @@
 # JenAI UX 規格
 
+> 📜 **設計期文件**(v0.1 規劃階段)。實際實作已演進,現況以 [TECHNICAL_GUIDE.md](TECHNICAL_GUIDE.md)、[COMMANDS.md](COMMANDS.md) 與程式碼為準;方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
+
+
 ## 設計原則
 
 - **Terminal-first**：TUI 是主要操作介面，WebUI 是監控輔助介面

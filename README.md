@@ -113,31 +113,36 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 | 文件 | 說明 |
 |---|---|
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（新人先讀這份） |
+| [docs/PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md) | **專案方向**：三方視角收斂的六層架構、功能優先序（必做 M1–M5）與可用性評估 |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | CLI + slash 命令完整規格 |
-| [docs/FEATURES.md](docs/FEATURES.md) | 14 個核心功能可實作規格 |
-| [docs/UX.md](docs/UX.md) | TUI/WebUI 互動設計規格 |
-| [docs/DATA_SCHEMAS.md](docs/DATA_SCHEMAS.md) | 共用資料結構定義 |
-| [docs/STATE_MACHINE.md](docs/STATE_MACHINE.md) | Run 狀態機設計 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模組架構設計 |
-| [docs/MOSCOW.md](docs/MOSCOW.md) | v0.1.0 功能優先級 |
+| [docs/FEATURES.md](docs/FEATURES.md) | 設計期文件：14 個核心功能規格 |
+| [docs/UX.md](docs/UX.md) | 設計期文件：TUI/WebUI 互動設計 |
+| [docs/DATA_SCHEMAS.md](docs/DATA_SCHEMAS.md) | 設計期文件：共用資料結構 |
+| [docs/STATE_MACHINE.md](docs/STATE_MACHINE.md) | 設計期文件：Run 狀態機 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 設計期文件：模組架構 |
+| [docs/MOSCOW.md](docs/MOSCOW.md) | 設計期文件：v0.1.0 功能優先級 |
 
 ---
 
-## 技術棧（規劃中）
+## 技術棧
 
-- **Agent Framework**：OpenAI Agents SDK
-- **LLM Provider**：LiteLLM（多 provider 統一接口）
-- **TUI**：Textual（Python）
-- **WebUI**：待定
-- **ROS2**：Jazzy
-- **語言**：Python 3.12+
+- **語言**：Python 3.12+（依賴由 [uv](https://docs.astral.sh/uv/) 管理，`uv.lock` 鎖定多平台 wheel）
+- **TUI**：Textual；**WebUI**：stdlib `http.server`（零額外依賴）；**CLI**：Typer
+- **LLM Provider**：`openai` SDK 打任何 OpenAI 相容端點（NVIDIA NIM 雲端／Ollama 地端）
+- **Agent Framework**：openai-agents SDK（多-agent handoffs、本地 tracing）
+- **ROS2**：Jazzy；Nav2（Smac Hybrid-A* + RPP，阿克曼）；rclpy 走獨立 bridge 子程序（系統 Python）
+- **MCP**：官方 `mcp` SDK（FastMCP，stdio transport）
 
 ---
 
-## 狀態
+## 狀態（v0.7 系列，2026-07）
 
-> ✅ 核心功能：CLI 入口、setup wizard、`doctor`、`/plan`、ROS2 工具（`topics`／`topic-info`／`schema`／`echo`／`pub`／`drive`／`state`）、`/drive` 自然語言控車、`/route`、`/vision image`、`/shell`、Claude 風格 TUI（項目符號時間軸、編號審批、`!` bash、esc 中斷）與可互動的 WebUI（`jenai web`，含指令 console，手機 App 佈局）。
+> ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating。
 >
-> ✅ 完整 Agent 架構（基於 openai-agents SDK）：**多-agent handoffs**（Supervisor + ROS/Motion/Navigation/Perception 專職 agent）、**跨重啟對話記憶**（`Session`，依專案，`/clear` 清除）、**安全 guardrails** + 確定性速度夾限（涵蓋 Twist/TwistStamped）、**閉環感知**（`/ros state`）、**Nav2 導航**（誠實回報）、**確定性任務執行器**（`/mission`）、**本地 tracing**（取代 OpenAI 後端，不外傳）。詳見 [`docs/FEATURES.md`](docs/FEATURES.md)。
+> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（剩餘距離+Esc 真取消）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/dock`、`/loc add here` 現場建點、`/vision image|camera`、`/model`／`/provider` 雲地即時切換。
 >
-> 🚧 後續：`/run` 多步自主的可靠化、Nav2/感知端到端驗證、連續 `/ros echo` streaming、WebUI 完整 timeline。
+> ✅ **介面**：Claude 風格 TUI、WebUI（console+手機批准+即時地圖+STOP）、MCP server、daemon 常駐。全部走同一套共用原語（導航調度、急停、相機分析、地點載入各只有一份）。
+>
+> ✅ **工程**：271 測試（無 ROS 的 CI 可全跑）、rclpy bridge 協定有純 stdlib fake、誠實回報原則貫穿每條路徑。
+>
+> 🚧 **進行中**（見 [PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md)）：M5 onboarding（建圖到首航手把手）、M3 Twin Gate（Isaac Sim 數位孿生逐指令預演閘門，論文核心）。
