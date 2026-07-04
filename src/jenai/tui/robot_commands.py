@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from rich.markup import escape
 
@@ -482,13 +483,20 @@ class RobotCommandsMixin:
 
     async def _show_loc_add(self, arg: str) -> None:
         name = arg.strip()
+        if name.lower().startswith("gps "):
+            await self._loc_add_gps(name[4:].strip())
+            return
         if name.lower().startswith("here "):  # "/loc add here Kitchen" and "/loc add Kitchen"
             name = name[5:].strip()
         elif name.lower() == "here":  # bare "/loc add here" has no name to save
             name = ""
         if not name or name.startswith("<"):
             await self._mount_event(
-                TimelineItem("warn", "Usage: [bold #f2ede1]/loc add here <name>[/]")
+                TimelineItem(
+                    "warn",
+                    "Usage: [bold #f2ede1]/loc add here <name>[/] · "
+                    "[bold #f2ede1]/loc add gps <name> <lat> <lon>[/]",
+                )
             )
             return
 
@@ -531,6 +539,62 @@ class RobotCommandsMixin:
                 f"Saved [bold #f2ede1]{name}[/] at x={location.pose.x} y={location.pose.y} "
                 f"yaw={location.pose.yaw} ({pose.frame_id}, from {pose.source}) · "
                 f"try [bold #f2ede1]/route from here to {name}[/]{note}",
+            )
+        )
+
+    async def _loc_add_gps(self, arg: str) -> None:
+        """`/loc add gps <name> <lat> <lon>` — campus lat/lon into map metres."""
+        from jenai.adapters.locations import gps_to_map_xy
+
+        numbers = re.findall(r"-?\d+(?:\.\d+)?", arg)
+        name = re.split(r"-?\d+(?:\.\d+)?", arg, maxsplit=1)[0].strip().rstrip(",= ")
+        if not name or len(numbers) < 2:
+            await self._mount_event(
+                TimelineItem(
+                    "warn", "Usage: [bold #f2ede1]/loc add gps <name> <lat> <lon>[/]"
+                )
+            )
+            return
+        lat, lon = float(numbers[0]), float(numbers[1])
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            await self._mount_event(TimelineItem("warn", f"({lat}, {lon}) 不是合法經緯度。"))
+            return
+        datum = self.config.map_datum
+        if not datum.configured:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "GPS 地點需要先設定地圖基準點 —— 在 config 加:\n"
+                    "[bold #f2ede1][map_datum][/]\n"
+                    "[bold #f2ede1]lat = <map 原點的緯度>[/]\n"
+                    "[bold #f2ede1]lon = <map 原點的經度>[/]\n"
+                    "[bold #f2ede1]yaw_deg = <map +x 相對正東的角度,對齊 ENU 則為 0>[/]\n"
+                    "(建圖起點的 GPS 讀值即可;沒有基準點,經緯度換不成 map 座標 —— 不猜。)",
+                )
+            )
+            return
+        locations_path = self.config.resolved_locations_path(self.config_path)
+        if locations_path is None:
+            await self._mount_event(
+                TimelineItem("warn", "No locations_path is configured — add one to the config.")
+            )
+            return
+        x, y = gps_to_map_xy(datum, lat, lon)
+        location = Location(
+            name=name,
+            pose=Pose2D(x=round(x, 3), y=round(y, 3), yaw=0.0),
+            description=f"gps {lat}, {lon}",
+        )
+        try:
+            await asyncio.to_thread(append_location, location, locations_path)
+        except LocationsFileError as exc:
+            await self._mount_event(TimelineItem("warn", str(exc)))
+            return
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Saved [bold #f2ede1]{name}[/] at x={location.pose.x} y={location.pose.y} "
+                f"(map,自 GPS {lat}, {lon} 換算) · 實地驗證第一次導航,基準點誤差會整批平移",
             )
         )
 

@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 import difflib
+import math
 import tomllib
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from jenai.schemas import Location
+
+_EARTH_RADIUS_M = 6378137.0  # WGS-84 equatorial
+
+
+def gps_to_map_xy(datum, lat: float, lon: float) -> tuple[float, float]:
+    """lat/lon → map-frame metres via a local ENU tangent plane at the datum.
+
+    Equirectangular approximation — centimetre-class error at campus scale
+    (< a few km), far below Nav2 goal tolerance. `datum.yaw_deg` is the
+    bearing of map +x measured CCW from east, so a SLAM map that wasn't
+    built axis-aligned to ENU still lands correctly.
+    """
+    east = math.radians(lon - datum.lon) * _EARTH_RADIUS_M * math.cos(math.radians(datum.lat))
+    north = math.radians(lat - datum.lat) * _EARTH_RADIUS_M
+    theta = math.radians(datum.yaw_deg)
+    x = east * math.cos(theta) + north * math.sin(theta)
+    y = -east * math.sin(theta) + north * math.cos(theta)
+    return x, y
+
 
 _STARTER_CONTENT = """\
 # JenAI locations file

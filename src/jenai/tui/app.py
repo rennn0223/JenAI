@@ -108,7 +108,9 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/loc list", "List known locations"),
     SlashCommand(
-        "/loc add", "Save the robot's current position as a location", "/loc add here <name>"
+        "/loc add",
+        "Save a location: robot's position (here) or GPS lat/lon",
+        "/loc add here <name> · /loc add gps <name> <lat> <lon>",
     ),
     SlashCommand("/loc show", "Show a location's details", "/loc show <name>"),
     SlashCommand("/vision image", "Analyze a local image with the VLM", "/vision image <path>"),
