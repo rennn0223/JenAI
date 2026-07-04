@@ -298,6 +298,7 @@ body:not(.view-console) #mapcard{display:none}
 body:not(.view-camera) #cameracard{display:none}
 body:not(.view-api) #apicard{display:none}
 #camwrap{display:grid; grid-template-columns:minmax(0,3fr) minmax(150px,1fr); gap:14px; align-items:start}
+#cam-topic{font:inherit; font-size:12.5px; max-width:46%; padding:3px 6px; border-radius:7px; border:1px solid var(--line, #e3ded4); background:transparent}
 #rgb{width:100%; border-radius:10px; background:#0d0c0a; min-height:180px; object-fit:contain}
 #odom-mini{font-size:13px; border:1px solid var(--line, #e3ded4); border-radius:10px; padding:10px 12px}
 #odom-mini h3{margin:0 0 6px; font-size:12px; letter-spacing:.4px; text-transform:uppercase; opacity:.6}
@@ -373,7 +374,10 @@ body:not(.view-api) #apicard{display:none}
   <svg id="map" viewBox="0 0 100 60" preserveAspectRatio="xMidYMid meet"></svg>
 </section>
 <section id="cameracard" class="card">
-  <div class="card-head"><h2>Camera</h2><span class="dim" id="cam-meta">switch here to start streaming…</span></div>
+  <div class="card-head"><h2>Camera</h2>
+    <select id="cam-topic" title="image topic for /api/frame"><option value="__default__">vehicle.camera_topic(預設)</option></select>
+    <span class="dim" id="cam-meta">switch here to start streaming…</span>
+  </div>
   <div id="camwrap">
     <img id="rgb" alt="camera frame">
     <div id="odom-mini">
@@ -396,6 +400,9 @@ body:not(.view-api) #apicard{display:none}
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/command　{"text": "…"}</span><span class="api-d">跑指令;動作類回 confirm_id</span></div>
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/confirm　{"confirm_id": "…"}</span><span class="api-d">批准一次性動作(server 端持有)</span></div>
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/stop</span><span class="api-d">緊急停止 — 唯一免 token</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/topics</span><span class="api-d">即時 ROS graph topics(下表)</span></div>
+  <div class="card-head" style="margin-top:14px"><h2 style="font-size:15px">ROS topics(即時)</h2><span class="dim" id="api-topics-meta">切到此頁時載入…</span></div>
+  <div id="api-topics" class="mono" style="font-size:12.5px; line-height:1.9"></div>
   <div class="dim" style="margin-top:8px">程式化整合建議走 <span class="mono">JenAI mcp</span>(MCP 協定,預設唯讀);完整規格見 docs/THREAT_MODEL.md 與 docs/COMMANDS.md。</div>
 </section>
 <main>__MAIN__</main>
@@ -526,7 +533,7 @@ async function camTick(){
   if(camBusy) return;               // a slow frame must not stack requests
   camBusy = true;
   try{
-    rgb.src = 'api/frame?ts=' + Date.now();
+    rgb.src = 'api/frame?ts=' + Date.now() + camTopicParam();
     const r = await fetch('api/map', {cache:'no-store'});
     if(r.ok){
       const d = await r.json();
@@ -544,8 +551,48 @@ async function camTick(){
   }catch(e){/* keep last values */}
   finally{ camBusy = false; }
 }
-function camStart(){ if(!camTimer){ camTick(); camTimer = setInterval(camTick, 1000); } }
+// Topic picker: camera_topic names vary per robot (/rgb vs /rgb/image vs
+// /camera/image_raw) — list the live graph so nobody has to guess.
+const camTopic = document.getElementById('cam-topic');
+camTopic.value = localStorage.getItem('jenai-cam-topic') || '__default__';
+camTopic.addEventListener('change', () => {
+  localStorage.setItem('jenai-cam-topic', camTopic.value);
+  camTick();
+});
+function camTopicParam(){
+  return camTopic.value === '__default__' ? '' : '&topic=' + encodeURIComponent(camTopic.value);
+}
+async function camTopicsLoad(){
+  try{
+    const r = await fetch('api/topics', {cache:'no-store'});
+    if(!r.ok) return;
+    const d = await r.json();
+    const names = (d.topics||[]).map(t => t.name);
+    const imgish = names.filter(n => /rgb|image|camera|depth/i.test(n));
+    const rest = names.filter(n => !imgish.includes(n));
+    const keep = camTopic.value;
+    camTopic.innerHTML = '<option value="__default__">vehicle.camera_topic(預設)</option>' +
+      imgish.map(n => `<option>${esc(n)}</option>`).join('') +
+      (rest.length ? '<optgroup label="其他 topics">' + rest.map(n => `<option>${esc(n)}</option>`).join('') + '</optgroup>' : '');
+    if([...camTopic.options].some(o => o.value === keep)) camTopic.value = keep;
+  }catch(e){/* picker keeps whatever it has */}
+}
+function camStart(){ if(!camTimer){ camTopicsLoad(); camTick(); camTimer = setInterval(camTick, 1000); } }
 function camStop(){ if(camTimer){ clearInterval(camTimer); camTimer = null; } }
+
+// API page: one-shot live topics listing per visit.
+async function apiTopicsLoad(){
+  const box = document.getElementById('api-topics');
+  const meta = document.getElementById('api-topics-meta');
+  try{
+    const r = await fetch('api/topics', {cache:'no-store'});
+    const d = await r.json();
+    if(!d.available){ meta.textContent = 'ROS2 not available on this host'; return; }
+    if(d.error){ meta.textContent = d.error; return; }
+    meta.textContent = d.count + ' topics';
+    box.innerHTML = d.topics.map(t => `${esc(t.name)} <span class="dim">· ${esc(t.kind)}</span>`).join('<br>');
+  }catch(e){ meta.textContent = 'failed to load topics'; }
+}
 
 // Console/Camera/Status/API tabs (multi-page on every screen size)
 document.querySelectorAll('#tabs .tab').forEach(t => {
@@ -554,6 +601,7 @@ document.querySelectorAll('#tabs .tab').forEach(t => {
     t.classList.add('active');
     document.body.className = 'view-' + t.dataset.view;
     if(t.dataset.view === 'camera') camStart(); else camStop();
+    if(t.dataset.view === 'api') apiTopicsLoad();
     if(t.dataset.view === 'console') input.focus();
   });
 });
