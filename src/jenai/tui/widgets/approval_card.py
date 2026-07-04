@@ -1,3 +1,5 @@
+"""Approval card widget: numbered options (1/2/3, Esc), keyboard select."""
+
 from __future__ import annotations
 
 from rich.text import Text

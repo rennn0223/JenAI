@@ -1,3 +1,5 @@
+"""Per-run context object threaded through the agent and its tools."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

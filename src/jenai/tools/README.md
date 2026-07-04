@@ -13,6 +13,7 @@
 | `ros2_core.py` | topics/echo/schema/pub/drive 核心;**`[vehicle]` 硬限速夾在執行路徑上,LLM 碰不到夾限值** |
 | `vision_core.py` | `capture_and_analyze`(相機→VLM 的唯一出處) |
 | `shell_core.py` | shell 執行 + 風險評估(批准卡的素材) |
+| `ros2_pkg_core.py` | **自然語言 → ROS2 (ament_python) 套件**:確定性 boilerplate(package.xml/setup.py 永遠可 build)+ LLM 寫 node 主體;`render_package` 純函數可單測。`JenAI scaffold` 的核心 —— 從 control agent 邁向 development copilot |
 | `registry.py` / `summaries.py` / `tracking.py` / `approval_formatters.py` | 工具註冊、輸出摘要、nav 事件關聯、批准卡文案 |
 
 鐵律:此層以上不得出現載具字眼(CI 強制)—— 載具差異收在 `config` 的 `[vehicle]`。

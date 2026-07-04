@@ -1,3 +1,5 @@
+"""Specialist agents (ROS/Motion/Navigation/Perception) and the handoff graph."""
+
 from __future__ import annotations
 
 from agents import Agent

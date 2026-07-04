@@ -1,3 +1,5 @@
+"""FastMCP stdio server exposing robot tools (read-only; --allow-actions to move)."""
+
 from __future__ import annotations
 
 import asyncio

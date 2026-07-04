@@ -1,3 +1,5 @@
+"""http.server WebUI: endpoints, token auth, one-shot confirm escrow, PoseCache."""
+
 from __future__ import annotations
 
 import asyncio

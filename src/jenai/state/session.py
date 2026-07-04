@@ -1,3 +1,5 @@
+"""Session creation and persisted conversation state."""
+
 from __future__ import annotations
 
 import hashlib

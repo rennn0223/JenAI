@@ -1,3 +1,5 @@
+"""/run visual blocks: PlanBlock, ToolBlock, ErrorBlock."""
+
 from __future__ import annotations
 
 from textual.widgets import Static

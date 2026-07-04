@@ -1,3 +1,5 @@
+"""venv-side asyncio client for the system-python rclpy bridge sidecar."""
+
 from __future__ import annotations
 
 import asyncio

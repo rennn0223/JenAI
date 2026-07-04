@@ -1,3 +1,5 @@
+"""RunStore: session run records + the agents-SDK pause/resume side table."""
+
 from __future__ import annotations
 
 from typing import Any

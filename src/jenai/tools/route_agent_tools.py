@@ -1,3 +1,5 @@
+"""Agent-tool wrappers around route_core."""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,5 @@
+"""ros2 CLI subprocess wrapper (topics/echo/pub/action) with timeouts."""
+
 from __future__ import annotations
 
 import os

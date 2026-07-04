@@ -1,3 +1,5 @@
+"""AppConfig + profiles: VehicleProfile, TwinProfile, MapDatum, AvoidanceProfile."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -143,6 +145,7 @@ class AppConfig(BaseModel):
     model_bindings: ModelBindings | None = None
     locations_path: str | None = None
     route_adapter: str = "stub"
+    ros2_ws: str | None = None  # workspace root for `JenAI scaffold` (default ~/ros2_ws)
     vehicle: VehicleProfile = Field(default_factory=VehicleProfile)
     twin: TwinProfile = Field(default_factory=TwinProfile)
     map_datum: MapDatum = Field(default_factory=MapDatum)

@@ -1,3 +1,5 @@
+"""Daemon wiring: bridge watch → queue → engine → (gated) action."""
+
 from __future__ import annotations
 
 import asyncio

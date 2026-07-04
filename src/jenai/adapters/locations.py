@@ -1,3 +1,5 @@
+"""locations.toml load/save/fuzzy-search + GPS→map-frame conversion."""
+
 from __future__ import annotations
 
 import difflib

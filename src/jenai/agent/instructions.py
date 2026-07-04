@@ -1,3 +1,5 @@
+"""System prompts for the agents — the honest-reporting principle is written here."""
+
 from __future__ import annotations
 
 PLAN_AGENT_INSTRUCTIONS = """\

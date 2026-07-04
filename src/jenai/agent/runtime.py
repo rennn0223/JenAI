@@ -1,3 +1,5 @@
+"""Agent construction + execution glue over the openai-agents SDK."""
+
 from __future__ import annotations
 
 from agents import Agent, OpenAIChatCompletionsModel
