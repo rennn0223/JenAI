@@ -32,6 +32,7 @@ from jenai.schemas import (
     ToolCallRecord,
 )
 from jenai.state import InputHistory, RunStore, create_session
+from jenai.state.reports import save_patrol_log
 from jenai.tools.mission_core import run_mission
 from jenai.tools.ros2_core import (
     ros_drive,
@@ -101,6 +102,7 @@ SLASH_COMMANDS = [
         "/patrol A, B x2 photo",
     ),
     SlashCommand("/dock", "Return to the charging dock (needs approval)"),
+    SlashCommand("/report", "Show the latest patrol report (+LLM digest)", "/report [list]"),
     SlashCommand(
         "/route", "Resolve and send a navigation route (needs approval)", "/route <text>"
     ),
@@ -714,6 +716,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "/mission": self._show_mission,
             "/patrol": self._show_patrol,
             "/dock": self._show_dock,
+            "/report": self._show_report,
             "/vision": self._show_vision,
             "/perception": self._show_perception,
             "/shell": self._show_shell,
@@ -1160,6 +1163,13 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 final_output=report.summary,
             )
             await self._mount_event(OutputPanel("Patrol report", report.summary))
+            try:
+                log_path = save_patrol_log(report, self.config_path)
+                await self._mount_event(
+                    TimelineItem("success", f"Log saved — view with /report · {log_path.name}")
+                )
+            except OSError as exc:  # a full disk must not eat the patrol result
+                await self._mount_event(TimelineItem("warn", f"Patrol log not saved: {exc}"))
         elif pending["kind"] == "shell":
             shell_output = await run_shell(pending["command"])
             ok = shell_output.exit_code == 0

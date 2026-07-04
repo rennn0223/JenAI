@@ -109,6 +109,7 @@ JenAI 啟動流程：
 | `/mission <地點, …>` | 多步任務：依序導航/移動各點並回報（批准一次跑整趟；`drive <動作>` 段落可混排） | `/mission 廚房, drive 左轉, 大廳` |
 | `/patrol <地點, …> [xN] [photo]` | **循環巡邏**：點位 × 圈數；`photo` 時每個到達點抓相機幀給 VLM 並即時回報觀察。一點失敗記錄後續行 | `/patrol A, B x3 photo` |
 | `/dock` | 回充：導航到 `tags = ["dock"]` 的地點（名字/別名是 Dock、充電站也認得） | `/dock` |
+| `/report` | 顯示最近一次巡邏日報（確定性內容 + LLM 摘要段；provider 離線時誠實只給前者）。log 存 `<config 目錄>/reports/`，patrol 結束自動寫入 | `/report`、`/report list` |
 
 ### Vision
 
