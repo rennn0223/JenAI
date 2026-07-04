@@ -18,11 +18,11 @@
 | A3 | 安全鏈覆蓋率 | 92%(safety 100/engine 98/gate 94/client 93/runner 76);CI 加 fail-under=90 倒退閘,只升不降 | ✅ v0.12 |
 | A4 | 故障注入測試 | bridge 永不 ready / watchdog 武裝失敗 / 串流垃圾行 / twin 預演中斷→refer / pose 失聯→G4 跳過 / halt 失敗誠實回報 / 未知地點 / 無地點檔 → 全部證明誠實降級 | ✅ v0.11 |
 | A5 | 架構鐵律 CI 防護 | tests/unit/test_architecture.py:反射層(bridge/engine/safety/gate)禁 import LLM 堆疊;技能層以上禁載具字眼(AST + 逐行掃描) | ✅ v0.12 |
-| A6 | 24h soak 腳本 | daemon + perception 跑 24h,記憶體/觸發統計自動報告 | ☐ |
-| A7 | Safety case 草稿 | HARA-lite:危害清單 → 對應防護層 → 殘餘風險;場域細節留白給客戶補 | ☐ |
+| A6 | 24h soak 腳本 | `scripts/soak.py`:RSS 樹採樣 + warmup 校正 + PASS/WARN 判定;真 daemon 短跑驗證過(+0.0% PASS)。**24h 正式跑掛機時啟動**(見 TEST.md) | ✅ v0.13(24h 跑待排) |
+| A7 | Safety case 草稿 | docs/SAFETY_CASE.md:H1–H8 危害表 → R/G/H/P 防護對應 → 驗證證據 → 殘餘風險;⬜ TODO(客戶)欄待 B4/B5/B6 數據 | ✅ v0.13(草稿) |
 | A8 | 巡邏日報(C2) | patrol 結束自動存 log(`reports/patrol-*.json`);`/report` 確定性日報 + LLM 摘要(離線誠實降級)、`/report list` 回看歷次 | ✅ v0.12 |
 | A9 | M6 DecisionLoop 核心 | 有界動作集決策 + `jenai bench decision` 延遲量測(**v2 線,不擋 v1.0**) | ☐ |
-| A10 | 注釋/結構清理 pass | 全庫一輪:補 why 注釋、刪冗餘與死碼 | ☐ |
+| A10 | 注釋/結構清理 pass | 全庫稽核(v0.13):零 TODO/FIXME、零死碼(未引用 defs 僅 Typer 註冊命令)、唯一未 import 模組是 rclpy sidecar(設計如此)—— 無需清理 | ✅ v0.13 |
 
 ## 層二:客戶端必須下場 — 實機驗測與回饋
 
