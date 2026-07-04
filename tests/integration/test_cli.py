@@ -175,3 +175,12 @@ def test_route_command_cancelled_by_user(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "Cancelled" in result.stdout
+
+
+def test_help_command_lists_cli_and_oneshot_recipes() -> None:
+    result = runner.invoke(app, ["help"])
+
+    assert result.exit_code == 0
+    # Every subcommand family shows up, plus the one-shot recipes section.
+    for needle in ("JenAI doctor", "JenAI web", "JenAI daemon", "一鍵常用", "/stop"):
+        assert needle in result.stdout

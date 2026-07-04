@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.9.0。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v0.14.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(Jetson 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -26,14 +26,14 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | `324 passed`(v0.11.0 基準,約 24s,無 ROS 環境也全過);含安全鏈故障注入(bridge 啟動失敗/watchdog 武裝失敗/twin 預演中斷/halt 失敗誠實回報) |
+| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.14.0 基準 `333 passed`,約 24s,無 ROS 環境也全過);含安全鏈故障注入(bridge 啟動失敗/watchdog 武裝失敗/twin 預演中斷/halt 失敗誠實回報)與架構鐵律測試 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job(ruff+pytest,coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
 | Release gate | 推 `vX.Y.Z` tag | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → 草稿 release 附 wheel/sdist |
 | 安全鏈覆蓋閘 | CI `test` job 自動跑 | `coverage report --fail-under=90`(estop/watchdog/bridge/gate/rules);現況 92%,倒退即紅 |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 
-## 本機實測現況快照(v0.9.0,Jetson 工作機)
+## 本機實測現況快照(v0.14.0,Jetson 工作機)
 
 - **doctor overall:`warn`**(source ROS 後):environment / config / provider / locations / webui 全 pass;nav 區段:無 `/map`、無 `/amcl_pose`、無 `/scan`、**Nav2 未跑**;`/cmd_vel` **有 controller 訂閱** ✅
 - **ROS graph**:`/cmd_vel`、`/ackermann_cmd`、`/depth`(**無 `/rgb`、`/odom`、`/scan`**)
@@ -48,7 +48,8 @@
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.9.0`(版本來自 package metadata) |
+| ✅ | `JenAI version` | `JenAI 0.14.0`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI doctor` | 分區檢查表(environment/config/ros2/nav/provider/locations/webui),每項 pass/warn/fail + 修法指引;**無後端時誠實 warn/fail,不假裝** |
 | ✅ | `JenAI doctor --json` | 機器可讀 JSON:`{overall, items[{section, check_name, status, message, fix_suggestion}], checked_at}` |
 | ✅ | `JenAI config` | 設定 JSON(active_provider、profiles、vehicle、twin…) |
