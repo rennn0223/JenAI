@@ -102,6 +102,7 @@ JenAI 啟動流程：
 | `/loc list` | 列出所有地點 | `/loc list` |
 | `/loc show <名>` | 顯示地點詳細資料 | `/loc show 應科大樓` |
 | `/loc add here <名>` | **抓機器人當下位置**存成地點（讀 /amcl_pose，退回 /odom） | `/loc add here 走廊測試點` |
+| `/loc add gps <名> <緯> <經>` | **GPS 經緯度**存成地點：經 `[map_datum]`（map 原點經緯度 + yaw_deg）換算成 map 座標；未設基準點時誠實拒絕並給設定教學 | `/loc add gps 機械系館 24.1201 120.6773` |
 
 ### Skills（任務技能）
 

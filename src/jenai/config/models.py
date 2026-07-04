@@ -48,6 +48,25 @@ class VehicleProfile(BaseModel):
     max_angular: float = 2.0  # rad/s
 
 
+class MapDatum(BaseModel):
+    """GPS anchor of the Nav2 map frame.
+
+    lat/lon of the map origin plus the bearing of map +x (degrees CCW from
+    east), so campus lat/lon can be converted into map-frame metres for
+    `/loc add gps`. Unset (None) means GPS locations are honestly refused.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float | None = None
+    lon: float | None = None
+    yaw_deg: float = 0.0
+
+    @property
+    def configured(self) -> bool:
+        return self.lat is not None and self.lon is not None
+
+
 class ForbiddenZone(BaseModel):
     """Axis-aligned rectangle in the map frame the twin trajectory must not enter."""
 
@@ -95,6 +114,7 @@ class AppConfig(BaseModel):
     route_adapter: str = "stub"
     vehicle: VehicleProfile = Field(default_factory=VehicleProfile)
     twin: TwinProfile = Field(default_factory=TwinProfile)
+    map_datum: MapDatum = Field(default_factory=MapDatum)
     created_by_setup: bool = False
 
     def is_complete(self) -> bool:

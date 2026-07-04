@@ -28,7 +28,13 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="Route",
-        commands=["/route <text>", "/loc list", "/loc show <name>", "/loc add here <name>"],
+        commands=[
+            "/route <text>",
+            "/loc list",
+            "/loc show <name>",
+            "/loc add here <name>",
+            "/loc add gps <name> <lat> <lon>",
+        ],
     ),
     CommandGroup(
         name="Skills",
