@@ -1,7 +1,8 @@
 # webui — 手機可用的監控/批准儀表板
 
-`JenAI web` 起 http.server(預設 127.0.0.1:8760):Console(chat+slash+確認
-按鈕)、Status 卡(5s 更新)、SVG 地圖(pose+地點,2s 更新)、紅色 **STOP** 鈕。
+`JenAI web` 起 http.server(預設 127.0.0.1:8760),**多頁式**:Console(chat+
+slash+確認按鈕+SVG 地圖)、Camera(`/api/frame` 每秒一幀 + odom 小格,只在該頁
+輪詢)、Status(5s 更新)、API(端點目錄);紅色 **STOP** 鈕全頁常駐。
 
 | 檔案 | 職責 |
 |---|---|

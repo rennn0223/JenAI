@@ -80,3 +80,31 @@ def test_extract_llm_bad_output_returns_none(monkeypatch) -> None:
 
     monkeypatch.setattr(drive_core, "ask_json", fake_json)
     assert asyncio.run(extract_drive_command(_config(), "do a barrel roll")) is None
+
+
+def test_drive_parses_chinese_numeral_durations() -> None:
+    # Regression: 「前進十秒」 drove 2 s — the matched direction skipped the LLM
+    # and the duration regex only read Arabic digits.
+    from jenai.tools.drive_core import _extract_via_regex
+
+    cases = {
+        "前進十秒": 10.0,
+        "前進10秒": 10.0,
+        "後退兩秒": 2.0,
+        "左轉二十五秒": 25.0,
+        "前進三十秒": 30.0,
+        "前進一分鐘": 30.0,  # 60 s clamped to the safety ceiling
+        "forward 5 seconds": 5.0,
+    }
+    for text, expected in cases.items():
+        intent = _extract_via_regex(text)
+        assert intent is not None, text
+        assert intent.duration_s == expected, f"{text}: {intent.duration_s}"
+
+
+def test_zh_normalizer_leaves_non_numerals_alone() -> None:
+    from jenai.tools.drive_core import _normalize_zh_numbers
+
+    assert _normalize_zh_numbers("前進十五秒") == "前進15秒"
+    assert _normalize_zh_numbers("go forward") == "go forward"
+    assert _normalize_zh_numbers("停") == "停"
