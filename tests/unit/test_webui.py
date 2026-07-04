@@ -368,3 +368,71 @@ def test_webui_wrong_query_token_gets_no_cookie(tmp_path: Path) -> None:
         for t in threads:
             t.join(timeout=5)
         server.server_close()
+
+
+# --- camera frame endpoint + multi-page dashboard ---------------------------
+
+
+def test_api_frame_honestly_503_without_bridge(tmp_path: Path) -> None:
+    server = make_server(_config(), tmp_path / "config.toml", port=0)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    try:
+        host, port = server.server_address
+        status, headers, body = _get(f"http://{host}:{port}/api/frame")
+        assert status == 503
+        assert json.loads(body)["kind"] == "error"
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_frame_serves_jpeg_from_bridge(tmp_path: Path) -> None:
+    class StubCache:
+        def ensure_started(self) -> None:
+            pass
+
+        def submit(self, coro_factory, timeout: float = 10.0):
+            frame = tmp_path / "frame.jpg"
+            frame.write_bytes(b"\xff\xd8fakejpeg\xff\xd9")
+            return frame
+
+    server = make_server(_config(), tmp_path / "config.toml", port=0)
+    server.RequestHandlerClass.pose_cache = StubCache()
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    try:
+        host, port = server.server_address
+        status, headers, body = _get(f"http://{host}:{port}/api/frame")
+        assert status == 200
+        assert headers["Content-Type"] == "image/jpeg"
+        assert body.startswith(b"\xff\xd8")
+        assert not (tmp_path / "frame.jpg").exists()  # one-shot temp is cleaned
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_api_frame_requires_token(tmp_path: Path) -> None:
+    server, threads, base = _tokened_server(tmp_path, 1)
+    try:
+        assert _get(f"{base}/api/frame")[0] == 401  # frames are not public
+    finally:
+        for t in threads:
+            t.join(timeout=5)
+        server.server_close()
+
+
+def test_dashboard_has_camera_and_api_pages(tmp_path: Path) -> None:
+    from jenai.webui.render import render_dashboard_html
+
+    html = render_dashboard_html(build_status_payload(_config(), tmp_path / "config.toml"))
+    for needle in (
+        'data-view="camera"',
+        'data-view="api"',
+        'id="rgb"',
+        'id="odom-mini"',
+        "api/frame",
+        "/api/stop",
+    ):
+        assert needle in html

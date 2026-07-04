@@ -290,7 +290,25 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
 #cmdsend:disabled{opacity:.5; cursor:default}
 
 /* Segmented Console/Status tabs — only shown on mobile */
-#tabs{display:none; gap:6px; max-width:960px; margin:0 auto 10px; padding:0 32px}
+#tabs{display:flex; gap:6px; max-width:960px; margin:0 auto 10px; padding:0 32px}
+/* Views are exclusive on every screen size — the dashboard is multi-page. */
+body:not(.view-status) main{display:none}
+body:not(.view-console) #console{display:none}
+body:not(.view-console) #mapcard{display:none}
+body:not(.view-camera) #cameracard{display:none}
+body:not(.view-api) #apicard{display:none}
+#camwrap{display:grid; grid-template-columns:minmax(0,3fr) minmax(150px,1fr); gap:14px; align-items:start}
+#rgb{width:100%; border-radius:10px; background:#0d0c0a; min-height:180px; object-fit:contain}
+#odom-mini{font-size:13px; border:1px solid var(--line, #e3ded4); border-radius:10px; padding:10px 12px}
+#odom-mini h3{margin:0 0 6px; font-size:12px; letter-spacing:.4px; text-transform:uppercase; opacity:.6}
+.odom-row{display:flex; justify-content:space-between; padding:2px 0}
+.odom-row b{font-variant-numeric:tabular-nums}
+.api-row{display:flex; gap:10px; align-items:baseline; padding:7px 10px; border:1px solid var(--line, #e3ded4); border-radius:8px; margin-bottom:6px}
+.api-m{font-weight:700; font-size:11px; letter-spacing:.5px; padding:2px 8px; border-radius:5px; color:#fff; min-width:44px; text-align:center}
+.m-get{background:#3f9d63}.m-post{background:#3d86c6}
+.api-p{font-family:ui-monospace,monospace; font-size:13px}
+.api-d{font-size:12px; opacity:.7; margin-left:auto; text-align:right}
+@media(max-width:640px){ #camwrap{grid-template-columns:1fr} .api-d{display:none} }
 .tab{flex:1; font:inherit; font-weight:600; font-size:14px; cursor:pointer; padding:9px;
   border-radius:11px; border:1px solid var(--line); background:var(--card); color:var(--muted)}
 .tab.active{background:var(--accent); color:#fff; border-color:var(--accent)}
@@ -320,8 +338,6 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
   .btn-approve,.btn-cancel{padding:11px 18px}
 
   /* One view at a time on a phone */
-  body.view-console main{display:none}
-  body.view-status #console{display:none}
   body.view-status #cmdform{display:none}
 }
 </style>
@@ -340,7 +356,9 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
 </header>
 <nav id="tabs">
   <button class="tab active" data-view="console">Console</button>
+  <button class="tab" data-view="camera">Camera</button>
   <button class="tab" data-view="status">Status</button>
+  <button class="tab" data-view="api">API</button>
 </nav>
 <section id="console" class="card">
   <div class="card-head"><h2>Console</h2><span class="dim">type a command, or ask in plain language</span></div>
@@ -353,6 +371,32 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
 <section id="mapcard" class="card">
   <div class="card-head"><h2>Map</h2><span class="dim" id="map-meta">waiting for robot pose…</span></div>
   <svg id="map" viewBox="0 0 100 60" preserveAspectRatio="xMidYMid meet"></svg>
+</section>
+<section id="cameracard" class="card">
+  <div class="card-head"><h2>Camera</h2><span class="dim" id="cam-meta">switch here to start streaming…</span></div>
+  <div id="camwrap">
+    <img id="rgb" alt="camera frame">
+    <div id="odom-mini">
+      <h3>Odometry</h3>
+      <div class="odom-row"><span>x</span><b id="od-x">–</b></div>
+      <div class="odom-row"><span>y</span><b id="od-y">–</b></div>
+      <div class="odom-row"><span>yaw</span><b id="od-yaw">–</b></div>
+      <div class="odom-row"><span>frame</span><b id="od-frame">–</b></div>
+      <div class="odom-row"><span>source</span><b id="od-src">–</b></div>
+      <div class="odom-row"><span>updated</span><b id="od-ts">–</b></div>
+    </div>
+  </div>
+</section>
+<section id="apicard" class="card">
+  <div class="card-head"><h2>API</h2><span class="dim">HTTP endpoints served by <span class="mono">jenai web</span> — token via Bearer / cookie / ?token=</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/</span><span class="api-d">此儀表板(?token= 首次授權)</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/status</span><span class="api-d">provider/doctor/ROS 狀態 JSON</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/map</span><span class="api-d">地點 + 即時位姿 JSON</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/frame?topic=…</span><span class="api-d">相機單幀 JPEG(預設 vehicle.camera_topic)</span></div>
+  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/command　{"text": "…"}</span><span class="api-d">跑指令;動作類回 confirm_id</span></div>
+  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/confirm　{"confirm_id": "…"}</span><span class="api-d">批准一次性動作(server 端持有)</span></div>
+  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/stop</span><span class="api-d">緊急停止 — 唯一免 token</span></div>
+  <div class="dim" style="margin-top:8px">程式化整合建議走 <span class="mono">JenAI mcp</span>(MCP 協定,預設唯讀);完整規格見 docs/THREAT_MODEL.md 與 docs/COMMANDS.md。</div>
 </section>
 <main>__MAIN__</main>
 <footer>Actions that move the robot always ask you to confirm first · served by <span class="mono">jenai web</span> (localhost).</footer>
@@ -472,12 +516,44 @@ async function refresh(){
 }
 setInterval(refresh, 5000);
 
-// Mobile Console/Status tabs
+// Camera page: poll only while visible — every tick costs a bridge frame grab.
+const rgb = document.getElementById('rgb');
+const camMeta = document.getElementById('cam-meta');
+let camTimer = null, camBusy = false;
+rgb.addEventListener('error', () => { camMeta.textContent = 'camera unavailable — is the RGB topic publishing? (vehicle.camera_topic)'; });
+rgb.addEventListener('load', () => { camMeta.textContent = 'live · ~1 fps snapshot stream'; });
+async function camTick(){
+  if(camBusy) return;               // a slow frame must not stack requests
+  camBusy = true;
+  try{
+    rgb.src = 'api/frame?ts=' + Date.now();
+    const r = await fetch('api/map', {cache:'no-store'});
+    if(r.ok){
+      const d = await r.json();
+      if(d.pose){
+        document.getElementById('od-x').textContent = d.pose.x.toFixed(2) + ' m';
+        document.getElementById('od-y').textContent = d.pose.y.toFixed(2) + ' m';
+        document.getElementById('od-yaw').textContent = d.pose.yaw.toFixed(2) + ' rad';
+        document.getElementById('od-frame').textContent = d.pose.frame_id;
+        document.getElementById('od-src').textContent = d.pose.source;
+        document.getElementById('od-ts').textContent = new Date().toLocaleTimeString();
+      } else {
+        document.getElementById('od-src').textContent = d.ros ? 'no pose yet' : 'no ROS';
+      }
+    }
+  }catch(e){/* keep last values */}
+  finally{ camBusy = false; }
+}
+function camStart(){ if(!camTimer){ camTick(); camTimer = setInterval(camTick, 1000); } }
+function camStop(){ if(camTimer){ clearInterval(camTimer); camTimer = null; } }
+
+// Console/Camera/Status/API tabs (multi-page on every screen size)
 document.querySelectorAll('#tabs .tab').forEach(t => {
   t.addEventListener('click', () => {
     document.querySelectorAll('#tabs .tab').forEach(x => x.classList.remove('active'));
     t.classList.add('active');
     document.body.className = 'view-' + t.dataset.view;
+    if(t.dataset.view === 'camera') camStart(); else camStop();
     if(t.dataset.view === 'console') input.focus();
   });
 });

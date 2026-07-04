@@ -347,12 +347,47 @@ class _Handler(BaseHTTPRequestHandler):
                 status=401,
             )
 
+    def _send_bytes(self, data: bytes, content_type: str, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_frame(self) -> None:
+        """One camera frame as JPEG for the dashboard's ~1 fps snapshot stream."""
+        query = parse_qs(urlsplit(self.path).query)
+        topic = (query.get("topic") or [None])[0] or self.config.vehicle.camera_topic
+        frame_path = None
+        if self.pose_cache is not None:
+            self.pose_cache.ensure_started()
+            # Rides the PoseCache's live bridge/loop — no per-request spawn.
+            frame_path = self.pose_cache.submit(
+                lambda client: client.capture_frame(topic, timeout=5.0), timeout=8.0
+            )
+        if frame_path is None:
+            self._send(
+                json.dumps({"kind": "error", "html": f"<p>No frame from {topic}.</p>"}),
+                "application/json; charset=utf-8",
+                status=503,
+            )
+            return
+        try:
+            data = Path(frame_path).read_bytes()
+        finally:
+            with contextlib.suppress(OSError):
+                Path(frame_path).unlink()  # each frame is a one-shot temp file
+        self._send_bytes(data, "image/jpeg")
+
     def do_GET(self) -> None:  # noqa: N802 (http.server naming)
         if not self._authorized():
             self._reject()
             return
         path = self._route()
-        if path == "/api/status":
+        if path == "/api/frame":
+            self._serve_frame()
+        elif path == "/api/status":
             self._send(
                 json.dumps(self._status(), ensure_ascii=False),
                 "application/json; charset=utf-8",

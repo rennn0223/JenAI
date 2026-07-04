@@ -39,10 +39,49 @@ class DriveIntent:
         }
 
 
+_ZH_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "兩": 2, "两": 2,
+    "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+
+
+def _zh_numeral_to_int(token: str) -> int | None:
+    """十-based numerals up to 99 (十/十五/三十/二十五) plus plain digit runs."""
+    if "十" in token:
+        tens, _, units = token.partition("十")
+        if tens and tens not in _ZH_DIGITS:
+            return None
+        if units and units not in _ZH_DIGITS:
+            return None
+        return (_ZH_DIGITS[tens] if tens else 1) * 10 + (_ZH_DIGITS[units] if units else 0)
+    value = 0
+    for ch in token:
+        if ch not in _ZH_DIGITS:
+            return None
+        value = value * 10 + _ZH_DIGITS[ch]
+    return value
+
+
+def _normalize_zh_numbers(text: str) -> str:
+    """「前進十秒」→「前進10秒」— the duration regex only reads Arabic digits,
+    and a matched direction never falls back to the LLM, so without this a
+    Chinese numeral silently became the 2 s default."""
+
+    def _sub(match: re.Match) -> str:
+        value = _zh_numeral_to_int(match.group(0))
+        return match.group(0) if value is None else str(value)
+
+    return re.sub(r"[零〇一二兩两三四五六七八九十]+", _sub, text)
+
+
 def _parse_duration(text: str) -> float:
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:秒|s\b|sec|secs|seconds?|second)", text.lower())
+    text = _normalize_zh_numbers(text).lower()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:秒|s\b|sec|secs|seconds?|second)", text)
     if match:
         return min(max(float(match.group(1)), 0.0), _MAX_DURATION)
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:分鐘|分钟|min(?:ute)?s?\b)", text)
+    if match:  # minutes still clamp to the 30 s safety ceiling
+        return min(max(float(match.group(1)) * 60.0, 0.0), _MAX_DURATION)
     return _DURATION
 
 
