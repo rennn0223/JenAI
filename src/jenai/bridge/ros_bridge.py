@@ -15,6 +15,7 @@ Ops: ping, pose, nav_send, drive_to_pose, nav_cancel, halt, capture_frame, watch
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -228,7 +229,7 @@ class BridgeNode(Node):
         self,
         gx: float,
         gy: float,
-        gyaw: float,
+        gyaw: float,  # goal heading — position-only seeker ignores it (see docstring)
         tag: str,
         cmd_vel_topic: str,
         stamped: bool,
@@ -242,29 +243,32 @@ class BridgeNode(Node):
         from nav_msgs.msg import Odometry
 
         latest: dict = {}
-
-        def _odom_cb(msg) -> None:
-            p = msg.pose.pose
-            latest["x"] = p.position.x
-            latest["y"] = p.position.y
-            latest["yaw"] = _yaw_from_quaternion(p.orientation)
-
-        sub = self.create_subscription(
-            Odometry, "/odom", _odom_cb, QoSPresetProfiles.SENSOR_DATA.value
-        )
-        with self._halt_lock:  # serialize rclpy entity creation vs halt()
-            pub = self.ensure_halt_publisher(cmd_vel_topic, stamped)
-        msg_type = TwistStamped if stamped else Twist
-        started = time.monotonic()
-        last_fb = 0.0
-        status = "failed"
+        sub = None
+        status = "failed"  # "timed_out" on the deadline path (not Nav2 "aborted")
+        # Setup lives INSIDE the try so any rclpy failure still resets
+        # _drive_active and emits nav_result — otherwise navigate_live hangs to
+        # its timeout and every later drive rejects with "already running".
         try:
+            def _odom_cb(msg) -> None:
+                p = msg.pose.pose
+                latest["x"] = p.position.x
+                latest["y"] = p.position.y
+                latest["yaw"] = _yaw_from_quaternion(p.orientation)
+
+            sub = self.create_subscription(
+                Odometry, "/odom", _odom_cb, QoSPresetProfiles.SENSOR_DATA.value
+            )
+            with self._halt_lock:  # serialize rclpy entity creation vs halt()
+                pub = self.ensure_halt_publisher(cmd_vel_topic, stamped)
+            msg_type = TwistStamped if stamped else Twist
+            started = time.monotonic()
+            last_fb = 0.0
             while True:
                 if self._drive_cancel.is_set():
                     status = "canceled"
                     break
                 if time.monotonic() - started > timeout:
-                    status = "aborted"
+                    status = "timed_out"
                     break
                 if "x" not in latest:
                     time.sleep(0.05)  # wait for the first /odom sample
@@ -274,9 +278,9 @@ class BridgeNode(Node):
                 if dist <= tolerance:
                     status = "succeeded"
                     break
+                bearing = math.atan2(dy, dx)
                 heading_err = math.atan2(
-                    math.sin(math.atan2(dy, dx) - latest["yaw"]),
-                    math.cos(math.atan2(dy, dx) - latest["yaw"]),
+                    math.sin(bearing - latest["yaw"]), math.cos(bearing - latest["yaw"])
                 )
                 angular = max(-max_angular, min(max_angular, 1.5 * heading_err))
                 # Gate forward speed by heading alignment (slow while turning
@@ -305,13 +309,23 @@ class BridgeNode(Node):
                     )
                 time.sleep(0.05)  # ~20 Hz control
         finally:
-            stop = msg_type()
-            if stamped:
-                stop.header.stamp = self.get_clock().now().to_msg()
-            for _ in range(3):  # pulse zero so the robot actually stops
-                pub.publish(stop)
-                time.sleep(0.02)
-            self.destroy_subscription(sub)
+            # Guard every step: setup may have failed before pub/sub existed,
+            # but _drive_active MUST reset and a result MUST be emitted so the
+            # client never hangs waiting on a drive that already ended.
+            try:
+                from geometry_msgs.msg import Twist, TwistStamped
+
+                stop = (TwistStamped if stamped else Twist)()
+                if stamped:
+                    stop.header.stamp = self.get_clock().now().to_msg()
+                for _ in range(3):  # pulse zero so the robot actually stops
+                    self.ensure_halt_publisher(cmd_vel_topic, stamped).publish(stop)
+                    time.sleep(0.02)
+            except Exception:
+                pass
+            if sub is not None:
+                with contextlib.suppress(Exception):
+                    self.destroy_subscription(sub)
             self._drive_active = False
             _emit({"event": "nav_result", "tag": tag, "status": status})
 
@@ -335,9 +349,11 @@ class BridgeNode(Node):
         if handle is not None:
             handle.cancel_goal_async()
             canceled = True
-        # Only pay the Nav2 cancel-all service wait if we ever used Nav2 —
-        # a pure odom-driver session has no action server to ask.
-        if self._nav_client is not None and self._cancel_all_nav_goals():
+        # ALWAYS ask the server to cancel-all: a goal owned by a DIFFERENT
+        # process's bridge is invisible to _nav_client, so gating this on our
+        # own client would silently drop cross-process emergency-stop coverage.
+        # (Bounded 2s wait; returns fast when no Nav2 server is present.)
+        if self._cancel_all_nav_goals():
             canceled = True
         if not canceled:
             return {"canceled": False, "detail": "no active navigation goal"}

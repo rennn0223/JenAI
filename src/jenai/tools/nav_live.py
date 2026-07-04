@@ -103,6 +103,7 @@ async def navigate_live(
             "canceled": "Navigation canceled.",
             "aborted": "Nav2 aborted the goal (obstacle/planning failure?).",
             "rejected": "Nav2 rejected the goal.",
+            "timed_out": "Navigation timed out before reaching the goal.",
         }.get(status, f"Navigation ended with status '{status}'.")
         execution = "succeeded" if status == "succeeded" else "failed"
     except BridgeError as exc:
