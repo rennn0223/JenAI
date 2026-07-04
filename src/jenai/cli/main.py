@@ -313,6 +313,38 @@ def version_command() -> None:
     console.print(f"JenAI {__version__}")
 
 
+@app.command("help")
+def help_command() -> None:
+    """One-page overview: every CLI command plus the common one-shot recipes."""
+    table = Table(title=f"JenAI {__version__} — CLI 命令", show_lines=False, padding=(0, 1))
+    table.add_column("命令", style="bold")
+    table.add_column("做什麼")
+    for cmd, desc in (
+        ("JenAI", "進 TUI 主介面(首次執行會跑 setup wizard)"),
+        ("JenAI help", "本頁"),
+        ("JenAI doctor", "環境健檢:ROS2/nav/provider/locations(--json 機器可讀)"),
+        ("JenAI web", "手機可用的 WebUI(狀態/地圖/批准/STOP);印出帶 token 的網址"),
+        ("JenAI mcp", "把機器人工具開給 Claude 等 MCP client(預設唯讀,--allow-actions 才能動)"),
+        ("JenAI daemon", "常駐規則引擎:電量低回充、急停規則(--rules rules.toml)"),
+        ("JenAI route \"<話>\"", "一句話導航(需 Nav2;互動確認後送出)"),
+        ("JenAI loc list / show <名>", "查導航地點"),
+        ("JenAI config / providers / models", "看設定、供應商、模型綁定"),
+        ("JenAI version", "版本"),
+    ):
+        table.add_row(cmd, desc)
+    console.print(table)
+    console.print("\n[bold]一鍵常用:[/bold]")
+    for recipe, note in (
+        ("JenAI doctor", "先確認環境"),
+        ("JenAI → 輸入 /help", "TUI 內看全部 slash 指令"),
+        ("JenAI → /route 去充電站", "自然語言導航(批准後執行)"),
+        ("JenAI → /patrol A, B x2 photo", "循環巡邏+每點拍照觀察"),
+        ("JenAI → /stop 或 WebUI 紅色 STOP", "緊急停止,永遠免批准"),
+    ):
+        console.print(f"  [bold cyan]{recipe}[/bold cyan]  [dim]# {note}[/dim]", highlight=False)
+    console.print("\n[dim]完整規格:docs/COMMANDS.md;可測項目與期望輸出:docs/TEST.md[/dim]")
+
+
 @loc_app.command("list")
 def loc_list(config: ConfigOption = None) -> None:
     config_path = config or default_config_path()
