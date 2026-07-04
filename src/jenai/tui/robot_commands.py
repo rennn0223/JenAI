@@ -432,6 +432,41 @@ class RobotCommandsMixin:
         )
         await self._request_direct_approval(ctx, tool_call, pending, approval)
 
+    async def _show_report(self, arg: str = "") -> None:
+        from jenai.state.reports import (
+            list_patrol_logs,
+            load_patrol_log,
+            render_patrol_markdown,
+            summarize_patrol,
+        )
+
+        logs = list_patrol_logs(self.config_path)
+        if not logs:
+            await self._mount_event(
+                TimelineItem("warn", "No patrol logs yet — finish a /patrol first.")
+            )
+            return
+        if arg.strip() == "list":
+            rows = [f"{i}. [#9c9689]{p.name}[/]" for i, p in enumerate(logs[:10], start=1)]
+            await self._mount_event(OutputPanel("Patrol logs (newest first)", "\n".join(rows)))
+            return
+        log = load_patrol_log(logs[0])
+        if log is None:
+            await self._mount_event(TimelineItem("error", f"Log unreadable: {logs[0]}"))
+            return
+        await self._mount_event(
+            OutputPanel(f"Patrol report · {logs[0].name}", escape(render_patrol_markdown(log)))
+        )
+        digest = await summarize_patrol(self.config, log)
+        if digest:
+            await self._mount_event(TimelineItem("assistant", escape(digest)))
+        else:
+            # Honest: the deterministic body above IS the report; the LLM
+            # paragraph is a bonus, never a dependency.
+            await self._mount_event(
+                TimelineItem("warn", "LLM digest unavailable — deterministic report shown above.")
+            )
+
     async def _show_loc_list(self, _: str = "") -> None:
         locations = self._load_locations()
         if not locations:

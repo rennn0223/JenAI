@@ -129,6 +129,7 @@
 | 🔶 | `/mission 廚房, drive 左轉, 大廳` | Nav2+地點後測 | 批准一次跑整趟,逐步回報;drive 段可混排 |
 | 🔶 | `/patrol A, B x3 photo` | Nav2+地點+RGB 相機後測 | 點位×圈數;photo 時每到達點抓幀→VLM 觀察即時顯示 👁;一點失敗記錄後續行,**統計誠實 n/m**;Esc/`/stop` 可搶佔 |
 | 🔶 | `/dock` | 建 `tags=["dock"]` 地點後測 | 導航到 dock 點;無 dock 點時**誠實提示建法**(`/loc add here Dock`) |
+| ✅ | `/report` / `/report list` | 沒 log 時直接輸入;有 log 後再測 | 無 log → `No patrol logs yet`;有 log → 日報(時間/路線/n:m/逐點 ✓✗/👁 觀察)+ LLM 摘要段;provider 離線 → 誠實標示只有確定性內容 |
 
 ### Vision / Perception
 

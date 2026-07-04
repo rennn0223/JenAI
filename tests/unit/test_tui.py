@@ -1282,3 +1282,39 @@ def test_tui_perception_start_and_stop(monkeypatch, tmp_path) -> None:
             assert any("Perception loop stopped" in b for b in bodies)
 
     asyncio.run(run())
+
+
+def test_tui_report_command_no_logs_then_latest(monkeypatch, tmp_path: Path) -> None:
+    """/report warns when no patrol ran yet; with a log it renders the
+    deterministic body and degrades honestly when the LLM digest fails."""
+    from datetime import datetime
+
+    from jenai.state.reports import save_patrol_log
+    from jenai.tools.skills import PatrolReport, PatrolSpec, PatrolStepResult
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        async with app.run_test():
+            await app.handle_user_text("/report")
+            texts = [str(getattr(c, "body", "")) for c in app.query_one("#events").children]
+            assert any("No patrol logs yet" in t for t in texts)
+
+            report = PatrolReport(spec=PatrolSpec(points=["A"]))
+            report.results = [PatrolStepResult(1, "A", "succeeded", "reached")]
+            save_patrol_log(report, app.config_path, now=datetime(2026, 7, 4, 12, 0))
+
+            async def no_digest(config, log):
+                return None
+
+            import jenai.tui.robot_commands  # noqa: F401 — target module below
+
+            monkeypatch.setattr("jenai.state.reports.summarize_patrol", no_digest)
+            await app.handle_user_text("/report")
+            texts = [
+                str(getattr(c, "body", "")) + str(getattr(c, "renderable", ""))
+                for c in app.query_one("#events").children
+            ]
+            assert any("1/1 waypoints" in t for t in texts)
+            assert any("LLM digest unavailable" in t for t in texts)
+
+    asyncio.run(run())

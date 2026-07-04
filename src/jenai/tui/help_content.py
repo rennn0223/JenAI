@@ -36,6 +36,7 @@ _COMMAND_GROUPS = [
             "/mission <place>, <place>, …",
             "/patrol <place>, <place> [xN] [photo]",
             "/dock",
+            "/report [list]",
         ],
     ),
     CommandGroup(
