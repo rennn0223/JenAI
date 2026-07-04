@@ -436,3 +436,35 @@ def test_dashboard_has_camera_and_api_pages(tmp_path: Path) -> None:
         "/api/stop",
     ):
         assert needle in html
+
+
+def test_api_topics_endpoint_and_camera_picker(tmp_path: Path, monkeypatch) -> None:
+    import jenai.webui.server as srv
+
+    monkeypatch.setattr(
+        srv,
+        "_ros_snapshot",
+        lambda: {
+            "available": True,
+            "topics": [{"name": "/rgb/image", "kind": "sensor"}],
+            "count": 1,
+            "error": None,
+        },
+    )
+    server = make_server(_config(), tmp_path / "config.toml", port=0)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    try:
+        host, port = server.server_address
+        status, _, body = _get(f"http://{host}:{port}/api/topics")
+        assert status == 200
+        assert json.loads(body)["topics"][0]["name"] == "/rgb/image"
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+
+    from jenai.webui.render import render_dashboard_html
+
+    html = render_dashboard_html(build_status_payload(_config(), tmp_path / "config.toml"))
+    for needle in ('id="cam-topic"', "api/topics", 'id="api-topics"'):
+        assert needle in html

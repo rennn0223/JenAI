@@ -387,6 +387,13 @@ class _Handler(BaseHTTPRequestHandler):
         path = self._route()
         if path == "/api/frame":
             self._serve_frame()
+        elif path == "/api/topics":
+            # Live graph snapshot — feeds the Camera page's topic picker and
+            # the API page's reference list.
+            self._send(
+                json.dumps(_ros_snapshot(), ensure_ascii=False),
+                "application/json; charset=utf-8",
+            )
         elif path == "/api/status":
             self._send(
                 json.dumps(self._status(), ensure_ascii=False),
