@@ -198,6 +198,7 @@ class BridgeNode(Node):
         max_angular: float = 2.0,
         tolerance: float = 0.3,
         timeout: float = 600.0,
+        avoidance: dict | None = None,
     ) -> dict:
         """Nav2-less point-to-point drive: closed loop on /odom → /cmd_vel.
 
@@ -205,8 +206,11 @@ class BridgeNode(Node):
         goal (x, y) is treated as ODOM-frame coordinates, valid when map≈odom
         (no localization offset). Emits nav_feedback/nav_result with `tag`, the
         SAME protocol as nav_send, so the client's navigate_live works unchanged.
-        Obstacle avoidance is NOT provided — this is a straight-line seeker, not
-        a substitute for Nav2 in a cluttered map.
+
+        With `avoidance` enabled, a depth camera is folded into the loop as a
+        pseudo-laserscan and the go-to-goal steering is blended with
+        follow-the-gap (steer around obstacles, return to the line once clear).
+        Reactive/local only — not a global planner substitute.
         """
         if self._drive_active:
             raise RuntimeError("a drive_to_pose is already running")
@@ -220,6 +224,7 @@ class BridgeNode(Node):
                 "max_angular": max_angular,
                 "tolerance": tolerance,
                 "timeout": timeout,
+                "avoidance": avoidance,
             },
             daemon=True,
         ).start()
@@ -238,13 +243,20 @@ class BridgeNode(Node):
         max_angular: float,
         tolerance: float,
         timeout: float,
+        avoidance: dict | None = None,
     ) -> None:
+        # Sibling module (stdlib-only): the bridge runs as a script so its dir is
+        # on sys.path; the venv tests import it as jenai.bridge._avoidance.
+        from _avoidance import follow_the_gap
         from geometry_msgs.msg import Twist, TwistStamped
         from nav_msgs.msg import Odometry
 
         latest: dict = {}
+        depth: dict = {}  # "ranges"/"angles": pseudo-laserscan from the depth cam
         sub = None
+        depth_sub = None
         status = "failed"  # "timed_out" on the deadline path (not Nav2 "aborted")
+        avoid = avoidance if (avoidance and avoidance.get("enabled")) else None
         # Setup lives INSIDE the try so any rclpy failure still resets
         # _drive_active and emits nav_result — otherwise navigate_live hangs to
         # its timeout and every later drive rejects with "already running".
@@ -258,11 +270,14 @@ class BridgeNode(Node):
             sub = self.create_subscription(
                 Odometry, "/odom", _odom_cb, QoSPresetProfiles.SENSOR_DATA.value
             )
+            if avoid is not None:
+                depth_sub = self._start_depth_scan(avoid, depth)
             with self._halt_lock:  # serialize rclpy entity creation vs halt()
                 pub = self.ensure_halt_publisher(cmd_vel_topic, stamped)
             msg_type = TwistStamped if stamped else Twist
             started = time.monotonic()
             last_fb = 0.0
+            avoid_ticks = 0
             while True:
                 if self._drive_cancel.is_set():
                     status = "canceled"
@@ -282,12 +297,27 @@ class BridgeNode(Node):
                 heading_err = math.atan2(
                     math.sin(bearing - latest["yaw"]), math.cos(bearing - latest["yaw"])
                 )
-                angular = max(-max_angular, min(max_angular, 1.5 * heading_err))
-                # Gate forward speed by heading alignment (slow while turning
+                # Reactive avoidance blends in here: steer toward the goal, but
+                # if the depth cam sees something close, steer around it instead
+                # (goal attraction pulls back to the line once it clears).
+                steer, avoid_scale, blocked = heading_err, 1.0, False
+                if avoid is not None and depth.get("ranges"):
+                    steer, avoid_scale, blocked = follow_the_gap(
+                        heading_err,
+                        depth["ranges"],
+                        depth["angles"],
+                        stop_distance=avoid["stop_distance"],
+                        slow_distance=avoid["slow_distance"],
+                        hfov_deg=avoid["hfov_deg"],
+                    )
+                angular = max(-max_angular, min(max_angular, 1.5 * steer))
+                # Gate forward speed by steering alignment (slow while turning
                 # onto the bearing), but keep a crawl floor: an Ackermann can
                 # only steer while rolling, so it must never fully stop to turn.
-                align = max(0.2, math.cos(heading_err))
-                forward = align * min(max_linear, 0.8 * dist + 0.2)
+                align = max(0.2, math.cos(steer))
+                forward = align * min(max_linear, 0.8 * dist + 0.2) * avoid_scale
+                if blocked and avoid_scale == 0.0:
+                    forward = 0.15 * max_linear  # crawl so it can steer clear
                 msg = msg_type()
                 twist = msg.twist if stamped else msg
                 if stamped:
@@ -295,6 +325,8 @@ class BridgeNode(Node):
                 twist.linear.x = float(forward)
                 twist.angular.z = float(angular)
                 pub.publish(msg)
+                if blocked:
+                    avoid_ticks += 1
                 now = time.monotonic()
                 if now - last_fb >= 0.5:
                     last_fb = now
@@ -303,7 +335,8 @@ class BridgeNode(Node):
                             "event": "nav_feedback",
                             "tag": tag,
                             "distance_remaining": round(dist, 2),
-                            "recoveries": 0,
+                            "recoveries": avoid_ticks,  # ticks spent avoiding
+                            "avoiding": blocked,
                             "elapsed": round(now - started, 1),
                         }
                     )
@@ -323,11 +356,49 @@ class BridgeNode(Node):
                     time.sleep(0.02)
             except Exception:
                 pass
-            if sub is not None:
-                with contextlib.suppress(Exception):
-                    self.destroy_subscription(sub)
+            for s in (sub, depth_sub):
+                if s is not None:
+                    with contextlib.suppress(Exception):
+                        self.destroy_subscription(s)
             self._drive_active = False
             _emit({"event": "nav_result", "tag": tag, "status": status})
+
+    def _start_depth_scan(self, avoid: dict, out: dict):
+        """Subscribe to the depth camera and keep `out` updated with a
+        pseudo-laserscan: nearest range per angular sector across the FOV.
+
+        The depth image (32FC1, metres) is reduced to one range per column
+        (nearest valid pixel in a central horizontal band), then grouped into
+        `sectors` bins mapped to angles (image-left = robot-left = +yaw)."""
+        import numpy as np
+        from sensor_msgs.msg import Image
+
+        n = int(avoid["sectors"])
+        hfov = math.radians(avoid["hfov_deg"])
+        lo, hi = avoid["band_lo"], avoid["band_hi"]
+        min_valid = avoid["min_valid"]
+        # Sector centre angles: leftmost = +hfov/2, rightmost = -hfov/2.
+        out["angles"] = [hfov * (0.5 - (i + 0.5) / n) for i in range(n)]
+
+        def _cb(msg) -> None:
+            try:
+                h, w = msg.height, msg.width
+                buf = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(h, w)
+                band = buf[int(h * lo) : int(h * hi), :]
+                col_min = np.where(
+                    np.isfinite(band) & (band > min_valid) & (band < 100.0), band, np.inf
+                ).min(axis=0)
+                ranges = []
+                for chunk in np.array_split(col_min, n):
+                    finite = chunk[np.isfinite(chunk)]
+                    ranges.append(float(finite.min()) if finite.size else float("inf"))
+                out["ranges"] = ranges
+            except Exception:
+                pass  # a malformed frame just leaves the last scan in place
+
+        return self.create_subscription(
+            Image, avoid["depth_topic"], _cb, QoSPresetProfiles.SENSOR_DATA.value
+        )
 
     def nav_cancel(self) -> dict:
         """Cancel our own goal AND everything else on the Nav2 action server.
@@ -602,6 +673,7 @@ def _handle(node: BridgeNode, op: str, req: dict, watchdog: WatchdogState) -> di
             max_angular=float(req.get("max_angular", 2.0)),
             tolerance=float(req.get("tolerance", 0.3)),
             timeout=float(req.get("timeout", 600.0)),
+            avoidance=req.get("avoidance"),
         )
     if op == "nav_cancel":
         return node.nav_cancel()

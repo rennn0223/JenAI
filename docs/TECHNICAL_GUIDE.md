@@ -171,7 +171,8 @@ jenai daemon                                        # Ctrl-C 停止
 | `adapters/ros2_adapter.py` | 304 | `ros2` CLI subprocess 包裝(有 timeout、錯誤分類) |
 | `adapters/locations.py` | ~200 | locations.toml 載入/儲存/模糊搜尋;`load_locations_tolerant`(全介面共用的容錯載入) |
 | `adapters/route_adapter.py` | 91 | RouteAdapter 協定:`stub`(誠實拒絕)/`nav2`(CLI send_goal,bridge 不可用時的後備)/`odom`(直驅只走 live bridge,CLI 後備誠實拒絕) |
-| `bridge` `drive_to_pose` | — | **無 Nav2 的點對點直驅**:閉環 /odom → /cmd_vel(目標視為 odom 座標,map≈odom 時成立);餵同一套 nav_feedback/nav_result,navigate_live 無縫共用;**不含避障**——開闊地/ground plane 用,非 Nav2 替代品 |
+| `bridge` `drive_to_pose` | — | **無 Nav2 的點對點直驅**:閉環 /odom → /cmd_vel(目標視為 odom 座標,map≈odom 時成立);餵同一套 nav_feedback/nav_result,navigate_live 無縫共用 |
+| `bridge/_avoidance.py` + drive_loop | — | **反應式局部避障(選配)**:depth camera(32FC1)→ 每扇區最近距離的偽雷射 → **follow-the-gap**(往最接近目標方位的空隙轉、太近就停、清空後靠目標吸引回到原線)。反射層,不經 LLM;純函數 `follow_the_gap` 可單測。**局部反應,非全域規劃**——複雜地圖仍需 Nav2 |
 | `daemon/engine.py` | 165 | 規則引擎純邏輯:條件、冷卻、安全 gating;動作 notify/goto/**halt**(可單測) |
 | `daemon/runner.py` | 115 | bridge watch → queue → engine → (獲准才)navigate_live;halt 決策優先搶佔 |
 | `webui/server.py` | 352 | http.server:`/api/status` `/api/command` `/api/confirm` `/api/map` **`/api/stop`**;PoseCache(退避重試) |

@@ -48,6 +48,35 @@ class VehicleProfile(BaseModel):
     max_angular: float = 2.0  # rad/s
 
 
+class AvoidanceProfile(BaseModel):
+    """Reactive local obstacle avoidance for the Nav2-less odom driver.
+
+    A depth camera (sensor_msgs/Image, 32FC1 metres) is turned into a
+    pseudo-laserscan (nearest range per angular sector across the horizontal
+    FOV); the odom driver's go-to-goal steering is then blended with
+    follow-the-gap: steer into the clear sector nearest the goal bearing when
+    the way ahead is blocked, stop when something is right in front, and let
+    goal attraction pull the robot back onto its line once the obstacle clears.
+    This is a reflex-layer behavior — it runs in the bridge with NO LLM. Off by
+    default; irrelevant to the Nav2 adapter (Nav2 does its own avoidance).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    depth_topic: str = "/depth"
+    stop_distance: float = 0.6  # m: obstacle dead-ahead nearer than this → stop/turn away
+    slow_distance: float = 2.0  # m: start slowing + steering around within this
+    hfov_deg: float = 90.0  # camera horizontal field of view (column→angle mapping)
+    sectors: int = 15  # angular resolution of the pseudo-scan
+    band_lo: float = 0.45  # vertical band of the depth image to read (fractions of height)
+    band_hi: float = 0.60
+    min_valid: float = 0.1  # m: ignore nearer returns (sensor noise / self-view)
+
+    def as_params(self) -> dict:
+        return self.model_dump()
+
+
 class MapDatum(BaseModel):
     """GPS anchor of the Nav2 map frame.
 
@@ -115,6 +144,7 @@ class AppConfig(BaseModel):
     vehicle: VehicleProfile = Field(default_factory=VehicleProfile)
     twin: TwinProfile = Field(default_factory=TwinProfile)
     map_datum: MapDatum = Field(default_factory=MapDatum)
+    avoidance: AvoidanceProfile = Field(default_factory=AvoidanceProfile)
     created_by_setup: bool = False
 
     def is_complete(self) -> bool:

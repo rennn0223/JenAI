@@ -254,10 +254,12 @@ class RosBridgeClient:
         max_angular: float = 2.0,
         tolerance: float = 0.3,
         timeout: float = 600.0,
+        avoidance: dict | None = None,
     ) -> None:
         """Nav2-less point-to-point drive (odom→cmd_vel). Feedback/result flow
         through the SAME nav_feedback/nav_result events as nav_send, so
-        navigate_live consumes them unchanged. See ros_bridge.drive_to_pose."""
+        navigate_live consumes them unchanged. `avoidance` (when enabled) folds
+        a depth camera in for reactive follow-the-gap. See ros_bridge."""
         await self.request(
             "drive_to_pose",
             timeout=8.0,
@@ -266,6 +268,7 @@ class RosBridgeClient:
                 "cmd_vel_topic": cmd_vel_topic, "stamped": stamped,
                 "max_linear": max_linear, "max_angular": max_angular,
                 "tolerance": tolerance, "timeout": timeout,
+                "avoidance": avoidance,
             },
         )
 
