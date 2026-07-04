@@ -63,6 +63,11 @@ def main() -> None:
             emit({"event": "nav_feedback", "tag": tag, "distance_remaining": 3.2, "elapsed": 1.0})
             emit({"id": req_id, "ok": True, "result": {"sent": True}})
             emit({"event": "nav_result", "tag": tag, "status": "succeeded"})
+        elif op == "drive_to_pose":
+            tag = req.get("tag", "")
+            emit({"event": "nav_feedback", "tag": tag, "distance_remaining": 1.5, "elapsed": 0.5})
+            emit({"id": req_id, "ok": True, "result": {"sent": True}})
+            emit({"event": "nav_result", "tag": tag, "status": "succeeded"})
         else:
             emit({"id": req_id, "ok": False, "error": f"unknown op '{op}'"})
 

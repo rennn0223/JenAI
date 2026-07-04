@@ -1318,3 +1318,41 @@ def test_tui_report_command_no_logs_then_latest(monkeypatch, tmp_path: Path) -> 
             assert any("LLM digest unavailable" in t for t in texts)
 
     asyncio.run(run())
+
+
+def test_tui_route_from_a_to_b_runs_ordered_two_stop(monkeypatch, tmp_path) -> None:
+    """`/route 從 A 到 B` with both ends known → mission [goto A, goto B],
+    visiting A then B in order."""
+    from jenai.tools.mission_core import MissionReport, StepResult
+
+    ran = {}
+
+    async def fake_run_mission(config, locations, steps, *, on_step=None, navigate=None):
+        ran["steps"] = [(s.kind, s.target) for s in steps]
+        return MissionReport([StepResult("goto", s.target, "succeeded", "ok") for s in steps])
+
+    monkeypatch.setattr("jenai.tui.app.run_mission", fake_run_mission)
+
+    # Two known locations so both start and goal resolve.
+    locs = (tmp_path / "locations.toml")
+    locs.write_text(
+        '[[locations]]\nname = "應科大樓"\n[locations.pose]\nx=0.0\ny=0.0\nyaw=0.0\n\n'
+        '[[locations]]\nname = "機械系館"\n[locations.pose]\nx=88.413\ny=-184.273\nyaw=0.0\n',
+        encoding="utf-8",
+    )
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.locations_path = "locations.toml"
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/route 從應科大樓到機械系館")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert "應科大樓 → 機械系館" in cards[0].approval.title
+            await pilot.press("enter")
+            await pilot.pause()
+            if app._active_task is not None:
+                await app._active_task
+    asyncio.run(run())
+
+    assert ran["steps"] == [("goto", "應科大樓"), ("goto", "機械系館")]

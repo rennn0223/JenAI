@@ -91,3 +91,65 @@ def test_run_mission_uses_injected_navigator() -> None:
         assert all(r.status == "succeeded" for r in report.results)
 
     asyncio.run(run())
+
+
+def test_navigate_live_direct_mode_uses_drive_to_pose(fake_bridge) -> None:
+    """route_adapter='odom': navigate_live drives via drive_to_pose (odom→cmd_vel),
+    consuming the same nav_feedback/nav_result events."""
+
+    class _Vehicle:
+        cmd_vel_topic = "/cmd_vel"
+        cmd_vel_stamped = False
+        max_linear = 1.5
+        max_angular = 0.53
+
+    async def run() -> None:
+        client = RosBridgeClient()
+        progress: list = []
+        output = await navigate_live(
+            client, ACTION, on_progress=progress.append, direct=True, vehicle=_Vehicle()
+        )
+        assert output.execution_status == "succeeded"
+        assert progress and progress[0].distance_remaining == 1.5
+        await client.stop()
+
+    asyncio.run(run())
+
+
+def test_navigate_with_fallback_odom_dispatches_direct(fake_bridge, monkeypatch) -> None:
+    from jenai.config.store import build_minimal_config
+    from jenai.tools.nav_live import navigate_with_fallback
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "odom"
+
+    seen: dict = {}
+
+    async def fake_drive(**kwargs):
+        seen.update(kwargs)
+
+    async def run() -> None:
+        client = RosBridgeClient()
+        monkeypatch.setattr(client, "drive_to_pose", fake_drive)
+
+        async def get_bridge():
+            return client
+
+        # Emit the terminal result so navigate_live completes.
+        import threading
+
+        def _late_result():
+            import time
+
+            time.sleep(0.2)
+            client._dispatch_event({"event": "nav_result", "tag": "", "status": "succeeded"})
+
+        threading.Thread(target=_late_result, daemon=True).start()
+        out = await navigate_with_fallback(config, get_bridge, ACTION)
+        assert out.execution_status == "succeeded"
+        assert seen["x"] == 2.0 and seen["y"] == 1.5  # goal reached drive_to_pose
+        await client.stop()
+
+    asyncio.run(run())

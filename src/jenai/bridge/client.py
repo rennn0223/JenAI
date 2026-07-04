@@ -241,6 +241,34 @@ class RosBridgeClient:
             params={"x": x, "y": y, "yaw": yaw, "frame_id": frame_id, "tag": tag},
         )
 
+    async def drive_to_pose(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        *,
+        tag: str = "",
+        cmd_vel_topic: str = "/cmd_vel",
+        stamped: bool = False,
+        max_linear: float = 1.0,
+        max_angular: float = 2.0,
+        tolerance: float = 0.3,
+        timeout: float = 600.0,
+    ) -> None:
+        """Nav2-less point-to-point drive (odom→cmd_vel). Feedback/result flow
+        through the SAME nav_feedback/nav_result events as nav_send, so
+        navigate_live consumes them unchanged. See ros_bridge.drive_to_pose."""
+        await self.request(
+            "drive_to_pose",
+            timeout=8.0,
+            params={
+                "x": x, "y": y, "yaw": yaw, "tag": tag,
+                "cmd_vel_topic": cmd_vel_topic, "stamped": stamped,
+                "max_linear": max_linear, "max_angular": max_angular,
+                "tolerance": tolerance, "timeout": timeout,
+            },
+        )
+
     async def nav_cancel(self) -> bool:
         result = await self.request("nav_cancel", timeout=5.0)
         return bool(result.get("canceled"))

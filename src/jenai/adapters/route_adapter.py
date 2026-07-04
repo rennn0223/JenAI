@@ -91,7 +91,9 @@ def get_route_adapter(adapter_name: str) -> RouteAdapter:
     unavailable) rather than guessing at hardware.
     """
     # "stub"/"none" mean "no backend wired" — honest, non-faking null adapter.
-    if adapter_name in ("stub", "none", ""):
+    # "odom" drives only through the live bridge (navigate_with_fallback); if we
+    # reached the CLI fallback the bridge was unavailable, so honestly report it.
+    if adapter_name in ("stub", "none", "", "odom"):
         return NullRouteAdapter()
     if adapter_name == "nav2":
         return Nav2RouteAdapter()

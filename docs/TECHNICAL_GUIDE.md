@@ -64,7 +64,7 @@ jenai doctor        # 每一項應為 pass/warn,不該有意外的 fail
 ```toml
 # ~/.config/jenai/config.toml
 active_provider = "local"          # /provider 可即時切換
-route_adapter = "nav2"             # "stub"(預設,不動真機)| "nav2"(真的送 goal)
+route_adapter = "nav2"             # "stub"(預設,不動真機)| "nav2"(送 NavigateToPose goal)| "odom"(無 Nav2 的 odom→cmd_vel 直驅,開闊地/ground plane 測試用)
 locations_path = "locations.toml"  # 相對於 config.toml 所在目錄
 
 [provider_profiles."local"]
@@ -170,7 +170,8 @@ jenai daemon                                        # Ctrl-C 停止
 | `providers/chat.py` | 337 | OpenAI 相容呼叫:`ask_provider`、**`stream_provider`(串流)**、`ask_json`、`ask_vision_json`、`list_provider_models`;`_provider_errors` 共用例外映射;`parse_json_reply`(寬容解析,thinking 模型必備) |
 | `adapters/ros2_adapter.py` | 304 | `ros2` CLI subprocess 包裝(有 timeout、錯誤分類) |
 | `adapters/locations.py` | ~200 | locations.toml 載入/儲存/模糊搜尋;`load_locations_tolerant`(全介面共用的容錯載入) |
-| `adapters/route_adapter.py` | 91 | RouteAdapter 協定:`stub`(誠實拒絕)/`nav2`(CLI send_goal,bridge 不可用時的後備) |
+| `adapters/route_adapter.py` | 91 | RouteAdapter 協定:`stub`(誠實拒絕)/`nav2`(CLI send_goal,bridge 不可用時的後備)/`odom`(直驅只走 live bridge,CLI 後備誠實拒絕) |
+| `bridge` `drive_to_pose` | — | **無 Nav2 的點對點直驅**:閉環 /odom → /cmd_vel(目標視為 odom 座標,map≈odom 時成立);餵同一套 nav_feedback/nav_result,navigate_live 無縫共用;**不含避障**——開闊地/ground plane 用,非 Nav2 替代品 |
 | `daemon/engine.py` | 165 | 規則引擎純邏輯:條件、冷卻、安全 gating;動作 notify/goto/**halt**(可單測) |
 | `daemon/runner.py` | 115 | bridge watch → queue → engine → (獲准才)navigate_live;halt 決策優先搶佔 |
 | `webui/server.py` | 352 | http.server:`/api/status` `/api/command` `/api/confirm` `/api/map` **`/api/stop`**;PoseCache(退避重試) |

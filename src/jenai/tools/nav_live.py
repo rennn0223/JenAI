@@ -23,13 +23,18 @@ async def navigate_live(
     *,
     on_progress: Callable[[NavProgress], None] | None = None,
     timeout: float = 600.0,
+    direct: bool = False,
+    vehicle=None,
 ) -> RouteOutput:
-    """Drive Nav2 through the rclpy bridge with live feedback and cancellation.
+    """Drive through the rclpy bridge with live feedback and cancellation.
 
     Unlike the CLI adapter (fire `ros2 action send_goal`, block, done), this
     streams distance-remaining while the robot moves and reacts to task
-    cancellation (TUI Esc) by cancelling the Nav2 goal — the robot actually
+    cancellation (TUI Esc) by cancelling the goal — the robot actually
     stops instead of sailing on after the UI gave up.
+
+    `direct=True` uses the Nav2-less odom→cmd_vel driver (open ground / a bare
+    ground plane with no planner); it clamps to the vehicle's speed limits.
     """
     goal = outgoing_action.get("goal") or {}
     pose = goal.get("pose") or {}
@@ -72,13 +77,26 @@ async def navigate_live(
     bridge.on_event("nav_result", _on_result)
     heartbeat = asyncio.create_task(_heartbeat())
     try:
-        await bridge.nav_send(
-            x=float(pose.get("x", 0.0)),
-            y=float(pose.get("y", 0.0)),
-            yaw=float(pose.get("yaw", 0.0)),
-            frame_id=goal.get("frame_id", "map"),
-            tag=tag,
-        )
+        if direct:
+            await bridge.drive_to_pose(
+                x=float(pose.get("x", 0.0)),
+                y=float(pose.get("y", 0.0)),
+                yaw=float(pose.get("yaw", 0.0)),
+                tag=tag,
+                cmd_vel_topic=getattr(vehicle, "cmd_vel_topic", "/cmd_vel"),
+                stamped=getattr(vehicle, "cmd_vel_stamped", False),
+                max_linear=getattr(vehicle, "max_linear", 1.0),
+                max_angular=getattr(vehicle, "max_angular", 2.0),
+                timeout=timeout,
+            )
+        else:
+            await bridge.nav_send(
+                x=float(pose.get("x", 0.0)),
+                y=float(pose.get("y", 0.0)),
+                yaw=float(pose.get("yaw", 0.0)),
+                frame_id=goal.get("frame_id", "map"),
+                tag=tag,
+            )
         status = await asyncio.wait_for(result_future, timeout)
         detail = {
             "succeeded": "Arrived at the goal.",
@@ -151,10 +169,16 @@ async def navigate_with_fallback(
                 route_preview=f"{report.summary} — the real robot was NOT moved.",
             )
 
-    if config.route_adapter == "nav2" and RosBridgeClient.available():
+    if config.route_adapter in ("nav2", "odom") and RosBridgeClient.available():
         try:
             bridge = await get_bridge()
-            return await navigate_live(bridge, outgoing_action, on_progress=on_progress)
+            return await navigate_live(
+                bridge,
+                outgoing_action,
+                on_progress=on_progress,
+                direct=config.route_adapter == "odom",
+                vehicle=config.vehicle,
+            )
         except BridgeError:
             pass  # bridge could not start — fall through to the CLI path
     return await route_execute(config, outgoing_action)
