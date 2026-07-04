@@ -10,7 +10,7 @@ Speaks newline-delimited JSON over stdin/stdout:
 This file must stay importable by a bare system python: standard library +
 ROS packages only — never import jenai (the venv is not visible here).
 
-Ops: ping, pose, nav_send, nav_cancel, capture_frame, watch, unwatch, shutdown.
+Ops: ping, pose, nav_send, drive_to_pose, nav_cancel, halt, capture_frame, watch, unwatch, shutdown.
 """
 
 from __future__ import annotations
@@ -69,6 +69,10 @@ class BridgeNode(Node):
         # pulse never races DDS discovery on a freshly created publisher.
         self._halt_lock = threading.Lock()
         self._halt_publishers: dict[tuple[str, bool], object] = {}
+        # Nav2-less point-to-point driver (open ground / ground-plane testing):
+        # closed loop on /odom → /cmd_vel. Only one runs at a time.
+        self._drive_cancel = threading.Event()
+        self._drive_active = False
 
     # -- pose ---------------------------------------------------------------
 
@@ -180,6 +184,137 @@ class BridgeNode(Node):
         send_future.add_done_callback(_on_accepted)
         return {"sent": True}
 
+    def drive_to_pose(
+        self,
+        x: float,
+        y: float,
+        yaw: float = 0.0,
+        *,
+        tag: str = "",
+        cmd_vel_topic: str = "/cmd_vel",
+        stamped: bool = False,
+        max_linear: float = 1.0,
+        max_angular: float = 2.0,
+        tolerance: float = 0.3,
+        timeout: float = 600.0,
+    ) -> dict:
+        """Nav2-less point-to-point drive: closed loop on /odom → /cmd_vel.
+
+        For open ground with no map/planner (e.g. an Isaac ground plane): the
+        goal (x, y) is treated as ODOM-frame coordinates, valid when map≈odom
+        (no localization offset). Emits nav_feedback/nav_result with `tag`, the
+        SAME protocol as nav_send, so the client's navigate_live works unchanged.
+        Obstacle avoidance is NOT provided — this is a straight-line seeker, not
+        a substitute for Nav2 in a cluttered map.
+        """
+        if self._drive_active:
+            raise RuntimeError("a drive_to_pose is already running")
+        self._drive_cancel.clear()
+        self._drive_active = True
+        threading.Thread(
+            target=self._drive_loop,
+            args=(x, y, yaw, tag, cmd_vel_topic, stamped),
+            kwargs={
+                "max_linear": max_linear,
+                "max_angular": max_angular,
+                "tolerance": tolerance,
+                "timeout": timeout,
+            },
+            daemon=True,
+        ).start()
+        return {"sent": True}
+
+    def _drive_loop(
+        self,
+        gx: float,
+        gy: float,
+        gyaw: float,
+        tag: str,
+        cmd_vel_topic: str,
+        stamped: bool,
+        *,
+        max_linear: float,
+        max_angular: float,
+        tolerance: float,
+        timeout: float,
+    ) -> None:
+        from geometry_msgs.msg import Twist, TwistStamped
+        from nav_msgs.msg import Odometry
+
+        latest: dict = {}
+
+        def _odom_cb(msg) -> None:
+            p = msg.pose.pose
+            latest["x"] = p.position.x
+            latest["y"] = p.position.y
+            latest["yaw"] = _yaw_from_quaternion(p.orientation)
+
+        sub = self.create_subscription(
+            Odometry, "/odom", _odom_cb, QoSPresetProfiles.SENSOR_DATA.value
+        )
+        with self._halt_lock:  # serialize rclpy entity creation vs halt()
+            pub = self.ensure_halt_publisher(cmd_vel_topic, stamped)
+        msg_type = TwistStamped if stamped else Twist
+        started = time.monotonic()
+        last_fb = 0.0
+        status = "failed"
+        try:
+            while True:
+                if self._drive_cancel.is_set():
+                    status = "canceled"
+                    break
+                if time.monotonic() - started > timeout:
+                    status = "aborted"
+                    break
+                if "x" not in latest:
+                    time.sleep(0.05)  # wait for the first /odom sample
+                    continue
+                dx, dy = gx - latest["x"], gy - latest["y"]
+                dist = math.hypot(dx, dy)
+                if dist <= tolerance:
+                    status = "succeeded"
+                    break
+                heading_err = math.atan2(
+                    math.sin(math.atan2(dy, dx) - latest["yaw"]),
+                    math.cos(math.atan2(dy, dx) - latest["yaw"]),
+                )
+                angular = max(-max_angular, min(max_angular, 1.5 * heading_err))
+                # Gate forward speed by heading alignment (slow while turning
+                # onto the bearing), but keep a crawl floor: an Ackermann can
+                # only steer while rolling, so it must never fully stop to turn.
+                align = max(0.2, math.cos(heading_err))
+                forward = align * min(max_linear, 0.8 * dist + 0.2)
+                msg = msg_type()
+                twist = msg.twist if stamped else msg
+                if stamped:
+                    msg.header.stamp = self.get_clock().now().to_msg()
+                twist.linear.x = float(forward)
+                twist.angular.z = float(angular)
+                pub.publish(msg)
+                now = time.monotonic()
+                if now - last_fb >= 0.5:
+                    last_fb = now
+                    _emit(
+                        {
+                            "event": "nav_feedback",
+                            "tag": tag,
+                            "distance_remaining": round(dist, 2),
+                            "recoveries": 0,
+                            "elapsed": round(now - started, 1),
+                        }
+                    )
+                time.sleep(0.05)  # ~20 Hz control
+        finally:
+            stop = msg_type()
+            if stamped:
+                stop.header.stamp = self.get_clock().now().to_msg()
+            for _ in range(3):  # pulse zero so the robot actually stops
+                pub.publish(stop)
+                time.sleep(0.02)
+            self.destroy_subscription(sub)
+            self._drive_active = False
+            _emit({"event": "nav_result", "tag": tag, "status": status})
+
     def nav_cancel(self) -> dict:
         """Cancel our own goal AND everything else on the Nav2 action server.
 
@@ -189,6 +324,10 @@ class BridgeNode(Node):
         pulses. The server-side cancel-all covers every owner.
         """
         canceled = False
+        if self._drive_active:
+            # The odom driver stops within one control tick; no server round-trip.
+            self._drive_cancel.set()
+            canceled = True
         if self._nav_pending:
             self._cancel_on_accept = True
             canceled = True
@@ -196,7 +335,9 @@ class BridgeNode(Node):
         if handle is not None:
             handle.cancel_goal_async()
             canceled = True
-        if self._cancel_all_nav_goals():
+        # Only pay the Nav2 cancel-all service wait if we ever used Nav2 —
+        # a pure odom-driver session has no action server to ask.
+        if self._nav_client is not None and self._cancel_all_nav_goals():
             canceled = True
         if not canceled:
             return {"canceled": False, "detail": "no active navigation goal"}
@@ -224,7 +365,7 @@ class BridgeNode(Node):
 
     @property
     def nav_active(self) -> bool:
-        return self._nav_goal_handle is not None or self._nav_pending
+        return self._nav_goal_handle is not None or self._nav_pending or self._drive_active
 
     # -- emergency stop -------------------------------------------------------
 
@@ -432,6 +573,19 @@ def _handle(node: BridgeNode, op: str, req: dict, watchdog: WatchdogState) -> di
     if op == "nav_send":
         return node.nav_send(
             req["x"], req["y"], req.get("yaw", 0.0), req.get("frame_id", "map"), req.get("tag", "")
+        )
+    if op == "drive_to_pose":
+        return node.drive_to_pose(
+            req["x"],
+            req["y"],
+            req.get("yaw", 0.0),
+            tag=req.get("tag", ""),
+            cmd_vel_topic=req.get("cmd_vel_topic", "/cmd_vel"),
+            stamped=bool(req.get("stamped", False)),
+            max_linear=float(req.get("max_linear", 1.0)),
+            max_angular=float(req.get("max_angular", 2.0)),
+            tolerance=float(req.get("tolerance", 0.3)),
+            timeout=float(req.get("timeout", 600.0)),
         )
     if op == "nav_cancel":
         return node.nav_cancel()

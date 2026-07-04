@@ -32,7 +32,7 @@ from jenai.schemas import (
     ToolCallRecord,
 )
 from jenai.tools.drive_core import extract_drive_command
-from jenai.tools.mission_core import parse_mission
+from jenai.tools.mission_core import MissionStep, parse_mission
 from jenai.tools.nav_live import navigate_with_fallback
 from jenai.tools.perception import PerceptionLoop
 from jenai.tools.ros2_core import (
@@ -412,6 +412,15 @@ class RobotCommandsMixin:
             await self._mount_event(TimelineItem("warn", output.route_preview))
             return
 
+        # "從 A 到 B" with BOTH ends known → visit A then B in order (先去A再去B),
+        # run as a two-stop mission so each leg is navigated and reported. When
+        # only the goal resolves, keep the single-goal "from current position".
+        if output.resolved_start is not None and output.resolved_goal is not None:
+            await self._start_ordered_route(
+                arg, output.resolved_start.name, output.resolved_goal.name, locations
+            )
+            return
+
         ctx = self._new_run_context(f"/route {arg}")
         tool_call = ToolCallRecord(
             tool_name="route_execute_tool",
@@ -430,6 +439,34 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
             justification="Requested via /route.",
+        )
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
+
+    async def _start_ordered_route(
+        self, arg: str, start_name: str, goal_name: str, locations
+    ) -> None:
+        """`/route 從 A 到 B` → mission [goto A, goto B]: go to A, then B."""
+        steps = [MissionStep("goto", start_name), MissionStep("goto", goal_name)]
+        plan = f"{start_name} → {goal_name}"
+        ctx = self._new_run_context(f"/route {arg}")
+        tool_call = ToolCallRecord(
+            tool_name="mission",
+            category=ToolCallCategory.ROUTE,
+            input_summary=plan,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        pending = {"kind": "mission", "ctx": ctx, "steps": steps, "locations": locations}
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="mission",
+            title=f"Route · {start_name} → {goal_name}",
+            summary=f"先導航到 {start_name},再到 {goal_name}。",
+            raw_action=plan,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification=f"Requested via /route: {arg}",
         )
         await self._request_direct_approval(ctx, tool_call, pending, approval)
 
