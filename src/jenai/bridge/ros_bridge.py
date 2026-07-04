@@ -277,7 +277,6 @@ class BridgeNode(Node):
             msg_type = TwistStamped if stamped else Twist
             started = time.monotonic()
             last_fb = 0.0
-            avoid_ticks = 0
             while True:
                 if self._drive_cancel.is_set():
                     status = "canceled"
@@ -325,8 +324,6 @@ class BridgeNode(Node):
                 twist.linear.x = float(forward)
                 twist.angular.z = float(angular)
                 pub.publish(msg)
-                if blocked:
-                    avoid_ticks += 1
                 now = time.monotonic()
                 if now - last_fb >= 0.5:
                     last_fb = now
@@ -335,7 +332,7 @@ class BridgeNode(Node):
                             "event": "nav_feedback",
                             "tag": tag,
                             "distance_remaining": round(dist, 2),
-                            "recoveries": avoid_ticks,  # ticks spent avoiding
+                            "recoveries": 0,  # a Nav2 concept; use `avoiding` here
                             "avoiding": blocked,
                             "elapsed": round(now - started, 1),
                         }
@@ -383,7 +380,12 @@ class BridgeNode(Node):
         def _cb(msg) -> None:
             try:
                 h, w = msg.height, msg.width
-                buf = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(h, w)
+                # frombuffer reads the array.array/bytes buffer zero-copy (no
+                # per-frame full-buffer copy). Honor msg.step: a padded row
+                # stride (step > w*4) would otherwise mis-shape every frame and
+                # silently disable avoidance on a real camera.
+                row = (msg.step // 4) if msg.step else w
+                buf = np.frombuffer(msg.data, dtype=np.float32).reshape(h, row)[:, :w]
                 band = buf[int(h * lo) : int(h * hi), :]
                 col_min = np.where(
                     np.isfinite(band) & (band > min_valid) & (band < 100.0), band, np.inf

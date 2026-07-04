@@ -58,7 +58,9 @@ class AvoidanceProfile(BaseModel):
     the way ahead is blocked, stop when something is right in front, and let
     goal attraction pull the robot back onto its line once the obstacle clears.
     This is a reflex-layer behavior — it runs in the bridge with NO LLM. Off by
-    default; irrelevant to the Nav2 adapter (Nav2 does its own avoidance).
+    default; irrelevant to the Nav2 adapter (Nav2 does its own avoidance). If
+    the depth topic is silent (wrong name / camera off) the driver degrades to
+    a blind straight-line seeker — check `depth_topic` with `/ros topics`.
     """
 
     model_config = ConfigDict(extra="forbid")
