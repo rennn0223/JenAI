@@ -35,6 +35,11 @@ def follow_the_gap(
     When nothing is within ``slow_distance`` in the forward cone it returns the
     goal bearing unchanged (pure seeking → the robot rejoins its line to goal
     as the obstacle clears).
+
+    Convention: a sector with no depth return is ``inf`` (treated as clear/far,
+    the standard no-return semantics). A surface that reflects no depth is
+    therefore invisible here — depth-only avoidance cannot see what the camera
+    cannot range.
     """
     if not ranges:
         return heading_err, 1.0, False
