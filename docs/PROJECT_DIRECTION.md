@@ -155,18 +155,20 @@ ROS topics 就能算,不用碰 Isaac 內部 API,增量成本可控。
 |---|---|---|---|---|
 | M1 | **E-stop / watchdog** | 客戶 | ✅ **v0.7** | `/stop`、WebUI STOP 鈕、MCP stop、daemon halt;bridge watchdog 斷線自主停車 |
 | M2 | **Vehicle profile 抽象** | 工程師 | ✅ **v0.7** | config `[vehicle]`:cmd_vel topic、硬限速、相機 topic → 換載具改設定不改程式 |
-| M3 | **Isaac Sim twin 場景 + Twin Gate pipeline** | PM | 🚧 **pipeline ✅** | 論文核心 = 產品差異化。Gate pipeline 已完成:G1–G5 判準、pass/block/refer、孿生獨立 ROS_DOMAIN_ID、`[twin]` 設定、doctor `twin` 檢查,掛在導航唯一出口(所有入口 + daemon 全過閘)。剩 Isaac Sim 場景建置(工作站作業,見 [TWIN_SETUP.md](TWIN_SETUP.md)) |
+| M3 | **Isaac Sim twin 場景 + Twin Gate pipeline** | PM | 🚧 **pipeline ✅** | 論文核心 = 產品差異化。Gate pipeline 已完成:G1–G5 判準、pass/block/refer、孿生獨立 ROS_DOMAIN_ID、`[twin]` 設定、doctor `twin` 檢查,掛在導航唯一出口(所有入口 + daemon 全過閘)。剩 Isaac Sim 場景建置(工作站作業,見 [TWIN_SETUP.md](TWIN_SETUP.md) = 客戶 B5) |
 | M4 | **任務級技能:patrol / return_to_dock** | 客戶 | ✅ **v0.8** | `/patrol A, B x3 photo`(循環+每點 VLM 觀察)、`/dock`;follow_route 由 `/mission` 涵蓋 |
-| M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | 🚧 | 建圖、定位、cmd_vel 檢查的手把手流程(doctor 擴充 + 文件) |
-| M6 | **自主決策迴圈(論文主軸)** | PM(論文) | 🚧 | 感知→情境快照(pose/電量/VLM 摘要)→ LLM 於有界動作集(navigate/patrol/dock/wait/report/refer)決策 → 孿生預演(M3)→ 執行 → 回饋。daemon(事件)+ agent(決策)+ skills(動作)+ Gate(預演)串成迴圈;人工指令與自主觸發共用同一條 |
+| M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | ✅ **軟體 v0.13** | doctor `nav` 區段 + ONBOARDING.md 手把手;剩新手計時實測(客戶 B6) |
+| M6 | **自主決策迴圈(論文主軸)** | PM(論文) | 🚧 **零件齊,迴圈未串** | 感知/有界動作/odom 直驅/避障/Gate/規則引擎都在,尚未串成 DecisionLoop 閉環。v2.0 主線,詳見 [ROADMAP 軌道 1](ROADMAP.md) |
+
+> **v0.9–v0.18 新增(不在原 M 表,但已 shipped)**:odom 直驅(`route_adapter=odom`,無 Nav2 開闊地導航)、反應式避障(depth follow-the-gap)、GPS 地點(`/loc add gps` + `[map_datum]`)、`/route 從A到B` 依序、多頁 WebUI(Camera/API)、`/report` 巡邏日報(=C2)、`JenAI help`、V1_GATE 層一工程(semver/威脅模型/safety case/soak/架構鐵律/覆蓋倒退閘)。完整前瞻見 **[ROADMAP.md](ROADMAP.md)**。
 
 ### 可做(有明確價值,排在必做之後)
 
 | # | 功能 | 說明 |
 |---|---|---|
-| C1 | 多機/namespace 支援 | bridge 加 namespace,一個 JenAI 管狗+車 |
-| C2 | 巡邏報告 | patrol 途中 vision 快照 + 事件 log → 自動生成日報(LLM 摘要) |
-| C3 | WebUI 地圖疊 costmap/規劃路徑 | 現有 SVG 地圖已有 pose+locations,疊圖是自然延伸 |
+| C1 | 多機/namespace 支援 | bridge 加 namespace,一個 JenAI 管狗+車(ROADMAP 軌道 4) |
+| C2 | 巡邏報告 | ✅ **v0.12** `/report`:確定性日報 + LLM 摘要,離線誠實降級 |
+| C3 | WebUI 地圖疊 costmap/規劃路徑 | 現有 SVG 地圖已有 pose+locations,疊圖是自然延伸(ROADMAP 軌道 5) |
 | C4 | MCP action 擴充 | patrol 等技能開給 MCP client(維持 --allow-actions 閘控) |
 | C5 | 語音輸入 | 場域裡對狗喊話比打字實際;whisper 本地跑 |
 
