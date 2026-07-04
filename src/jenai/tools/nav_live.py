@@ -1,3 +1,5 @@
+"""Live-bridge navigation (feedback/cancel) + navigate_with_fallback dispatch."""
+
 from __future__ import annotations
 
 import asyncio

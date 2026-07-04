@@ -1,3 +1,5 @@
+"""Route parsing ('from A to B') + execution through the route adapter."""
+
 from __future__ import annotations
 
 import asyncio

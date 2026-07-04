@@ -22,6 +22,7 @@ JenAI 的命令分為兩層：
 | `JenAI providers` | 顯示 provider 清單 |
 | `JenAI models` | 顯示 model 綁定 |
 | `JenAI route "<text>"` | 非互動式 route 任務（互動確認後送出） |
+| `JenAI scaffold "<描述>"` | **自然語言生成 ROS2 (ament_python) 套件**：確定性 boilerplate（package.xml/setup.py…永遠可 build）+ LLM 寫的 node 主體（送出前確認、寫入 `ros2_ws/src/<pkg>/`）。`--ws` 指定工作區 |
 | `JenAI loc list` / `loc show <名>` | 非互動式 location 查詢 |
 | `JenAI version` | 顯示版本資訊 |
 

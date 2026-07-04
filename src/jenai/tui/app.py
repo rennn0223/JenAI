@@ -1,3 +1,5 @@
+"""Textual App shell: input dispatch, streaming chat, approval flow, task execution."""
+
 from __future__ import annotations
 
 import asyncio

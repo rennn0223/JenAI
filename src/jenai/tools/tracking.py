@@ -1,3 +1,5 @@
+"""Navigation event correlation helpers."""
+
 from __future__ import annotations
 
 from agents import RunContextWrapper

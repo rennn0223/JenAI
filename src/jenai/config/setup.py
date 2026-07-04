@@ -1,3 +1,5 @@
+"""First-run setup wizard (ASCII banner, provider presets, per-field examples)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

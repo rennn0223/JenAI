@@ -152,7 +152,7 @@ jenai daemon                                        # Ctrl-C 停止
 
 | 模組 | 行數 | 職責 |
 |---|---|---|
-| `cli/main.py` | 371 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
+| `cli/main.py` | ~430 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
 | `tui/app.py` | 1241 | App 殼:輸入分發、串流聊天渲染、spinner、Esc 中斷、`/stop` 搶佔、審批卡流程、mission/patrol 執行 |
 | `tui/robot_commands.py` | 689 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/loc` `/vision` + bridge 生命週期(含 watchdog 佈署) |
 | `tui/info_commands.py` | 292 | Mixin:`/help` `/status` `/doctor` `/model` `/provider` 等資訊類 |
@@ -163,6 +163,7 @@ jenai daemon                                        # Ctrl-C 停止
 | `tools/*_core.py` | — | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
 | `tools/nav_live.py` | 143 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback`(nav2-vs-CLI 調度的唯一出處,TUI/MCP 共用)** |
 | `tools/skills.py` | 145 | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
+| `tools/ros2_pkg_core.py` | ~200 | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋。從 control agent 邁向 development copilot |
 | `tools/safety.py` | 32 | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
 | `tools/perception.py` | ~180 | **PerceptionLoop**:持續相機→VLM→結構化 `SceneAnalysis`(場景/物件/affordances/建議動作);TUI `/perception`、daemon `@perception` 規則共用;只觀察不動作 |
 | `mcp_server/server.py` | 183 | FastMCP stdio server:唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |

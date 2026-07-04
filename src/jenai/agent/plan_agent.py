@@ -1,3 +1,5 @@
+"""/plan and /review: produce or critique a plan with no side effects."""
+
 from __future__ import annotations
 
 from agents import Runner

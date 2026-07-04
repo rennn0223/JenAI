@@ -1,3 +1,5 @@
+"""Grouped command content rendered by /help."""
+
 from __future__ import annotations
 
 from jenai import __version__

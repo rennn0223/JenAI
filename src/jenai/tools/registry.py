@@ -1,3 +1,5 @@
+"""Registry assembling the agent's tool set."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

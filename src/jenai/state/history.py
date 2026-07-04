@@ -1,3 +1,5 @@
+"""Input history for the composer (↑/↓ recall)."""
+
 from __future__ import annotations
 
 from jenai.schemas import SessionState

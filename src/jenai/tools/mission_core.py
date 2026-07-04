@@ -1,3 +1,5 @@
+"""Deterministic multi-stop mission stepping + resolve_and_navigate (shared)."""
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable

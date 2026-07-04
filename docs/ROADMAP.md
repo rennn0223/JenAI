@@ -28,7 +28,8 @@
 - **實機驗證數據**:里程、消融、onboarding 計時(客戶 B4/B5/B6)。
 
 ### 一句話定位
-> JenAI 已是「載具無關的任務層大腦 + 三層安全鏈 + 可重現實驗平台」。
+> JenAI 已是「載具無關的任務層大腦 + 三層安全鏈 + 可重現實驗平台」,
+> 且自 v0.19 起多了一個新身分:**development copilot**(`JenAI scaffold` 生成 ROS2 套件)。
 > v1.0 前缺的是**證據**(實機數據)不是程式;v2.0 的靈魂是 **M6 自主迴圈**。
 
 ---
@@ -85,6 +86,18 @@
   - **檔案定義技能**:markdown/TOML 組合原語成 `/inspect` 之類,學弟不改程式。
   - **任務日誌可回放**:run 軌跡 + 決策紀錄(接軌道 1 的可審計)。
 - **層別**:A 為主。
+
+### 軌道 6 — Development Copilot(從 control agent 邁向寫碼)
+- **價值**:**類別躍遷** —— JenAI 不只「操作機器人」,還能「幫使用者寫機器人程式」。這是把「會用 ROS 的 AI」變成「會寫 ROS 的 AI」,對新手教學與快速原型是殺手級。
+- **已 shipped(v0.19)**:`JenAI scaffold "<描述>"` —— 自然語言生成 ament_python 套件(確定性 boilerplate 永遠可 build + LLM 寫 node 主體 + 送出前審閱 + 拒絕覆蓋)。誠實分工:boilerplate 定死、node 邏輯 LLM 寫使用者審。
+- **關鍵步驟(深化)**:
+  1. **ament_cmake / C++** 節點、launch file、多節點套件、自訂 msg/srv/action。
+  2. **生成即驗證**:寫完自動 `colcon build`,錯誤回饋給 LLM 修一輪(閉環)。
+  3. **從既有 graph 學**:讀 `/ros topics` + schema,生成「訂閱這些真實 topic」的節點(接地氣,不亂猜型別)。
+  4. **測試/launch 一起生**:pytest + launch,交付即可跑。
+  5. 進 TUI(`/scaffold` 批准卡預覽)與 MCP(開給外部 agent)。
+- **論文**:可作獨立貢獻或延伸章(「LLM 代理不只執行、還能擴充自身工具鏈」)。
+- **層別**:A 為主(生成 + 驗證閉環);B(真場域需求驗證實用性)。
 
 ---
 

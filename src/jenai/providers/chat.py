@@ -1,3 +1,5 @@
+"""OpenAI-compatible provider calls: ask/stream/json/vision + lenient JSON parse."""
+
 from __future__ import annotations
 
 import json

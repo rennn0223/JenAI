@@ -1,3 +1,5 @@
+"""Shell command execution + risk assessment (approval-card material)."""
+
 from __future__ import annotations
 
 import asyncio

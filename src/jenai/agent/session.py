@@ -1,3 +1,5 @@
+"""Cross-restart conversation memory for the /run agent (JenAIFileSession)."""
+
 from __future__ import annotations
 
 import asyncio

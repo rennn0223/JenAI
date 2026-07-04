@@ -1,3 +1,5 @@
+"""Builds the runnable /run agent from the tool set and specialists."""
+
 from __future__ import annotations
 
 from agents import Agent

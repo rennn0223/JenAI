@@ -1,3 +1,5 @@
+"""Approval-card copy for actuating commands."""
+
 from __future__ import annotations
 
 import json

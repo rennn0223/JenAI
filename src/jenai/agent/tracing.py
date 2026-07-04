@@ -1,3 +1,5 @@
+"""Execution trace of the current run — the data /why reads."""
+
 from __future__ import annotations
 
 import json

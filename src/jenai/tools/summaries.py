@@ -1,3 +1,5 @@
+"""Tool output summarization for the timeline."""
+
 from __future__ import annotations
 
 from jenai.config.models import AppConfig

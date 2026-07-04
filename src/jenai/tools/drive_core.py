@@ -1,3 +1,5 @@
+"""Plain-language → velocity command parsing (/drive), incl. Chinese numerals."""
+
 from __future__ import annotations
 
 import re

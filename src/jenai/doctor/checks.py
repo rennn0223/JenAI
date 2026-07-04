@@ -1,3 +1,5 @@
+"""Environment health checks powering `JenAI doctor` and /doctor."""
+
 from __future__ import annotations
 
 import os

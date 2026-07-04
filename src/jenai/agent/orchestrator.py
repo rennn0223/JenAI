@@ -1,3 +1,5 @@
+"""/run supervisor loop: plan → tool calls → approval pauses → report."""
+
 from __future__ import annotations
 
 import json

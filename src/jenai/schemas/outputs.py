@@ -1,3 +1,5 @@
+"""Tool output models (RouteOutput, …) — the honest-reporting carriers."""
+
 from __future__ import annotations
 
 from typing import Literal

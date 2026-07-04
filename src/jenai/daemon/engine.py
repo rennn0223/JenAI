@@ -1,3 +1,5 @@
+"""Rule engine pure logic: conditions, cooldown, action gating (unit-testable)."""
+
 from __future__ import annotations
 
 import time

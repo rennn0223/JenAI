@@ -1,3 +1,5 @@
+"""RouteAdapter protocol: stub (honest refuse) / nav2 (CLI send_goal) dispatch."""
+
 from __future__ import annotations
 
 import json

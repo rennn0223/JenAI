@@ -1,3 +1,5 @@
+"""Typer entry point: every JenAI subcommand (TUI/doctor/web/mcp/daemon/scaffold/…)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -203,6 +205,65 @@ def route(text: str, config: ConfigOption = None) -> None:
 
 
 @app.command()
+def scaffold(
+    spec: Annotated[str, typer.Argument(help="Plain-language description of the ROS2 package.")],
+    config: ConfigOption = None,
+    ws: Annotated[
+        str | None,
+        typer.Option("--ws", help="Workspace root (default: config ros2_ws or ~/ros2_ws)."),
+    ] = None,
+) -> None:
+    """Generate a ROS2 (ament_python) package from a natural-language spec.
+
+    Deterministic boilerplate + LLM-written node body. Shows the plan, asks to
+    confirm, writes under <ws>/src/<pkg>/, then prints the colcon build command.
+    """
+    from jenai.tools.ros2_pkg_core import (
+        default_ws,
+        generate_package_plan,
+        render_package,
+        write_package,
+    )
+
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if ws:
+        loaded.ros2_ws = ws
+
+    plan = asyncio.run(generate_package_plan(loaded, spec))
+    if plan is None:
+        console.print("[red]Could not generate a package — try a more specific description.[/red]")
+        raise typer.Exit(1)
+
+    ws_src = default_ws(loaded)
+    files = render_package(plan)
+    console.print(f"\n[bold]{plan.package_name}[/bold] — {plan.description}")
+    console.print(f"[#9c9689]deps:[/] {', '.join(plan.dependencies)}")
+    console.print(f"[#9c9689]→[/] {ws_src / plan.package_name}")
+    for path in files:
+        console.print(f"  [#9c9689]{path}[/]")
+    console.print("\n[#9c9689]Review the generated node before building.[/]")
+
+    if not typer.confirm("Write these files?"):
+        console.print("[yellow]Cancelled — nothing written.[/yellow]")
+        raise typer.Exit(0)
+    try:
+        pkg_dir = write_package(plan, ws_src)
+    except FileExistsError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]Wrote {pkg_dir}[/green]")
+    console.print(
+        f"[#9c9689]Next:[/] cd {loaded.ros2_ws or '~/ros2_ws'} && "
+        f"colcon build --packages-select {plan.package_name}"
+    )
+
+
+@app.command()
 def web(
     config: ConfigOption = None,
     host: Annotated[str, typer.Option("--host", help="Bind address.")] = "127.0.0.1",
@@ -327,6 +388,7 @@ def help_command() -> None:
         ("JenAI mcp", "把機器人工具開給 Claude 等 MCP client(預設唯讀,--allow-actions 才能動)"),
         ("JenAI daemon", "常駐規則引擎:電量低回充、急停規則(--rules rules.toml)"),
         ("JenAI route \"<話>\"", "一句話導航(需 Nav2;互動確認後送出)"),
+        ("JenAI scaffold \"<描述>\"", "自然語言生成 ROS2 套件(boilerplate 定死 + LLM 寫 node)"),
         ("JenAI loc list / show <名>", "查導航地點"),
         ("JenAI config / providers / models", "看設定、供應商、模型綁定"),
         ("JenAI version", "版本"),

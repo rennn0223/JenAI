@@ -1,3 +1,5 @@
+"""Agent-tool wrappers around vision_core."""
+
 from __future__ import annotations
 
 from agents import RunContextWrapper, function_tool

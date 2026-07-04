@@ -1,3 +1,5 @@
+"""capture_and_analyze: camera frame → VLM (the single vision entry point)."""
+
 from __future__ import annotations
 
 import base64

@@ -1,3 +1,5 @@
+"""WebUI command execution + server-side confirm-action escrow."""
+
 from __future__ import annotations
 
 import html as _html

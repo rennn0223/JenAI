@@ -1,3 +1,5 @@
+"""config/.env path resolution and loading; build_minimal_config; save."""
+
 from __future__ import annotations
 
 import os

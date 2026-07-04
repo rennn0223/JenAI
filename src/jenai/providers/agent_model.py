@@ -1,3 +1,5 @@
+"""Model bindings for the openai-agents SDK."""
+
 from __future__ import annotations
 
 from typing import Literal
