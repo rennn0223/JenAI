@@ -25,6 +25,7 @@ async def navigate_live(
     timeout: float = 600.0,
     direct: bool = False,
     vehicle=None,
+    avoidance: dict | None = None,
 ) -> RouteOutput:
     """Drive through the rclpy bridge with live feedback and cancellation.
 
@@ -88,6 +89,7 @@ async def navigate_live(
                 max_linear=getattr(vehicle, "max_linear", 1.0),
                 max_angular=getattr(vehicle, "max_angular", 2.0),
                 timeout=timeout,
+                avoidance=avoidance,
             )
         else:
             await bridge.nav_send(
@@ -179,6 +181,7 @@ async def navigate_with_fallback(
                 on_progress=on_progress,
                 direct=config.route_adapter == "odom",
                 vehicle=config.vehicle,
+                avoidance=config.avoidance.as_params(),
             )
         except BridgeError:
             pass  # bridge could not start — fall through to the CLI path
