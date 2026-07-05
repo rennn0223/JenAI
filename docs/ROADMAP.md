@@ -39,6 +39,7 @@
 每條軌道標:**價值**、**關鍵步驟**、**依賴**、**論文對應**、**層別**(A=agent 可獨力 / B=需客戶下場)。
 
 ### 軌道 1 — M6 自主決策迴圈(v2 主軸,論文核心)
+> **v0.21 進度**:決策腦已落地 —— `tools/decision_core.py`(情境快照 → 有界動作單選,越界/幻覺目的地一律降級 refer_to_human)+ `JenAI eval`(E1 評測:per-family accuracy / unsafe rate / refer rate,scenarios.example.toml 種子庫)。**剩下的是把 perceive→decide→rehearse→act 接成常駐迴圈**。
 - **價值**:專案從「聽指令的操作平台」進化成「會自己決定下一步的決策大腦」——論文第三章的實體。
 - **關鍵步驟**:
   1. `DecisionLoop`:感知(pose/電量/VLM 摘要/任務狀態)→ 情境快照(結構化文字)→ LLM 於有界動作集 {navigate_to, patrol, dock, wait, capture_and_report, refer} 輸出**單一離散決策**(constrained JSON)。
@@ -145,7 +146,8 @@
 |---|---|---|
 | **v0.19** | 導航堆疊 + 觀測性 | 軌道 3 的 Nav2 bringup 工具 + GPS datum 校正;D4 run 日誌 + `bench` 延遲雛形 |
 | **v0.20** | 可維護性硬化 | D1 sibling 抽取(nav 狀態機/halt/watchdog 純邏輯 → 單測);D3 padded/noisy fixture |
-| **v0.21** | 感知深化 | 軌道 2:depth→Nav2 costmap;VLM 語意層進規則 |
+| ~~v0.21~~ ✅ | Eval 地基(提前) | decision_core + `JenAI eval`(E1);Tier-0 對標的 eval 紀律起點 |
+| **v0.22+** | 感知深化 | 軌道 2:depth→Nav2 costmap;VLM 語意層進規則 |
 | **v1.0** | **監督式操作平台定稿** | V1_GATE 層一全 ✅ + 層二 B1–B7 客戶數據齊;安全鏈 ~100%、24h soak、實車 20h/50 任務;semver/safety case/Twin 消融定稿 |
 | **v2.0** | **自主決策大腦** | 軌道 1:M6 DecisionLoop 完整迴圈 + 邊緣延遲優化;論文 E1–E4 數據 |
 | **v2.x** | 多機 / 平台 | 軌道 4/5:多載具、語音、costmap 疊圖、檔案定義技能 |
