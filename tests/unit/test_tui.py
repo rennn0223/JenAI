@@ -110,118 +110,6 @@ def test_tui_shows_slash_command_palette() -> None:
     asyncio.run(run())
 
 
-def test_tui_streams_natural_language_reply(monkeypatch) -> None:
-    async def fake_stream_provider(config, prompt):
-        calls.append((config.active_provider, prompt))
-        for delta in ("LLM ", "says ", "hi"):
-            yield delta
-
-    async def run() -> None:
-        app = JenAITuiApp(
-            config=build_minimal_config(
-                provider_name="test",
-                provider="openai",
-                default_model="gpt-test",
-                api_key_env="",
-            ),
-            config_path=Path("/tmp/config.toml"),
-        )
-        async with app.run_test():
-            await app.handle_user_text("hi")
-            items = app.query(TimelineItem)
-            assert any(i.body == "LLM says hi" for i in items)  # full reply assembled
-
-    calls = []
-    monkeypatch.setattr("jenai.tui.app.stream_provider", fake_stream_provider)
-
-    asyncio.run(run())
-
-    assert calls == [("test", "hi")]
-
-
-def test_tui_stream_error_keeps_partial_and_reports(monkeypatch) -> None:
-    from jenai.providers import ProviderChatError
-
-    async def broken_stream(config, prompt):
-        yield "partial "
-        raise ProviderChatError("connection dropped")
-
-    async def run() -> None:
-        app = JenAITuiApp(
-            config=build_minimal_config(
-                provider_name="test",
-                provider="openai",
-                default_model="gpt-test",
-                api_key_env="",
-            ),
-            config_path=Path("/tmp/config.toml"),
-        )
-        async with app.run_test():
-            await app.handle_user_text("hi")
-            bodies = [i.body for i in app.query(TimelineItem)]
-            assert "partial " in bodies          # partial answer preserved
-            assert any("connection dropped" in b for b in bodies)  # error surfaced
-
-    monkeypatch.setattr("jenai.tui.app.stream_provider", broken_stream)
-    asyncio.run(run())
-
-
-def test_tui_stream_unexpected_error_is_surfaced(monkeypatch) -> None:
-    # Transport errors escape the openai SDK unwrapped mid-stream; they must
-    # still produce an error bullet instead of a silently orphaned '…' bubble.
-    async def exploding_stream(config, prompt):
-        yield "partial "
-        raise RuntimeError("connection reset by peer")
-
-    async def run() -> None:
-        app = JenAITuiApp(
-            config=build_minimal_config(
-                provider_name="test",
-                provider="openai",
-                default_model="gpt-test",
-                api_key_env="",
-            ),
-            config_path=Path("/tmp/config.toml"),
-        )
-        async with app.run_test():
-            await app.handle_user_text("hi")
-            bodies = [i.body for i in app.query(TimelineItem)]
-            assert "partial " in bodies  # partial answer preserved
-            assert any("connection reset by peer" in b for b in bodies)
-            assert not any(b == "…" for b in bodies)  # no orphaned placeholder
-
-    monkeypatch.setattr("jenai.tui.app.stream_provider", exploding_stream)
-    asyncio.run(run())
-
-
-def test_tui_stream_error_text_is_markup_safe(monkeypatch) -> None:
-    from jenai.providers import ProviderChatError
-
-    # '[Errno 111]' and stray '[/]' are what real provider errors look like —
-    # they must render as text, not crash Textual's markup parser.
-    async def refused_stream(config, prompt):
-        raise ProviderChatError("endpoint said [/] no: [Errno 111] Connection refused")
-        yield  # pragma: no cover — makes this an async generator
-
-    async def run() -> None:
-        app = JenAITuiApp(
-            config=build_minimal_config(
-                provider_name="test",
-                provider="openai",
-                default_model="gpt-test",
-                api_key_env="",
-            ),
-            config_path=Path("/tmp/config.toml"),
-        )
-        async with app.run_test():
-            await app.handle_user_text("hi")
-            bodies = [i.body for i in app.query(TimelineItem)]
-            assert any("Errno 111" in b for b in bodies)  # surfaced, not crashed
-
-    monkeypatch.setattr("jenai.tui.app.stream_provider", refused_stream)
-    asyncio.run(run())
-
-
 def test_tui_ros_topics_command(monkeypatch) -> None:
     async def fake_ros_topics(config):
         return RosTopicsOutput(topics=[TopicItem(name="/cmd_vel", kind_hint="control")])
@@ -1385,3 +1273,72 @@ def test_mascot_animation_tick_updates_widget() -> None:
             assert app._mascot_frame >= 2  # ticks advanced without crashing
 
     asyncio.run(run())
+
+
+def test_mode_cycle_shift_tab_and_status_chip() -> None:
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            assert app._mode == "approve"  # safe default
+            app.action_cycle_mode()
+            assert app._mode == "plan"
+            app.action_cycle_mode()
+            assert app._mode == "auto"
+            app.action_cycle_mode()
+            assert app._mode == "approve"  # full cycle
+            app._mode = "auto"
+            assert "自動" in app._status_line()
+
+    asyncio.run(run())
+
+
+def test_plain_language_routes_by_mode(monkeypatch) -> None:
+    """The point of the modes: a bare sentence plans or acts — it no longer
+    just chats back 'here is the command you could type'."""
+    calls = []
+
+    async def fake_plan(self, arg):
+        calls.append(("plan", arg))
+
+    async def fake_run(self, arg):
+        calls.append(("run", arg))
+
+    monkeypatch.setattr(JenAITuiApp, "_show_plan", fake_plan)
+    monkeypatch.setattr(JenAITuiApp, "_show_run", fake_run)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            await app.handle_user_text("帶我去機械系館")  # approve → agent
+            app._mode = "plan"
+            await app.handle_user_text("帶我去機械系館")  # plan → planner
+
+    asyncio.run(run())
+    assert calls == [("run", "帶我去機械系館"), ("plan", "帶我去機械系館")]
+
+
+def test_auto_mode_skips_approval_card_but_logs(monkeypatch) -> None:
+    from jenai.tools.mission_core import MissionReport, StepResult
+
+    ran = {}
+
+    async def fake_run_mission(config, locations, steps, *, on_step=None, navigate=None):
+        ran["steps"] = len(steps)
+        return MissionReport([StepResult("goto", "kitchen", "succeeded", "ok")])
+
+    monkeypatch.setattr("jenai.tui.app.run_mission", fake_run_mission)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            app._mode = "auto"
+            await app.handle_user_text("/mission kitchen, lobby")
+            assert list(app.query(ApprovalCard)) == []  # no card in auto mode
+            await pilot.pause()
+            if app._active_task is not None:
+                await app._active_task
+            texts = [str(getattr(c, "body", "")) for c in app.query_one("#events").children]
+            assert any("自動模式:已批准" in t for t in texts)  # consent is logged
+
+    asyncio.run(run())
+    assert ran["steps"] == 2

@@ -56,6 +56,12 @@ class RobotCommandsMixin:
         record the tool call, honor session auto-approval (auto_key falls back
         to the execution kind), otherwise raise the card and park the action."""
         self.run_store.add_tool_call(ctx.run, tool_call)
+        if getattr(self, "_mode", "approve") == "auto":
+            # Auto mode: execute without a card, but SAY so — an unlogged
+            # auto-approval would make the transcript lie about consent.
+            await self._mount_event(TimelineItem("warn", f"自動模式:已批准 {approval.title}"))
+            await self._execute_direct(pending)
+            return
         if pending.get("auto_key", pending["kind"]) in self._auto_approved:
             await self._execute_direct(pending)
             return
