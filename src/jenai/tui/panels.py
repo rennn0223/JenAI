@@ -49,6 +49,8 @@ class WelcomePanel(Container):
         model_name: str,
         config_path: Path,
         doctor_result: DoctorResult | None,
+        locations_count: int | None = None,
+        skills_count: int | None = None,
     ) -> None:
         super().__init__(id="welcome")
         self.version = version
@@ -57,6 +59,8 @@ class WelcomePanel(Container):
         self.model_name = model_name
         self.config_path = config_path
         self.doctor_result = doctor_result
+        self.locations_count = locations_count
+        self.skills_count = skills_count
 
     def compose(self) -> ComposeResult:
         # Single, centred column so it never crushes on a narrow (mobile) terminal.
@@ -67,11 +71,23 @@ class WelcomePanel(Container):
         yield Static("Robot workflow console", classes="heading")
         yield Static("Plan, inspect, and drive robot tasks from one terminal.", classes="meta")
         yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
+        yield Static(self._workspace_meta(), id="welcome-workspace-meta", classes="meta")
         yield Static(self._doctor_summary(), id="welcome-doctor-status", classes="meta")
 
     def update_doctor_result(self, doctor_result: DoctorResult | None) -> None:
         self.doctor_result = doctor_result
         self.query_one("#welcome-doctor-status", Static).update(self._doctor_summary())
+
+    def _workspace_meta(self) -> str:
+        """One line of live workspace facts — what this robot already knows."""
+        parts: list[str] = []
+        if self.locations_count is not None:
+            parts.append(f"{self.locations_count} locations")
+        if self.skills_count:
+            parts.append(f"{self.skills_count} skills")
+        if not parts:
+            return ""
+        return "[#9c9689]" + " · ".join(parts) + "[/]"
 
     def update_model(
         self,
@@ -257,7 +273,14 @@ def _short_cwd() -> str:
 
 
 
-def pixel_mark() -> Text:
+def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
+    """The dachshund mascot, one animation frame at a time.
+
+    frame cycles the idle animation (tail wag, an occasional blink);
+    ``running=True`` switches to a two-pose gallop — the mascot doubles as a
+    task-status indicator. Frame geometry is stable (same bounding box every
+    pose) so the welcome panel never jitters.
+    """
     colors = {
         "body": "#d98c69",
         "belly": "#e8a987",
@@ -268,6 +291,10 @@ def pixel_mark() -> Text:
         "collar": "#5fb1c0",
         "tag": "#f0c84e",
     }
+    tail_up = frame % 2 == 0
+    blink = (not running) and frame % 8 == 6  # a blink every ~5s at idle pace
+    stride = frame % 2 if running else None
+
     cells: dict[tuple[int, int], str] = {}
 
     def fill(x0: int, y0: int, x1: int, y1: int, color: str) -> None:
@@ -292,23 +319,51 @@ def pixel_mark() -> Text:
     put(20, 6, colors["black"])
     put(19, 6, colors["black"])
     put(18, 7, colors["black"])
-    fill(14, 3, 15, 4, colors["black"])
-    put(15, 3, colors["white"])
+    # Eye: open (pupil + highlight) or a closed lid line mid-blink.
+    if blink:
+        fill(14, 3, 15, 3, colors["body"])
+        fill(14, 4, 15, 4, colors["black"])
+    else:
+        fill(14, 3, 15, 4, colors["black"])
+        put(15, 3, colors["white"])
     put(17, 6, colors["cheek"])
     fill(-1, 7, 13, 10, colors["body"])
     delete(-1, 7)
     fill(0, 10, 12, 10, colors["belly"])
-    put(-2, 6, colors["body"])
-    put(-3, 5, colors["body"])
-    put(-3, 4, colors["body"])
-    put(-2, 4, colors["body"])
-    fill(0, 11, 1, 13, colors["body"])
-    fill(3, 11, 4, 13, colors["body"])
-    fill(10, 11, 11, 13, colors["body"])
-    fill(13, 11, 14, 13, colors["body"])
+    # Tail: wag between an up-curl and a down-sweep.
+    if tail_up:
+        put(-2, 6, colors["body"])
+        put(-3, 5, colors["body"])
+        put(-3, 4, colors["body"])
+        put(-2, 4, colors["body"])
+    else:
+        put(-2, 8, colors["body"])
+        put(-3, 9, colors["body"])
+        put(-3, 10, colors["body"])
+        put(-2, 10, colors["body"])
+    # Legs: standing, or a two-pose gallop (pairs spread ↔ tucked).
+    if stride is None:
+        fill(0, 11, 1, 13, colors["body"])
+        fill(3, 11, 4, 13, colors["body"])
+        fill(10, 11, 11, 13, colors["body"])
+        fill(13, 11, 14, 13, colors["body"])
+    elif stride == 0:  # spread: back pair kicks back, front pair reaches out
+        fill(-1, 11, 0, 13, colors["body"])
+        fill(4, 11, 5, 13, colors["body"])
+        fill(9, 11, 10, 13, colors["body"])
+        fill(14, 11, 15, 13, colors["body"])
+    else:  # tucked under the body
+        fill(1, 11, 2, 13, colors["body"])
+        fill(2, 11, 3, 13, colors["body"])
+        fill(11, 11, 12, 13, colors["body"])
+        fill(12, 11, 13, 13, colors["body"])
     # Collar/tag is drawn last: the body fills above cover this region.
     fill(11, 7, 12, 9, colors["collar"])
     put(12, 10, colors["tag"])
+    # Pin the bounding box so every frame renders the same size (no jitter):
+    # x −3..20 and y 1..13 are the extremes across all poses.
+    cells.setdefault((-3, 1), None)
+    cells.setdefault((20, 13), None)
 
     min_x = min(x for x, _ in cells)
     max_x = max(x for x, _ in cells)
@@ -331,6 +386,7 @@ def pixel_mark() -> Text:
         if y + 1 < max_y:
             text.append("\n")
     return text
+
 
 def status_color(status: DoctorStatus | str) -> str:
     try:

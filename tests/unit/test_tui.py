@@ -1356,3 +1356,32 @@ def test_tui_route_from_a_to_b_runs_ordered_two_stop(monkeypatch, tmp_path) -> N
     asyncio.run(run())
 
     assert ran["steps"] == [("goto", "應科大樓"), ("goto", "機械系館")]
+
+
+def test_mascot_frames_animate_but_keep_size() -> None:
+    """Tail wag / blink / gallop produce different frames, and every pose has
+    the same bounding box so the welcome panel never jitters."""
+    idle_a, idle_b = pixel_mark(0), pixel_mark(1)
+    blink = pixel_mark(6)
+    run_a, run_b = pixel_mark(0, running=True), pixel_mark(1, running=True)
+
+    assert idle_a.plain != "" and idle_a.spans
+    assert str(idle_a) != str(idle_b) or idle_a.spans != idle_b.spans  # tail moved
+    assert blink.spans != idle_a.spans  # eye closed
+    assert run_a.spans != run_b.spans  # gallop alternates
+    sizes = {(t.plain.count("\n"), max(len(line) for line in t.plain.split("\n")))
+             for t in (idle_a, idle_b, blink, run_a, run_b)}
+    assert len(sizes) == 1  # identical bounding box across all poses
+
+
+def test_mascot_animation_tick_updates_widget() -> None:
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            app.query_one("#pixel-mark")  # mascot mounted
+            app._animate_mascot()
+            app._animate_mascot()
+            await pilot.pause()
+            assert app._mascot_frame >= 2  # ticks advanced without crashing
+
+    asyncio.run(run())
