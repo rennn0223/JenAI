@@ -18,3 +18,4 @@ coverage.xml
 
 # Personal thesis planning (not part of the project)
 docs/THESIS_*.md
+log/
