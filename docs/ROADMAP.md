@@ -83,13 +83,14 @@
   - **語音輸入**(C5):whisper 本地 → `/route` 等,場域喊話比打字實際。
   - **WebUI 疊 costmap / 規劃路徑**(C3):現有 SVG 地圖的自然延伸。
   - **MCP action 擴充**(C4):patrol/dock 開給外部 agent(維持 `--allow-actions`)。
-  - **檔案定義技能**:markdown/TOML 組合原語成 `/inspect` 之類,學弟不改程式。
+  - ~~檔案定義技能~~ ✅ v0.20(skills/*.toml,見 COMMANDS)。
   - **任務日誌可回放**:run 軌跡 + 決策紀錄(接軌道 1 的可審計)。
 - **層別**:A 為主。
 
 ### 軌道 6 — Development Copilot(從 control agent 邁向寫碼)
 - **價值**:**類別躍遷** —— JenAI 不只「操作機器人」,還能「幫使用者寫機器人程式」。這是把「會用 ROS 的 AI」變成「會寫 ROS 的 AI」,對新手教學與快速原型是殺手級。
-- **已 shipped(v0.19)**:`JenAI scaffold "<描述>"` —— 自然語言生成 ament_python 套件(確定性 boilerplate 永遠可 build + LLM 寫 node 主體 + 送出前審閱 + 拒絕覆蓋)。誠實分工:boilerplate 定死、node 邏輯 LLM 寫使用者審。
+- **已 shipped(v0.19)**:`JenAI scaffold "<描述>"` —— 自然語言生成 ament_python 套件(確定性 boilerplate 永遠可 build + LLM 寫 node 主體 + 送出前審閱 + 拒絕覆蓋)。
+- **已 shipped(v0.20)**:`--build` **生成即驗證閉環**(寫完即 colcon build,失敗餵錯誤回 LLM 修一輪,真 colcon 實測);**檔案定義技能**(skills/*.toml → 新 slash 指令,走同一張批准卡,保留字拒載)。
 - **關鍵步驟(深化)**:
   1. **ament_cmake / C++** 節點、launch file、多節點套件、自訂 msg/srv/action。
   2. **生成即驗證**:寫完自動 `colcon build`,錯誤回饋給 LLM 修一輪(閉環)。

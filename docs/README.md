@@ -12,6 +12,7 @@
 | [TEST](TEST.md) | 全部可測項目 + 期望輸出 + 環境須知(驗收手冊) |
 | [ONBOARDING](ONBOARDING.md) | 裸 ROS2 → 第一次導航的手把手(建圖/AMCL/Nav2) |
 | [TWIN_SETUP](TWIN_SETUP.md) | Isaac Sim 孿生場景建置、domain 隔離、G1–G5 |
+| [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) | Isaac 佔位圖生成 + Nav2 試跑完整流程(官方文件整理,接 JenAI /route) |
 | [SAFETY_CASE](SAFETY_CASE.md) | H1–H8 危害分析 → 防護層對應(HARA-lite) |
 | [THREAT_MODEL](THREAT_MODEL.md) | 信任邊界(WebUI token、MCP、/shell)一頁 |
 | [VERSIONING](VERSIONING.md) | semver 契約:public surface、棄用/遷移政策 |

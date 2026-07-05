@@ -45,6 +45,7 @@ _COMMAND_GROUPS = [
             "/patrol <place>, <place> [xN] [photo]",
             "/dock",
             "/report [list]",
+            "/skills(列出檔案定義技能;skills/*.toml 自訂 slash 指令)",
         ],
     ),
     CommandGroup(
