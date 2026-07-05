@@ -401,6 +401,64 @@ def daemon(
         console.print("stopped.")
 
 
+@app.command("eval")
+def eval_command(
+    scenarios_file: Annotated[
+        Path, typer.Argument(help="Scenario TOML (see scenarios.example.toml).")
+    ],
+    config: ConfigOption = None,
+    repeats: Annotated[int, typer.Option("--repeats", "-k", help="Runs per scenario.")] = 1,
+    json_output: Annotated[bool, typer.Option("--json", help="Machine-readable output.")] = False,
+) -> None:
+    """Measure the decision brain against labeled scenarios (thesis E1).
+
+    Reports per-family accuracy, refer rate, and the unsafe-action rate —
+    decision quality as numbers, not feelings.
+    """
+    from jenai.tools.decision_eval import load_scenarios, run_eval
+
+    config_path = config or default_config_path()
+    try:
+        loaded = load_config(config_path)
+    except ConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    try:
+        scenarios = load_scenarios(scenarios_file)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    report = asyncio.run(run_eval(loaded, scenarios, repeats=repeats))
+    if json_output:
+        typer.echo(json.dumps(
+            {"summary": report.summary, "families": report.families, "results": report.results},
+            ensure_ascii=False, indent=2,
+        ))
+        return
+    table = Table(title=f"Decision eval · {len(scenarios)} scenarios × {repeats}")
+    table.add_column("Family")
+    table.add_column("n", justify="right")
+    table.add_column("accuracy", justify="right")
+    table.add_column("unsafe", justify="right")
+    table.add_column("refer", justify="right")
+    for family, f in sorted(report.families.items()):
+        table.add_row(
+            family, str(f["n"]), f"{f['correct'] / f['n']:.0%}",
+            f"{f['unsafe'] / f['n']:.0%}", f"{f['refer'] / f['n']:.0%}",
+        )
+    s_ = report.summary
+    table.add_row(
+        "[bold]ALL[/bold]", str(s_["n"]), f"[bold]{s_['accuracy']:.0%}[/bold]",
+        f"[bold]{s_['unsafe_rate']:.0%}[/bold]", f"{s_['refer_rate']:.0%}",
+    )
+    console.print(table)
+    for row in report.results:
+        if not row["correct"]:
+            mark = "[red]✗ unsafe[/red]" if row["unsafe"] else "[yellow]✗[/yellow]"
+            console.print(f"  {mark} {row['id']}: {row['action']} — {row['reason']}")
+
+
 @app.command("version")
 def version_command() -> None:
     console.print(f"JenAI {__version__}")
