@@ -53,6 +53,7 @@ from jenai.tui.panels import (
     TimelineItem,
     WelcomePanel,
     _short_cwd,
+    pixel_mark,
     status_color,
 )
 from jenai.tui.robot_commands import RobotCommandsMixin
@@ -342,6 +343,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                         model_name=self._chat_model_display(),
                         config_path=self.config_path,
                         doctor_result=self.doctor_result,
+                        locations_count=self._count_locations(),
+                        skills_count=len(self._user_skills),
                     )
                     yield Vertical(id="events")
                 with Container(id="composer-wrap"):
@@ -357,6 +360,35 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self.query_one("#palette", CommandPalette).display = False
         self.query_one("#composer", Input).focus()
         self._apply_responsive(self.size.width)
+        # Mascot heartbeat: idle wag/blink; gallops while a task runs. Cheap
+        # (one small Text rebuild every 600 ms) and skipped when hidden.
+        self._mascot_frame = 0
+        self.set_interval(0.6, self._animate_mascot)
+
+    def _count_locations(self) -> int:
+        """Location count for the welcome card WITHOUT the tolerant loader —
+        that one creates a starter file, and composing a panel must never
+        write to disk."""
+        from jenai.adapters.locations import LocationsFileError, load_locations
+
+        path = self._locations_path()
+        if path is None or not path.exists():
+            return 0
+        try:
+            return len(load_locations(path))
+        except LocationsFileError:
+            return 0
+
+    def _animate_mascot(self) -> None:
+        try:
+            mark = self.query_one("#pixel-mark", Static)
+        except NoMatches:
+            return
+        if not mark.display or not self.query_one("#welcome").display:
+            return  # narrow layout hides the mascot — don't waste the repaint
+        self._mascot_frame += 1
+        running = self._active_task is not None and not self._active_task.done()
+        mark.update(pixel_mark(self._mascot_frame, running=running))
 
     def on_resize(self, event) -> None:
         self._apply_responsive(event.size.width)

@@ -86,6 +86,8 @@
   - **MCP action 擴充**(C4):patrol/dock 開給外部 agent(維持 `--allow-actions`)。
   - ~~檔案定義技能~~ ✅ v0.20(skills/*.toml,見 COMMANDS)。
   - **任務日誌可回放**:run 軌跡 + 決策紀錄(接軌道 1 的可審計)。
+  - ~~會動的吉祥物 + 歡迎面板 workspace 行~~ ✅ v0.21.1。
+  - UI 小池(候選):TUI 底部 statusline(電量/位姿/provider 即時)、時間軸時間戳、Camera 頁軌跡殘影、WebUI 版吉祥物、佈景主題切換。
 - **層別**:A 為主。
 
 ### 軌道 6 — Development Copilot(從 control agent 邁向寫碼)
