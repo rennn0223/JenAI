@@ -212,16 +212,26 @@ def scaffold(
         str | None,
         typer.Option("--ws", help="Workspace root (default: config ros2_ws or ~/ros2_ws)."),
     ] = None,
+    build: Annotated[
+        bool,
+        typer.Option("--build", help="colcon build after writing; one LLM repair on failure."),
+    ] = False,
 ) -> None:
     """Generate a ROS2 (ament_python) package from a natural-language spec.
 
     Deterministic boilerplate + LLM-written node body. Shows the plan, asks to
     confirm, writes under <ws>/src/<pkg>/, then prints the colcon build command.
+    With --build: builds immediately and, if the build fails, feeds the errors
+    back to the model for ONE repair round — generate-and-verify, honestly
+    reported either way.
     """
     from jenai.tools.ros2_pkg_core import (
+        build_package,
         default_ws,
         generate_package_plan,
         render_package,
+        repair_node,
+        rewrite_node,
         write_package,
     )
 
@@ -257,10 +267,32 @@ def scaffold(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     console.print(f"[green]Wrote {pkg_dir}[/green]")
-    console.print(
-        f"[#9c9689]Next:[/] cd {loaded.ros2_ws or '~/ros2_ws'} && "
-        f"colcon build --packages-select {plan.package_name}"
-    )
+    if not build:
+        console.print(
+            f"[#9c9689]Next:[/] cd {loaded.ros2_ws or '~/ros2_ws'} && "
+            f"colcon build --packages-select {plan.package_name}"
+        )
+        return
+
+    # Generate-and-verify: build now; one honest repair round on failure.
+    ws_root = ws_src.parent
+    console.print(f"[#9c9689]colcon build --packages-select {plan.package_name} …[/]")
+    ok, log = build_package(ws_root, plan.package_name)
+    if not ok:
+        console.print("[yellow]Build failed — asking the model for one repair round…[/yellow]")
+        repaired = asyncio.run(repair_node(loaded, plan, log))
+        if repaired is not None:
+            rewrite_node(repaired, ws_src)
+            ok, log = build_package(ws_root, plan.package_name)
+    if ok:
+        console.print(
+            f"[green]Build succeeded.[/green] "
+            f"Try: ros2 run {plan.package_name} {plan.node_name}"
+        )
+    else:
+        console.print("[red]Build still failing — package left in place for manual fixing:[/red]")
+        console.print(f"[#9c9689]{log}[/]")
+        raise typer.Exit(1)
 
 
 @app.command()

@@ -1,0 +1,8 @@
+# JenAI user skill — copy into ~/.config/jenai/skills/<name>.toml and restart.
+# A skill is a named /mission: it composes existing gated primitives (goto,
+# drive) and always shows ONE approval card before running. It can never
+# bypass safety — reserved names (stop, route, …) are refused at load.
+
+name = "inspect"                     # slash command: /inspect (default: file stem)
+description = "巡檢:大廳 → 機械系館"
+steps = "大廳, drive 左轉, 機械系館"   # exactly /mission syntax

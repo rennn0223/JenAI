@@ -208,6 +208,71 @@ def default_ws(config: AppConfig) -> Path:
     return Path(root).expanduser() / "src"
 
 
+def build_package(ws_root: Path, package_name: str, *, timeout: float = 300.0) -> tuple[bool, str]:
+    """Run `colcon build --packages-select <pkg>` in the workspace root.
+
+    Sources the ROS setup first (same ROS_SETUP contract as the bridge) so it
+    works from a non-sourced shell. Returns (ok, log_tail) — the tail is what
+    the repair round feeds back to the model. Honest failure when colcon/ROS
+    are absent: (False, reason), never a fake success.
+    """
+    import os
+    import subprocess
+
+    ros_setup = os.environ.get("ROS_SETUP", "/opt/ros/jazzy/setup.bash")
+    command = (
+        f'source "{ros_setup}" 2>/dev/null; '
+        f"colcon build --packages-select {package_name}"
+    )
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", command],
+            cwd=ws_root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return False, "bash/colcon not found — build skipped."
+    except subprocess.TimeoutExpired:
+        return False, f"colcon build timed out after {timeout:.0f}s."
+    log = (proc.stdout + "\n" + proc.stderr).strip()
+    # Keep only the tail: colcon logs are long and the model needs the error.
+    tail = "\n".join(log.splitlines()[-40:])
+    return proc.returncode == 0, tail
+
+
+_REPAIR_PROMPT = (
+    "The following ROS2 node failed to build. Fix the node source. Respond "
+    'with ONLY JSON: {{"node_code": "COMPLETE corrected python source"}}. '
+    "Do not change the package layout; no markdown fences.\n\n"
+    "--- build errors (tail) ---\n{errors}\n\n--- current node source ---\n{code}\n"
+)
+
+
+async def repair_node(config: AppConfig, plan: PackagePlan, build_log: str) -> PackagePlan | None:
+    """One LLM repair round: feed the build errors + node source back, get a
+    corrected node body. None when the model can't produce one (the caller
+    reports the build failure honestly instead of looping forever)."""
+    parsed = await ask_json(
+        config,
+        _REPAIR_PROMPT.format(errors=build_log[-3000:], code=plan.node_code[-6000:]),
+        binding="plan",
+    )
+    if not isinstance(parsed, dict) or not str(parsed.get("node_code", "")).strip():
+        return None
+    return plan.model_copy(update={"node_code": str(parsed["node_code"])})
+
+
+def rewrite_node(plan: PackagePlan, ws_src: Path) -> Path:
+    """Overwrite ONLY the node source of an already-written package (the
+    repair round must never touch the deterministic boilerplate)."""
+    node_path = ws_src / plan.package_name / plan.package_name / f"{plan.node_name}.py"
+    code = plan.node_code.strip() + "\n"
+    node_path.write_text(code, encoding="utf-8")
+    return node_path
+
+
 def write_package(plan: PackagePlan, ws_src: Path) -> Path:
     """Write a rendered package under ws_src/<pkg>/. Refuses to overwrite an
     existing package (never clobber the user's code). Returns the package dir."""

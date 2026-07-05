@@ -101,3 +101,60 @@ def test_generate_plan_parses_llm_and_degrades(monkeypatch) -> None:
 
     monkeypatch.setattr(mod, "ask_json", junk)
     assert asyncio.run(generate_package_plan(cfg, "x")) is None  # honest None
+
+
+# --- generate-and-verify (--build) -------------------------------------------
+
+
+class _Proc:
+    def __init__(self, rc: int, out: str = "", err: str = ""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_build_package_reports_ok_and_tail(monkeypatch, tmp_path: Path) -> None:
+    import subprocess
+
+    from jenai.tools.ros2_pkg_core import build_package
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0, "Summary: 1 package finished"))
+    ok, tail = build_package(tmp_path, "demo")
+    assert ok is True and "finished" in tail
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(1, "", "SyntaxError: bad"))
+    ok, tail = build_package(tmp_path, "demo")
+    assert ok is False and "SyntaxError" in tail
+
+
+def test_repair_node_returns_patched_plan_or_none(monkeypatch) -> None:
+    import jenai.tools.ros2_pkg_core as mod
+
+    cfg = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+
+    async def fixed(config, prompt, *, binding="chat"):
+        assert "SyntaxError" in prompt  # errors actually reach the model
+        return {"node_code": "def main():\n    pass\n"}
+
+    async def hopeless(config, prompt, *, binding="chat"):
+        return {"node_code": "   "}
+
+    monkeypatch.setattr(mod, "ask_json", fixed)
+    plan = asyncio.run(mod.repair_node(cfg, _plan(), "SyntaxError: bad"))
+    assert plan is not None and plan.node_code.startswith("def main")
+    assert plan.package_name == "obstacle_stop"  # layout untouched
+
+    monkeypatch.setattr(mod, "ask_json", hopeless)
+    assert asyncio.run(mod.repair_node(cfg, _plan(), "err")) is None
+
+
+def test_rewrite_node_touches_only_the_node_file(tmp_path: Path) -> None:
+    from jenai.tools.ros2_pkg_core import rewrite_node
+
+    ws_src = tmp_path / "src"
+    write_package(_plan(), ws_src)
+    before_xml = (ws_src / "obstacle_stop" / "package.xml").read_text()
+    fixed = _plan(node_code="# fixed\n")
+    rewrite_node(fixed, ws_src)
+    assert (ws_src / "obstacle_stop" / "obstacle_stop" / "stopper.py").read_text() == "# fixed\n"
+    assert (ws_src / "obstacle_stop" / "package.xml").read_text() == before_xml

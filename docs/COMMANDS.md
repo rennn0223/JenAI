@@ -22,7 +22,7 @@ JenAI 的命令分為兩層：
 | `JenAI providers` | 顯示 provider 清單 |
 | `JenAI models` | 顯示 model 綁定 |
 | `JenAI route "<text>"` | 非互動式 route 任務（互動確認後送出） |
-| `JenAI scaffold "<描述>"` | **自然語言生成 ROS2 (ament_python) 套件**：確定性 boilerplate（package.xml/setup.py…永遠可 build）+ LLM 寫的 node 主體（送出前確認、寫入 `ros2_ws/src/<pkg>/`）。`--ws` 指定工作區 |
+| `JenAI scaffold "<描述>"` | **自然語言生成 ROS2 (ament_python) 套件**：確定性 boilerplate + LLM 寫的 node 主體（送出前確認）。**`--build`：寫完即 colcon build，失敗自動餵錯誤給 LLM 修一輪（生成即驗證）**；`--ws` 指定工作區 |
 | `JenAI loc list` / `loc show <名>` | 非互動式 location 查詢 |
 | `JenAI version` | 顯示版本資訊 |
 
@@ -113,6 +113,7 @@ JenAI 啟動流程：
 | `/patrol <地點, …> [xN] [photo]` | **循環巡邏**：點位 × 圈數；`photo` 時每個到達點抓相機幀給 VLM 並即時回報觀察。一點失敗記錄後續行 | `/patrol A, B x3 photo` |
 | `/dock` | 回充：導航到 `tags = ["dock"]` 的地點（名字/別名是 Dock、充電站也認得） | `/dock` |
 | `/report` | 顯示最近一次巡邏日報（確定性內容 + LLM 摘要段；provider 離線時誠實只給前者）。log 存 `<config 目錄>/reports/`，patrol 結束自動寫入 | `/report`、`/report list` |
+| `/skills` | 列出**檔案定義技能**：`<config 目錄>/skills/*.toml`（name/description/steps=/mission 語法）→ 重啟後 `/名稱` 即新指令，進 palette、走同一張批准卡；保留字（stop/route…）拒載。範例見 repo 根目錄 `skills.example.toml` | `/skills`、`/inspect` |
 
 ### Vision
 

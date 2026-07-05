@@ -42,6 +42,7 @@ from jenai.tools.ros2_core import (
 )
 from jenai.tools.shell_core import assess_command, preview_command, run_shell
 from jenai.tools.skills import run_patrol
+from jenai.tools.user_skills import load_user_skills
 from jenai.tools.vision_core import capture_and_analyze
 from jenai.tui.info_commands import InfoCommandsMixin
 from jenai.tui.panels import (
@@ -105,6 +106,7 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/dock", "Return to the charging dock (needs approval)"),
     SlashCommand("/report", "Show the latest patrol report (+LLM digest)", "/report [list]"),
+    SlashCommand("/skills", "List file-defined user skills (skills/*.toml)"),
     SlashCommand(
         "/route", "Resolve and send a navigation route (needs approval)", "/route <text>"
     ),
@@ -293,6 +295,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self.doctor_result = doctor_result
         self._command_matches: list[SlashCommand] = []
         self._selected_command_index = 0
+        # File-defined skills (skills/*.toml): loaded once at startup; /skills
+        # lists them (and any load warnings) without restarting.
+        self._user_skills, self._skill_warnings = load_user_skills(config_path)
 
         self.session = create_session(config, working_directory=str(Path.cwd()))
         self.run_store = RunStore()
@@ -575,12 +580,13 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # instead of being treated as "done, now typing free-form args" — that
         # only kicks in once the query is no longer a prefix of any command.
         query = raw[1:].lower()
+        commands = self._all_slash_commands()
         name_matches = [
-            command for command in SLASH_COMMANDS if command.name[1:].lower().startswith(query)
+            command for command in commands if command.name[1:].lower().startswith(query)
         ]
         description_matches = [
             command
-            for command in SLASH_COMMANDS
+            for command in commands
             if command not in name_matches and query in command.description.lower()
         ]
         matches = name_matches + description_matches
@@ -620,8 +626,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     def _should_complete_command(self, value: str) -> bool:
         if not self._palette_is_visible() or not self._command_matches:
             return False
-        known_values = {command.name for command in SLASH_COMMANDS}
-        known_values.update(command.completion for command in SLASH_COMMANDS)
+        known_values = {command.name for command in self._all_slash_commands()}
+        known_values.update(command.completion for command in self._all_slash_commands())
         return value not in known_values
 
     def _complete_selected_command(self) -> None:
@@ -677,6 +683,42 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         except Exception as exc:
             await self._mount_event(TimelineItem("error", f"{command} failed: {exc}"))
 
+    def _all_slash_commands(self) -> list[SlashCommand]:
+        """Built-ins plus file-defined skills, so user skills get the same
+        palette/completion treatment as native commands."""
+        extras = [
+            SlashCommand(f"/{s.name}", f"Skill: {s.description}")
+            for s in self._user_skills.values()
+        ]
+        return SLASH_COMMANDS + extras
+
+    async def _show_skills(self, _: str = "") -> None:
+        from jenai.tools.user_skills import skills_dir
+
+        lines: list[str] = []
+        for s in self._user_skills.values():
+            lines.append(f"[bold #f2ede1]/{s.name}[/] — {s.description}")
+            lines.append(f"    [#9c9689]{s.steps}[/]")
+        for warning in self._skill_warnings:
+            lines.append(f"[#d99a86]⚠ {warning}[/]")
+        if not lines:
+            lines.append("No user skills yet.")
+        lines.append("")
+        lines.append(
+            f"[#9c9689]Add one: {skills_dir(self.config_path)}/<name>.toml with "
+            'name / description / steps(=/mission 語法) — restart to load.[/]'
+        )
+        await self._mount_event(OutputPanel("User skills", "\n".join(lines)))
+
+    async def _run_user_skill(self, name: str) -> None:
+        """A skill is a named mission: same parser, same approval card, same
+        gated execution — files can only compose primitives, never bypass."""
+        skill = self._user_skills[name]
+        await self._mount_event(
+            TimelineItem("success", f"Skill [bold #f2ede1]/{skill.name}[/] → {skill.steps}")
+        )
+        await self._show_mission(skill.steps)
+
     def _resolve_command_handler(self, command: str, arg: str):
         if command == "/ros":
             subcommand, _, rest = arg.partition(" ")
@@ -721,13 +763,22 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "/patrol": self._show_patrol,
             "/dock": self._show_dock,
             "/report": self._show_report,
+            "/skills": self._show_skills,
             "/vision": self._show_vision,
             "/perception": self._show_perception,
             "/shell": self._show_shell,
             "/quit": self._quit_from_command,
             "/exit": self._quit_from_command,
         }
-        return handlers.get(command), arg
+        handler = handlers.get(command)
+        if handler is not None:
+            return handler, arg
+        # File-defined skills: /name runs the skill's mission steps. Built-ins
+        # always win (checked first), and loading already refused reserved names.
+        skill_name = command[1:].lower()
+        if skill_name in self._user_skills:
+            return self._run_user_skill, skill_name
+        return None, arg
 
     async def on_unmount(self) -> None:
         if self._perception is not None:
