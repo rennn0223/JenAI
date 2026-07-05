@@ -6,7 +6,6 @@ import asyncio
 import time
 from pathlib import Path
 
-from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, ScrollableContainer, Vertical
 from textual.css.query import NoMatches
@@ -19,10 +18,8 @@ from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.providers import (
-    ProviderChatError,
     chat_model_name,
     resolve_model_alias,
-    stream_provider,
 )
 from jenai.schemas import (
     ApprovalRequest,
@@ -281,7 +278,22 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+d", "quit", "Quit"),
         ("escape", "focus_composer", "Focus input"),
+        ("shift+tab", "cycle_mode", "Mode"),
     ]
+
+    # Permission modes (shift+tab cycles). They decide two things: where a
+    # plain-language line goes, and whether approval cards pause execution.
+    #   approve — NL → /run agent; actions raise approval cards (default)
+    #   plan    — NL → /plan; nothing can execute (plan agent has no tools)
+    #   auto    — NL → /run agent; approval cards are auto-approved. The
+    #             safety FLOOR is untouched: hard speed clamps, Twin Gate,
+    #             watchdog and /stop never depended on approvals.
+    PERMISSION_MODES = ("approve", "plan", "auto")
+    _MODE_LABEL = {
+        "approve": "[#5fb1c0]⏵ 審批模式[/] · 自然語言交給 agent,動作先過批准卡",
+        "plan": "[#f0c84e]⏸ 規劃模式[/] · 只規劃與教學,不執行任何動作",
+        "auto": "[#d99a86]⏩ 自動模式[/] · 批准卡自動通過(急停/限速/閘門仍有效)",
+    }
 
     def __init__(
         self,
@@ -299,6 +311,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # File-defined skills (skills/*.toml): loaded once at startup; /skills
         # lists them (and any load warnings) without restarting.
         self._user_skills, self._skill_warnings = load_user_skills(config_path)
+        self._mode = "approve"  # shift+tab cycles; see MODES
 
         self.session = create_session(config, working_directory=str(Path.cwd()))
         self.run_store = RunStore()
@@ -541,60 +554,14 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             await self._handle_command(value)
         else:
             self._scroll_to_bottom()
-            await self._stream_chat_reply(value)
+            # Plain language is mode-routed: the point of the modes is that a
+            # bare sentence DOES something (plans or acts) instead of the model
+            # telling you which command to type.
+            if self._mode == "plan":
+                await self._show_plan(value)
+            else:  # approve / auto — the run agent answers questions too
+                await self._show_run(value)
         self._scroll_to_bottom()
-
-    async def _stream_chat_reply(self, prompt: str) -> None:
-        """Stream the assistant reply token-by-token into one TimelineItem."""
-        item = TimelineItem("assistant", "…")
-        await self._mount_event(item)
-        parts: list[str] = []
-
-        def _paint() -> None:
-            item.set_body(escape("".join(parts)))
-
-        async def _keep_or_drop() -> None:
-            # Freeze the partial answer, or drop the still-empty placeholder.
-            if parts:
-                _paint()
-            else:
-                await item.remove()
-
-        last_paint = 0.0
-        try:
-            async for delta in stream_provider(self.config, prompt):
-                parts.append(delta)
-                now = time.monotonic()
-                if now - last_paint >= 0.05:  # cap repaints at ~20 fps
-                    _paint()
-                    self._scroll_to_bottom()
-                    last_paint = now
-        except asyncio.CancelledError:
-            # Esc mid-answer. Widget ops can fail if the app is tearing down —
-            # never let that mask the cancellation itself.
-            try:
-                await _keep_or_drop()
-            except Exception:
-                pass
-            raise
-        except Exception as exc:
-            # ProviderChatError is the expected failure, but mid-stream errors
-            # (transport drops, nonconforming chunks) reach here unwrapped by
-            # the SDK — every one must surface, or the reply dies silently
-            # leaving an orphaned bubble. escape(): provider-supplied text may
-            # contain bracketed sequences Textual would parse as markup.
-            await _keep_or_drop()
-            message = str(exc) if isinstance(exc, ProviderChatError) else f"Chat failed: {exc!r}"
-            await self._mount_event(TimelineItem("error", escape(message)))
-            return
-
-        if not parts:
-            await item.remove()
-            await self._mount_event(
-                TimelineItem("error", "Provider returned an empty response.")
-            )
-            return
-        _paint()  # final full paint
 
     def action_focus_composer(self) -> None:
         self._hide_command_palette()
@@ -875,10 +842,16 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 self._pending_approvals[run.run_id] = entry
                 mounted_card = False
                 for approval in pending_approvals:
-                    # "Don't ask again": tools the user remembered this session
-                    # are auto-approved without another card.
-                    if approval.tool_name and approval.tool_name in self._auto_approved:
+                    # Auto mode approves everything; "don't ask again" tools
+                    # skip their card in any mode.
+                    if self._mode == "auto" or (
+                        approval.tool_name and approval.tool_name in self._auto_approved
+                    ):
                         entry["decisions"][approval.tool_call_id] = True
+                        if self._mode == "auto":
+                            await self._mount_event(
+                                TimelineItem("warn", f"自動模式:已批准 {approval.title}")
+                            )
                     else:
                         await self._mount_event(ApprovalCard(approval))
                         mounted_card = True
@@ -1309,11 +1282,35 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
     _SPINNER_FRAMES = "✻✳✢✦✳"
 
+    _MODE_CHIP = {
+        "approve": "[#5fb1c0]⏵ 審批[/]",
+        "plan": "[#f0c84e]⏸ 規劃[/]",
+        "auto": "[#d99a86]⏩ 自動[/]",
+    }
+
     def _status_line(self) -> str:
         profile = self._active_profile()
         provider = profile.provider if profile else "no-provider"
         model = self._chat_model_display()
-        return f"[#9c9689]⏵⏵ {provider} · {model} · {_short_cwd()}[/]"
+        chip = self._MODE_CHIP.get(getattr(self, "_mode", "approve"), "")
+        return f"{chip} [#9c9689]shift+tab · {provider} · {model} · {_short_cwd()}[/]"
+
+    def action_cycle_mode(self) -> None:
+        """shift+tab: approve → plan → auto → approve."""
+        modes = list(self.PERMISSION_MODES)
+        self._mode = modes[(modes.index(self._mode) + 1) % len(modes)]
+        try:
+            self.query_one("#statusbar", Static).update(self._status_line())
+        except NoMatches:
+            pass
+        # Timeline note so the transcript records WHEN the gate posture changed
+        # (an auto-approved action is only auditable if the switch is visible).
+        self.call_later(self._announce_mode)
+
+    async def _announce_mode(self) -> None:
+        await self._mount_event(TimelineItem("warn" if self._mode == "auto" else "success",
+                                             self._MODE_LABEL[self._mode]))
+        self._scroll_to_bottom()
 
     def _spinner_label_for(self, value: str) -> str:
         if value.startswith("/plan"):
