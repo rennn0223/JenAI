@@ -1342,3 +1342,24 @@ def test_auto_mode_skips_approval_card_but_logs(monkeypatch) -> None:
 
     asyncio.run(run())
     assert ran["steps"] == 2
+
+
+def test_plan_mode_provider_error_shows_message_not_crash(monkeypatch) -> None:
+    """Regression: plain language in plan mode routes to run_plan, which has no
+    exception net; a provider/model failure must surface as a clean error, not
+    an unhandled task exception (the /plan slash and old chat both caught this)."""
+
+    async def boom_plan(self, arg):
+        raise RuntimeError("provider is down")
+
+    monkeypatch.setattr(JenAITuiApp, "_show_plan", boom_plan)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            app._mode = "plan"
+            await app.handle_user_text("帶我去機械系館")  # must not raise
+            texts = [str(getattr(c, "body", "")) for c in app.query_one("#events").children]
+            assert any("provider is down" in t for t in texts)
+
+    asyncio.run(run())

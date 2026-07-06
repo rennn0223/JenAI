@@ -311,7 +311,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # File-defined skills (skills/*.toml): loaded once at startup; /skills
         # lists them (and any load warnings) without restarting.
         self._user_skills, self._skill_warnings = load_user_skills(config_path)
-        self._mode = "approve"  # shift+tab cycles; see MODES
+        self._mode = "approve"  # shift+tab cycles; see PERMISSION_MODES
 
         self.session = create_session(config, working_directory=str(Path.cwd()))
         self.run_store = RunStore()
@@ -556,11 +556,17 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             self._scroll_to_bottom()
             # Plain language is mode-routed: the point of the modes is that a
             # bare sentence DOES something (plans or acts) instead of the model
-            # telling you which command to type.
-            if self._mode == "plan":
-                await self._show_plan(value)
-            else:  # approve / auto — the run agent answers questions too
-                await self._show_run(value)
+            # telling you which command to type. Wrapped like _handle_command so
+            # a provider error or non-conforming model output (run_plan does not
+            # catch these) surfaces as a clean message instead of an unhandled
+            # task exception — the exception net the removed chat stream had.
+            try:
+                if self._mode == "plan":
+                    await self._show_plan(value)
+                else:  # approve / auto — the run agent answers questions too
+                    await self._show_run(value)
+            except Exception as exc:
+                await self._mount_event(TimelineItem("error", f"Failed: {exc}"))
         self._scroll_to_bottom()
 
     def action_focus_composer(self) -> None:
