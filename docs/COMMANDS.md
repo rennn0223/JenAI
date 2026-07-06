@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v0.7 系列(2026-07)。
+> 對應版本:v0.23 系列(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -23,6 +23,7 @@ JenAI 的命令分為兩層：
 | `JenAI models` | 顯示 model 綁定 |
 | `JenAI route "<text>"` | 非互動式 route 任務（互動確認後送出） |
 | `JenAI scaffold "<描述>"` | **自然語言生成 ROS2 (ament_python) 套件**：確定性 boilerplate + LLM 寫的 node 主體（送出前確認）。**`--build`：寫完即 colcon build，失敗自動餵錯誤給 LLM 修一輪（生成即驗證）**；`--ws` 指定工作區 |
+| `JenAI eval <scenarios.toml>` | **決策腦 E1 評測**(v0.21):跑場景庫(種子庫見 `scenarios.example.toml`),輸出 per-family accuracy / refer rate / unsafe rate;`--repeats/-k` 每場景重複數、`--json` 機器可讀 |
 | `JenAI loc list` / `loc show <名>` | 非互動式 location 查詢 |
 | `JenAI version` | 顯示版本資訊 |
 
@@ -92,7 +93,6 @@ JenAI 啟動流程：
 | `/ros echo <topic> [count]` | 擷取 N 筆訊息快照（snapshot 模式） | `/ros echo /scan 3` |
 | `/ros pub <topic> <payload>` | 向 topic 發送訊息（需批准；速度過 `[vehicle]` 硬限速） | `/ros pub /cmd_vel {"linear":{"x":0.5}}` |
 | `/ros drive <topic> <payload> [秒]` | 定頻發布 N 秒後自動送 0 停車（需批准） | `/ros drive /cmd_vel {"linear":{"x":0.5}} 2` |
-| `/ros state` | 機器人當下狀態快照（/odom + /scan，閉環感知） | `/ros state` |
 
 ### Route / 地點
 

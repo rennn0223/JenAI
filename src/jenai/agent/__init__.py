@@ -1,3 +1,5 @@
+"""Agent layer: planning/review/run agents, session wiring, guardrails."""
+
 from __future__ import annotations
 
 from jenai.agent.context import JenAIRunContext

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ApprovalCardFields:
+    """Human-facing copy for one approval card (title/summary/raw/why)."""
+
     title: str
     summary: str
     raw_action: str

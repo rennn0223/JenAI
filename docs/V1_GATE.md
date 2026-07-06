@@ -1,14 +1,15 @@
 # V1_GATE — v1.0 驗收基準與兩層分工
 
-> 對應版本:**v0.18.1**。v1.0 的定義:**一份承諾** —— 介面不再亂動、安全語意經過驗證、
+> 對應版本:**v0.23.0**。v1.0 的定義:**一份承諾** —— 介面不再亂動、安全語意經過驗證、
 > 陌生人能靠文件自己跑起來。本文件是 v1.0 前的待辦總表,依「誰能完成」分兩層;
 > 每個 release 對照打勾。前瞻主圖見 **[ROADMAP.md](ROADMAP.md)**。
 >
 > **範圍決策**:v1.0 鎖在「監督式操作平台」邊界(人永遠在圈內);
 > M6 自主決策迴圈是 v2 主線,不擋 v1.0。
 >
-> **現況(v0.18.1)**:層一 A1–A8、A10 全 ✅(僅 A9=M6 屬 v2);層二待客戶下場,
-> B2 已起頭(應科大樓/機械系館以 GPS 註冊)。v1.0 剩的幾乎全是**客戶端實機數據**。
+> **現況(v0.23.0)**:層一 A1–A8、A10 全 ✅(僅 A9=M6 屬 v2,且決策腦+eval 已於
+> v0.21 先落地);層二待客戶下場,B2 已起頭(應科大樓/機械系館以 GPS 註冊)。
+> 程式端已收整凍結(注釋/文件/交接齊備),v1.0 剩的幾乎全是**客戶端實機數據**。
 
 ---
 
@@ -24,7 +25,7 @@
 | A6 | 24h soak 腳本 | `scripts/soak.py`:RSS 樹採樣 + warmup 校正 + PASS/WARN 判定;真 daemon 短跑驗證過(+0.0% PASS)。**24h 正式跑掛機時啟動**(見 TEST.md) | ✅ v0.13(24h 跑待排) |
 | A7 | Safety case 草稿 | docs/SAFETY_CASE.md:H1–H8 危害表 → R/G/H/P 防護對應 → 驗證證據 → 殘餘風險;⬜ TODO(客戶)欄待 B4/B5/B6 數據 | ✅ v0.13(草稿) |
 | A8 | 巡邏日報(C2) | patrol 結束自動存 log(`reports/patrol-*.json`);`/report` 確定性日報 + LLM 摘要(離線誠實降級)、`/report list` 回看歷次 | ✅ v0.12 |
-| A9 | M6 DecisionLoop 核心 | 有界動作集決策 + `jenai bench decision` 延遲量測(**v2 線,不擋 v1.0**;零件已備,詳見 [ROADMAP 軌道 1](ROADMAP.md)) | ☐ v2 |
+| A9 | M6 DecisionLoop 核心 | 有界動作集決策 + 延遲量測(**v2 線,不擋 v1.0**)。決策腦 `decision_core.py` + `JenAI eval`(E1)已於 v0.21 落地;剩常駐迴圈 perceive→decide→rehearse→act,詳見 [ROADMAP 軌道 1](ROADMAP.md) | 🚧 v2(腦已備) |
 | A10 | 注釋/結構清理 pass | 全庫稽核(v0.13):零 TODO/FIXME、零死碼(未引用 defs 僅 Typer 註冊命令)、唯一未 import 模組是 rclpy sidecar(設計如此)—— 無需清理 | ✅ v0.13 |
 
 ## 層二:客戶端必須下場 — 實機驗測與回饋

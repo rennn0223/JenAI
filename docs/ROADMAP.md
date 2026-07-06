@@ -1,13 +1,13 @@
 # ROADMAP — 演進與維護深度規劃
 
-> 對應版本:**v0.18.1**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
+> 對應版本:**v0.23.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
 > 五條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
 > 方向收斂邏輯見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md);v1.0 驗收與兩層分工見
 > [V1_GATE](V1_GATE.md);每次改動的驗收標準見根目錄 `CLAUDE.md`。
 
 ---
 
-## 1. 現況真實快照(v0.18.1)
+## 1. 現況真實快照(v0.23.0)
 
 過去的 M1–M6 表低估了實際進度。誠實盤點「真的 shipped 了什麼」:
 
@@ -18,9 +18,10 @@
 - **地點**:`/loc add here`(pose)、**`/loc add gps`**(經緯度 + `[map_datum]` 換算)。
 - **Twin Gate pipeline**:G1–G5、pass/block/refer、自主路徑 refer→block、獨立 ROS_DOMAIN_ID(剩 Isaac 場景 = 客戶 B5)。
 - **感知**:PerceptionLoop(相機→VLM→SceneAnalysis),daemon `@perception` 規則共用同一 gating。
-- **介面**:TUI(Claude Code 風)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`。
+- **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
 - **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
-- **工程基建**:352 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿、`scripts/soak.py`、22 份目錄 README、semver 契約、威脅模型、safety case 草稿。
+- **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
+- **工程基建**:375 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿、`scripts/soak.py`、22 份目錄 README、semver 契約、威脅模型、safety case 草稿。
 
 ### 未完成的主線
 - **M6 自主決策迴圈**(A9):零件都在(感知、有界動作、odom 直驅、避障、Gate、規則引擎),但把它們串成「感知→情境快照→LLM 決策→預演→執行→回饋」的閉環**還沒建**。這是最大的未完成項,也是論文主軸。
@@ -119,7 +120,7 @@
 | D5 | **release 節奏過碎**(一天十幾 patch) | changelog 噪音、版本語意稀釋 | 收斂:feature 累積成有意義的 minor;patch 只留真 bug/安全修;semver 契約(VERSIONING)已立 |
 
 ### 3.2 測試策略演進
-- **現況**:352 單元測試(無 ROS 全綠)+ CI 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
+- **現況**:375 單元測試(無 ROS 全綠)+ CI 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
 - **下一步**:
   - D1 的 sibling 抽取 → 提升 bridge 邏輯覆蓋。
   - **HIL 冒煙**(選配):self-hosted runner 連 Isaac,跑一條 `/route` + 避障的端到端(現在只能人工 E2E)。
@@ -146,10 +147,12 @@
 
 | 版本 | 主題 | 內容 |
 |---|---|---|
-| **v0.19** | 導航堆疊 + 觀測性 | 軌道 3 的 Nav2 bringup 工具 + GPS datum 校正;D4 run 日誌 + `bench` 延遲雛形 |
-| **v0.20** | 可維護性硬化 | D1 sibling 抽取(nav 狀態機/halt/watchdog 純邏輯 → 單測);D3 padded/noisy fixture |
+| ~~v0.19~~ ✅ | Development copilot(實走) | `JenAI scaffold`:NL→ROS2 套件(原規劃「導航堆疊+觀測性」讓位,後移) |
+| ~~v0.20~~ ✅ | 生成即驗證 + 檔案技能(實走) | scaffold `--build` colcon 閉環;`skills/*.toml`(原規劃「D1 sibling 硬化」後移) |
 | ~~v0.21~~ ✅ | Eval 地基(提前) | decision_core + `JenAI eval`(E1);Tier-0 對標的 eval 紀律起點 |
-| **v0.22+** | 感知深化 | 軌道 2:depth→Nav2 costmap;VLM 語意層進規則 |
+| ~~v0.22~~ ✅ | 權限三模式 | Shift+Tab 審批/規劃/自動 + 自然語言路由例外網 |
+| ~~v0.23~~ ✅ | 終章收整 | 全庫注釋/文件對齊、HANDOFF 終章;程式凍結,轉入數據期 |
+| **v0.24+** | 原規劃回補(數據期擋修) | 軌道 3 導航工具 + D1 sibling 抽取 + 軌道 2 depth→Nav2 costmap(僅在實測需要時做) |
 | **v1.0** | **監督式操作平台定稿** | V1_GATE 層一全 ✅ + 層二 B1–B7 客戶數據齊;安全鏈 ~100%、24h soak、實車 20h/50 任務;semver/safety case/Twin 消融定稿 |
 | **v2.0** | **自主決策大腦** | 軌道 1:M6 DecisionLoop 完整迴圈 + 邊緣延遲優化;論文 E1–E4 數據 |
 | **v2.x** | 多機 / 平台 | 軌道 4/5:多載具、語音、costmap 疊圖、檔案定義技能 |

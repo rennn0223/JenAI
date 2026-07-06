@@ -1,3 +1,5 @@
+"""Session-local state: input history, run store, session setup."""
+
 from __future__ import annotations
 
 from jenai.state.history import InputHistory

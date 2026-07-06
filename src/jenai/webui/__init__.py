@@ -1,3 +1,5 @@
+"""Multi-page WebUI: console, camera, status, JSON API."""
+
 from __future__ import annotations
 
 from jenai.webui.render import render_dashboard_html, render_main

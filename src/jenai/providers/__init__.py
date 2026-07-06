@@ -1,3 +1,5 @@
+"""LLM provider bindings (chat + agent model construction)."""
+
 from __future__ import annotations
 
 from jenai.providers.agent_model import build_agent_model

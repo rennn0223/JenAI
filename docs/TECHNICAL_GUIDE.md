@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v0.9 系列(2026-07)。專案方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
+> 對應版本:v0.23 系列(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -18,6 +18,9 @@
 - **WebUI 儀表板**:手機也能看狀態、下指令、批准動作、看即時地圖
 - **MCP server**:`jenai mcp` 把機器人工具開放給 Claude Code/Desktop 等 client(預設唯讀)
 - **daemon 常駐**:規則觸發(如電量低回充),預設只通報、明確授權才動作
+- **權限三模式**(v0.22):Shift+Tab 循環「審批/規劃/自動」;裸自然語言依模式路由(規劃只想不動、自動免批准卡),急停/硬限速永不放鬆
+- **Development copilot**(v0.19+):`JenAI scaffold` 自然語言生成 ROS2 套件(`--build` 生成即 colcon 驗證);`skills/*.toml` 檔案定義技能
+- **決策腦 + 評測**(v0.21):`decision_core` 有界動作單選決策、`JenAI eval` E1 場景評測(論文工具鏈)
 
 ## 2. 從零建置
 
@@ -101,8 +104,14 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 | 導航 | `/route from A to B` | 需批准;Nav2 模式下**即時顯示剩餘距離,Esc 真的取消 goal** |
 | 地點 | `/loc list`、`/loc show <名>`、**`/loc add here <名>`** | add here 抓當下機器人位置存檔 |
 | 視覺 | `/vision image <路徑>`、**`/vision camera [topic]`** | camera 預設讀 `vehicle.camera_topic` |
+| 感知 | `/perception start|stop|status` | 相機→VLM 定頻結構化分析;只觀察不動作 |
+| 日報 | `/report`、`/report list` | 巡邏日報:確定性彙整 + LLM 摘要(離線誠實降級) |
+| 技能檔 | `/skills`(+ `skills/*.toml` 定義的自訂指令) | 檔案定義技能,走同一張批准卡;保留字拒載 |
+| Shell | `/shell <cmd>`(或 `!<cmd>`) | 需批准;風險評估進批准卡 |
 | 模型 | `/model`(列出+編號切換)、`/models`、`/provider <名>`、`/providers` | 即時生效並持久化 |
 | 系統 | `/status`、`/doctor`、`/config`、`/permissions`、`/help`、`/clear`、`/quit` | |
+
+**權限模式(v0.22)**:**Shift+Tab** 循環切換「審批(預設)/規劃/自動」。模式路由的是**裸自然語言**——打一句話就會做事(規劃模式只產計畫不執行;審批/自動模式交給 run agent);自動模式下批准卡一律自動批准(時間軸以 warn 明示「自動模式:已批准」)。slash 指令不受模式改道;急停與硬限速在任何模式都不放鬆。自然語言路由包例外網(v0.22.1):provider 錯誤/模型輸出不合規以乾淨訊息呈現,不會變成未處理例外。
 
 ### 3.2 WebUI(`jenai web`,預設 127.0.0.1:8760)
 
@@ -152,8 +161,8 @@ jenai daemon                                        # Ctrl-C 停止
 
 | 模組 | 行數 | 職責 |
 |---|---|---|
-| `cli/main.py` | ~430 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
-| `tui/app.py` | 1241 | App 殼:輸入分發、串流聊天渲染、spinner、Esc 中斷、`/stop` 搶佔、審批卡流程、mission/patrol 執行 |
+| `cli/main.py` | 568 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、**`eval`**、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
+| `tui/app.py` | 1386 | App 殼:輸入分發、**權限三模式(Shift+Tab)與裸自然語言路由**、spinner、Esc 中斷、`/stop` 搶佔、審批卡流程、mission/patrol 執行 |
 | `tui/robot_commands.py` | 689 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/loc` `/vision` + bridge 生命週期(含 watchdog 佈署) |
 | `tui/info_commands.py` | 292 | Mixin:`/help` `/status` `/doctor` `/model` `/provider` 等資訊類 |
 | `tui/panels.py` | 352 | 純視覺:WelcomePanel、TimelineItem(variant 決定行距)、OutputPanel、CommandPalette |
@@ -163,7 +172,10 @@ jenai daemon                                        # Ctrl-C 停止
 | `tools/*_core.py` | — | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
 | `tools/nav_live.py` | 143 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback`(nav2-vs-CLI 調度的唯一出處,TUI/MCP 共用)** |
 | `tools/skills.py` | 145 | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
-| `tools/ros2_pkg_core.py` | ~200 | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋。從 control agent 邁向 development copilot |
+| `tools/ros2_pkg_core.py` | 286 | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋;`--build` 生成即 colcon 驗證(失敗餵錯誤回 LLM 修一輪)。從 control agent 邁向 development copilot |
+| `tools/decision_core.py` | 104 | **M6 決策腦**(v0.21):`ContextSnapshot`(六欄位情境快照)→ 單次 `ask_json` 於封閉動作集單選 `Decision`;越界動作/幻覺目的地/解析失敗一律降級 refer_to_human,無自由文字可達致動 |
+| `tools/decision_eval.py` | 110 | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate(論文工具鏈) |
+| `tools/user_skills.py` | 85 | **檔案定義技能**(v0.20):`skills/*.toml` → 新 slash 指令;與內建指令同一張批准卡;保留字拒載 |
 | `tools/safety.py` | 32 | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
 | `tools/perception.py` | ~180 | **PerceptionLoop**:持續相機→VLM→結構化 `SceneAnalysis`(場景/物件/affordances/建議動作);TUI `/perception`、daemon `@perception` 規則共用;只觀察不動作 |
 | `mcp_server/server.py` | 183 | FastMCP stdio server:唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |
@@ -227,13 +239,14 @@ env -u PYTHONPATH uv run ruff check src tests
 Roadmap 的正式版在 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)(必做 M1–M5、可做、考慮做);已完成與剩餘:
 
 1. ~~MCP server 化~~(v0.6)、~~急停 + watchdog(M1)~~、~~vehicle profile(M2)~~、~~任務技能 patrol/dock(M4)~~(以上 v0.7 系列完成)
-2. **M5 onboarding**:doctor 擴充(map server/AMCL/Nav2 lifecycle 檢查)+ 建圖到首航的手把手文件
-3. **M3 Twin Gate**:第二個 bridge 以 `ROS_DOMAIN_ID` 隔離指向 Isaac Sim 孿生;goal 先在孿生跑,G1–G5 判準過閘才碰實體(掛載點:`navigate_with_fallback`)
-4. **WebUI SSE**:把 5s/2s 輪詢換成 Server-Sent Events;地圖點擊下 goal(走既有 confirm 流程)
-5. **多機器人**:namespace 切換(`/robot <ns>`),M3 的第二 bridge 就是地基
-6. **語音**:Jetson 上 Whisper(STT)+ Piper(TTS),入口掛在 TUI 輸入層
-7. **巡邏報告**:patrol 的每點觀察已存在,補「彙整成日報」(LLM 摘要 + 存檔)
-8. **Nav2 進階**:waypoint following(`FollowWaypoints` action)取代逐點 send
+2. ~~M5 onboarding~~ ✅([ONBOARDING.md](ONBOARDING.md):裸 ROS2 → 建圖 → 定位 → Nav2 → 首航;doctor nav 檢查即進度條)
+3. ~~M3 Twin Gate~~ ✅(v0.9,見 [TWIN_SETUP.md](TWIN_SETUP.md):G1–G5 判準、pass/block/refer、獨立 ROS_DOMAIN_ID;剩 Isaac 場景 = 客戶 B5)
+4. ~~巡邏報告~~ ✅(v0.12 `/report`:確定性日報 + LLM 摘要,離線誠實降級)
+5. **WebUI SSE**:把 5s/2s 輪詢換成 Server-Sent Events;地圖點擊下 goal(走既有 confirm 流程)
+6. **多機器人**:namespace 切換(`/robot <ns>`),Twin 的第二 bridge 就是地基(ROADMAP 軌道 4)
+7. **語音**:Jetson 上 Whisper(STT)+ Piper(TTS),入口掛在 TUI 輸入層(ROADMAP 軌道 5)
+8. **Nav2 進階**:waypoint following(`FollowWaypoints` action)取代逐點 send;depth→costmap(ROADMAP 軌道 2)
+9. **M6 常駐迴圈**(v2 主軸):決策腦與 eval 已備(`decision_core`/`decision_eval`),剩 perceive→decide→rehearse→act 接成常駐迴圈(ROADMAP 軌道 1)
 
 ---
 *其他文件:[PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)(方向與 roadmap)、[COMMANDS.md](COMMANDS.md)(指令規格)。[ARCHITECTURE.md](ARCHITECTURE.md)、[FEATURES.md](FEATURES.md)、[UX.md](UX.md)、[DATA_SCHEMAS.md](DATA_SCHEMAS.md)、[STATE_MACHINE.md](STATE_MACHINE.md)、[MOSCOW.md](MOSCOW.md) 為 v0.1 設計期文件,細節以本指南與程式碼為準。*

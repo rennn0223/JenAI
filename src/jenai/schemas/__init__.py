@@ -1,3 +1,5 @@
+"""Shared pydantic schemas for approvals, doctor, and outputs."""
+
 from __future__ import annotations
 
 from jenai.schemas.models import (

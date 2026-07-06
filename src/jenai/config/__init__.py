@@ -1,3 +1,5 @@
+"""App configuration: models, TOML store, first-run setup."""
+
 from __future__ import annotations
 
 from jenai.config.models import AppConfig, ProviderProfile
