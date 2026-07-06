@@ -21,7 +21,7 @@
 - **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
 - **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
 - **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
-- **工程基建**:375 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿、`scripts/soak.py`、22 份目錄 README、semver 契約、威脅模型、safety case 草稿。
+- **工程基建**:375 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
 
 ### 未完成的主線
 - **M6 自主決策迴圈**(A9):零件都在(感知、有界動作、odom 直驅、避障、Gate、規則引擎),但把它們串成「感知→情境快照→LLM 決策→預演→執行→回饋」的閉環**還沒建**。這是最大的未完成項,也是論文主軸。
@@ -133,7 +133,7 @@
 - Provider SDK(openai/litellm/agents)升級走相容測試。
 
 ### 3.4 CI/CD 演進
-- 已有:test(ruff+pytest+覆蓋倒退閘)、build(wheel 冒煙)、release(tag→草稿)。
+- 已有:test(ruff+pytest+覆蓋倒退閘)、build(wheel 冒煙)、release(tag→草稿;notes 版本化在 `docs/releases/`,發佈仍走人工閘)。
 - 規劃:Node20→24 actions 升級(release annotation 提醒過)、依賴掃描(pip-audit/Dependabot)、可選 HIL job、coverage 趨勢圖進 job summary。
 
 ### 3.5 文件可持續性

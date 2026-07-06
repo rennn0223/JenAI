@@ -37,9 +37,9 @@ env -u PYTHONPATH uv run ruff check scripts src tests
 git add -A && git commit -m "Release v1.0.0" && git push -u origin release/v1.0.0
 gh pr create --title "Release v1.0.0" --body "V1_GATE 全項完成,見 V1_RELEASE_CHECKLIST"
 gh pr merge <PR#> --merge --delete-branch
-# 5) tag → workflow 自動草稿 → 換 notes 發佈
+# 5) notes 先寫進 docs/releases/v1.0.0.md(隨 PR review)→ tag → workflow 草稿 → 人工發佈
 git tag -a v1.0.0 -m "JenAI v1.0.0" && git push origin v1.0.0
-gh release edit v1.0.0 --notes-file <你的 v1.0 notes> --draft=false
+gh release edit v1.0.0 --notes-file docs/releases/v1.0.0.md --draft=false
 ```
 
 **v1.0 notes 該寫什麼**(素材都在):五視角簽字條件逐條、與 v0.1 對照的能力表、

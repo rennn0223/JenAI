@@ -29,7 +29,7 @@
 | 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.23.0 基準 `375 passed`,約 25s,無 ROS 環境也全過);含安全鏈故障注入(bridge 啟動失敗/watchdog 武裝失敗/twin 預演中斷/halt 失敗誠實回報)與架構鐵律測試 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job(ruff+pytest,coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
-| Release gate | 推 `vX.Y.Z` tag | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → 草稿 release 附 wheel/sdist |
+| Release gate | 推 `vX.Y.Z` tag | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → 草稿 release 附 wheel/sdist(發佈用 `docs/releases/<tag>.md` 的 notes 走人工閘) |
 | 安全鏈覆蓋閘 | CI `test` job 自動跑 | `coverage report --fail-under=90`(estop/watchdog/bridge/gate/rules);現況 92%,倒退即紅 |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 
