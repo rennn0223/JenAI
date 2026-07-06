@@ -20,6 +20,10 @@ JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人
 - **TUI + WebUI 雙介面**：terminal 優先；WebUI 有對話 console、即時地圖、手機批准
 - **daemon 常駐模式**：`jenai daemon` 規則觸發（如電量低回充），預設只通報、明確授權才動作
 - **MCP server**：`jenai mcp` 把機器人工具開放給 Claude Code／Desktop 等 MCP client（預設唯讀，`--allow-actions` 才開放導航）
+- **權限三模式**：TUI Shift+Tab 循環切換「審批／規劃／自動」——裸自然語言依模式路由（規劃模式只產計畫不執行、自動模式批准卡自動批准並明示），急停與硬限速在任何模式都不放鬆
+- **Development copilot**：`JenAI scaffold "<描述>"` 自然語言生成 ROS2 套件（boilerplate 確定性生成 + LLM 寫 node 主體 + 送出前審閱；`--build` 生成即 colcon 驗證）；`skills/*.toml` 檔案定義技能擴充 slash 指令
+- **決策核心與評測**：`decision_core` 有界動作集單選決策（越界一律降級 refer）+ `JenAI eval` E1 場景評測（accuracy／unsafe rate／refer rate）
+- **巡邏日報**：`/report` 確定性日報 + LLM 摘要（離線誠實降級），`/report list` 回看歷次
 
 ---
 
@@ -115,6 +119,10 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 | 文件 | 說明 |
 |---|---|
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（新人先讀這份） |
+| [docs/CODE_TOUR.md](docs/CODE_TOUR.md) | **全程式碼逐檔導讀**：每個檔案在做什麼、為什麼這樣設計 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | **前瞻主圖**：現況快照、演進五軌、工程健康度、風險登記 |
+| [docs/V1_GATE.md](docs/V1_GATE.md) | v1.0 驗收基準與兩層分工（agent 可獨力 vs 需客戶下場） |
+| [docs/HANDOFF.md](docs/HANDOFF.md) | 交接與臨別備忘：狀態、方法、誠實的話 |
 | [docs/ONBOARDING.md](docs/ONBOARDING.md) | **機器人上線手把手**：裸 ROS2 → 建圖 → 定位 → Nav2 → 第一次 `/route`（`jenai doctor` 的 nav 檢查就是進度條） |
 | [docs/PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md) | **專案方向**：三方視角收斂的六層架構、功能優先序（必做 M1–M5）與可用性評估 |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | CLI + slash 命令完整規格 |
@@ -138,16 +146,18 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v0.9 系列，2026-07）
+## 狀態（v0.23 系列，2026-07）
 
-> ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating。
+> ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
-> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（剩餘距離+Esc 真取消）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/dock`、`/loc add here` 現場建點、`/vision image|camera`、`/model`／`/provider` 雲地即時切換。
+> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（Nav2／odom 直驅雙路徑，剩餘距離+Esc 真取消）、depth 反應式避障（follow-the-gap）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/dock`、`/loc add here|gps` 現場建點與 GPS 註冊、`/vision image|camera`、`/perception` 持續感知、`/report` 巡邏日報、`/model`／`/provider` 雲地即時切換。
 >
-> ✅ **介面**：Claude 風格 TUI、WebUI（console+手機批准+即時地圖+STOP）、MCP server、daemon 常駐。全部走同一套共用原語（導航調度、急停、相機分析、地點載入各只有一份）。
+> ✅ **介面**：Claude 風格 TUI（會動的吉祥物+權限三模式 Shift+Tab）、多頁 WebUI（Console／Camera／Status／API，token 認證+手機批准+即時地圖+STOP）、MCP server、daemon 常駐、`skills/*.toml` 檔案定義技能。全部走同一套共用原語（導航調度、急停、相機分析、地點載入各只有一份）。
 >
-> ✅ **工程**：305 測試（無 ROS 的 CI 可全跑）、rclpy bridge 協定有純 stdlib fake、誠實回報原則貫穿每條路徑。
+> ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測（論文工具鏈）。
+>
+> ✅ **工程**：375 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、誠實回報原則貫穿每條路徑。
 >
 > ✅ **Twin Gate**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：導航目標先在數位孿生（獨立 ROS_DOMAIN_ID）預演，G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗 → pass／block／refer；`[twin]` 一行開關，所有導航入口與 daemon 全部過閘，daemon 自主路徑 refer 一律視同 block。
 >
-> 🚧 **進行中**（見 [PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md)）：M3 Isaac Sim 孿生場景建置（工作站作業，見 TWIN_SETUP.md）、M6 自主決策迴圈（論文主軸）。
+> 🚧 **進行中**（見 [ROADMAP.md](docs/ROADMAP.md)／[V1_GATE.md](docs/V1_GATE.md)）：v1.0 等實機驗測數據（客戶層二 B1–B7）；M6 自主決策常駐迴圈是 v2 主軸（決策腦零件已備）。

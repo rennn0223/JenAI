@@ -126,6 +126,14 @@ def condition_met(rule: Rule, value: Any, data: dict | None = None) -> bool:
 
 @dataclass
 class Decision:
+    """Verdict for one (rule, message) evaluation.
+
+    Invariant: `fired` means the condition matched — it does NOT permit
+    movement. `navigate_to` is set only when every gate in handle_event
+    passed (condition + cooldown + auto_approve + nav2 adapter); consumers
+    must act on `navigate_to`/`halt`, never on `fired` alone.
+    """
+
     rule: Rule
     value: Any
     fired: bool

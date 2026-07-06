@@ -1,3 +1,5 @@
+"""Textual TUI (Claude Code-style console)."""
+
 from __future__ import annotations
 
 from jenai.tui.app import JenAITuiApp, run_tui, status_color

@@ -20,6 +20,7 @@
 | [SAFETY_CASE](SAFETY_CASE.md) | H1–H8 危害分析 → 防護層對應(HARA-lite) |
 | [THREAT_MODEL](THREAT_MODEL.md) | 信任邊界(WebUI token、MCP、/shell)一頁 |
 | [VERSIONING](VERSIONING.md) | semver 契約:public surface、棄用/遷移政策 |
+| [releases/](releases/) | 各版手寫 release notes(隨 PR review 版本化;發佈時作為 notes 來源) |
 | [ARCHITECTURE](ARCHITECTURE.md) / [STATE_MACHINE](STATE_MACHINE.md) / [DATA_SCHEMAS](DATA_SCHEMAS.md) / [FEATURES](FEATURES.md) / [MOSCOW](MOSCOW.md) / [UX](UX.md) | v0.1 設計期文件(含歷史標註)與 UX 基準 |
 | THESIS_* | 論文規劃(不入版控的除外) |
 

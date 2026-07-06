@@ -1,11 +1,12 @@
 # tui — Textual 終端介面(主介面)
 
 Claude Code 風格的 TUI:時間軸 bullet、slash palette(Tab 補完)、
-編號批准卡(1/2/3 鍵)、Esc 真取消(Nav2 goal 會停)、`/stop` 任何時刻搶佔。
+編號批准卡(1/2/3 鍵)、Esc 真取消(Nav2 goal 會停)、`/stop` 任何時刻搶佔、
+**權限三模式(Shift+Tab:審批/規劃/自動)**——裸自然語言依模式路由。
 
 | 檔案 | 職責 |
 |---|---|
-| `app.py` | App 殼:輸入分發(chat / `!` shell / slash)、串流聊天渲染、spinner、批准卡流程、mission/patrol 執行與日報存檔、`SLASH_COMMANDS` 表(palette 資料源) |
+| `app.py` | App 殼:輸入分發(裸語言依權限模式路由 / `!` shell / slash)、spinner、批准卡流程(自動模式明示自動批准)、mission/patrol 執行與日報存檔、`SLASH_COMMANDS` 表(palette 資料源) |
 | `robot_commands.py` | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/loc` `/vision` `/perception` `/report` + bridge 生命週期(watchdog 佈署) |
 | `info_commands.py` | Mixin:`/help` `/status` `/doctor` `/model` `/provider` `/config` 等資訊類 |
 | `panels.py` | 純視覺:WelcomePanel(吉祥物)、TimelineItem(variant 決定行距)、OutputPanel、CommandPalette |

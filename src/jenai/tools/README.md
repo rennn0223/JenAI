@@ -13,7 +13,10 @@
 | `ros2_core.py` | topics/echo/schema/pub/drive 核心;**`[vehicle]` 硬限速夾在執行路徑上,LLM 碰不到夾限值** |
 | `vision_core.py` | `capture_and_analyze`(相機→VLM 的唯一出處) |
 | `shell_core.py` | shell 執行 + 風險評估(批准卡的素材) |
-| `ros2_pkg_core.py` | **自然語言 → ROS2 (ament_python) 套件**:確定性 boilerplate(package.xml/setup.py 永遠可 build)+ LLM 寫 node 主體;`render_package` 純函數可單測。`JenAI scaffold` 的核心 —— 從 control agent 邁向 development copilot |
+| `ros2_pkg_core.py` | **自然語言 → ROS2 (ament_python) 套件**:確定性 boilerplate(package.xml/setup.py 永遠可 build)+ LLM 寫 node 主體;`render_package` 純函數可單測;`--build` 生成即 colcon 驗證。`JenAI scaffold` 的核心 —— 從 control agent 邁向 development copilot |
+| `decision_core.py` | **M6 決策腦**:`ContextSnapshot` → 封閉動作集單選 `Decision`;越界/幻覺目的地/解析失敗一律降級 refer_to_human —— 無自由文字可達致動 |
+| `decision_eval.py` | `JenAI eval`(論文 E1):場景庫 → per-family accuracy / refer rate / unsafe rate |
+| `user_skills.py` | 檔案定義技能:`skills/*.toml` → 新 slash 指令;與內建同一張批准卡,保留字拒載 |
 | `registry.py` / `summaries.py` / `tracking.py` / `approval_formatters.py` | 工具註冊、輸出摘要、nav 事件關聯、批准卡文案 |
 
 鐵律:此層以上不得出現載具字眼(CI 強制)—— 載具差異收在 `config` 的 `[vehicle]`。

@@ -47,6 +47,14 @@ class ContextSnapshot(BaseModel):
 
 
 class Decision(BaseModel):
+    """One discrete choice from the closed action set — the ONLY thing that
+    may reach actuation.
+
+    `action` is constrained to ACTIONS at validation time, so a hallucinated
+    verb fails parsing and degrades to refer_to_human upstream. extra="ignore"
+    tolerates models that emit extra keys; unknown *values* still fail.
+    """
+
     model_config = ConfigDict(extra="ignore")
 
     action: Literal[*ACTIONS]
