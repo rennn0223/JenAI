@@ -273,6 +273,13 @@ def _short_cwd() -> str:
 
 
 
+# Extra torso columns beyond the original sketch — THE one number to bump
+# when the dachshund needs to be longer. Rear parts (tail, back legs, torso
+# start) shift left together; head/front stay put. Mind the welcome panel's
+# narrow-layout threshold in app.py when growing this.
+EXTRA_LENGTH = 4
+
+
 def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
     """The dachshund mascot, one animation frame at a time.
 
@@ -294,6 +301,7 @@ def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
     tail_up = frame % 2 == 0
     blink = (not running) and frame % 8 == 6  # a blink every ~5s at idle pace
     stride = frame % 2 if running else None
+    ext = EXTRA_LENGTH  # rear-half leftward shift (longer dog)
 
     cells: dict[tuple[int, int], str] = {}
 
@@ -327,42 +335,42 @@ def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
         fill(14, 3, 15, 4, colors["black"])
         put(15, 3, colors["white"])
     put(17, 6, colors["cheek"])
-    fill(-1, 7, 13, 10, colors["body"])
-    delete(-1, 7)
-    fill(0, 10, 12, 10, colors["belly"])
+    fill(-1 - ext, 7, 13, 10, colors["body"])
+    delete(-1 - ext, 7)
+    fill(0 - ext, 10, 12, 10, colors["belly"])
     # Tail: wag between an up-curl and a down-sweep.
     if tail_up:
-        put(-2, 6, colors["body"])
-        put(-3, 5, colors["body"])
-        put(-3, 4, colors["body"])
-        put(-2, 4, colors["body"])
+        put(-2 - ext, 6, colors["body"])
+        put(-3 - ext, 5, colors["body"])
+        put(-3 - ext, 4, colors["body"])
+        put(-2 - ext, 4, colors["body"])
     else:
-        put(-2, 8, colors["body"])
-        put(-3, 9, colors["body"])
-        put(-3, 10, colors["body"])
-        put(-2, 10, colors["body"])
+        put(-2 - ext, 8, colors["body"])
+        put(-3 - ext, 9, colors["body"])
+        put(-3 - ext, 10, colors["body"])
+        put(-2 - ext, 10, colors["body"])
     # Legs: standing, or a two-pose gallop (pairs spread ↔ tucked).
     if stride is None:
-        fill(0, 11, 1, 13, colors["body"])
-        fill(3, 11, 4, 13, colors["body"])
+        fill(0 - ext, 11, 1 - ext, 13, colors["body"])
+        fill(3 - ext, 11, 4 - ext, 13, colors["body"])
         fill(10, 11, 11, 13, colors["body"])
         fill(13, 11, 14, 13, colors["body"])
     elif stride == 0:  # spread: back pair kicks back, front pair reaches out
-        fill(-1, 11, 0, 13, colors["body"])
-        fill(4, 11, 5, 13, colors["body"])
+        fill(-1 - ext, 11, 0 - ext, 13, colors["body"])
+        fill(4 - ext, 11, 5 - ext, 13, colors["body"])
         fill(9, 11, 10, 13, colors["body"])
         fill(14, 11, 15, 13, colors["body"])
     else:  # tucked under the body
-        fill(1, 11, 2, 13, colors["body"])
-        fill(2, 11, 3, 13, colors["body"])
+        fill(1 - ext, 11, 2 - ext, 13, colors["body"])
+        fill(2 - ext, 11, 3 - ext, 13, colors["body"])
         fill(11, 11, 12, 13, colors["body"])
         fill(12, 11, 13, 13, colors["body"])
     # Collar/tag is drawn last: the body fills above cover this region.
     fill(11, 7, 12, 9, colors["collar"])
     put(12, 10, colors["tag"])
     # Pin the bounding box so every frame renders the same size (no jitter):
-    # x −3..20 and y 1..13 are the extremes across all poses.
-    cells.setdefault((-3, 1), None)
+    # x (−3−ext)..20 and y 1..13 are the extremes across all poses.
+    cells.setdefault((-3 - ext, 1), None)
     cells.setdefault((20, 13), None)
 
     min_x = min(x for x, _ in cells)
