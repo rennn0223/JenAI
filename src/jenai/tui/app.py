@@ -408,7 +408,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
     def _apply_responsive(self, width: int) -> None:
         # On a narrow (mobile) terminal, collapse decorative chrome so nothing
-        # gets crushed. The mascot needs ~26 columns to render cleanly.
+        # gets crushed. The mascot needs ~30 columns to render cleanly
+        # (24 + panels.EXTRA_LENGTH + margins).
         try:
             self.query_one("#welcome").set_class(width < 56, "narrow")
         except NoMatches:
