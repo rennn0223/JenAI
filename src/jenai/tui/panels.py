@@ -241,6 +241,22 @@ class CommandPalette(Static):
     # matching command is reachable without a hard cap.
     WINDOW = 12
 
+    def update_hint(self, command: SlashCommand) -> None:
+        """Dim, non-interactive argument-format hint shown while typing args.
+
+        Completion inserts only the command name; the format lives HERE as a
+        hint — never in the composer, where it would have to be deleted.
+        """
+        args = command.template.removeprefix(command.name).strip()
+        text = Text()
+        text.append("格式  ", style=f"bold {ACCENT}")
+        text.append(command.name, style="bold #f2ede1")
+        if args:
+            text.append(f"  {args}", style=MUTED)
+        if command.description:
+            text.append(f"\n  {command.description}", style=MUTED)
+        self.update(text)
+
     def update_matches(
         self,
         matches: list[SlashCommand],

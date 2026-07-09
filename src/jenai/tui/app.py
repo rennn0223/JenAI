@@ -605,13 +605,37 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         matches = name_matches + description_matches
 
         if not matches:
-            self._hide_command_palette()
+            # Typing arguments of a known command → show its format as a dim,
+            # non-interactive hint (the completion inserts only the name, so
+            # the palette carries the "what goes next" knowledge instead).
+            hint = self._argument_hint(raw)
+            if hint is None:
+                self._hide_command_palette()
+                return
+            self._command_matches = []
+            self._selected_command_index = 0
+            palette.display = True
+            palette.update_hint(hint)
             return
 
         self._command_matches = matches
         self._selected_command_index = min(self._selected_command_index, max(len(matches) - 1, 0))
         palette.display = True
         palette.update_matches(matches, self._selected_command_index)
+
+    def _argument_hint(self, raw: str) -> SlashCommand | None:
+        """The command whose arguments are being typed, if it has a template.
+
+        Longest name wins so "/loc add …" hints /loc add, not a shorter
+        prefix command.
+        """
+        lowered = raw.lower()
+        candidates = [
+            command
+            for command in self._all_slash_commands()
+            if "<" in command.template and lowered.startswith(command.name.lower() + " ")
+        ]
+        return max(candidates, key=lambda command: len(command.name), default=None)
 
     def _hide_command_palette(self) -> None:
         self.query_one("#palette", CommandPalette).display = False
@@ -649,22 +673,19 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
         command = self._command_matches[self._selected_command_index]
         composer = self.query_one("#composer", Input)
-        # Bare (no-argument) commands complete with a trailing space, ready to
-        # submit; templated ones (e.g. "/ros pub <topic> <payload>") complete
-        # as-is, with the cursor placed at the first "<placeholder>" so the
-        # user can type straight over it.
-        completion = command.completion
-        composer.value = completion if completion != command.name else f"{completion} "
-        placeholder_index = composer.value.find("<")
-        composer.cursor_position = (
-            placeholder_index if placeholder_index != -1 else len(composer.value)
-        )
-        self._hide_command_palette()
+        # Complete the command NAME only, never the "<placeholder>" template —
+        # an inserted template had to be deleted before typing real arguments.
+        # The argument format shows as a dim palette HINT instead (see the
+        # hint branch in _sync_command_palette).
+        composer.value = f"{command.name} "
+        composer.cursor_position = len(composer.value)
+        self._sync_command_palette(composer.value)  # command list → format hint
         composer.focus()
 
-    # Palette completions like "/model <name|number>" insert their usage
-    # placeholder into the composer; a submitted placeholder must never reach a
-    # handler (it once saved the literal "<name|number>" as a model binding).
+    # A submitted "<placeholder>" must never reach a handler (it once saved the
+    # literal "<name|number>" as a model binding). Completion no longer inserts
+    # templates, but /help and docs still show them — keep the net for
+    # copy-paste and manual input.
     _TEMPLATE_VALUES = frozenset(c.template for c in SLASH_COMMANDS if "<" in c.template)
 
     async def _handle_command(self, value: str) -> None:
