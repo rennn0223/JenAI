@@ -170,6 +170,19 @@ def _detail_markup(lines: list[str]) -> str:
     return "\n".join(out)
 
 
+def _spaced_detail(lines: list[str]) -> list[str]:
+    """Exactly one blank line between logical lines, collapsing whatever
+    spacing the model chose — prose replies get a FIXED airy rhythm
+    regardless of how the answer was formatted."""
+    logical = [line for line in lines if line.strip()]
+    out: list[str] = []
+    for line in logical:
+        if out:
+            out.append("")
+        out.append(line)
+    return out
+
+
 class PromptPill(Static):
     """Echo of the user's submitted line, shown as a muted `>` prompt."""
 
@@ -201,10 +214,20 @@ class TimelineItem(Static):
 
 
 class OutputPanel(Static):
-    """A bullet with a title line and elbow-indented body lines (no box)."""
+    """A bullet with a title line and elbow-indented body lines (no box).
 
-    def __init__(self, title: str, body: str, *, variant: str = "assistant") -> None:
-        detail = _detail_markup(body.split("\n")) if body else ""
+    ``spaced=True`` gives the body the assistant-reply rhythm (one blank
+    line between logical lines, pre-existing blanks collapsed) — use it for
+    prose answers; tables and listings stay compact by default.
+    """
+
+    def __init__(
+        self, title: str, body: str, *, variant: str = "assistant", spaced: bool = False
+    ) -> None:
+        body_lines = body.split("\n") if body else []
+        if spaced:
+            body_lines = _spaced_detail(body_lines)
+        detail = _detail_markup(body_lines) if body_lines else ""
         markup = _bullet_markup(variant, f"[bold #f2ede1]{title}[/]")
         if detail:
             markup = f"{markup}\n{detail}"
