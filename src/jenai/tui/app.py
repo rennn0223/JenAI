@@ -126,6 +126,11 @@ SLASH_COMMANDS = [
     ),
     SlashCommand("/perception stop", "Stop the perception loop"),
     SlashCommand("/shell", "Run a host shell command (needs approval)", "/shell <cmd>"),
+    SlashCommand(
+        "/mode",
+        "Set/cycle permission mode (Shift+Tab fallback)",
+        "/mode [approve|plan|auto]",
+    ),
     SlashCommand("/clear", "Clear the output area"),
     SlashCommand("/quit", "Exit JenAI"),
 ]
@@ -759,6 +764,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "/model": self._show_model,
             "/provider": self._show_provider,
             "/permissions": self._show_permissions,
+            "/mode": self._show_mode,
             "/config": self._show_config,
             "/plan": self._show_plan,
             "/run": self._show_run,
@@ -1309,7 +1315,10 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     def action_cycle_mode(self) -> None:
         """shift+tab: approve → plan → auto → approve."""
         modes = list(self.PERMISSION_MODES)
-        self._mode = modes[(modes.index(self._mode) + 1) % len(modes)]
+        self._set_mode(modes[(modes.index(self._mode) + 1) % len(modes)])
+
+    def _set_mode(self, mode: str) -> None:
+        self._mode = mode
         try:
             self.query_one("#statusbar", Static).update(self._status_line())
         except NoMatches:
@@ -1317,6 +1326,28 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # Timeline note so the transcript records WHEN the gate posture changed
         # (an auto-approved action is only auditable if the switch is visible).
         self.call_later(self._announce_mode)
+
+    # Typed fallback for terminals that never deliver Shift+Tab (common over
+    # SSH clients and embedded terminals) — same state, same announcement.
+    _MODE_ALIASES = {
+        "approve": "approve", "審批": "approve",
+        "plan": "plan", "規劃": "plan",
+        "auto": "auto", "自動": "auto",
+    }
+
+    async def _show_mode(self, arg: str = "") -> None:
+        """/mode [approve|plan|auto] — set the permission mode; no arg cycles."""
+        choice = arg.strip().lower()
+        if not choice:
+            self.action_cycle_mode()
+            return
+        mode = self._MODE_ALIASES.get(choice)
+        if mode is None:
+            await self._mount_event(
+                TimelineItem("error", "用法:/mode [approve|plan|auto](不帶參數 = 循環切換)")
+            )
+            return
+        self._set_mode(mode)
 
     async def _announce_mode(self) -> None:
         await self._mount_event(TimelineItem("warn" if self._mode == "auto" else "success",

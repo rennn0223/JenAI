@@ -1304,6 +1304,29 @@ def test_mode_cycle_shift_tab_and_status_chip() -> None:
     asyncio.run(run())
 
 
+def test_mode_slash_command_is_shift_tab_fallback() -> None:
+    """/mode sets (en/zh alias) or cycles the permission mode — for terminals
+    that never deliver Shift+Tab; bad args leave the mode untouched."""
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/mode plan")
+            await pilot.pause()
+            assert app._mode == "plan"
+            await app.handle_user_text("/mode 自動")
+            await pilot.pause()
+            assert app._mode == "auto"
+            await app.handle_user_text("/mode")  # 不帶參數 = 循環:auto → approve
+            await pilot.pause()
+            assert app._mode == "approve"
+            await app.handle_user_text("/mode bogus")
+            await pilot.pause()
+            assert app._mode == "approve"  # 錯誤參數不改變模式
+
+    asyncio.run(run())
+
+
 def test_plain_language_routes_by_mode(monkeypatch) -> None:
     """The point of the modes: a bare sentence plans or acts — it no longer
     just chats back 'here is the command you could type'."""

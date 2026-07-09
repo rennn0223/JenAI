@@ -2,7 +2,7 @@
 
 Claude Code 風格的 TUI:時間軸 bullet、slash palette(Tab 補完)、
 編號批准卡(1/2/3 鍵)、Esc 真取消(Nav2 goal 會停)、`/stop` 任何時刻搶佔、
-**權限三模式(Shift+Tab:審批/規劃/自動)**——裸自然語言依模式路由。
+**權限三模式(Shift+Tab:審批/規劃/自動,`/mode` 為鍵盤備援)**——裸自然語言依模式路由。
 
 | 檔案 | 職責 |
 |---|---|

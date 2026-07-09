@@ -59,7 +59,7 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="System",
-        commands=["/shell <cmd>"],
+        commands=["/shell <cmd>", "/mode [approve|plan|auto](權限模式;Shift+Tab 的備援)"],
     ),
     CommandGroup(
         name="Provider / Model",
@@ -87,6 +87,9 @@ _KEYBOARD_SHORTCUTS = [
     KeyboardShortcut(key="1 / 2 / 3", action="Pick an approval option (Yes / Yes+remember / No)"),
     KeyboardShortcut(key="Tab", action="Complete the selected command"),
     KeyboardShortcut(key="↑ / ↓", action="History, command palette, or approval options"),
+    KeyboardShortcut(
+        key="Shift+Tab", action="Cycle permission mode (approve/plan/auto); /mode if unsupported"
+    ),
 ]
 
 
