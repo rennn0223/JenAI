@@ -22,6 +22,25 @@ from jenai.tools.route_core import route_execute, route_preview
 
 TWIST = "geometry_msgs/msg/Twist"
 
+# Console palette data — MUST mirror what _slash()/_ros()/_loc() actually
+# handle. Extend both together (the palette is the promise, _slash is the
+# implementation; a phantom row here is the /ros state bug all over again).
+WEB_SLASH_COMMANDS: list[dict[str, str]] = [
+    {"name": "/help", "usage": "/help", "desc": "指令總覽"},
+    {"name": "/status", "usage": "/status", "desc": "provider / model / config 狀態"},
+    {"name": "/doctor", "usage": "/doctor", "desc": "環境健檢(逐項 pass/warn/fail)"},
+    {"name": "/ros topics", "usage": "/ros topics", "desc": "列出 ROS graph topics"},
+    {"name": "/ros topic-info", "usage": "/ros topic-info <topic>", "desc": "type 與 pub/sub 數"},
+    {"name": "/ros schema", "usage": "/ros schema <topic>", "desc": "訊息欄位摘要 + 範例 payload"},
+    {"name": "/ros echo", "usage": "/ros echo <topic> [count]", "desc": "擷取 N 筆訊息快照"},
+    {"name": "/ros pub", "usage": "/ros pub <topic> <json>", "desc": "發布一筆訊息(需確認)"},
+    {"name": "/ros drive", "usage": "/ros drive <topic> <json> [秒]", "desc": "定頻駕駛(需確認)"},
+    {"name": "/drive", "usage": "/drive 前進兩秒", "desc": "自然語言駕駛(需確認)"},
+    {"name": "/route", "usage": "/route from A to B", "desc": "解析並送導航(需確認)"},
+    {"name": "/loc list", "usage": "/loc list", "desc": "列出已知地點"},
+    {"name": "/loc show", "usage": "/loc show <name>", "desc": "地點詳細資料"},
+]
+
 
 def _esc(text: Any) -> str:
     return _html.escape(str(text))

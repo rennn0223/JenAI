@@ -21,7 +21,7 @@
 - **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
 - **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
 - **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
-- **工程基建**:377 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
+- **工程基建**:378 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
 
 ### 未完成的主線
 - **M6 自主決策迴圈**(A9):零件都在(感知、有界動作、odom 直驅、避障、Gate、規則引擎),但把它們串成「感知→情境快照→LLM 決策→預演→執行→回饋」的閉環**還沒建**。這是最大的未完成項,也是論文主軸。
@@ -88,6 +88,8 @@
   - ~~檔案定義技能~~ ✅ v0.20(skills/*.toml,見 COMMANDS)。
   - **任務日誌可回放**:run 軌跡 + 決策紀錄(接軌道 1 的可審計)。
   - ~~會動的吉祥物 + 歡迎面板 workspace 行~~ ✅ v0.21.1。
+  - ~~WebUI slash 指令選擇表~~ ✅ v0.23.4(與 `_slash` 實作同源,測試強制)。
+  - **WebUI 跑 agent**:Console 純文字改走 run agent,tool calling 時間軸(`⏺/⎿`)+ 批准卡整合(需要 run 狀態流式推送;目前 WebUI 純文字=單輪聊天)。
   - UI 小池(候選):TUI 底部 statusline(電量/位姿/provider 即時)、時間軸時間戳、Camera 頁軌跡殘影、WebUI 版吉祥物、佈景主題切換。
 - **層別**:A 為主。
 
@@ -120,7 +122,7 @@
 | D5 | **release 節奏過碎**(一天十幾 patch) | changelog 噪音、版本語意稀釋 | 收斂:feature 累積成有意義的 minor;patch 只留真 bug/安全修;semver 契約(VERSIONING)已立 |
 
 ### 3.2 測試策略演進
-- **現況**:377 單元測試(無 ROS 全綠)+ CI 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
+- **現況**:378 單元測試(無 ROS 全綠)+ CI 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
 - **下一步**:
   - D1 的 sibling 抽取 → 提升 bridge 邏輯覆蓋。
   - **HIL 冒煙**(選配):self-hosted runner 連 Isaac,跑一條 `/route` + 避障的端到端(現在只能人工 E2E)。

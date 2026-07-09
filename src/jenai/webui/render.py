@@ -8,8 +8,11 @@ unit-tested (and reused by doctor's webui-assets check) in isolation.
 from __future__ import annotations
 
 import html
+import json
 from datetime import datetime
 from typing import Any
+
+from jenai.webui.commands import WEB_SLASH_COMMANDS
 
 
 def _esc(value: Any) -> str:
@@ -281,7 +284,19 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
 .btn-approve{background:var(--accent); color:#fff}
 .btn-approve:hover{background:var(--accent-ink)}
 .btn-cancel{background:transparent; color:var(--muted); border-color:var(--line)}
-#cmdform{display:flex; gap:8px}
+#cmdform{display:flex; gap:8px; position:relative}
+/* Slash palette: floats above the input, TUI-style (type "/" to open). */
+#palette{display:none; position:absolute; bottom:100%; left:0; right:0; margin-bottom:8px;
+  background:var(--card); border:1px solid var(--line); border-radius:12px; padding:6px;
+  box-shadow:0 10px 28px rgba(0,0,0,.14); max-height:280px; overflow-y:auto; z-index:5}
+.pal-row{display:flex; gap:12px; align-items:baseline; padding:7px 10px; border-radius:8px;
+  cursor:pointer}
+.pal-row.sel{background:rgba(217,119,87,.13)}
+.pal-row.sel .pal-name::before{content:"❯ "; color:var(--accent); font-weight:700}
+.pal-name{font-family:ui-monospace,Menlo,monospace; font-size:13px; color:var(--ink);
+  white-space:nowrap}
+.pal-desc{color:var(--muted); font-size:12.5px; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap}
 #cmdinput{flex:1; font:inherit; font-size:14.5px; color:var(--ink); background:var(--paper);
   border:1px solid var(--line); border-radius:12px; padding:10px 14px; outline:none}
 #cmdinput:focus{border-color:var(--accent); box-shadow:0 0 0 3px rgba(217,119,87,.14)}
@@ -365,6 +380,7 @@ body:not(.view-api) #apicard{display:none}
   <div class="card-head"><h2>Console</h2><span class="dim">type a command, or ask in plain language</span></div>
   <div id="transcript"></div>
   <form id="cmdform" autocomplete="off">
+    <div id="palette" role="listbox"></div>
     <input id="cmdinput" placeholder="/drive 前進兩秒 · /ros topics · or ask anything…" autocomplete="off">
     <button type="submit" id="cmdsend">Send</button>
   </form>
@@ -455,11 +471,52 @@ estop.addEventListener('click', async () => {
 
 const form = document.getElementById('cmdform');
 const input = document.getElementById('cmdinput');
+
+// Slash palette (TUI parity): type "/" → filtered command list; ↑/↓ select,
+// Tab or click completes, Esc hides. SLASH is server-rendered from
+// WEB_SLASH_COMMANDS so the palette can never promise an unimplemented command.
+const SLASH = __SLASH__;
+const pal = document.getElementById('palette');
+let palIdx = 0, palMatches = [];
+function palHide(){ pal.style.display='none'; palMatches=[]; }
+function palRender(){
+  pal.innerHTML = palMatches.map((c,i) =>
+    '<div class="pal-row'+(i===palIdx?' sel':'')+'" data-i="'+i+'">' +
+    '<span class="pal-name">'+esc(c.usage)+'</span>' +
+    '<span class="pal-desc">'+esc(c.desc)+'</span></div>').join('');
+  pal.style.display='block';
+  pal.querySelectorAll('.pal-row').forEach(r => {
+    r.onmousedown = (e) => { e.preventDefault(); palPick(+r.dataset.i); };
+  });
+}
+function palSync(){
+  const v = input.value.replace(/^\s+/, '').toLowerCase();
+  // Only while the query still narrows a command name; once args are being
+  // typed (or nothing matches) the palette gets out of the way.
+  palMatches = v.startsWith('/') ? SLASH.filter(c => c.name.startsWith(v)) : [];
+  if(!palMatches.length){ palHide(); return; }
+  palIdx = Math.min(palIdx, palMatches.length-1);
+  palRender();
+}
+function palPick(i){
+  input.value = palMatches[i].name + ' ';
+  palHide(); input.focus(); palIdx = 0; palSync();
+}
+input.addEventListener('input', () => { palIdx = 0; palSync(); });
+input.addEventListener('keydown', (e) => {
+  if(pal.style.display !== 'block' || !palMatches.length) return;
+  if(e.key === 'ArrowDown'){ e.preventDefault(); palIdx = (palIdx+1) % palMatches.length; palRender(); }
+  else if(e.key === 'ArrowUp'){ e.preventDefault(); palIdx = (palIdx-1+palMatches.length) % palMatches.length; palRender(); }
+  else if(e.key === 'Tab'){ e.preventDefault(); palPick(palIdx); }
+  else if(e.key === 'Escape'){ palHide(); }
+});
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = input.value.trim();
   if(!text) return;
   input.value='';
+  palHide();
   block('you', el('you-line', '<span class="you-mark">›</span> ' + esc(text)));
   const send = document.getElementById('cmdsend'); send.disabled=true; send.textContent='…';
   try { render(await post('api/command', {text})); }
@@ -614,4 +671,5 @@ if(window.innerWidth > 640) input.focus();
 
 def render_dashboard_html(status: dict[str, Any]) -> str:
     """Render the full Claude-Desktop-style dashboard page."""
-    return _PAGE.replace("__MAIN__", render_main(status))
+    slash_json = json.dumps(WEB_SLASH_COMMANDS, ensure_ascii=False)
+    return _PAGE.replace("__MAIN__", render_main(status)).replace("__SLASH__", slash_json)
