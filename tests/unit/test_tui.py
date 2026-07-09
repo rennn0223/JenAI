@@ -828,7 +828,10 @@ def test_tui_typing_resets_history_cursor() -> None:
     asyncio.run(run())
 
 
-def test_tui_palette_completes_parameter_template() -> None:
+def test_tui_palette_completes_name_only_and_hints_format() -> None:
+    """Tab completes the command NAME (nothing to delete before typing args);
+    the argument template shows as a dim palette hint instead."""
+
     async def run() -> None:
         app = _app()
         async with app.run_test() as pilot:
@@ -841,8 +844,18 @@ def test_tui_palette_completes_parameter_template() -> None:
             await pilot.press("tab")
 
             composer = app.query_one("#composer")
-            assert composer.value == "/ros pub <topic> <payload>"
-            assert composer.cursor_position == composer.value.index("<")
+            assert composer.value == "/ros pub "  # 名稱+空格,無 <placeholder>
+            assert composer.cursor_position == len(composer.value)
+
+            palette = app.query_one("#palette")
+            assert palette.display  # 補完後 palette 留著當格式提示
+            hint = app.query_one("#palette").render()
+            assert "<topic>" in str(hint) and "格式" in str(hint)
+
+            for ch in "/cmd_vel":  # 繼續打參數,提示仍在、不干擾輸入
+                await pilot.press(ch)
+            assert composer.value == "/ros pub /cmd_vel"
+            assert app.query_one("#palette").display
 
     asyncio.run(run())
 

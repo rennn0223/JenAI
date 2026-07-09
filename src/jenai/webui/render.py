@@ -150,7 +150,9 @@ def render_main(status: dict[str, Any]) -> str:
 # Static shell (head + hero + footer + refresh script). Kept as a plain string
 # so the literal CSS/JS braces don't collide with f-string formatting; the
 # dynamic body is spliced in at __MAIN__.
-_PAGE = """<!DOCTYPE html>
+# Raw string: the embedded JS contains regex escapes (e.g. /^\s+/) that are
+# not Python escape sequences.
+_PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -297,6 +299,8 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
   white-space:nowrap}
 .pal-desc{color:var(--muted); font-size:12.5px; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap}
+.pal-hint{cursor:default}
+.pal-hint .pal-name{color:var(--accent-ink)}
 #cmdinput{flex:1; font:inherit; font-size:14.5px; color:var(--ink); background:var(--paper);
   border:1px solid var(--line); border-radius:12px; padding:10px 14px; outline:none}
 #cmdinput:focus{border-color:var(--accent); box-shadow:0 0 0 3px rgba(217,119,87,.14)}
@@ -491,12 +495,19 @@ function palRender(){
 }
 function palSync(){
   const v = input.value.replace(/^\s+/, '').toLowerCase();
-  // Only while the query still narrows a command name; once args are being
-  // typed (or nothing matches) the palette gets out of the way.
   palMatches = v.startsWith('/') ? SLASH.filter(c => c.name.startsWith(v)) : [];
-  if(!palMatches.length){ palHide(); return; }
-  palIdx = Math.min(palIdx, palMatches.length-1);
-  palRender();
+  if(palMatches.length){ palIdx = Math.min(palIdx, palMatches.length-1); palRender(); return; }
+  // Typing arguments of a known command → dim, non-interactive format hint
+  // (completion inserts only the name; the format is a hint, never input).
+  const hint = v.startsWith('/')
+    ? SLASH.filter(c => c.usage !== c.name && v.startsWith(c.name + ' '))
+           .sort((a,b) => b.name.length - a.name.length)[0]
+    : null;
+  if(!hint){ palHide(); return; }
+  pal.innerHTML = '<div class="pal-row pal-hint">' +
+    '<span class="pal-name">' + esc(hint.usage) + '</span>' +
+    '<span class="pal-desc">' + esc(hint.desc) + '</span></div>';
+  pal.style.display = 'block';
 }
 function palPick(i){
   input.value = palMatches[i].name + ' ';
@@ -504,7 +515,13 @@ function palPick(i){
 }
 input.addEventListener('input', () => { palIdx = 0; palSync(); });
 input.addEventListener('keydown', (e) => {
-  if(pal.style.display !== 'block' || !palMatches.length) return;
+  if(pal.style.display !== 'block') return;
+  if(!palMatches.length){
+    // Hint mode: keep typing args; Esc dismisses, Tab stays in the input.
+    if(e.key === 'Escape') palHide();
+    else if(e.key === 'Tab') e.preventDefault();
+    return;
+  }
   if(e.key === 'ArrowDown'){ e.preventDefault(); palIdx = (palIdx+1) % palMatches.length; palRender(); }
   else if(e.key === 'ArrowUp'){ e.preventDefault(); palIdx = (palIdx-1+palMatches.length) % palMatches.length; palRender(); }
   else if(e.key === 'Tab'){ e.preventDefault(); palPick(palIdx); }
