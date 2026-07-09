@@ -60,6 +60,24 @@ def test_render_dashboard_html_renders_doctor_and_ros(tmp_path: Path) -> None:
     assert "Python" in html
 
 
+def test_dashboard_embeds_slash_palette(tmp_path: Path) -> None:
+    """The console palette is server-rendered from WEB_SLASH_COMMANDS —
+    placeholder substituted, and every entry dispatches to a real handler."""
+    from jenai.webui.commands import WEB_SLASH_COMMANDS
+
+    payload = build_status_payload(_config(), tmp_path / "config.toml")
+    html = render_dashboard_html(payload)
+    assert "__SLASH__" not in html  # placeholder replaced
+    assert 'id="palette"' in html
+    assert "/ros schema" in html  # palette data actually embedded
+
+    # Palette ≡ implementation: every first token must be a _slash dispatch
+    # key — a phantom row here is the /ros state doc bug all over again.
+    dispatch = {"/help", "/status", "/doctor", "/ros", "/drive", "/route", "/loc"}
+    for entry in WEB_SLASH_COMMANDS:
+        assert entry["name"].split()[0] in dispatch
+
+
 def test_render_main_is_a_standalone_fragment(tmp_path: Path) -> None:
     from jenai.webui.server import render_main
 
