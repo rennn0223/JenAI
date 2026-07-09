@@ -14,7 +14,7 @@ from jenai.schemas import (
 )
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
-from jenai.tui.panels import TimelineItem, pixel_mark
+from jenai.tui.panels import OutputPanel, TimelineItem, pixel_mark
 from jenai.tui.widgets import ApprovalCard
 
 
@@ -25,6 +25,18 @@ def test_tui_uses_colored_dachshund_mascot() -> None:
     assert any("#d98c69" in style for style in styles)
     assert any("#5fb1c0" in style for style in styles)
     assert 4 <= mascot.plain.count("\n") <= 7
+
+
+def test_output_panel_spaced_gives_fixed_airy_rhythm() -> None:
+    """spaced=True → exactly one blank line between logical lines, no matter
+    how the model spaced its own output; default stays compact (tables)."""
+    airy = str(OutputPanel("Result", "第一段\n\n\n第二段\n第三行", spaced=True).render())
+    airy_body = airy.split("\n")[1:]  # drop the title line
+    blanks = [line for line in airy_body if not line.strip()]
+    assert len(blanks) == 2  # 段落間各恰好一行,三連空行被收斂
+
+    compact = str(OutputPanel("Status", "row1\nrow2\nrow3").render())
+    assert all(line.strip() for line in compact.split("\n"))  # 表格不受影響
 
 
 def _app(tmp_path: Path | None = None) -> JenAITuiApp:

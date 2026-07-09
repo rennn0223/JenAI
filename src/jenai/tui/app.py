@@ -206,7 +206,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
     .prompt-line {
         height: auto;
-        margin: 1 0 0 0;
+        /* Fixed gap above AND below the user's echoed question, so the
+           question–answer rhythm is constant (Claude Code-style). */
+        margin: 1 0 1 0;
         color: #d9d3c7;
     }
 
@@ -870,7 +872,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                     await self._mount_event(ApprovalCard(approval))
         elif run.status == "completed":
             if run.final_output:
-                await self._mount_event(OutputPanel("Result", run.final_output))
+                # The LLM's answer is prose — fixed airy spacing (the user's
+                # question echo gets the matching gap via .prompt-line margin).
+                await self._mount_event(OutputPanel("Result", run.final_output, spaced=True))
             await self._mount_event(TimelineItem("success", "Done."))
         elif run.status == "failed":
             if run.error:
