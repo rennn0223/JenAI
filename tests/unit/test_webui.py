@@ -78,6 +78,31 @@ def test_dashboard_embeds_slash_palette(tmp_path: Path) -> None:
         assert entry["name"].split()[0] in dispatch
 
 
+def test_lan_addresses_never_returns_loopback() -> None:
+    from jenai.webui.server import lan_addresses
+
+    addrs = lan_addresses()
+    assert isinstance(addrs, list)
+    assert all(isinstance(a, str) and not a.startswith("127.") for a in addrs)
+
+
+def test_web_access_lines_honest_per_bind(monkeypatch) -> None:
+    """Loopback bind prints SSH/how-to hints but NO LAN URL (it wouldn't
+    work); 0.0.0.0 prints one working URL per interface."""
+    from jenai.cli.main import _web_access_lines
+
+    loop = "\n".join(_web_access_lines("127.0.0.1", 8760, "tok"))
+    assert "http://127.0.0.1:8760/?token=tok" in loop
+    assert "ssh -L 8760:127.0.0.1:8760" in loop
+    assert "--host 0.0.0.0" in loop
+    assert "區網開" not in loop  # 綁 loopback 時不得印出打不開的區網網址
+
+    monkeypatch.setattr("jenai.webui.server.lan_addresses", lambda: ["192.168.1.5"])
+    lan = "\n".join(_web_access_lines("0.0.0.0", 8760, "tok"))
+    assert "http://192.168.1.5:8760/?token=tok" in lan
+    assert "http://127.0.0.1:8760/?token=tok" in lan
+
+
 def test_render_main_is_a_standalone_fragment(tmp_path: Path) -> None:
     from jenai.webui.server import render_main
 

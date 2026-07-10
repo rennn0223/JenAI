@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import secrets
+import socket
 import threading
 import time
 from http.cookies import SimpleCookie
@@ -449,6 +450,33 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
+
+
+def lan_addresses() -> list[str]:
+    """Best-effort non-loopback IPv4 addresses of this host.
+
+    Used to print the WebUI URLs that are actually reachable when bound to
+    0.0.0.0 — never printed for a loopback bind (an unreachable URL would be
+    a lie). UDP connect() sends no packets; it only resolves the route.
+    """
+    addresses: set[str] = set()
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 80))
+            addresses.add(probe.getsockname()[0])
+        finally:
+            probe.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                addresses.add(ip)
+    except OSError:
+        pass
+    return sorted(addresses)
 
 
 def make_server(

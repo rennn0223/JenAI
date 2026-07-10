@@ -317,11 +317,32 @@ def web(
     # Auth is always on: the WebUI can approve robot actions, and --host may
     # expose it to the LAN. Only the emergency STOP endpoint skips the token.
     access_token = token or secrets.token_urlsafe(24)
-    console.print(
-        f"[green]JenAI WebUI serving at http://{host}:{port}/?token={access_token}[/green]\n"
-        "Open that exact URL (the token is required; STOP works without it). Ctrl-C to stop."
-    )
+    console.print("\n".join(_web_access_lines(host, port, access_token)))
     serve(loaded, config_path, host=host, port=port, token=access_token)
+
+
+def _web_access_lines(host: str, port: int, token: str) -> list[str]:
+    """Every way to open the WebUI — but ONLY URLs that actually work with
+    the current bind (printing a LAN URL while bound to loopback would lie)."""
+    from jenai.webui.server import lan_addresses
+
+    local_url = f"http://127.0.0.1:{port}/?token={token}"
+    lines = [f"[green]JenAI WebUI serving on {host}:{port}[/green]"]
+    if host in ("127.0.0.1", "localhost", "::1"):
+        lines += [
+            f"  本機開:     {local_url}",
+            f"  遠端(SSH): ssh -L {port}:127.0.0.1:{port} <user>@<這台的IP> 後,開上面同一個網址",
+            "  區網直連:   重啟加 --host 0.0.0.0(token 認證常開),屆時會列出各介面網址",
+        ]
+    else:
+        lines.append(f"  本機開:     {local_url}")
+        for ip in lan_addresses():
+            lines.append(f"  區網開:     http://{ip}:{port}/?token={token}")
+        lines.append(f"  遠端(SSH): ssh -L {port}:127.0.0.1:{port} <user>@<這台的IP> 也通")
+    lines.append(
+        "(token 必須帶著,重啟會換 —— 想要固定書籤用 --token;STOP 端點免 token。Ctrl-C 停止)"
+    )
+    return lines
 
 
 @app.command()

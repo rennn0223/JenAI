@@ -119,6 +119,8 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 
 **Token 認證**(v0.10+):啟動時自動生成 token 並印出帶 `?token=…` 的網址(`--token` 可固定);Bearer header、cookie、query 三種攜帶方式,首次 query 驗證通過即種 session cookie。唯一免認證端點 **`/api/stop`** —— 停車永遠安全(見 docs/THREAT_MODEL.md)。
 
+**遠端存取**(v0.23.6):啟動輸出直接列印所有開法——本機網址、SSH 轉發一行指令(`ssh -L 8760:127.0.0.1:8760 …` 後開同一網址;可寫進 `~/.ssh/config` 的 `LocalForward` 一勞永逸)、以及 `--host 0.0.0.0` 時各介面的區網網址(誠實原則:綁 loopback 時**不**印打不開的區網網址)。公共/不可信網路建議走 SSH 轉發;實驗室網段 `--host 0.0.0.0` + token 即可。
+
 ### 3.3 MCP server(`jenai mcp`)
 
 把 JenAI 的機器人工具以 [MCP](https://modelcontextprotocol.io) stdio 服務開放給任何 MCP client(Claude Code、Claude Desktop⋯):

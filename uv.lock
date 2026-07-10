@@ -760,7 +760,7 @@ wheels = [
 
 [[package]]
 name = "jenai"
-version = "0.23.5"
+version = "0.23.6"
 source = { editable = "." }
 dependencies = [
     { name = "litellm" },
