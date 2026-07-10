@@ -43,6 +43,71 @@ def test_doctor_json_command(tmp_path: Path) -> None:
     assert isinstance(payload["items"], list)
 
 
+def test_onboard_backs_up_config_and_preserves_user_data(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("old config\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text("NVIDIA_API_KEY=secret\n", encoding="utf-8")
+    locations_path = tmp_path / "locations.toml"
+    locations_path.write_text("[[locations]]\nname='Dock'\n", encoding="utf-8")
+
+    def fake_wizard(path: Path) -> Path:
+        path.write_text("new config\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr("jenai.cli.main.run_setup_wizard", fake_wizard)
+
+    result = runner.invoke(
+        app, ["onboard", "--config", str(config_path), "--yes"]
+    )
+
+    assert result.exit_code == 0
+    assert config_path.read_text(encoding="utf-8") == "new config\n"
+    backups = list(tmp_path.glob("config.toml.bak-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "old config\n"
+    assert env_path.read_text(encoding="utf-8") == "NVIDIA_API_KEY=secret\n"
+    assert locations_path.read_text(encoding="utf-8") == "[[locations]]\nname='Dock'\n"
+
+
+def test_onboard_cancel_changes_nothing(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("keep me\n", encoding="utf-8")
+
+    def unexpected_wizard(path: Path) -> Path:
+        raise AssertionError("wizard must not run after cancellation")
+
+    monkeypatch.setattr("jenai.cli.main.run_setup_wizard", unexpected_wizard)
+    result = runner.invoke(
+        app, ["onboard", "--config", str(config_path)], input="n\n"
+    )
+
+    assert result.exit_code == 0
+    assert config_path.read_text(encoding="utf-8") == "keep me\n"
+    assert list(tmp_path.glob("config.toml.bak-*")) == []
+    assert "nothing changed" in result.stdout
+
+
+def test_onboard_without_config_starts_wizard_without_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    called: list[Path] = []
+
+    def fake_wizard(path: Path) -> Path:
+        called.append(path)
+        path.write_text("created\n", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr("jenai.cli.main.run_setup_wizard", fake_wizard)
+    result = runner.invoke(app, ["onboard", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert called == [config_path]
+    assert config_path.read_text(encoding="utf-8") == "created\n"
+    assert list(tmp_path.glob("config.toml.bak-*")) == []
+
+
 def test_main_command_starts_tui(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.toml"
     save_config(

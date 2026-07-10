@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.25.1(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v0.26.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(Jetson 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -26,7 +26,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.25.1 基準 `401 passed`,約 25s,無 ROS 環境也全過);含安全鏈故障注入(bridge 啟動失敗/watchdog 武裝失敗/twin 預演中斷/halt 失敗誠實回報)與架構鐵律測試 |
+| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.26.0 基準 `404 passed`,約 25s,無 ROS 環境也全過);含安全鏈故障注入(bridge 啟動失敗/watchdog 武裝失敗/twin 預演中斷/halt 失敗誠實回報)與架構鐵律測試 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job(ruff+pytest,coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
 | Release gate | 推 `vX.Y.Z` tag,或手動 dispatch(輸入 tag) | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → tag push 建草稿(人工發佈);dispatch 由 workflow 建 tag 並以 `docs/releases/<tag>.md` 直接發佈 |
@@ -48,13 +48,14 @@
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.25.1`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 0.26.0`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |
 | ✅ | `JenAI scaffold … --build` | **生成即驗證**:寫完即 colcon build;失敗餵錯誤給 LLM 修一輪再 build,結果誠實回報。實測:生成套件真 colcon build 1.5s 過 ✅ |
 | ✅ | `JenAI doctor` | 分區檢查表(environment/config/ros2/nav/provider/locations/webui),每項 pass/warn/fail + 修法指引;**無後端時誠實 warn/fail,不假裝** |
 | ✅ | `JenAI doctor --json` | 機器可讀 JSON:`{overall, items[{section, check_name, status, message, fix_suggestion}], checked_at}` |
+| ✅ | `JenAI onboard` | 備份 `config.toml` 後重跑 setup wizard;`.env`、locations、skills、reports、run history 保留;`--yes` 可略過替換確認 |
 | ✅ | `JenAI config` | 設定 JSON(active_provider、profiles、vehicle、twin…) |
 | ✅ | `JenAI providers` | 表格:local(ollama)* / nvidia-cloud,`*` 標 active |
 | ✅ | `JenAI models` | 綁定表:chat/plan/vision/route/default → 各自模型 |

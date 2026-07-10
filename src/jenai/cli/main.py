@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -118,6 +120,35 @@ def doctor(
         typer.echo(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
     else:
         _print_doctor_result(result)
+
+
+@app.command()
+def onboard(
+    config: ConfigOption = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation before replacing config."),
+    ] = False,
+) -> None:
+    """Back up config and rerun setup without deleting credentials or locations."""
+    config_path = config or default_config_path()
+    backup: Path | None = None
+    if config_path.exists():
+        if not yes and not typer.confirm(
+            f"Back up and replace {config_path}? (.env and locations are preserved)"
+        ):
+            console.print("[yellow]Onboarding cancelled; nothing changed.[/yellow]")
+            raise typer.Exit(0)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        backup = config_path.with_name(f"{config_path.name}.bak-{stamp}")
+        shutil.copy2(config_path, backup)
+        console.print(f"[green]Existing config backed up to {backup}[/green]")
+
+    console.print("[dim]Keeping .env, locations, skills, reports, and run history.[/dim]")
+    written = run_setup_wizard(config_path)
+    console.print(f"[green]Onboarding complete. Config written to {written}[/green]")
+    if backup is not None:
+        console.print(f"[dim]Previous config: {backup}[/dim]")
 
 
 @app.command()
@@ -495,6 +526,7 @@ def help_command() -> None:
     for cmd, desc in (
         ("JenAI", "進 TUI 主介面(首次執行會跑 setup wizard)"),
         ("JenAI help", "本頁"),
+        ("JenAI onboard", "備份現有 config 並重跑 setup wizard(.env/locations 保留)"),
         ("JenAI doctor", "環境健檢:ROS2/nav/provider/locations(--json 機器可讀)"),
         ("JenAI web", "手機可用的 WebUI(狀態/地圖/批准/STOP);印出帶 token 的網址"),
         ("JenAI mcp", "把機器人工具開給 Claude 等 MCP client(預設唯讀,--allow-actions 才能動)"),
