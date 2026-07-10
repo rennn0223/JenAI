@@ -118,6 +118,7 @@ class TwinGate:
         tag = uuid4().hex[:8]
         collision: list[str] = []
         zone_hit: list[str] = []
+        pose_samples = [0]
 
         def _on_result(event: dict) -> None:
             if event.get("tag", "") in ("", tag) and not result_future.done():
@@ -136,7 +137,7 @@ class TwinGate:
         except BridgeError:
             pass  # no contact sensor in the scene: G1 will be reported as skipped
 
-        sampler = asyncio.create_task(self._sample_trajectory(zone_hit))
+        sampler = asyncio.create_task(self._sample_trajectory(zone_hit, pose_samples))
         status, timed_out, we_canceled = "failed", False, False
         try:
             await self._bridge.nav_send(
@@ -185,6 +186,7 @@ class TwinGate:
             "we_canceled": we_canceled,
             "collision": collision[0] if collision else None,
             "zone_hit": zone_hit[0] if zone_hit else None,
+            "pose_samples": pose_samples[0],
             "deviation": deviation,
             "watched_contact": watch_id is not None,
         }
@@ -198,7 +200,15 @@ class TwinGate:
             if o["timed_out"]
             else ("pass", "")
         )
-        statuses["G3"] = ("fail", o["zone_hit"]) if o["zone_hit"] else ("pass", "")
+        g3_inconclusive = bool(
+            self._twin.forbidden_zones and not o["zone_hit"] and o["pose_samples"] == 0
+        )
+        if o["zone_hit"]:
+            statuses["G3"] = ("fail", o["zone_hit"])
+        elif g3_inconclusive:
+            statuses["G3"] = ("skipped", "no twin pose samples; forbidden zones were not checked")
+        else:
+            statuses["G3"] = ("pass", "")
         if o["deviation"] is not None:
             ok = o["deviation"] <= self._twin.goal_tolerance_m
             statuses["G4"] = (
@@ -217,20 +227,30 @@ class TwinGate:
             statuses["G5"] = ("fail", f"twin Nav2 ended with '{o['status']}'")
 
         failed = {cid for cid, (st, _) in statuses.items() if st == "fail"}
-        if failed & set(_HARD):
+        hard_failed = failed & set(_HARD)
+        if hard_failed:
             verdict = "block"
+        elif g3_inconclusive:
+            verdict = "refer"
         elif failed:
             verdict = "refer"
         else:
             verdict = "pass"
         reason = ""
         for cid in _NAMES:
-            if cid in failed:
+            if cid in hard_failed:
                 reason = statuses[cid][1]
                 break
+        if not reason and g3_inconclusive:
+            reason = statuses["G3"][1]
+        if not reason:
+            for cid in _NAMES:
+                if cid in failed:
+                    reason = statuses[cid][1]
+                    break
         return _report(verdict, reason, elapsed, statuses)
 
-    async def _sample_trajectory(self, zone_hit: list[str]) -> None:
+    async def _sample_trajectory(self, zone_hit: list[str], pose_samples: list[int]) -> None:
         """Watch the twin's pose and record the first forbidden-zone entry."""
         if not self._twin.forbidden_zones:
             return
@@ -240,6 +260,7 @@ class TwinGate:
             except BridgeError:
                 pass  # transient (no pose yet / bridge respawning) — keep sampling
             else:
+                pose_samples[0] += 1
                 zone = self._zone_at(p.x, p.y)
                 if zone is not None:
                     zone_hit.append(f"twin entered '{zone.name}' at ({p.x:.2f}, {p.y:.2f})")

@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from jenai.config import ConfigError, load_config, save_config
-from jenai.config.models import ForbiddenZone
+from jenai.config.models import AppConfig, ForbiddenZone
 from jenai.config.store import build_minimal_config
 
 
@@ -126,3 +127,24 @@ api_key_env = "{secret}"
 
     assert "api_key_env" in str(caught.value)
     assert secret not in str(caught.value)
+
+
+def test_incomplete_config_can_be_saved_and_loaded(tmp_path: Path) -> None:
+    path = save_config(AppConfig(), tmp_path / "config.toml")
+    assert load_config(path).is_complete() is False
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        {"vehicle": {"max_linear": -1}},
+        {"vehicle": {"max_linear": float("inf")}},
+        {"twin": {"nav_timeout_s": -1}},
+        {"twin": {"forbidden_zones": [{"x_min": 2, "x_max": 1, "y_min": 0, "y_max": 1}]}},
+        {"avoidance": {"band_lo": 0.9, "band_hi": 0.1}},
+        {"avoidance": {"stop_distance": 2.0, "slow_distance": 1.0}},
+    ],
+)
+def test_safety_config_rejects_invalid_ranges(section: dict) -> None:
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(section)

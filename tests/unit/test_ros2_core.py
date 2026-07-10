@@ -337,3 +337,17 @@ def test_safety_clamp_uses_vehicle_limits() -> None:
     # Vehicle profile limits (e.g. Leatherback: 2.0 m/s, 0.53 rad/s).
     vehicle = _safety_clamp(payload, 2.0, 0.53)
     assert vehicle["linear"]["x"] == 2.0 and vehicle["angular"]["z"] == -0.53
+
+
+def test_safety_clamp_fails_closed_for_invalid_limits() -> None:
+    payload = {"linear": {"x": -5.0}, "angular": {"z": 3.0}}
+
+    negative = ros2_core._safety_clamp(payload, -1.0, -2.0)
+    infinite = ros2_core._safety_clamp(payload, float("inf"), float("nan"))
+    invalid_values = ros2_core._safety_clamp(
+        {"linear": {"x": float("nan")}, "angular": {"z": float("inf")}}
+    )
+
+    assert negative == {"linear": {"x": 0}, "angular": {"z": 0}}
+    assert infinite == {"linear": {"x": 0}, "angular": {"z": 0}}
+    assert invalid_values == {"linear": {"x": 0}, "angular": {"z": 0}}

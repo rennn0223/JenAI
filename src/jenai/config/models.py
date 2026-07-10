@@ -147,10 +147,10 @@ class ForbiddenZone(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = "zone"
-    x_min: float
-    y_min: float
-    x_max: float
-    y_max: float
+    x_min: float = Field(allow_inf_nan=False)
+    y_min: float = Field(allow_inf_nan=False)
+    x_max: float = Field(allow_inf_nan=False)
+    y_max: float = Field(allow_inf_nan=False)
 
     @model_validator(mode="after")
     def bounds_are_ordered(self) -> ForbiddenZone:

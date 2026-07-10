@@ -138,9 +138,9 @@ class RosContext(JenAIModel):
 
 
 class Pose2D(JenAIModel):
-    x: float
-    y: float
-    yaw: float
+    x: float = Field(allow_inf_nan=False)
+    y: float = Field(allow_inf_nan=False)
+    yaw: float = Field(allow_inf_nan=False)
 
 
 class Location(JenAIModel):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -119,12 +120,21 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = config.model_dump(mode="python", exclude_none=True)
     rendered = tomli_w.dumps(payload)
-    temporary = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=config_path.parent, prefix=f".{config_path.name}.", suffix=".tmp"
+    )
     try:
-        temporary.write_text(rendered, encoding="utf-8")
-        os.replace(temporary, config_path)
-    finally:
-        temporary.unlink(missing_ok=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(rendered)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, config_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
     return config_path
 
 

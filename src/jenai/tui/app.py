@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import deque
 from pathlib import Path
@@ -11,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, ScrollableContainer, Vertical
 from textual.css.query import NoMatches
+from textual.markup import escape
 from textual.widgets import Input, Static
 
 from jenai import __version__
@@ -20,8 +22,10 @@ from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.providers import (
+    ProviderChatError,
     chat_model_name,
     resolve_model_alias,
+    stream_provider,
 )
 from jenai.schemas import (
     ApprovalRequest,
@@ -61,6 +65,18 @@ from jenai.tui.widgets import ApprovalCard, ErrorBlock, PlanBlock, ToolBlock
 APPROVAL_REQUIRED_COMMANDS = ("/ros pub", "/route", "/shell", "/run")
 
 MODEL_BINDING_NAMES = ("chat", "plan", "vision", "route", "default")
+
+_CASUAL_GREETING = re.compile(
+    r"(?:hi|hello|hey)(?:\s+(?:there|jenai))?"
+    r"|(?:嗨|你好|哈囉|哈啰|早安|午安|晚安)(?:\s*jenai)?[啊呀嗎么]?",
+    re.IGNORECASE,
+)
+
+
+def _is_casual_greeting(value: str) -> bool:
+    """Return true only for a standalone greeting, never an action prefixed by one."""
+    normalized = value.strip().strip("!?！？。、,.~～👋 ")
+    return bool(_CASUAL_GREETING.fullmatch(normalized))
 
 
 SLASH_COMMANDS = [
@@ -671,13 +687,60 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             # catch these) surfaces as a clean message instead of an unhandled
             # task exception — the exception net the removed chat stream had.
             try:
-                if self._mode == "plan":
+                if _is_casual_greeting(value):
+                    # A greeting needs neither robot state nor an agent handoff.
+                    # Keep it structurally tool-free so weak local models cannot
+                    # turn "hi" into a visible specialist/tool call.
+                    await self._stream_chat_reply(value)
+                elif self._mode == "plan":
                     await self._show_plan(value)
                 else:  # approve / auto — the run agent answers questions too
                     await self._show_run(value)
             except Exception as exc:
                 await self._mount_event(TimelineItem("error", f"Failed: {exc}"))
         self._scroll_to_bottom()
+
+    async def _stream_chat_reply(self, prompt: str) -> None:
+        """Stream a tool-free chat reply into one timeline item."""
+        item = TimelineItem("assistant", "…")
+        await self._mount_event(item)
+        parts: list[str] = []
+
+        def _paint() -> None:
+            item.set_body(escape("".join(parts)))
+
+        async def _keep_or_drop() -> None:
+            if parts:
+                _paint()
+            else:
+                await item.remove()
+
+        last_paint = 0.0
+        try:
+            async for delta in stream_provider(self.config, prompt):
+                parts.append(delta)
+                now = time.monotonic()
+                if now - last_paint >= 0.05:
+                    _paint()
+                    self._scroll_to_bottom()
+                    last_paint = now
+        except asyncio.CancelledError:
+            try:
+                await _keep_or_drop()
+            except Exception:
+                pass
+            raise
+        except Exception as exc:
+            await _keep_or_drop()
+            message = str(exc) if isinstance(exc, ProviderChatError) else f"Chat failed: {exc!r}"
+            await self._mount_event(TimelineItem("error", escape(message)))
+            return
+
+        if not parts:
+            await item.remove()
+            await self._mount_event(TimelineItem("error", "Provider returned an empty response."))
+            return
+        _paint()
 
     def action_focus_composer(self) -> None:
         self._hide_command_palette()

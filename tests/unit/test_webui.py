@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import threading
 import urllib.error
@@ -191,6 +192,13 @@ def test_pending_confirms_is_one_time_and_bounded() -> None:
     assert store.pop(ids[0]) is None
     assert store.pop(ids[2]) == {"n": 2}
 
+    expired = _PendingConfirms(ttl_s=0)
+    assert expired.pop(expired.put({"type": "drive"})) is None
+
+    token = store.put({"type": "drive"})
+    store.clear()
+    assert store.pop(token) is None
+
 
 def test_confirm_endpoint_rejects_unknown_id(tmp_path: Path) -> None:
     # A blind POST to /api/confirm without a server-issued id must not actuate.
@@ -375,14 +383,45 @@ def test_webui_stop_works_without_token(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(srv, "_do_stop", lambda *a, **k: {"kind": "info", "html": "stopped"})
     server, threads, base = _tokened_server(tmp_path, 1)
+    pending = server.RequestHandlerClass.pending
+    confirm_id = pending.put({"type": "drive"})
     try:
-        req = urllib.request.Request(f"{base}/api/stop", data=b"{}", method="POST")
+        # Deliberately claim a large body but send none: STOP must execute before
+        # reading Content-Length and must revoke actions previewed before it.
+        req = urllib.request.Request(
+            f"{base}/api/stop",
+            data=None,
+            headers={"Content-Length": str(10 * 1024 * 1024)},
+            method="POST",
+        )
         with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200
             assert json.loads(resp.read())["kind"] == "info"
+        assert pending.pop(confirm_id) is None
     finally:
         for t in threads:
             t.join(timeout=5)
+        server.server_close()
+
+
+def test_webui_rejects_oversized_json_body(tmp_path: Path) -> None:
+    server, threads, _ = _tokened_server(tmp_path, 1)
+    host, port = server.server_address
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        conn.request(
+            "POST",
+            "/api/command",
+            body=b"{}",
+            headers={"Authorization": "Bearer s3cret", "Content-Length": str(64 * 1024 + 1)},
+        )
+        response = conn.getresponse()
+        assert response.status == 413
+        response.read()
+    finally:
+        conn.close()
+        for thread in threads:
+            thread.join(timeout=5)
         server.server_close()
 
 
