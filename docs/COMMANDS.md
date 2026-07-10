@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v0.23 系列(2026-07)。
+> 對應版本:v0.26.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -18,6 +18,7 @@ JenAI 的命令分為兩層：
 | `JenAI mcp` | MCP stdio server：把機器人工具開放給 Claude Code/Desktop 等 client。預設唯讀，`--allow-actions` 才註冊 `navigate_to` |
 | `JenAI daemon` | 常駐規則引擎：監看 topics 觸發規則（`--rules` 指定檔案，預設 `~/.config/jenai/rules.toml`） |
 | `JenAI doctor` | 檢查 ROS2、provider、model、locations、環境（`--json` 機器可讀） |
+| `JenAI onboard` | 備份目前 `config.toml` 後重跑 setup wizard;`.env`、locations、skills、reports、run history 全部保留。已有 config 時需確認,`--yes/-y` 可略過確認 |
 | `JenAI config` | 顯示目前設定（JSON） |
 | `JenAI providers` | 顯示 provider 清單 |
 | `JenAI models` | 顯示 model 綁定 |
