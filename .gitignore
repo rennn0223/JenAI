@@ -7,6 +7,7 @@ pytest-of-*/
 dist/
 build/
 .venv/
+.venv
 .uv-cache/
 .tmp/
 venv/

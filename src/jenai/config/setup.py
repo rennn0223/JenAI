@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,6 +96,39 @@ def _prompt(label: str, *, default: str, example: str = "") -> str:
     return typer.prompt(f"  {label}{hint}", default=default, show_default=bool(default))
 
 
+def _secure_api_key_input(
+    value: str, preset: ProviderPreset, config_path: Path
+) -> tuple[str, Path | None]:
+    """Accept an env name, or safely relocate an accidentally pasted key."""
+    stripped = value.strip()
+    if not stripped or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", stripped):
+        return stripped, None
+
+    env_name = preset.api_key_env or "JENAI_API_KEY"
+    env_path = config_path.parent / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+
+    def _assignment_name(line: str) -> str:
+        candidate = line.strip()
+        if candidate.startswith("export "):
+            candidate = candidate[len("export ") :].lstrip()
+        return candidate.partition("=")[0].strip()
+
+    lines = [line for line in existing if _assignment_name(line) != env_name]
+    lines.append(f"{env_name}={stripped}")
+    temporary = env_path.with_name(f".{env_path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        os.replace(temporary, env_path)
+        os.chmod(env_path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return env_name, env_path
+
+
 def run_setup_wizard(config_path: Path) -> Path:
     console = Console()
     _print_banner(console)
@@ -131,7 +166,12 @@ def run_setup_wizard(config_path: Path) -> Path:
         "Base URL(供應商官方端點可留白)", default=preset.base_url, example="http://localhost:11434/v1"
     )
     api_key_env = _prompt(
-        "API 金鑰環境變數(本地模型留白)", default=preset.api_key_env, example="NVIDIA_API_KEY"
+        "API 金鑰環境變數名稱(貼入金鑰會安全搬到 .env;本地模型留白)",
+        default=preset.api_key_env,
+        example="NVIDIA_API_KEY",
+    )
+    api_key_env, saved_credential_path = _secure_api_key_input(
+        api_key_env, preset, config_path
     )
 
     console.print(
@@ -164,7 +204,13 @@ def run_setup_wizard(config_path: Path) -> Path:
     summary.add_row("[dim]API key env[/dim]", api_key_env or "(不需要)")
     summary.add_row("[dim]Config[/dim]", str(written))
     console.print(Panel(summary, title="✓ 設定完成", border_style="green"))
-    if api_key_env:
+    if saved_credential_path is not None:
+        console.print(
+            f"  [green]金鑰已安全寫入:[/green] [bold]{saved_credential_path}[/bold] "
+            f"([bold]{api_key_env}[/bold],權限 0600)",
+            highlight=False,
+        )
+    elif api_key_env:
         console.print(
             f"  [yellow]記得放金鑰:[/yellow]在 [bold]~/.config/jenai/.env[/bold] 加一行 "
             f"[bold]{api_key_env}=你的金鑰[/bold]",
