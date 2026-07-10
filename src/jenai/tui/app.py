@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Container, Horizontal, ScrollableContainer, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Input, Static
@@ -274,11 +275,14 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     }
     """
 
+    # priority=True: dispatch checks the focused widget first, so without it
+    # these keys never reach the App — Screen grabs shift+tab (focus_previous)
+    # and the composer Input grabs ctrl+c (copy) / ctrl+d (delete_right).
     BINDINGS = [
-        ("ctrl+c", "quit", "Quit"),
-        ("ctrl+d", "quit", "Quit"),
+        Binding("ctrl+c", "quit", "Quit", priority=True),
+        Binding("ctrl+d", "quit", "Quit", priority=True),
         ("escape", "focus_composer", "Focus input"),
-        ("shift+tab", "cycle_mode", "Mode"),
+        Binding("shift+tab", "cycle_mode", "Mode", priority=True),
     ]
 
     # Permission modes (shift+tab cycles). They decide two things: where a
@@ -290,9 +294,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     #             watchdog and /stop never depended on approvals.
     PERMISSION_MODES = ("approve", "plan", "auto")
     _MODE_LABEL = {
-        "approve": "[#5fb1c0]⏵ 審批模式[/] · 自然語言交給 agent,動作先過批准卡",
-        "plan": "[#f0c84e]⏸ 規劃模式[/] · 只規劃與教學,不執行任何動作",
-        "auto": "[#d99a86]⏩ 自動模式[/] · 批准卡自動通過(急停/限速/閘門仍有效)",
+        "approve": "[#5fb1c0]approve[/] · 自然語言交給 agent,動作先過批准卡",
+        "plan": "[#f0c84e]plan[/] · 只規劃與教學,不執行任何動作",
+        "auto": "[#d99a86]auto[/] · 批准卡自動通過(急停/限速/閘門仍有效)",
     }
 
     def __init__(
@@ -1290,9 +1294,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     _SPINNER_FRAMES = "✻✳✢✦✳"
 
     _MODE_CHIP = {
-        "approve": "[#5fb1c0]⏵ 審批[/]",
-        "plan": "[#f0c84e]⏸ 規劃[/]",
-        "auto": "[#d99a86]⏩ 自動[/]",
+        "approve": "[#5fb1c0]approve[/]",
+        "plan": "[#f0c84e]plan[/]",
+        "auto": "[#d99a86]auto[/]",
     }
 
     def _status_line(self) -> str:

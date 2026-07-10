@@ -1287,7 +1287,7 @@ def test_mode_cycle_shift_tab_and_status_chip() -> None:
             app.action_cycle_mode()
             assert app._mode == "approve"  # full cycle
             app._mode = "auto"
-            assert "自動" in app._status_line()
+            assert "auto" in app._status_line()
 
     asyncio.run(run())
 
@@ -1361,5 +1361,35 @@ def test_plan_mode_provider_error_shows_message_not_crash(monkeypatch) -> None:
             await app.handle_user_text("帶我去機械系館")  # must not raise
             texts = [str(getattr(c, "body", "")) for c in app.query_one("#events").children]
             assert any("provider is down" in t for t in texts)
+
+    asyncio.run(run())
+
+
+def test_shift_tab_cycles_mode_while_composer_focused() -> None:
+    """Regression: without priority=True the Screen's shift+tab (focus_previous)
+    and the composer Input's ctrl+c/ctrl+d bindings win the dispatch order, so
+    the App-level cycle_mode/quit actions never fire."""
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            assert app._mode == "approve"
+            await pilot.press("shift+tab")
+            assert app._mode == "plan"
+            await pilot.press("shift+tab")
+            assert app._mode == "auto"
+            await pilot.press("shift+tab")
+            assert app._mode == "approve"
+
+    asyncio.run(run())
+
+
+def test_ctrl_c_quits_while_composer_focused() -> None:
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+c")
+        # exit() stamps return_code; a plain test-harness shutdown leaves it None.
+        assert app.return_code is not None
 
     asyncio.run(run())

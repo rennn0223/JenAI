@@ -54,11 +54,12 @@ class AvoidanceProfile(BaseModel):
     """Reactive local obstacle avoidance for the Nav2-less odom driver.
 
     A depth camera (sensor_msgs/Image, 32FC1 metres) is turned into a
-    pseudo-laserscan (nearest range per angular sector across the horizontal
-    FOV); the odom driver's go-to-goal steering is then blended with
-    follow-the-gap: steer into the clear sector nearest the goal bearing when
-    the way ahead is blocked, stop when something is right in front, and let
-    goal attraction pull the robot back onto its line once the obstacle clears.
+    pseudo-laserscan (range per angular sector across the horizontal FOV).
+    When the forward corridor is blocked inside slow_distance, the odom
+    driver STOPS, plans a two-waypoint detour around the sighted obstacle
+    (position remembered from the scan — a down-pitched camera cannot keep a
+    low obstacle in view while rounding it), drives the detour, then reseeks
+    the goal; if it ends up pinned it reports "blocked" instead of grinding.
     This is a reflex-layer behavior — it runs in the bridge with NO LLM. Off by
     default; irrelevant to the Nav2 adapter (Nav2 does its own avoidance). If
     the depth topic is silent (wrong name / camera off) the driver degrades to
@@ -76,6 +77,24 @@ class AvoidanceProfile(BaseModel):
     band_lo: float = 0.45  # vertical band of the depth image to read (fractions of height)
     band_hi: float = 0.60
     min_valid: float = 0.1  # m: ignore nearer returns (sensor noise / self-view)
+    # Ground filtering for a down-pitched camera: returns at/beyond this
+    # distance are the floor, not obstacles (0 = off). Measure with the scene:
+    # the uniform ring the empty ground reads in your band IS the reference.
+    floor_ref: float = 0.0
+    floor_tol: float = 0.2
+    # Per-pixel floor reference: .npy saved by the bridge's `avoid_snapshot`
+    # op, captured while the view is EMPTY. Each pixel reading closer than its
+    # reference (minus floor_tol) is an obstacle — one mechanism for the floor
+    # ring, the vehicle's own body in frame, and obstacles shorter than the
+    # camera (which no fixed band + scalar floor_ref can see in time).
+    # Supersedes floor_ref where the file is valid; flat ground only.
+    floor_snapshot: str = ""
+    # Stop-and-go detour parameters (the avoidance mechanism itself): on a
+    # blocked corridor the driver STOPS, plans two waypoints around the
+    # sighted obstacle, drives them from memory, then reseeks the goal.
+    detour_clearance: float = 0.5  # m: lateral margin beyond the obstacle half-width
+    detour_beyond: float = 1.2  # m: how far past the obstacle to rejoin the line
+    max_replans: int = 4  # give up (status "blocked") after this many detour plans
 
     def as_params(self) -> dict:
         return self.model_dump()
