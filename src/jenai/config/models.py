@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -24,6 +25,18 @@ class ProviderProfile(BaseModel):
         stripped = value.strip()
         if not stripped:
             raise ValueError("value must not be blank")
+        return stripped
+
+    @field_validator("api_key_env")
+    @classmethod
+    def api_key_env_is_a_variable_name(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        stripped = value.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", stripped):
+            raise ValueError(
+                "api_key_env must be an environment variable name, not an API key"
+            )
         return stripped
 
 

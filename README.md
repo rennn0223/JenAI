@@ -80,7 +80,9 @@ jenai web        # WebUI 儀表板
 **API 金鑰用 `.env`（建議）**：把 provider 金鑰放在 `~/.config/jenai/.env`
 （`chmod 600`，跟 `config.toml` 同目錄），**JenAI 啟動時自動載入**——不論用
 `jenai`、`uv run JenAI` 還是 venv script 啟動都一樣。shell 已 export 的變數
-優先於檔案內容。這比寫在 `.bashrc` 好——不受「互動 shell 才載入」限制：
+優先於檔案內容。這比寫在 `.bashrc` 好——不受「互動 shell 才載入」限制。
+setup 欄位預期填 `NVIDIA_API_KEY` 這類變數名稱;若誤貼 key 本體,v0.25.1 起會
+自動搬到權限 `0600` 的 `.env`,不再把 secret 留在 `config.toml`：
 
 ```bash
 printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.config/jenai/.env
@@ -156,7 +158,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測（論文工具鏈）。
 >
-> ✅ **工程**：398 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：401 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >
 > ✅ **Twin Gate**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：導航目標先在數位孿生（獨立 ROS_DOMAIN_ID）預演，G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗 → pass／block／refer；`[twin]` 一行開關，所有導航入口與 daemon 全部過閘，daemon 自主路徑 refer 一律視同 block。
 >

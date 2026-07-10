@@ -107,7 +107,11 @@ def load_config(path: Path | None = None) -> AppConfig:
     except UnicodeDecodeError as exc:
         raise ConfigError(f"Config file must be UTF-8: {config_path}") from exc
     except ValidationError as exc:
-        raise ConfigError(f"Config file has invalid JenAI settings: {exc}") from exc
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in exc.errors(include_input=False)
+        )
+        raise ConfigError(f"Config file has invalid JenAI settings: {details}") from exc
 
 
 def save_config(config: AppConfig, path: Path | None = None) -> Path:
@@ -153,4 +157,3 @@ def build_minimal_config(
         locations_path=locations_path,
         created_by_setup=True,
     )
-

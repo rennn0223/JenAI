@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import ast
 import re
+import tomllib
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "jenai"
+ROOT = SRC.parents[1]
 
 # Rule 1: modules that must never depend on an LLM (or the network stack it
 # implies). The daemon *runner* wires in PerceptionLoop (decision-layer input),
@@ -96,3 +98,10 @@ def test_navigation_surfaces_cannot_bypass_the_gateway() -> None:
             if isinstance(node, ast.Name) and node.id == "navigate_with_fallback":
                 violations.append(f"{rel}:{node.lineno} bypasses NavigationGateway")
     assert not violations, "Navigation must go through NavigationGateway:\n" + "\n".join(violations)
+
+
+def test_litellm_remains_a_declared_compatibility_dependency() -> None:
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        dependencies = tomllib.load(handle)["project"]["dependencies"]
+
+    assert any(dependency.lower().startswith("litellm") for dependency in dependencies)

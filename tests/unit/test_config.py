@@ -105,3 +105,24 @@ def test_config_rejects_unsafe_numeric_settings(
 
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+def test_config_rejects_literal_api_key_without_echoing_it(tmp_path: Path) -> None:
+    secret = "nvapi-example-secret-that-must-not-appear"
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'''active_provider = "nvidia"
+
+[provider_profiles.nvidia]
+name = "nvidia"
+provider = "nvidia"
+api_key_env = "{secret}"
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError) as caught:
+        load_config(path)
+
+    assert "api_key_env" in str(caught.value)
+    assert secret not in str(caught.value)
