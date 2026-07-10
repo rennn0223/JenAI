@@ -151,17 +151,17 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v0.26，2026-07）
+## 狀態（v0.27，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
-> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（Nav2／odom 直驅雙路徑，剩餘距離+Esc 真取消）、depth stop-and-go 局部繞障（資料逾時即停）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/dock`、`/loc add here|gps` 現場建點與 GPS 註冊、`/vision image|camera`、`/perception` 持續感知、`/report` 巡邏日報、`/model`／`/provider` 雲地即時切換。
+> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、忙碌時 FIFO 指令排隊（`/queue` 管理）、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（Nav2／odom 直驅雙路徑，剩餘距離+Esc 真取消）、depth stop-and-go 局部繞障（資料逾時即停）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/dock`、`/loc add here|gps` 現場建點與 GPS 註冊、`/vision image|camera`、`/perception` 持續感知、`/report` 巡邏日報、`/model`／`/provider` 雲地即時切換。
 >
 > ✅ **介面**：Claude 風格 TUI（會動的吉祥物+權限三模式 Shift+Tab）、多頁 WebUI（Console／Camera／Status／API，token 認證+手機批准+即時地圖+STOP）、MCP server、daemon 常駐、`skills/*.toml` 檔案定義技能。全部走同一套共用原語（導航調度、急停、相機分析、地點載入各只有一份）。
 >
 > ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測（論文工具鏈）。
 >
-> ✅ **工程**：404 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：409 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >
 > ✅ **Twin Gate**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：導航目標先在數位孿生（獨立 ROS_DOMAIN_ID）預演，G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗 → pass／block／refer；`[twin]` 一行開關，所有導航入口與 daemon 全部過閘，daemon 自主路徑 refer 一律視同 block。
 >

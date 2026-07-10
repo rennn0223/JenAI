@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -77,7 +78,8 @@ SLASH_COMMANDS = [
     SlashCommand("/run", "Execute a task, calling tools as needed", "/run <task>"),
     SlashCommand("/why", "Explain the current run's last decision"),
     SlashCommand("/review", "Re-plan and critique the current plan"),
-    SlashCommand("/abort", "Abort the active run"),
+    SlashCommand("/abort", "Abort the active run and continue the queue"),
+    SlashCommand("/queue", "Show or clear queued commands", "/queue [clear]"),
     SlashCommand("/ros topics", "List ROS2 topics"),
     SlashCommand(
         "/ros topic-info", "Show a topic's type/publishers/subscribers", "/ros topic-info <topic>"
@@ -212,9 +214,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
     .prompt-line {
         height: auto;
-        /* Fixed gap above AND below the user's echoed question, so the
-           question–answer rhythm is constant (Claude Code-style). */
-        margin: 1 0 1 0;
+        margin: 0 0 1 0;
         color: #d9d3c7;
     }
 
@@ -300,6 +300,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     #             safety FLOOR is untouched: hard speed clamps, Twin Gate,
     #             watchdog and /stop never depended on approvals.
     PERMISSION_MODES = ("approve", "plan", "auto")
+    COMMAND_QUEUE_LIMIT = 20
     _MODE_LABEL = {
         "approve": "[#5fb1c0]approve[/] · 自然語言交給 agent,動作先過批准卡",
         "plan": "[#f0c84e]plan[/] · 只規劃與教學,不執行任何動作",
@@ -344,6 +345,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # tool_call_id -> {"kind", "ctx", ...} for approvals from deterministic,
         # non-agent commands (/ros pub, /route) that skip the LLM entirely.
         self._pending_direct_approvals: dict[str, dict] = {}
+        self._command_queue: deque[str] = deque()
         # Claude Code-style working indicator + interruptible execution.
         self._active_task: asyncio.Task | None = None
         # True while the active task IS the emergency stop — Esc must not
@@ -473,27 +475,93 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self._hide_command_palette()
         if not value:
             return
+        command = value.split()[0].lower()
         # Recognize any spelling of the stop command ('/STOP', '/stop now'):
         # in an emergency the operator must not need the exact five characters.
-        is_stop = value.split()[0].lower() == "/stop"
+        is_stop = command == "/stop"
+        is_abort = command == "/abort"
+        is_queue_command = command == "/queue"
         if is_stop:
             value = "/stop"
-        if self._active_task is not None and not self._active_task.done():
-            if not is_stop:
-                # Busy: don't swallow the input silently — the user must know
-                # their submission was ignored and how to interrupt.
+        active = self._active_task is not None and not self._active_task.done()
+
+        if is_queue_command:
+            # Queue management must remain available while another command is
+            # running; otherwise `/queue` itself would disappear at the tail.
+            await self.handle_user_text(value)
+            return
+
+        if is_stop:
+            # Never run old intent after an emergency stop. Stop preempts the
+            # active command and invalidates everything that was queued behind it.
+            cleared = len(self._command_queue)
+            self._command_queue.clear()
+            if active:
+                self._active_task.cancel()
+            if cleared:
                 await self._mount_event(
-                    TimelineItem(
-                        "muted", "Busy — press Esc to interrupt, or /stop to halt the robot."
-                    )
+                    TimelineItem("warn", f"Emergency stop cleared {cleared} queued command(s).")
                 )
-                self._scroll_to_bottom()
-                return
-            # /stop must never queue behind the thing it is stopping: cancel the
-            # in-flight task (which cancels its Nav2 goal) and run the halt now.
+            self._start_user_submission(value, is_stop=True)
+            return
+
+        if is_abort and active:
+            # Abort affects only the current command. Its task-finally hook
+            # starts the next queued item after cancellation has unwound.
             self._active_task.cancel()
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"Abort requested; {len(self._command_queue)} queued command(s) remain.",
+                )
+            )
+            self._scroll_to_bottom()
+            return
+
+        if active or (self._has_pending_approvals() and not is_abort):
+            await self._enqueue_submission(value)
+            return
+
+        self._start_user_submission(value)
+
+    def _start_user_submission(self, value: str, *, is_stop: bool = False) -> None:
         self._active_task = asyncio.create_task(self._run_user_text(value))
         self._active_task_is_stop = is_stop
+        self._update_statusbar()
+
+    async def _enqueue_submission(self, value: str) -> None:
+        if len(self._command_queue) >= self.COMMAND_QUEUE_LIMIT:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"Queue full ({self.COMMAND_QUEUE_LIMIT}); command was not added.",
+                )
+            )
+            self._scroll_to_bottom()
+            return
+        self._command_queue.append(value)
+        await self._mount_event(
+            TimelineItem(
+                "muted",
+                f"Queued #{len(self._command_queue)}: {value}",
+            )
+        )
+        self._update_statusbar()
+        self._scroll_to_bottom()
+
+    def _has_pending_approvals(self) -> bool:
+        return bool(self._pending_approvals or self._pending_direct_approvals)
+
+    def _start_next_queued(self) -> None:
+        active = self._active_task is not None and not self._active_task.done()
+        if active or self._has_pending_approvals() or not self.is_running:
+            self._update_statusbar()
+            return
+        if not self._command_queue:
+            self._update_statusbar()
+            return
+        value = self._command_queue.popleft()
+        self._start_user_submission(value)
 
     async def _run_user_text(self, value: str) -> None:
         """Run one submission with a working spinner; cancellable via Esc."""
@@ -520,6 +588,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 self._stop_spinner()
                 self._active_task = None
                 self._active_task_is_stop = False
+                self._start_next_queued()
 
     def _finalize_interrupted_run(self) -> None:
         """Mark an in-flight run as stopped so an Esc interrupt doesn't leave it
@@ -825,6 +894,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "/why": self._show_why,
             "/review": self._show_review,
             "/abort": self._show_abort,
+            "/queue": self._show_queue,
             "/route": self._show_route,
             "/drive": self._show_drive,
             "/mission": self._show_mission,
@@ -932,8 +1002,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                     await self._mount_event(ApprovalCard(approval))
         elif run.status == "completed":
             if run.final_output:
-                # The LLM's answer is prose — fixed airy spacing (the user's
-                # question echo gets the matching gap via .prompt-line margin).
+                # Normalize model-authored paragraph gaps; all transcript
+                # entries otherwise use the same one-row line spacing.
                 await self._mount_event(OutputPanel("Result", run.final_output, spaced=True))
             await self._mount_event(TimelineItem("success", "Done."))
         elif run.status == "failed":
@@ -1020,6 +1090,25 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
         self.run_store.finish(run, status=RunStatus.BLOCKED)
         await self._mount_event(TimelineItem("warn", "Run aborted."))
+
+    async def _show_queue(self, arg: str = "") -> None:
+        choice = arg.strip().lower()
+        if choice == "clear":
+            count = len(self._command_queue)
+            self._command_queue.clear()
+            self._update_statusbar()
+            await self._mount_event(
+                TimelineItem("success", f"Cleared {count} queued command(s).")
+            )
+            return
+        if choice:
+            await self._mount_event(TimelineItem("warn", "Usage: /queue [clear]"))
+            return
+        if not self._command_queue:
+            await self._mount_event(TimelineItem("muted", "Command queue is empty."))
+            return
+        lines = [f"{index}. {value}" for index, value in enumerate(self._command_queue, 1)]
+        await self._mount_event(OutputPanel("Command queue", "\n".join(lines)))
 
     # -- ROS2 ---------------------------------------------------------------
 
@@ -1137,6 +1226,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             self.run_store.finish(ctx.run, status=RunStatus.BLOCKED)
             await self._mount_event(TimelineItem("warn", "Rejected. No action was taken."))
             self._scroll_to_bottom()
+            self._start_next_queued()
             return
 
         # Run the approved action as the active task so long executions (live
@@ -1170,6 +1260,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 self._stop_spinner()
                 self._active_task = None
                 self._active_task_is_stop = False
+                self._start_next_queued()
 
     async def _mount_step_line(self, status: str, body: str) -> None:
         """One rendering for every skill/mission step — success green, rest warn."""
@@ -1335,6 +1426,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             pending["agent"], pending["ctx"], pending["decisions"]
         )
         await self._render_run_update(pending["ctx"], run, agent=pending["agent"])
+        self._start_next_queued()
 
     async def _quit_from_command(self, _: str = "") -> None:
         self.exit()
@@ -1364,7 +1456,18 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         provider = profile.provider if profile else "no-provider"
         model = self._chat_model_display()
         chip = self._MODE_CHIP.get(getattr(self, "_mode", "approve"), "")
-        return f"{chip} [#9c9689]shift+tab · {provider} · {model} · {_short_cwd()}[/]"
+        queued = len(getattr(self, "_command_queue", ()))
+        queue_text = f" · queue {queued}" if queued else ""
+        return (
+            f"{chip} [#9c9689]shift+tab · {provider} · {model} · "
+            f"{_short_cwd()}{queue_text}[/]"
+        )
+
+    def _update_statusbar(self) -> None:
+        try:
+            self.query_one("#statusbar", Static).update(self._status_line())
+        except NoMatches:
+            pass
 
     def action_cycle_mode(self) -> None:
         """shift+tab: approve → plan → auto → approve."""

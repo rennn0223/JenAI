@@ -14,7 +14,7 @@ from jenai.schemas import (
 )
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
-from jenai.tui.panels import OutputPanel, TimelineItem, pixel_mark
+from jenai.tui.panels import OutputPanel, PromptPill, TimelineItem, pixel_mark
 from jenai.tui.widgets import ApprovalCard
 
 
@@ -27,16 +27,30 @@ def test_tui_uses_colored_dachshund_mascot() -> None:
     assert 4 <= mascot.plain.count("\n") <= 7
 
 
-def test_output_panel_spaced_gives_fixed_airy_rhythm() -> None:
-    """spaced=True → exactly one blank line between logical lines, no matter
-    how the model spaced its own output; default stays compact (tables)."""
-    airy = str(OutputPanel("Result", "第一段\n\n\n第二段\n第三行", spaced=True).render())
-    airy_body = airy.split("\n")[1:]  # drop the title line
-    blanks = [line for line in airy_body if not line.strip()]
-    assert len(blanks) == 2  # 段落間各恰好一行,三連空行被收斂
+def test_output_panel_uses_uniform_line_spacing() -> None:
+    """Normal lines stay adjacent; repeated paragraph gaps collapse to one."""
+    rendered = str(OutputPanel("Result", "第一段\n\n\n第二段\n第三行", spaced=True).render())
+    body = rendered.split("\n")[1:]  # drop the title line
+    blanks = [line for line in body if not line.strip()]
+    assert len(blanks) == 1
+    assert body[-2:] == ["     第二段", "     第三行"]
 
     compact = str(OutputPanel("Status", "row1\nrow2\nrow3").render())
     assert all(line.strip() for line in compact.split("\n"))  # 表格不受影響
+
+
+def test_transcript_entries_share_one_row_gap() -> None:
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            await app._mount_event(PromptPill("question"))
+            await app._mount_event(TimelineItem("assistant", "answer"))
+            prompt = app.query_one(PromptPill)
+            answer = app.query_one(TimelineItem)
+            assert prompt.styles.margin.top == answer.styles.margin.top == 0
+            assert prompt.styles.margin.bottom == answer.styles.margin.bottom == 1
+
+    asyncio.run(run())
 
 
 def _app(tmp_path: Path | None = None) -> JenAITuiApp:
@@ -1028,9 +1042,149 @@ def test_tui_dock_routes_to_tagged_location(monkeypatch, tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_tui_stop_variants_preempt_and_busy_gives_feedback(monkeypatch, tmp_path) -> None:
-    """'/STOP' must preempt like '/stop'; other input while busy must not be
-    silently swallowed (review findings)."""
+def test_tui_busy_submissions_run_in_fifo_order(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        processed: list[str] = []
+
+        async def fake_handle(value: str) -> None:
+            if value == "first":
+                started.set()
+                await release.wait()
+            processed.append(value)
+
+        app.handle_user_text = fake_handle  # type: ignore[method-assign]
+        async with app.run_test() as pilot:
+            def event(value: str):
+                return SimpleNamespace(value=value, input=SimpleNamespace(value=""))
+
+            await app.on_input_submitted(event("first"))
+            await started.wait()
+            await app.on_input_submitted(event("second"))
+            await app.on_input_submitted(event("third"))
+
+            assert list(app._command_queue) == ["second", "third"]
+            assert "queue 2" in app._status_line()
+            bodies = [item.body for item in app.query(TimelineItem)]
+            assert any("Queued #1: second" in body for body in bodies)
+            assert any("Queued #2: third" in body for body in bodies)
+
+            release.set()
+            for _ in range(100):
+                await pilot.pause()
+                active = app._active_task is not None and not app._active_task.done()
+                if not active and not app._command_queue:
+                    break
+
+            assert processed == ["first", "second", "third"]
+            assert list(app._command_queue) == []
+            assert "queue" not in app._status_line()
+
+    asyncio.run(run())
+
+
+def test_tui_queue_waits_for_pending_approval(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        processed: list[str] = []
+
+        async def fake_handle(value: str) -> None:
+            processed.append(value)
+
+        app.handle_user_text = fake_handle  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            app._pending_direct_approvals["call-1"] = {}
+            await app.on_input_submitted(
+                SimpleNamespace(value="after approval", input=SimpleNamespace(value=""))
+            )
+            await pilot.pause()
+
+            assert processed == []
+            assert list(app._command_queue) == ["after approval"]
+
+            del app._pending_direct_approvals["call-1"]
+            app._start_next_queued()
+            for _ in range(20):
+                await pilot.pause()
+                if app._active_task is None:
+                    break
+
+            assert processed == ["after approval"]
+
+    asyncio.run(run())
+
+
+def test_tui_queue_command_lists_and_clears_pending_items(tmp_path) -> None:
+    async def run() -> None:
+        app = _app(tmp_path)
+        async with app.run_test():
+            app._command_queue.extend(["/status", "/plan inspect map"])
+            await app.handle_user_text("/queue")
+
+            panels = list(app.query(OutputPanel))
+            assert panels[-1].title == "Command queue"
+            assert "1. /status" in panels[-1].body
+            assert "2. /plan inspect map" in panels[-1].body
+
+            await app.handle_user_text("/queue clear")
+            assert list(app._command_queue) == []
+            assert "queue" not in app._status_line()
+            bodies = [item.body for item in app.query(TimelineItem)]
+            assert any("Cleared 2 queued" in body for body in bodies)
+
+    asyncio.run(run())
+
+
+def test_tui_abort_current_command_then_continues_queue(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        first_started = asyncio.Event()
+        started: list[str] = []
+        completed: list[str] = []
+
+        async def fake_handle(value: str) -> None:
+            started.append(value)
+            if value == "first":
+                first_started.set()
+                await asyncio.sleep(30)
+            completed.append(value)
+
+        app.handle_user_text = fake_handle  # type: ignore[method-assign]
+        async with app.run_test() as pilot:
+            def event(value: str):
+                return SimpleNamespace(value=value, input=SimpleNamespace(value=""))
+
+            await app.on_input_submitted(event("first"))
+            await first_started.wait()
+            await app.on_input_submitted(event("second"))
+            await app.on_input_submitted(event("/abort"))
+
+            for _ in range(100):
+                await pilot.pause()
+                active = app._active_task is not None and not app._active_task.done()
+                if not active and not app._command_queue:
+                    break
+
+            assert started == ["first", "second"]
+            assert completed == ["second"]
+            assert list(app._command_queue) == []
+            bodies = [item.body for item in app.query(TimelineItem)]
+            assert any("Abort requested" in body for body in bodies)
+
+    asyncio.run(run())
+
+
+def test_tui_stop_variants_preempt_and_clear_queue(monkeypatch, tmp_path) -> None:
+    """'/STOP' preempts like '/stop' and invalidates queued old intent."""
     from types import SimpleNamespace
 
     async def fake_get_bridge():
@@ -1050,13 +1204,14 @@ def test_tui_stop_variants_preempt_and_busy_gives_feedback(monkeypatch, tmp_path
             app._active_task = hang_task
             await hang_started.wait()
 
-            # Non-stop input while busy: visible feedback, task untouched.
+            # Non-stop input while busy is queued and leaves the task untouched.
             await app.on_input_submitted(
                 SimpleNamespace(value="/status", input=SimpleNamespace(value=""))
             )
             await pilot.pause()
             bodies = [i.body for i in app.query(TimelineItem)]
-            assert any("Busy" in b for b in bodies)
+            assert any("Queued #1" in b for b in bodies)
+            assert list(app._command_queue) == ["/status"]
             assert not hang_task.cancelled()
 
             # A shouty stop variant still preempts.
@@ -1068,7 +1223,9 @@ def test_tui_stop_variants_preempt_and_busy_gives_feedback(monkeypatch, tmp_path
             await stop_task
             await pilot.pause()
             assert hang_task.cancelled()
+            assert list(app._command_queue) == []
             bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("cleared 1 queued" in b.lower() for b in bodies)
             assert any("halted" in b.lower() for b in bodies)
 
     asyncio.run(run())

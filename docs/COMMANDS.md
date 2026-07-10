@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v0.26.0(2026-07)。
+> 對應版本:v0.27.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -49,7 +49,7 @@ JenAI 啟動流程：
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
-| `/stop` | **緊急停止**：取消 Nav2 goal + 連發零速度。**免批准**；任務執行中輸入也會搶佔（先取消進行中任務再停車） | `/stop` |
+| `/stop` | **緊急停止**：取消 Nav2 goal + 連發零速度。**免批准**；任務執行中輸入也會搶佔，並清空等待佇列，避免舊移動意圖稍後執行 | `/stop` |
 
 > 對應介面:WebUI 右上角紅色 **STOP** 鈕（免確認）、MCP `stop` 工具（唯讀模式也有）、daemon `action = "halt"` 規則。另有 bridge 端 watchdog:導航中 client 斷線/卡死超過 6 秒,bridge 自主停車。
 
@@ -59,6 +59,7 @@ JenAI 啟動流程：
 |---|---|---|
 | `/help` | 顯示指令簡介、分類、範例與快捷鍵 | `/help` |
 | `/status` | 顯示 provider、model、config、doctor 摘要 | `/status` |
+| `/queue [clear]` | 顯示 FIFO 指令佇列;`clear` 清除等待項目。任務執行中也會立即回應，最多保留 20 項 | `/queue` |
 | `/clear` | 清除目前對話畫面**與跨重啟記憶** | `/clear` |
 | `/quit` / `/exit` | 離開 JenAI | `/quit` |
 
@@ -70,7 +71,7 @@ JenAI 啟動流程：
 | `/run <task>` | 執行任務：Supervisor agent 依需求 handoff 給 ROS/Motion/Navigation/Perception 專職 agent | `/run 帶我到應科大樓` |
 | `/why` | 解釋 agent 目前決策原因 | `/why` |
 | `/review` | 重新檢視目前 plan 並建議修改 | `/review` |
-| `/abort` | 中止目前 run | `/abort` |
+| `/abort` | 中止目前 run，接著執行下一個排隊項目 | `/abort` |
 
 ### Provider / Model
 
@@ -138,10 +139,10 @@ JenAI 啟動流程：
 
 | 按鍵 | 功能 |
 |---|---|
-| `Enter` | 送出輸入 / 選定 approval 目前選項 |
+| `Enter` | 送出輸入;忙碌時自動加入 FIFO 佇列 / 選定 approval 目前選項 |
 | `Shift+Tab` | **切換權限模式**:⏵ 審批(NL→agent 執行,動作過批准卡)→ ⏸ 規劃(只規劃教學,零執行)→ ⏩ 自動(批准卡自動通過;急停/限速/閘門仍有效)。目前模式顯示在底部狀態列。**終端不支援 Shift+Tab 時用 `/mode`**(不帶參數循環;`/mode approve|plan|auto` 直接指定,中文別名 審批/規劃/自動 也通) |
 | `!` | 以 `!` 開頭 → 該行當 shell 命令執行 |
-| `Esc` | 中斷執行中的任務（**Nav2 goal 真的會取消**）/ 拒絕 approval / 關閉 palette |
+| `Esc` | 中斷目前任務並繼續下一個排隊項目（**Nav2 goal 真的會取消**）/ 拒絕 approval / 關閉 palette |
 | `1` `2` `3` | 直接選 approval 選項（Yes / Yes 並記住 / No） |
 | `Tab` | 補全命令名稱或模板 |
 | `↑` `↓` | 歷史輸入、slash palette 選項、或 approval 選項 |
