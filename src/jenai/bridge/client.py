@@ -261,7 +261,7 @@ class RosBridgeClient:
         """Nav2-less point-to-point drive (odom→cmd_vel). Feedback/result flow
         through the SAME nav_feedback/nav_result events as nav_send, so
         navigate_live consumes them unchanged. `avoidance` (when enabled) folds
-        a depth camera in for reactive follow-the-gap. See ros_bridge."""
+        a depth camera in for fail-closed local detours. See ros_bridge."""
         await self.request(
             "drive_to_pose",
             timeout=8.0,

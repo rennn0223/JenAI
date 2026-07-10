@@ -80,3 +80,19 @@ def test_layers_above_vehicle_profile_stay_vehicle_agnostic() -> None:
         "Vehicle words above the vehicle profile — move the difference into "
         "config [vehicle]:\n" + "\n".join(violations)
     )
+
+
+def test_navigation_surfaces_cannot_bypass_the_gateway() -> None:
+    allowed = {"tools/nav_live.py", "tools/navigation_gateway.py", "tools/route_core.py"}
+    violations: list[str] = []
+    for path in SRC.rglob("*.py"):
+        rel = str(path.relative_to(SRC))
+        if rel in allowed:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "route_execute":
+                violations.append(f"{rel}:{node.lineno} calls route_execute directly")
+            if isinstance(node, ast.Name) and node.id == "navigate_with_fallback":
+                violations.append(f"{rel}:{node.lineno} bypasses NavigationGateway")
+    assert not violations, "Navigation must go through NavigationGateway:\n" + "\n".join(violations)

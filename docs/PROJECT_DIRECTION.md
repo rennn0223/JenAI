@@ -160,7 +160,7 @@ ROS topics 就能算,不用碰 Isaac 內部 API,增量成本可控。
 | M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | ✅ **軟體 v0.13** | doctor `nav` 區段 + ONBOARDING.md 手把手;剩新手計時實測(客戶 B6) |
 | M6 | **自主決策迴圈(論文主軸)** | PM(論文) | 🚧 **零件齊,迴圈未串** | 感知/有界動作/odom 直驅/避障/Gate/規則引擎都在,尚未串成 DecisionLoop 閉環。v2.0 主線,詳見 [ROADMAP 軌道 1](ROADMAP.md) |
 
-> **v0.9–v0.18 新增(不在原 M 表,但已 shipped)**:odom 直驅(`route_adapter=odom`,無 Nav2 開闊地導航)、反應式避障(depth follow-the-gap)、GPS 地點(`/loc add gps` + `[map_datum]`)、`/route 從A到B` 依序、多頁 WebUI(Camera/API)、`/report` 巡邏日報(=C2)、`JenAI help`、V1_GATE 層一工程(semver/威脅模型/safety case/soak/架構鐵律/覆蓋倒退閘)。完整前瞻見 **[ROADMAP.md](ROADMAP.md)**。
+> **v0.9–v0.25 新增(不在原 M 表,但已 shipped)**:odom 直驅(`route_adapter=odom`,無 Nav2 開闊地導航)、局部避障(depth stop-and-go detour + stale-frame fail-closed)、GPS 地點(`/loc add gps` + `[map_datum]`)、`/route 從A到B` 依序、多頁 WebUI(Camera/API)、`/report` 巡邏日報(=C2)、`JenAI help`、V1_GATE 層一工程(semver/威脅模型/safety case/soak/架構鐵律/覆蓋倒退閘)。完整前瞻見 **[ROADMAP.md](ROADMAP.md)**。
 
 ### 可做(有明確價值,排在必做之後)
 

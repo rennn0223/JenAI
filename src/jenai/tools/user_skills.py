@@ -9,7 +9,7 @@ The flexibility layer users asked for — extend JenAI without touching code:
 
 `/inspect` then appears in the palette and runs those steps as a mission —
 which means every safety property is inherited for free: one approval card up
-front, navigation through navigate_with_fallback (Twin Gate, avoidance,
+front, navigation through NavigationGateway (Twin Gate, avoidance,
 clamps), honest per-step reporting. A skill file can never introduce a new
 kind of actuation; it can only compose the already-gated primitives.
 

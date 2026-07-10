@@ -307,15 +307,17 @@ def test_bridge_error_mid_rehearsal_refers() -> None:
     assert "mid-rehearsal" in report.reason or "twin" in report.reason
 
 
-def test_pose_unavailable_after_success_skips_g4_and_passes() -> None:
+def test_pose_unavailable_after_success_refers() -> None:
     class NoPoseBridge(FakeTwinBridge):
         async def get_pose(self, timeout: float = 3.0):
             raise BridgeError("no pose on the twin domain")
 
-    # Nav2 succeeded but the twin can't report a final pose: G4 (endpoint
-    # deviation) is skipped rather than guessed — the other criteria decide.
+    # Nav2 succeeded but the twin can't verify the endpoint. An enabled gate
+    # must fail closed rather than silently pass an unverified G4 criterion.
     report = _rehearse(_twin(), NoPoseBridge(nav_status="succeeded"))
-    assert report.verdict == "pass"
+    assert report.verdict == "refer"
+    assert _status(report, "G4") == "fail"
+    assert "pose" in report.reason
 
 
 def test_unwatch_failure_is_swallowed_not_fatal() -> None:

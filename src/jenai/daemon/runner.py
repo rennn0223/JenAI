@@ -11,10 +11,9 @@ from jenai.adapters.locations import LocationNotFoundError, find_location, load_
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.daemon.engine import Decision, Rule, RuleEngine
-from jenai.tools.nav_live import navigate_live
+from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.perception import PerceptionLoop
 from jenai.tools.safety import arm_watchdog, halt_robot
-from jenai.twin import rehearse_goal
 
 PERCEPTION_TOPIC = "@perception"  # rule.topic sentinel: trigger on camera VLM analyses
 
@@ -40,6 +39,11 @@ async def run_daemon(
     await arm_watchdog(config, bridge)
     await bridge.start()
     on_status(f"bridge up · watching {len(rules)} rule(s)")
+
+    async def _get_bridge() -> RosBridgeClient:
+        return bridge
+
+    navigation = NavigationGateway(config, get_bridge=_get_bridge)
 
     loop = asyncio.get_running_loop()
     # One navigation at a time. The consumer loop is the only place that
@@ -106,15 +110,8 @@ async def run_daemon(
                 on_status(f"'{decision.rule.name}': unknown location '{decision.navigate_to}'")
                 return
             goal_action = {"goal": location.model_dump(mode="json")}
-            if config.twin.enabled:
-                # Autonomous path: there is no human to refer to, so anything
-                # short of a clean pass keeps the robot parked.
-                report = await rehearse_goal(config.twin, goal_action, on_status=on_status)
-                if report.verdict != "pass":
-                    on_status(f"'{decision.rule.name}': {report.summary} — robot NOT moved")
-                    return
             on_status(f"'{decision.rule.name}': navigating to {location.name}")
-            output = await navigate_live(bridge, goal_action)
+            output = await navigation.execute(goal_action, on_gate=on_status)
             on_status(
                 f"'{decision.rule.name}': {output.execution_status} — {output.route_preview}"
             )

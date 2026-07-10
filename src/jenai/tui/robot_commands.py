@@ -33,7 +33,7 @@ from jenai.schemas import (
 )
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.mission_core import MissionStep, parse_mission
-from jenai.tools.nav_live import navigate_with_fallback
+from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.perception import PerceptionLoop
 from jenai.tools.ros2_core import (
     ros_echo,
@@ -875,9 +875,8 @@ class RobotCommandsMixin:
         def _gate(message: str) -> None:
             self._spinner_label = message
 
-        return await navigate_with_fallback(
-            self.config, self._get_bridge, outgoing_action, on_progress=_progress, on_gate=_gate
-        )
+        gateway = NavigationGateway(self.config, get_bridge=self._get_bridge)
+        return await gateway.execute(outgoing_action, on_progress=_progress, on_gate=_gate)
 
     def _load_locations(self) -> list[Location]:
         locations, _error = load_locations_tolerant(self._locations_path())

@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.23.6(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v0.25.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(Jetson 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -26,7 +26,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.23.6 基準 `380 passed`,約 25s,無 ROS 環境也全過);含安全鏈故障注入(bridge 啟動失敗/watchdog 武裝失敗/twin 預演中斷/halt 失敗誠實回報)與架構鐵律測試 |
+| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.25.0 基準 `398 passed`,約 25s,無 ROS 環境也全過);含安全鏈故障注入(bridge 啟動失敗/watchdog 武裝失敗/twin 預演中斷/halt 失敗誠實回報)與架構鐵律測試 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job(ruff+pytest,coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
 | Release gate | 推 `vX.Y.Z` tag,或手動 dispatch(輸入 tag) | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → tag push 建草稿(人工發佈);dispatch 由 workflow 建 tag 並以 `docs/releases/<tag>.md` 直接發佈 |
@@ -48,7 +48,7 @@
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.22.1`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 0.25.0`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |
@@ -131,7 +131,7 @@
 |---|---|---|---|
 | 🔶 | `/route 從應科大樓到機械系館` | 建點 + (Nav2 或 route_adapter=odom) | **兩端已知 → 先去 A 再去 B**(兩段導航);只認得目的地 → 從當前位置去。即時剩餘距離、Esc 真取消。`route_adapter="odom"` 時無 Nav2 也能在開闊地/ground plane 直驅(閉環 odom→cmd_vel);實測:Isaac ground plane 從 odom (0,0) 往 (88.413,-184.273),distance_remaining 單調遞減、方向正確 ✅ |
 | ✅ | `/drive 前進兩秒` | 批准後 | 自然語言 → 速度指令定時發布到 `vehicle.cmd_vel_topic`,結束自動停(⚠️ 實體會動) |
-| 🔶 | 反應式避障(`[avoidance] enabled=true`,route_adapter=odom) | 需 depth topic + 障礙 | odom 直驅時 depth→follow-the-gap:偵測太近自動繞開、清空後回到原線;實測 Isaac 障礙前 1.1m → 觸發避障、側向偏 1.2m 未撞上。純律 `follow_the_gap` 7 個單元測試 |
+| 🔶 | 局部避障(`[avoidance] enabled=true`,route_adapter=odom) | 需 depth topic + 障礙 | odom 直驅時 depth→走廊判定→stop-and-go detour;depth 超過 `depth_timeout_s` 未更新即歸零並回報 `sensor_unavailable`,不沿用舊畫面盲走 |
 | ✅ | `/loc list` | 直接輸入 | 地點表;現在為空 |
 | 🔶 | `/loc add here 測試點` | 需 /amcl_pose 或 /odom | 抓當下位置存檔;**本機現在兩者皆無 → 誠實失敗** |
 | ✅ | `/loc add gps <名> <緯> <經>` | 先在 config 設 `[map_datum]` | 未設基準點 → 誠實拒絕 + 設定教學;設好 → 換算 map 座標存檔(提示:實地驗證第一次導航,基準誤差會整批平移) |

@@ -23,7 +23,8 @@ from jenai.config.models import AppConfig
 from jenai.config.setup import run_setup_wizard
 from jenai.doctor import run_doctor
 from jenai.schemas import DoctorResult, DoctorStatus, Location
-from jenai.tools.route_core import route_execute, route_preview
+from jenai.tools.navigation_gateway import execute_navigation
+from jenai.tools.route_core import route_preview
 from jenai.tui import run_tui, status_color
 
 app = typer.Typer(
@@ -197,7 +198,7 @@ def route(text: str, config: ConfigOption = None) -> None:
         console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(0)
 
-    result = asyncio.run(route_execute(loaded, output.outgoing_action))
+    result = asyncio.run(execute_navigation(loaded, output.outgoing_action))
     if result.execution_status == "succeeded":
         console.print(f"[green]{result.execution_status}[/green]")
     else:

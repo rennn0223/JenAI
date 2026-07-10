@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import math
 
-from jenai.bridge._avoidance import StuckDetector, apply_floor_filter, plan_detour
+from jenai.bridge._avoidance import (
+    StuckDetector,
+    apply_floor_filter,
+    corridor_nearest,
+    plan_detour,
+    scan_is_fresh,
+)
 
 # 15 sectors spanning ±45° (hfov 90): angles left(+)→right(-), like the bridge.
 ANGLES = [math.radians(90 * (0.5 - (i + 0.5) / 15)) for i in range(15)]
@@ -86,3 +92,21 @@ def test_stuck_detector_resets_when_path_clears() -> None:
     assert d.update(2.9, 0.0, 0.0, blocked=True) is False
     d.update(3.0, 0.0, 0.0, blocked=False)  # obstacle cleared → reset
     assert d.update(6.5, 0.0, 0.0, blocked=True) is False  # fresh anchor
+
+
+def test_scan_freshness_fails_closed_without_or_after_updates() -> None:
+    assert scan_is_fresh(None, now=10.0, timeout_s=1.0) is False
+    assert scan_is_fresh(9.1, now=10.0, timeout_s=1.0) is True
+    assert scan_is_fresh(9.0, now=10.0, timeout_s=1.0) is True
+    assert scan_is_fresh(8.99, now=10.0, timeout_s=1.0) is False
+
+
+def test_corridor_rotates_with_target_heading() -> None:
+    ranges = [1.0, 1.0]
+    angles = [0.0, 0.8]
+
+    assert corridor_nearest(ranges, angles, heading_err=0.0, half_width=0.2) == 1.0
+    assert corridor_nearest(ranges, angles, heading_err=0.8, half_width=0.2) == 1.0
+    assert math.isinf(
+        corridor_nearest([1.0], [0.0], heading_err=0.8, half_width=0.2)
+    )

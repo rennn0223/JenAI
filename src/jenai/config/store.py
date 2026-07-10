@@ -6,8 +6,8 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
+import tomli_w
 from pydantic import ValidationError
 
 from jenai.config.models import AppConfig, ProviderProfile
@@ -113,7 +113,14 @@ def load_config(path: Path | None = None) -> AppConfig:
 def save_config(config: AppConfig, path: Path | None = None) -> Path:
     config_path = path or default_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(_to_toml(config.model_dump(mode="python")), encoding="utf-8")
+    payload = config.model_dump(mode="python", exclude_none=True)
+    rendered = tomli_w.dumps(payload)
+    temporary = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(rendered, encoding="utf-8")
+        os.replace(temporary, config_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return config_path
 
 
@@ -146,56 +153,4 @@ def build_minimal_config(
         locations_path=locations_path,
         created_by_setup=True,
     )
-
-
-def _to_toml(data: dict[str, Any]) -> str:
-    lines: list[str] = []
-    scalar_items: dict[str, Any] = {}
-
-    for key, value in data.items():
-        if isinstance(value, dict):
-            continue
-        scalar_items[key] = value
-
-    for key, value in scalar_items.items():
-        lines.append(f"{key} = {_format_toml_value(value)}")
-
-    provider_profiles = data.get("provider_profiles") or {}
-    for profile_name, profile in provider_profiles.items():
-        lines.append("")
-        lines.append(f"[provider_profiles.{_quote_key(profile_name)}]")
-        for key, value in profile.items():
-            lines.append(f"{key} = {_format_toml_value(value)}")
-
-    model_bindings = data.get("model_bindings")
-    if model_bindings:
-        lines.append("")
-        lines.append("[model_bindings]")
-        for key, value in model_bindings.items():
-            lines.append(f"{key} = {_format_toml_value(value)}")
-
-    vehicle = data.get("vehicle")
-    if vehicle:
-        lines.append("")
-        lines.append("[vehicle]")
-        for key, value in vehicle.items():
-            lines.append(f"{key} = {_format_toml_value(value)}")
-
-    return "\n".join(lines) + "\n"
-
-
-def _quote_key(key: str) -> str:
-    escaped = key.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def _format_toml_value(value: Any) -> str:
-    if value is None:
-        return '""'
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
 

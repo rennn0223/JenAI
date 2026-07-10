@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from agents import OpenAIChatCompletionsModel
+from agents import Model, OpenAIChatCompletionsModel, OpenAIResponsesModel
 from openai import AsyncOpenAI
 
 from jenai.config.models import AppConfig
@@ -30,7 +30,7 @@ def build_agent_model(
     *,
     binding: ModelBinding = "chat",
     client: AsyncOpenAI | None = None,
-) -> OpenAIChatCompletionsModel:
+) -> Model:
     """Build an `agents` SDK model wired to the active provider profile.
 
     Reuses the same profile/api-key/model-alias resolution as `providers.chat.ask_provider`
@@ -40,4 +40,6 @@ def build_agent_model(
     profile = _active_profile(config)
     model_name = resolved_model(config, profile, binding)
     client = client or make_agent_client(config)
+    if profile.provider.lower() == "openai" and not profile.base_url:
+        return OpenAIResponsesModel(model=model_name, openai_client=client)
     return OpenAIChatCompletionsModel(model=model_name, openai_client=client)

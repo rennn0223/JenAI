@@ -325,7 +325,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self._mode = "approve"  # shift+tab cycles; see PERMISSION_MODES
 
         self.session = create_session(config, working_directory=str(Path.cwd()))
-        self.run_store = RunStore()
+        self.run_store = RunStore(pending_dir=config_path.parent / "pending-runs")
         self.history = InputHistory(self.session)
         self._last_history_value: str | None = None
         self._last_plan_ctx: JenAIRunContext | None = None
@@ -388,6 +388,25 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # (one small Text rebuild every 600 ms) and skipped when hidden.
         self._mascot_frame = 0
         self.set_interval(0.6, self._animate_mascot)
+        self.call_after_refresh(self._restore_pending_runs)
+
+    async def _restore_pending_runs(self) -> None:
+        """Rebuild approval cards for SDK runs paused before the last exit."""
+        for run in self.run_store.list_runs():
+            if run.status != "awaiting_approval":
+                continue
+            self.session.current_run_id = run.run_id
+            restored_session = self.session.model_copy(
+                update={"session_id": run.session_id, "current_run_id": run.run_id}
+            )
+            ctx = JenAIRunContext(
+                config=self.config,
+                config_path=self.config_path,
+                session=restored_session,
+                run=run,
+                run_store=self.run_store,
+            )
+            await self._render_run_update(ctx, run, agent=build_run_agent(self.config))
 
     def _count_locations(self) -> int:
         """Location count for the welcome card WITHOUT the tolerant loader —
@@ -1443,5 +1462,3 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
     def _format_status(self, value: str) -> str:
         return f"[bold {status_color(value)}]{value}[/]"
-
-

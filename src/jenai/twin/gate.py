@@ -207,6 +207,8 @@ class TwinGate:
                 else ("fail", f"stopped {o['deviation']:.2f} m from the goal "
                               f"(tolerance {self._twin.goal_tolerance_m:.2f} m)")
             )
+        elif o["status"] == "succeeded":
+            statuses["G4"] = ("fail", "twin final pose unavailable; endpoint not verified")
         if o["status"] == "succeeded":
             statuses["G5"] = ("pass", "")
         elif o["we_canceled"]:

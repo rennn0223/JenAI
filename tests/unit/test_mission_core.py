@@ -27,7 +27,7 @@ def test_run_mission_goto_and_drive(monkeypatch) -> None:
     from jenai.schemas import RosPubOutput, RouteOutput
     from jenai.tools.drive_core import DriveIntent
 
-    async def fake_route_execute(config, outgoing):
+    async def fake_navigation(config, outgoing):
         return RouteOutput(input_text="", execution_status="succeeded", route_preview="arrived")
 
     async def fake_extract(config, text):
@@ -38,7 +38,7 @@ def test_run_mission_goto_and_drive(monkeypatch) -> None:
             topic=topic, message_type=mt, execution_status="succeeded", result_message="drove"
         )
 
-    monkeypatch.setattr(mission_core, "route_execute", fake_route_execute)
+    monkeypatch.setattr(mission_core, "execute_navigation", fake_navigation)
     monkeypatch.setattr(mission_core, "extract_drive_command", fake_extract)
     monkeypatch.setattr(mission_core, "ros_drive", fake_drive)
 
@@ -75,12 +75,12 @@ def test_run_mission_continues_after_a_raising_step(monkeypatch) -> None:
     async def boom_drive(*a, **k):
         raise RuntimeError("ros2 not available")
 
-    async def fake_route_execute(config, outgoing):
+    async def fake_navigation(config, outgoing):
         return RouteOutput(input_text="", execution_status="succeeded", route_preview="arrived")
 
     monkeypatch.setattr(mission_core, "extract_drive_command", fake_extract)
     monkeypatch.setattr(mission_core, "ros_drive", boom_drive)
-    monkeypatch.setattr(mission_core, "route_execute", fake_route_execute)
+    monkeypatch.setattr(mission_core, "execute_navigation", fake_navigation)
 
     locs = [Location(name="lobby", frame_id="map", pose=Pose2D(x=1, y=1, yaw=0))]
     report = asyncio.run(run_mission(_config(), locs, parse_mission("drive forward, lobby")))

@@ -9,8 +9,8 @@ from jenai.adapters.locations import LocationNotFoundError, find_location
 from jenai.config.models import AppConfig
 from jenai.schemas import Location, RouteOutput
 from jenai.tools.drive_core import extract_drive_command
+from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.ros2_core import ros_drive
-from jenai.tools.route_core import route_execute
 
 TWIST = "geometry_msgs/msg/Twist"
 
@@ -71,9 +71,8 @@ async def run_mission(
     and testable). Each step reuses the existing, safety-clamped tools; results
     are collected into a report. `on_step` streams progress to the UI if given.
 
-    `navigate` overrides how goto steps are executed (the TUI injects the live
-    rclpy-bridge navigator when Nav2 + the bridge are available); the default
-    stays the blocking route_execute adapter path.
+    `navigate` overrides how goto steps are executed (the TUI injects its
+    long-lived bridge); the default still goes through NavigationGateway.
     """
     report = MissionReport()
     for step in steps:
@@ -113,7 +112,11 @@ async def resolve_and_navigate(
         detail = f"unknown location (near: {hint})" if hint else "unknown location"
         return target, "failed", detail
     action = {"goal": location.model_dump(mode="json")}
-    out = await navigate(action) if navigate is not None else await route_execute(config, action)
+    out = (
+        await navigate(action)
+        if navigate is not None
+        else await execute_navigation(config, action)
+    )
     return location.name, out.execution_status, out.route_preview
 
 
