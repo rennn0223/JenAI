@@ -81,10 +81,12 @@ async def resume_with_approvals(
     collide across resume cycles and leave stale approvals pending).
     """
     run, run_store = ctx.run, ctx.run_store
-    state = run_store.pop_pending_state(run.run_id)
-    approval_ids = run_store.pop_pending_approval_ids(run.run_id)
-    if state is None:
+    pending = await run_store.take_pending_state(
+        run.run_id, initial_agent=agent, context=ctx
+    )
+    if pending is None:
         raise ValueError(f"No pending approval state for run {run.run_id}")
+    state, approval_ids = pending
 
     for index, item in enumerate(state.get_interruptions()):
         call_id = approval_ids[index] if index < len(approval_ids) else (item.call_id or "")
@@ -175,8 +177,8 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
 
     for approval in requests:
         run_store.add_interruption(run, approval)
-    run_store.stash_pending_state(run.run_id, state, approval_ids)
     run_store.set_status(run, RunStatus.AWAITING_APPROVAL)
+    run_store.stash_pending_state(run.run_id, state, approval_ids)
     return run
 
 

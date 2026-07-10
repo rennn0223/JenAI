@@ -91,7 +91,7 @@
 2. TUI:`/route 從應科大樓到機械系館` → 走真 Nav2(全域規劃 + costmap 避障),
    即時剩餘距離、Esc 真取消照舊。
 3. **驗證我的避障演算法 vs Nav2**(你提的模擬驗證):同一組起終點 + 障礙,
-   分別用 `route_adapter="odom"`(follow-the-gap)與 `"nav2"` 跑,比:
+   分別用 `route_adapter="odom"`(stop-and-go detour)與 `"nav2"` 跑,比:
    成功率、路徑長、最小障礙距離 —— 這正是論文 E2/E3 的素材,
    也直接餵 [ROADMAP](ROADMAP.md) 軌道 2/3。
 4. Twin Gate:這個場景就是 B5 的雛形 —— `[twin]` 啟用 + 禁區設好,

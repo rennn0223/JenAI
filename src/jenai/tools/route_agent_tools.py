@@ -15,6 +15,7 @@ from jenai.adapters.locations import (
 from jenai.agent.context import JenAIRunContext
 from jenai.schemas import EffectScope, RiskLevel, ToolCallCategory, ToolCallRecord, ToolCallStatus
 from jenai.tools import route_core
+from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.registry import ToolRiskInfo, register_tool
 
 
@@ -97,7 +98,7 @@ async def route_execute_tool(
             "execution_status": "failed",
             "route_preview": f"outgoing_action_json is not valid JSON: {exc}",
         }
-    output = await route_core.route_execute(ctx.context.config, outgoing_action)
+    output = await execute_navigation(ctx.context.config, outgoing_action)
     _finish_call(ctx, call, ok=True, summary=output.execution_status)
     return output.model_dump(mode="json")
 

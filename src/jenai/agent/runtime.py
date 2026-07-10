@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents import Agent, OpenAIChatCompletionsModel
+from agents import Agent, Model
 from openai import AsyncOpenAI
 
 from jenai.agent.context import JenAIRunContext
@@ -17,7 +17,7 @@ def build_model(
     *,
     binding: ModelBinding = "chat",
     client: AsyncOpenAI | None = None,
-) -> OpenAIChatCompletionsModel:
+) -> Model:
     return build_agent_model(config, binding=binding, client=client)
 
 

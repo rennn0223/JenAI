@@ -107,7 +107,7 @@ def test_navigate_to_refuses_concurrent_goals(tmp_path: Path, monkeypatch) -> No
     async def run() -> None:
         release = asyncio.Event()
 
-        async def slow_nav(config, get_bridge, action, on_progress=None):
+        async def slow_nav(self, action, *, on_progress=None, on_gate=None):
             await release.wait()
             return RouteOutput(
                 input_text="",
@@ -116,7 +116,7 @@ def test_navigate_to_refuses_concurrent_goals(tmp_path: Path, monkeypatch) -> No
                 route_preview="Arrived at the goal.",
             )
 
-        monkeypatch.setattr("jenai.mcp_server.server.navigate_with_fallback", slow_nav)
+        monkeypatch.setattr("jenai.mcp_server.server.NavigationGateway.execute", slow_nav)
 
         first = asyncio.create_task(server.call_tool("navigate_to", {"location": "Dock"}))
         await asyncio.sleep(0.05)  # let the first goal take the lock

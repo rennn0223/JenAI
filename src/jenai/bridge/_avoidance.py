@@ -13,6 +13,28 @@ from __future__ import annotations
 import math
 
 
+def scan_is_fresh(updated_at: float | None, *, now: float, timeout_s: float) -> bool:
+    """Whether the latest depth scan is recent enough to command motion."""
+    return updated_at is not None and 0.0 <= now - updated_at <= timeout_s
+
+
+def corridor_nearest(
+    ranges: list[float],
+    angles: list[float],
+    *,
+    heading_err: float,
+    half_width: float = 0.5,
+) -> float:
+    """Nearest return inside the corridor aligned with the current target."""
+    candidates = (
+        distance
+        for distance, angle in zip(ranges, angles, strict=False)
+        if math.isfinite(distance)
+        and abs(distance * math.sin(angle - heading_err)) <= half_width
+    )
+    return min(candidates, default=math.inf)
+
+
 def apply_floor_filter(ranges: list[float], floor_ref: float, tol: float) -> list[float]:
     """Treat returns at/beyond the ground-plane reference as CLEAR (inf).
 

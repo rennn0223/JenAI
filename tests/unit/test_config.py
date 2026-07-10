@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from jenai.config import ConfigError, load_config, save_config
+from jenai.config.models import ForbiddenZone
 from jenai.config.store import build_minimal_config
 
 
@@ -61,3 +62,46 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     assert loaded.vehicle.cmd_vel_topic == "/leatherback/cmd_vel"
     assert loaded.vehicle.max_linear == 1.2
     assert loaded.vehicle.type == "ackermann"
+
+
+def test_config_round_trip_preserves_every_nested_safety_section(tmp_path: Path) -> None:
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "odom"
+    config.twin.enabled = True
+    config.twin.forbidden_zones = [
+        ForbiddenZone(name="stairs", x_min=1.0, y_min=2.0, x_max=3.0, y_max=4.0)
+    ]
+    config.map_datum.lat = 25.033
+    config.map_datum.lon = 121.5654
+    config.avoidance.enabled = True
+    config.avoidance.floor_ref = 1.6
+    config.avoidance.floor_snapshot = "/tmp/floor.npy"
+
+    path = tmp_path / "config.toml"
+    save_config(config, path)
+    loaded = load_config(path)
+
+    assert loaded.model_dump(mode="json") == config.model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    ("section", "body"),
+    [
+        ("vehicle", "max_linear = -1.0"),
+        ("vehicle", "max_angular = 0.0"),
+        ("avoidance", "stop_distance = 2.0\nslow_distance = 1.0"),
+        ("avoidance", "band_lo = 0.8\nband_hi = 0.2"),
+        ("avoidance", "sectors = 0"),
+        ("twin", "nav_timeout_s = 0.0"),
+    ],
+)
+def test_config_rejects_unsafe_numeric_settings(
+    tmp_path: Path, section: str, body: str
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f"[{section}]\n{body}\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        load_config(path)

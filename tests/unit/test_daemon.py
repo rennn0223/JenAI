@@ -297,8 +297,6 @@ def test_daemon_twin_refer_blocks_autonomous_goto(tmp_path: Path, monkeypatch) -
     twin pass must keep the robot parked, and say so."""
     from types import SimpleNamespace
 
-    import jenai.daemon.runner as runner_module
-
     moved: list[dict] = []
 
     async def fake_rehearse(twin, action, on_status=None):
@@ -308,8 +306,8 @@ def test_daemon_twin_refer_blocks_autonomous_goto(tmp_path: Path, monkeypatch) -
         moved.append(action)
         return SimpleNamespace(execution_status="succeeded", route_preview="")
 
-    monkeypatch.setattr(runner_module, "rehearse_goal", fake_rehearse)
-    monkeypatch.setattr(runner_module, "navigate_live", fake_navigate)
+    monkeypatch.setattr("jenai.twin.rehearse_goal", fake_rehearse)
+    monkeypatch.setattr("jenai.tools.nav_live.navigate_live", fake_navigate)
 
     def enable_twin(cfg) -> None:
         cfg.twin.enabled = True

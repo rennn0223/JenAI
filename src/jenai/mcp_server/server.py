@@ -17,7 +17,7 @@ from jenai.adapters.ros2_adapter import Ros2NotAvailableError
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.tools import ros2_core
-from jenai.tools.nav_live import navigate_with_fallback
+from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.safety import arm_watchdog, halt_robot
 from jenai.tools.vision_core import VisionError, capture_and_analyze
 
@@ -57,6 +57,8 @@ def build_mcp_server(
             safety_registered = True
         await bridge.start()  # idempotent; raises BridgeError when ROS is absent
         return bridge
+
+    navigation = NavigationGateway(config, get_bridge=_get_bridge)
 
     def _locations_or_error() -> tuple[list, str | None]:
         return load_locations_tolerant(config.resolved_locations_path(config_path))
@@ -181,7 +183,7 @@ def build_mcp_server(
                     hint = ", ".join(c.name for c in exc.candidates) or "no close matches"
                     return f"Unknown location '{location}' (near: {hint})."
                 action = {"goal": target.model_dump(mode="json")}
-                output = await navigate_with_fallback(config, _get_bridge, action)
+                output = await navigation.execute(action)
                 return f"{output.execution_status}: {output.route_preview}"
 
     return mcp

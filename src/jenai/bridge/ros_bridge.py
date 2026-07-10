@@ -208,9 +208,8 @@ class BridgeNode(Node):
         SAME protocol as nav_send, so the client's navigate_live works unchanged.
 
         With `avoidance` enabled, a depth camera is folded into the loop as a
-        pseudo-laserscan and the go-to-goal steering is blended with
-        follow-the-gap (steer around obstacles, return to the line once clear).
-        Reactive/local only — not a global planner substitute.
+        pseudo-laserscan for stop-and-go local detours. Motion fails closed if
+        fresh depth data is unavailable. This is not a global planner substitute.
         """
         if self._drive_active:
             raise RuntimeError("a drive_to_pose is already running")
@@ -247,7 +246,13 @@ class BridgeNode(Node):
     ) -> None:
         # Sibling module (stdlib-only): the bridge runs as a script so its dir is
         # on sys.path; the venv tests import it as jenai.bridge._avoidance.
-        from _avoidance import StuckDetector, apply_floor_filter, plan_detour
+        from _avoidance import (
+            StuckDetector,
+            apply_floor_filter,
+            corridor_nearest,
+            plan_detour,
+            scan_is_fresh,
+        )
         from geometry_msgs.msg import Twist, TwistStamped
         from nav_msgs.msg import Odometry
 
@@ -287,6 +292,7 @@ class BridgeNode(Node):
             waypoints: list[tuple[float, float]] = []
             replans = 0
             max_replans = int(avoid.get("max_replans", 4)) if avoid else 0
+            depth_timeout = float(avoid.get("depth_timeout_s", 1.0)) if avoid else 0.0
 
             def _zero_pulse() -> None:
                 z = msg_type()
@@ -310,6 +316,16 @@ class BridgeNode(Node):
                 if not waypoints and dist <= tolerance:
                     status = "succeeded"
                     break
+                now = time.monotonic()
+                if avoid is not None and not scan_is_fresh(
+                    depth.get("updated_at"), now=now, timeout_s=depth_timeout
+                ):
+                    _zero_pulse()
+                    if now - started > depth_timeout:
+                        status = "sensor_unavailable"
+                        break
+                    time.sleep(0.05)
+                    continue
                 if waypoints and (
                     math.hypot(waypoints[0][0] - latest["x"], waypoints[0][1] - latest["y"])
                     <= max(0.35, tolerance)
@@ -334,12 +350,9 @@ class BridgeNode(Node):
                     # a near on-path obstacle approached at a slant (live:
                     # cube at 33° bearing, 1.35 m) and false-triggers on far
                     # off-path returns near the scan edge.
-                    corridor = [
-                        r
-                        for r, a in zip(filtered, depth["angles"], strict=False)
-                        if math.isfinite(r) and abs(r * math.sin(a)) <= 0.5
-                    ]
-                    nearest = min(corridor) if corridor else math.inf
+                    nearest = corridor_nearest(
+                        filtered, depth["angles"], heading_err=heading_err
+                    )
                     # Seeking: anything inside slow_distance ahead → plan.
                     # On a detour leg: only an emergency (inside stop_distance)
                     # forces a REplan — the legs are meant to run blind.
@@ -502,6 +515,7 @@ class BridgeNode(Node):
                     else:
                         ranges.append(float(vals.min()) if vals.size else float("inf"))
                 out["ranges"] = ranges
+                out["updated_at"] = time.monotonic()
             except Exception:
                 pass  # a malformed frame just leaves the last scan in place
 
@@ -590,7 +604,7 @@ class BridgeNode(Node):
         pulses: int = 5,
         rate_hz: float = 20.0,
     ) -> dict:
-        """EMERGENCY STOP: cancel any Nav2 goal, then pulse zero velocity.
+        """EMERGENCY STOP: pulse zero, cancel Nav2, then pulse zero again.
 
         Zero is pulsed (not sent once) because a single message can lose the
         race against a controller that is still streaming motion commands.
@@ -598,24 +612,25 @@ class BridgeNode(Node):
         both call this, and concurrent rclpy entity churn is not safe.
         """
         with self._halt_lock:
-            canceled = self.nav_cancel().get("canceled", False)
-
+            from _safety_order import halt_in_order
             from geometry_msgs.msg import Twist, TwistStamped
 
             pub = self.ensure_halt_publisher(cmd_vel_topic, stamped)
-            # Best effort: give a cold publisher a moment to match its
-            # subscriber instead of pulsing into the void.
-            for _ in range(20):
-                if pub.get_subscription_count() > 0:
-                    break
-                time.sleep(0.05)
             msg_type = TwistStamped if stamped else Twist
-            for _ in range(max(1, pulses)):
-                msg = msg_type()  # all-zero twist
-                if stamped:
-                    msg.header.stamp = self.get_clock().now().to_msg()
-                pub.publish(msg)
-                time.sleep(1.0 / rate_hz)
+
+            def _send_zero(count: int) -> None:
+                for _ in range(count):
+                    msg = msg_type()  # all-zero twist
+                    if stamped:
+                        msg.header.stamp = self.get_clock().now().to_msg()
+                    pub.publish(msg)
+                    time.sleep(1.0 / rate_hz)
+
+            canceled = halt_in_order(
+                _send_zero,
+                lambda: self.nav_cancel().get("canceled", False),
+                pulses=pulses,
+            )
         return {"halted": True, "nav_canceled": canceled}
 
     # -- camera -------------------------------------------------------------

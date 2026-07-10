@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
+from agents import Agent
+
 from jenai.schemas import (
     ApprovalRequest,
     ApprovalStatus,
@@ -123,3 +127,39 @@ def test_run_store_pending_state_roundtrip() -> None:
     store.stash_pending_state(run.run_id, sentinel)
     assert store.pop_pending_state(run.run_id) is sentinel
     assert store.pop_pending_state(run.run_id) is None
+
+
+def test_run_store_restores_and_claims_serialized_sdk_state(tmp_path, monkeypatch) -> None:
+    class SerializableState:
+        def to_json(self, **kwargs):
+            assert kwargs["include_tracing_api_key"] is False
+            return {"$schemaVersion": "test", "current_turn": 2}
+
+    store = RunStore(pending_dir=tmp_path)
+    run = store.create_run("session-1", "move after approval")
+    store.set_status(run, RunStatus.AWAITING_APPROVAL)
+    store.stash_pending_state(run.run_id, SerializableState(), ["call-1"])
+
+    restored = RunStore(pending_dir=tmp_path)
+    restored_run = restored.get(run.run_id)
+    assert restored_run is not None
+    assert restored_run.status == "awaiting_approval"
+
+    sentinel = object()
+
+    async def fake_from_json(initial_agent, state_json, *, context_override):
+        assert state_json["current_turn"] == 2
+        assert context_override == "fresh-context"
+        return sentinel
+
+    monkeypatch.setattr("jenai.state.runs.RunState.from_json", fake_from_json)
+    pending = asyncio.run(
+        restored.take_pending_state(
+            run.run_id,
+            initial_agent=Agent(name="restore", instructions="restore"),
+            context="fresh-context",
+        )
+    )
+
+    assert pending == (sentinel, ["call-1"])
+    assert list(tmp_path.glob("*.json")) == []

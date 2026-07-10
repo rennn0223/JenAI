@@ -1,19 +1,19 @@
 # ROADMAP — 演進與維護深度規劃
 
-> 對應版本:**v0.23.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
+> 對應版本:**v0.25.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
 > 五條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
 > 方向收斂邏輯見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md);v1.0 驗收與兩層分工見
 > [V1_GATE](V1_GATE.md);每次改動的驗收標準見根目錄 `CLAUDE.md`。
 
 ---
 
-## 1. 現況真實快照(v0.23.0)
+## 1. 現況真實快照(v0.25.0)
 
 過去的 M1–M6 表低估了實際進度。誠實盤點「真的 shipped 了什麼」:
 
 ### 已完成且驗證
 - **三層安全鏈**:watchdog 斷線自主停車 → 四介面一鍵急停(免批准、可搶佔)→ 執行期硬限速 → HITL 批准卡 → daemon 明式授權。跨程序 cancel-all 已修復(v0.17.1)。
-- **rclpy bridge**:pose、Nav2 導航(feedback/cancel)、**odom 直驅**(無 Nav2 的閉環點對點)、**反應式避障**(depth follow-the-gap)、相機抓幀、topic 監看、halt/watchdog。
+- **rclpy bridge**:pose、Nav2 導航(feedback/cancel)、**odom 直驅**(無 Nav2 的閉環點對點)、**局部避障**(depth stop-and-go detour,逾時即停)、相機抓幀、topic 監看、halt/watchdog。
 - **導航語意**:`/route 從A到B` 依序兩段、`/mission`、`/patrol …photo`、`/dock`;`route_adapter` = stub/nav2/**odom**。
 - **地點**:`/loc add here`(pose)、**`/loc add gps`**(經緯度 + `[map_datum]` 換算)。
 - **Twin Gate pipeline**:G1–G5、pass/block/refer、自主路徑 refer→block、獨立 ROS_DOMAIN_ID(剩 Isaac 場景 = 客戶 B5)。
@@ -21,7 +21,7 @@
 - **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
 - **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
 - **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
-- **工程基建**:380 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
+- **工程基建**:398 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
 
 ### 未完成的主線
 - **M6 自主決策迴圈**(A9):零件都在(感知、有界動作、odom 直驅、避障、Gate、規則引擎),但把它們串成「感知→情境快照→LLM 決策→預演→執行→回饋」的閉環**還沒建**。這是最大的未完成項,也是論文主軸。
@@ -54,7 +54,7 @@
 ### 軌道 2 — 感知/避障深化
 - **價值**:從「開闊地反應式」升級到「複雜場景可靠」。
 - **關鍵步驟**:
-  1. **depth → Nav2 local costmap**:把 `/depth` 轉 pointcloud/laserscan 餵 Nav2,得到真正的全域+局部規劃(現有 follow-the-gap 當 Nav2 未起時的 fallback)。
+  1. **depth → Nav2 local costmap**:把 `/depth` 轉 pointcloud/laserscan 餵 Nav2,得到真正的全域+局部規劃(現有 stop-and-go detour 當 Nav2 未起時的 fallback)。
   2. **VLM 語意層進 Gate/規則**:場景異常(施工、人群)affordance → 影響決策/預演(語意避讓 vs 幾何避障分層)。
   3. depth 融合 Twin Gate 的 G1(孿生接觸感測器 + 實機 depth 雙證)。
 - **依賴**:軌道 3 的 Nav2 bringup。
@@ -122,11 +122,11 @@
 | D5 | **release 節奏過碎**(一天十幾 patch) | changelog 噪音、版本語意稀釋 | 收斂:feature 累積成有意義的 minor;patch 只留真 bug/安全修;semver 契約(VERSIONING)已立 |
 
 ### 3.2 測試策略演進
-- **現況**:380 單元測試(無 ROS 全綠)+ CI 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
+- **現況**:398 單元測試(無 ROS 全綠)+ CI 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
 - **下一步**:
   - D1 的 sibling 抽取 → 提升 bridge 邏輯覆蓋。
   - **HIL 冒煙**(選配):self-hosted runner 連 Isaac,跑一條 `/route` + 避障的端到端(現在只能人工 E2E)。
-  - 屬性測試(hypothesis)給 `follow_the_gap`、GPS 換算、drive 中文數字解析等純函數。
+  - 屬性測試(hypothesis)給 detour/corridor、GPS 換算、drive 中文數字解析等純函數。
   - 24h soak 正式跑一次並把結果進 SAFETY_CASE(A6 待排)。
 
 ### 3.3 依賴與相容

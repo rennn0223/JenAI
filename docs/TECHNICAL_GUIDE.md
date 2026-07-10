@@ -187,7 +187,7 @@ jenai daemon                                        # Ctrl-C 停止
 | `adapters/locations.py` | ~200 | locations.toml 載入/儲存/模糊搜尋;`load_locations_tolerant`(全介面共用的容錯載入) |
 | `adapters/route_adapter.py` | 91 | RouteAdapter 協定:`stub`(誠實拒絕)/`nav2`(CLI send_goal,bridge 不可用時的後備)/`odom`(直驅只走 live bridge,CLI 後備誠實拒絕) |
 | `bridge` `drive_to_pose` | — | **無 Nav2 的點對點直驅**:閉環 /odom → /cmd_vel(目標視為 odom 座標,map≈odom 時成立);餵同一套 nav_feedback/nav_result,navigate_live 無縫共用 |
-| `bridge/_avoidance.py` + drive_loop | — | **反應式局部避障(選配)**:depth camera(32FC1)→ 每扇區最近距離的偽雷射 → **follow-the-gap**(往最接近目標方位的空隙轉、太近就停、清空後靠目標吸引回到原線)。反射層,不經 LLM;純函數 `follow_the_gap` 可單測。**局部反應,非全域規劃**——複雜地圖仍需 Nav2 |
+| `bridge/_avoidance.py` + drive_loop | — | **局部避障(選配)**:depth camera(32FC1)→ 偽雷射 → 目標方向走廊判定 → stop-and-go detour。反射層不經 LLM;深度畫面逾時立即歸零並回報 `sensor_unavailable`,不使用陳舊影像繼續移動。**局部反應,非全域規劃**——複雜地圖仍需 Nav2 |
 | `daemon/engine.py` | 165 | 規則引擎純邏輯:條件、冷卻、安全 gating;動作 notify/goto/**halt**(可單測) |
 | `daemon/runner.py` | 115 | bridge watch → queue → engine → (獲准才)navigate_live;halt 決策優先搶佔 |
 | `webui/server.py` | 352 | http.server:`/api/status` `/api/command` `/api/confirm` `/api/map` **`/api/stop`**;PoseCache(退避重試) |
@@ -206,13 +206,13 @@ jenai daemon                                        # Ctrl-C 停止
 
 **批准模型。** 動作類指令建立 run + ApprovalCard;批准後的執行包成可取消的 active task(長導航要能 Esc)。WebUI 的 confirm 是伺服器端一次性 token —— 瀏覽器只拿到 id,動作本體不出伺服器。daemon 則是「規則明確 `auto_approve` 才動」。三個介面,同一哲學:**沒有明確授權,機器人不動**。
 
-**Provider 全走 OpenAI 相容端點。** 一個抽象吃遍 NVIDIA NIM / Ollama / 其他;`parse_json_reply` 寬容處理 thinking 模型的 ```json 圍欄與前後綴文字 —— 所有結構化輸出(vision、route 解析)都經過它。
+**Provider 依能力分流。** 官方 OpenAI agent 路徑使用 Responses API;NVIDIA NIM、Ollama 與自訂 `base_url` 使用 Chat Completions 相容層。兩者仍共用同一個 OpenAI SDK client/config resolver;`parse_json_reply` 寬容處理 thinking 模型的 ```json 圍欄與前後綴文字。
 
 **佔位符防呆。** 指令面板補完的 `<name|number>` 模板原文送出會被擋(曾把字面佔位符存成 model binding 弄壞 config)。
 
 **安全鏈是分層的(v0.7+)。** 依時間尺度由快到慢:①bridge watchdog(client 斷線/卡死 → 自主停車,不依賴任何上層)→ ②急停(四介面一鍵,免批准可搶佔,語意統一在 `tools/safety.py`)→ ③執行期硬限速(`[vehicle]`,LLM 給再大也夾住)→ ④HITL 批准卡(意圖層)→ ⑤daemon 明確授權。**LLM 永不進即時迴路**;載具差異只准活在 `[vehicle]`。
 
-**調度只寫一次。** 「nav2 可用走 live bridge、否則誠實 CLI」的決策活在 `navigate_with_fallback`(nav_live.py)一處,TUI/MCP/技能共用——改安全政策改一個地方,所有介面同時生效。同理:急停 = `safety.py`,相機→VLM = `capture_and_analyze`,locations 容錯載入 = `load_locations_tolerant`。
+**調度只寫一次。** 所有表面先進 `NavigationGateway`,再由 `navigate_with_fallback` 套用 Twin Gate、watchdog、live bridge/誠實後備策略;架構測試禁止其他模組直呼 `route_execute`。同理:急停 = `safety.py`,相機→VLM = `capture_and_analyze`,locations 容錯載入 = `load_locations_tolerant`。
 
 ### 4.4 測試與 CI
 
@@ -223,7 +223,7 @@ env -u PYTHONPATH uv run ruff check src tests
 
 - **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test`(ruff + pytest,coverage 寫入 job summary,**安全鏈覆蓋 fail-under=90 倒退閘**)、`build`(`uv build` + `uvx` 全新環境裝 wheel 跑 `jenai --help`,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護
 - **Release**(`.github/workflows/release.yml`):兩個入口,同一套閘(驗 tag 與 pyproject 版本一致、lint+測試、`uv build` + wheel 冒煙)——①推 `vX.Y.Z` tag:建**草稿** release(自動 notes),人工 `gh release edit vX.Y.Z --notes-file docs/releases/vX.Y.Z.md --draft=false` 發佈;②**手動 workflow_dispatch**(輸入 tag):由 workflow 建 tag 並直接以 `docs/releases/<tag>.md` **發佈**(dispatch 本身即人工授權;無 notes 檔即失敗)。手寫 notes 自 v0.23 版本化在 `docs/releases/`,隨 PR review。tag 已有 release 時只補上傳附件
-- **TUI 測試**:Textual `app.run_test()` + `handle_user_text()`;monkeypatch 目標在 handler 所在模組(如 `jenai.tui.robot_commands.route_execute`)
+- **TUI 測試**:Textual `app.run_test()` + `handle_user_text()`;導航測試 patch `NavigationGateway.execute`,以安全入口為邊界
 - **本機 E2E 手法**(開發時驗真鏈路):`scratchpad` 裡跑假節點 —— fake Nav2 action server、fake camera publisher、fake battery —— 全是真 rclpy、真協定,TUI/daemon 分不出真假。參考 git log 中各功能 commit 的驗證描述
 
 ### 4.5 擴充指南(常見四件事)

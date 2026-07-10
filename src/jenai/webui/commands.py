@@ -18,7 +18,8 @@ from jenai.doctor import run_doctor
 from jenai.providers.chat import ProviderChatError, ask_provider, chat_model_name
 from jenai.tools import ros2_core
 from jenai.tools.drive_core import extract_drive_command
-from jenai.tools.route_core import route_execute, route_preview
+from jenai.tools.navigation_gateway import execute_navigation
+from jenai.tools.route_core import route_preview
 
 TWIST = "geometry_msgs/msg/Twist"
 
@@ -317,7 +318,7 @@ async def run_web_confirm(config: AppConfig, action: dict) -> dict:
             )
             return _result(_p(out.result_message or "done"))
         if kind == "route":
-            out = await route_execute(config, action["outgoing_action"])
+            out = await execute_navigation(config, action["outgoing_action"])
             return _result(_p(out.route_preview))
         return _error("Unknown action.")
     except Exception as exc:

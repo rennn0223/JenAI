@@ -35,7 +35,7 @@
 
 ### `bridge/ros_bridge.py`(767 行)——【全 repo 最重要的檔案】
 - **做什麼**:常駐 rclpy 節點。ops:`pose`、`nav_send`(Nav2 action)、
-  `drive_to_pose`(無 Nav2 的 odom→cmd_vel 直驅+follow-the-gap 避障)、
+  `drive_to_pose`(無 Nav2 的 odom→cmd_vel 直驅+stop-and-go detour)、
   `nav_cancel`、`halt`(急停)、`watchdog`、`capture_frame`、`watch`。
 - **SDK**:rclpy(Node/ActionClient/QoS)、nav2_msgs、geometry_msgs、numpy。
 - **為什麼這樣寫**:
@@ -69,12 +69,11 @@
   - `stop()`:kill 後 `await proc.wait()` 收屍(否則殭屍+GC 噪音);
     kill 與自然死亡的 race 用 `ProcessLookupError` 包護。
 
-### `bridge/_avoidance.py`(62 行)
-- **做什麼**:純 follow-the-gap 轉向律(前方淨空→朝目標;擋→選最靠目標方位的空隙;
-  太近→crawl-and-turn;全堵→朝最空扇區)。
+### `bridge/_avoidance.py` + `_safety_order.py`
+- **做什麼**:純 stop-and-go detour、目標走廊、depth freshness、StuckDetector
+  與急停順序。
 - **為什麼**:stdlib-only 的**兄弟模組** —— bridge 當 sibling import、venv 測試當
-  `jenai.bridge._avoidance` import。這是「D1 技術債償還模式」:把 bridge 裡的純
-  決策邏輯抽出來變可單測(避障 7 個分支測試因此存在)。
+  package import。把 bridge 裡的純決策抽出後,安全分支不依賴 ROS 也能單測。
 
 ### `adapters/ros2_adapter.py`(331 行)
 - **做什麼**:`ros2` CLI 的 subprocess 包裝(topics/echo/pub/action/interface)。
@@ -185,8 +184,8 @@
 
 ### `providers/agent_model.py`(~40 行)
 - 把 config 的 model binding(chat/plan/vision/route)轉成 openai-agents 的
-  `OpenAIChatCompletionsModel`。**為什麼用 ChatCompletions 而非 Responses API**:
-  Ollama/NIM 相容端點只講 chat.completions。
+  model。官方 OpenAI 預設端點用 `OpenAIResponsesModel`;Ollama/NIM/自訂
+  `base_url` 用 `OpenAIChatCompletionsModel`,因相容端點通常只實作 chat.completions。
 
 ### `agent/`(/plan /run 的家,openai-agents SDK 專區)
 - **specialists.py**:Supervisor + 四個專職 Agent(ROS 查詢/Motion/Navigation/
@@ -282,8 +281,8 @@
   monkeypatch typer.prompt 餵答案)。
 
 ### `state/`(runs/session/history/reports)
-- runs:RunStore —— RunRecord 加一張「SDK 暫停狀態側表」(pydantic 存不了
-  SDK 的 RunState 物件,只好放旁邊配對)。
+- runs:RunStore —— RunRecord + SDK 原生 RunState JSON;批准中斷以原子檔案保存,
+  重啟後重建 agent graph/context 與批准卡,claim 後刪檔避免重播已批准動作。
 - session/history:對話 session 檔與輸入歷史(↑↓)。
 - reports:巡邏 log JSON 落地 + 確定性 markdown + LLM 摘要(離線退化)。
 
