@@ -247,7 +247,7 @@ class BridgeNode(Node):
     ) -> None:
         # Sibling module (stdlib-only): the bridge runs as a script so its dir is
         # on sys.path; the venv tests import it as jenai.bridge._avoidance.
-        from _avoidance import follow_the_gap
+        from _avoidance import StuckDetector, apply_floor_filter, plan_detour
         from geometry_msgs.msg import Twist, TwistStamped
         from nav_msgs.msg import Odometry
 
@@ -277,6 +277,25 @@ class BridgeNode(Node):
             msg_type = TwistStamped if stamped else Twist
             started = time.monotonic()
             last_fb = 0.0
+            stuck = StuckDetector()
+            # Stop-and-go avoidance: when the forward corridor is blocked,
+            # STOP, plan a small odom-frame detour from the current sighting
+            # (plan_detour), drive its waypoints blind, then resume the goal.
+            # Sighting memory instead of continuous sight — a down-pitched
+            # depth camera only sees a low obstacle inside a distance window,
+            # so any scheme that must keep seeing it while rounding it fails.
+            waypoints: list[tuple[float, float]] = []
+            replans = 0
+            max_replans = int(avoid.get("max_replans", 4)) if avoid else 0
+
+            def _zero_pulse() -> None:
+                z = msg_type()
+                if stamped:
+                    z.header.stamp = self.get_clock().now().to_msg()
+                for _ in range(3):
+                    pub.publish(z)
+                    time.sleep(0.05)
+
             while True:
                 if self._drive_cancel.is_set():
                     status = "canceled"
@@ -287,36 +306,90 @@ class BridgeNode(Node):
                 if "x" not in latest:
                     time.sleep(0.05)  # wait for the first /odom sample
                     continue
-                dx, dy = gx - latest["x"], gy - latest["y"]
-                dist = math.hypot(dx, dy)
-                if dist <= tolerance:
+                dist = math.hypot(gx - latest["x"], gy - latest["y"])
+                if not waypoints and dist <= tolerance:
                     status = "succeeded"
                     break
-                bearing = math.atan2(dy, dx)
+                if waypoints and (
+                    math.hypot(waypoints[0][0] - latest["x"], waypoints[0][1] - latest["y"])
+                    <= max(0.35, tolerance)
+                ):
+                    waypoints.pop(0)  # leg done → next leg, or back to seeking
+                    continue
+                tx, ty = waypoints[0] if waypoints else (gx, gy)
+                bearing = math.atan2(ty - latest["y"], tx - latest["x"])
                 heading_err = math.atan2(
                     math.sin(bearing - latest["yaw"]), math.cos(bearing - latest["yaw"])
                 )
-                # Reactive avoidance blends in here: steer toward the goal, but
-                # if the depth cam sees something close, steer around it instead
-                # (goal attraction pulls back to the line once it clears).
-                steer, avoid_scale, blocked = heading_err, 1.0, False
+                nearest = math.inf
                 if avoid is not None and depth.get("ranges"):
-                    steer, avoid_scale, blocked = follow_the_gap(
-                        heading_err,
+                    filtered = apply_floor_filter(
                         depth["ranges"],
-                        depth["angles"],
-                        stop_distance=avoid["stop_distance"],
-                        slow_distance=avoid["slow_distance"],
-                        hfov_deg=avoid["hfov_deg"],
+                        float(avoid.get("floor_ref", 0.0)),
+                        float(avoid.get("floor_tol", 0.2)),
                     )
-                angular = max(-max_angular, min(max_angular, 1.5 * steer))
+                    # Path-corridor test, not an angle cone: an obstacle
+                    # blocks us when its LATERAL offset from the heading line
+                    # is under half a vehicle-corridor — an angle cone misses
+                    # a near on-path obstacle approached at a slant (live:
+                    # cube at 33° bearing, 1.35 m) and false-triggers on far
+                    # off-path returns near the scan edge.
+                    corridor = [
+                        r
+                        for r, a in zip(filtered, depth["angles"], strict=False)
+                        if math.isfinite(r) and abs(r * math.sin(a)) <= 0.5
+                    ]
+                    nearest = min(corridor) if corridor else math.inf
+                    # Seeking: anything inside slow_distance ahead → plan.
+                    # On a detour leg: only an emergency (inside stop_distance)
+                    # forces a REplan — the legs are meant to run blind.
+                    threshold = (
+                        avoid["stop_distance"] if waypoints else avoid["slow_distance"]
+                    )
+                    if nearest <= threshold:
+                        _zero_pulse()  # stop first: plan from a settled scan
+                        replans += 1
+                        if replans > max_replans:
+                            status = "blocked"
+                            break
+                        det = plan_detour(
+                            latest["x"],
+                            latest["y"],
+                            latest["yaw"],
+                            gx,
+                            gy,
+                            filtered,
+                            depth["angles"],
+                            clearance=float(avoid.get("detour_clearance", 0.5)),
+                            beyond=float(avoid.get("detour_beyond", 1.2)),
+                        )
+                        if det:
+                            waypoints = det
+                        elif nearest <= avoid["stop_distance"]:
+                            status = "blocked"  # nothing plannable, nowhere to go
+                            break
+                        continue
+                # Emergency-close with no progress → end honestly, don't grind.
+                if stuck.update(
+                    time.monotonic(),
+                    latest["x"],
+                    latest["y"],
+                    avoid is not None and nearest <= avoid["stop_distance"],
+                ):
+                    status = "blocked"
+                    break
+                angular = max(-max_angular, min(max_angular, 1.5 * heading_err))
                 # Gate forward speed by steering alignment (slow while turning
-                # onto the bearing), but keep a crawl floor: an Ackermann can
-                # only steer while rolling, so it must never fully stop to turn.
-                align = max(0.2, math.cos(steer))
-                forward = align * min(max_linear, 0.8 * dist + 0.2) * avoid_scale
-                if blocked and avoid_scale == 0.0:
-                    forward = 0.15 * max_linear  # crawl so it can steer clear
+                # onto the bearing) and by obstacle proximity on detour legs.
+                align = max(0.2, math.cos(heading_err))
+                tdist = math.hypot(tx - latest["x"], ty - latest["y"])
+                prox = 1.0
+                if avoid is not None and math.isfinite(nearest):
+                    prox = (nearest - avoid["stop_distance"]) / max(
+                        1e-3, avoid["slow_distance"] - avoid["stop_distance"]
+                    )
+                    prox = max(0.3, min(1.0, prox))
+                forward = align * min(max_linear, 0.8 * tdist + 0.2) * prox
                 msg = msg_type()
                 twist = msg.twist if stamped else msg
                 if stamped:
@@ -332,8 +405,8 @@ class BridgeNode(Node):
                             "event": "nav_feedback",
                             "tag": tag,
                             "distance_remaining": round(dist, 2),
-                            "recoveries": 0,  # a Nav2 concept; use `avoiding` here
-                            "avoiding": blocked,
+                            "recoveries": replans,  # detour replans, not Nav2's
+                            "avoiding": bool(waypoints),
                             "elapsed": round(now - started, 1),
                         }
                     )
@@ -374,6 +447,20 @@ class BridgeNode(Node):
         hfov = math.radians(avoid["hfov_deg"])
         lo, hi = avoid["band_lo"], avoid["band_hi"]
         min_valid = avoid["min_valid"]
+        # Per-pixel floor reference (from the `avoid_snapshot` op, captured on
+        # empty ground): a pixel is an obstacle only if it reads CLOSER than
+        # its own reference. One mechanism covers the floor ring, the
+        # vehicle's own body in frame, and short obstacles the scalar
+        # floor_ref cannot separate from the ground (caught live: a cube
+        # below camera height was invisible to every fixed band until
+        # contact). A missing/mismatched file degrades to the scalar filter.
+        snap = None
+        snap_tol = float(avoid.get("floor_tol", 0.2))
+        if avoid.get("floor_snapshot"):
+            try:
+                snap = np.load(avoid["floor_snapshot"])
+            except Exception:
+                snap = None
         # Sector centre angles: leftmost = +hfov/2, rightmost = -hfov/2.
         out["angles"] = [hfov * (0.5 - (i + 0.5) / n) for i in range(n)]
 
@@ -386,14 +473,34 @@ class BridgeNode(Node):
                 # silently disable avoidance on a real camera.
                 row = (msg.step // 4) if msg.step else w
                 buf = np.frombuffer(msg.data, dtype=np.float32).reshape(h, row)[:, :w]
+                snapped = snap is not None and snap.shape == buf.shape
+                if snapped:
+                    buf = np.where(buf >= snap - snap_tol, np.inf, buf)
                 band = buf[int(h * lo) : int(h * hi), :]
-                col_min = np.where(
+                valid = np.where(
                     np.isfinite(band) & (band > min_valid) & (band < 100.0), band, np.inf
-                ).min(axis=0)
+                )
                 ranges = []
-                for chunk in np.array_split(col_min, n):
-                    finite = chunk[np.isfinite(chunk)]
-                    ranges.append(float(finite.min()) if finite.size else float("inf"))
+                for chunk in np.array_split(valid, n, axis=1):
+                    vals = chunk[np.isfinite(chunk)]
+                    if snapped:
+                        # After the snapshot filter the finite pixels are the
+                        # obstacle candidates. A sector's range must not hinge
+                        # on a lone pixel (caught live: a handful of self-view
+                        # edge pixels read 0.3 m under their reference and
+                        # kept every drive "blocked"): require a cluster of
+                        # ~1% of the sector before it counts, then take the
+                        # cluster's 10th percentile as its nearest face.
+                        # Cost: obstacles thinner than ~1% of a sector are
+                        # invisible — same order as the pre-existing band
+                        # limits, and the honest floor of depth-only sensing.
+                        if vals.size < max(20, chunk.size // 100):
+                            ranges.append(float("inf"))
+                            continue
+                        k = max(0, int(vals.size * 0.1) - 1)
+                        ranges.append(float(np.partition(vals, k)[k]))
+                    else:
+                        ranges.append(float(vals.min()) if vals.size else float("inf"))
                 out["ranges"] = ranges
             except Exception:
                 pass  # a malformed frame just leaves the last scan in place
@@ -512,6 +619,68 @@ class BridgeNode(Node):
         return {"halted": True, "nav_canceled": canceled}
 
     # -- camera -------------------------------------------------------------
+
+    def avoid_snapshot(
+        self, depth_topic: str, path: str, frames: int = 5, timeout: float = 10.0
+    ) -> dict:
+        """Calibrate the avoidance floor reference: per-pixel median depth.
+
+        Run with the view EMPTY (no obstacles inside sensor range). The median
+        over `frames` frames is each pixel's expected range — the ground plane
+        plus any static self-view of the vehicle. Saved as .npy for the drive
+        loop's per-pixel filter (`floor_snapshot`). Pixels with no valid
+        return in any frame are stored as inf (never filtered → their raw
+        readings pass through). Flat-ground assumption: recalibrate when the
+        camera mount moves.
+        """
+        import warnings
+
+        import numpy as np
+        from sensor_msgs.msg import Image
+
+        got: list = []
+        event = threading.Event()
+
+        def _cb(msg) -> None:
+            try:
+                h, w = msg.height, msg.width
+                row = (msg.step // 4) if msg.step else w
+                buf = np.frombuffer(msg.data, dtype=np.float32).reshape(h, row)[:, :w]
+                got.append(buf.copy())  # copy: msg buffer dies with the msg
+                if len(got) >= frames:
+                    event.set()
+            except Exception:
+                pass
+
+        sub = self.create_subscription(
+            Image, depth_topic, _cb, QoSPresetProfiles.SENSOR_DATA.value
+        )
+        try:
+            if not event.wait(timeout):
+                raise RuntimeError(
+                    f"Got {len(got)}/{frames} depth frames on {depth_topic} "
+                    f"within {timeout:.0f}s."
+                )
+        finally:
+            self.destroy_subscription(sub)
+
+        stack = np.stack(got[:frames])
+        stack = np.where(np.isfinite(stack) & (stack > 0.0), stack, np.nan)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # all-NaN pixel → NaN median is fine
+            ref = np.nanmedian(stack, axis=0)
+        ref = np.where(np.isfinite(ref), ref, np.inf).astype(np.float32)
+        np.save(path, ref)
+        finite = ref[np.isfinite(ref)]
+        return {
+            "path": path,
+            "frames": frames,
+            "height": int(ref.shape[0]),
+            "width": int(ref.shape[1]),
+            "coverage": round(float(np.isfinite(ref).mean()), 3),
+            "median_m": round(float(np.median(finite)), 2) if finite.size else None,
+            "min_m": round(float(finite.min()), 2) if finite.size else None,
+        }
 
     def capture_frame(self, topic: str, timeout: float = 5.0) -> dict:
         """Grab one frame from an image topic; returns a temp file path."""
@@ -693,6 +862,13 @@ def _handle(node: BridgeNode, op: str, req: dict, watchdog: WatchdogState) -> di
         return result
     if op == "capture_frame":
         return node.capture_frame(req["topic"], float(req.get("timeout", 5.0)))
+    if op == "avoid_snapshot":
+        return node.avoid_snapshot(
+            req.get("depth_topic", "/depth"),
+            req["path"],
+            int(req.get("frames", 5)),
+            float(req.get("timeout", 10.0)),
+        )
     if op == "watch":
         return node.watch(
             req["watch_id"], req["topic"], req["msg_type"], float(req.get("throttle", 1.0))

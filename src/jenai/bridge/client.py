@@ -309,6 +309,27 @@ class RosBridgeClient:
         if self.running:
             await self._send_request("watchdog", params=self._safety)
 
+    async def avoid_snapshot(
+        self,
+        path: str,
+        depth_topic: str = "/depth",
+        frames: int = 5,
+        timeout: float = 10.0,
+    ) -> dict:
+        """Calibrate the avoidance floor reference (view must be EMPTY):
+        save a per-pixel median depth frame to `path` (.npy) for
+        AvoidanceProfile.floor_snapshot."""
+        return await self.request(
+            "avoid_snapshot",
+            timeout=timeout + 3.0,
+            params={
+                "depth_topic": depth_topic,
+                "path": path,
+                "frames": frames,
+                "timeout": timeout,
+            },
+        )
+
     async def capture_frame(self, topic: str, timeout: float = 5.0) -> Path:
         result = await self.request(
             "capture_frame", timeout=timeout + 3.0, params={"topic": topic, "timeout": timeout}
