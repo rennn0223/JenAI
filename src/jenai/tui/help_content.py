@@ -12,7 +12,7 @@ _COMMAND_GROUPS = [
     ),
     CommandGroup(
         name="Session",
-        commands=["/help", "/status", "/doctor", "/clear"],
+        commands=["/help", "/status", "/doctor", "/queue [clear]", "/clear"],
     ),
     CommandGroup(
         name="Planning",
@@ -81,9 +81,13 @@ _EXAMPLES = [
 ]
 
 _KEYBOARD_SHORTCUTS = [
-    KeyboardShortcut(key="Enter", action="Submit input / choose the selected approval option"),
+    KeyboardShortcut(
+        key="Enter", action="Submit input (queues while busy) / choose an approval option"
+    ),
     KeyboardShortcut(key="!", action="Run the rest of the line as a shell command"),
-    KeyboardShortcut(key="Esc", action="Interrupt a running task / reject an approval"),
+    KeyboardShortcut(
+        key="Esc", action="Interrupt the current task and continue the queue / reject approval"
+    ),
     KeyboardShortcut(key="1 / 2 / 3", action="Pick an approval option (Yes / Yes+remember / No)"),
     KeyboardShortcut(key="Tab", action="Complete the selected command"),
     KeyboardShortcut(key="↑ / ↓", action="History, command palette, or approval options"),

@@ -137,28 +137,9 @@ _MARKER_COLOR = {
     "assistant": ACCENT,
 }
 
-# Variants whose multi-line bodies render airy (blank line between logical
-# lines). A property of the variant, not the callsite, so every future place
-# that mounts an assistant reply gets the same rhythm automatically.
-_SPACED_VARIANTS = {"assistant"}
-
-
 def _bullet_markup(variant: str, body: str) -> str:
     color = _MARKER_COLOR.get(variant, ACCENT)
     return f"[{color}]{BULLET}[/] {body}"
-
-
-def _spaced_body(body: str) -> str:
-    """Open up a multi-line reply: blank line between logical lines, and align
-    continuation lines under the bullet's text so it reads as one airy block."""
-    lines = body.split("\n")
-    if len(lines) == 1:
-        return body
-    spaced: list[str] = [lines[0]]
-    for line in lines[1:]:
-        spaced.append("")  # blank line widens the vertical rhythm
-        spaced.append(f"  {line}" if line else line)
-    return "\n".join(spaced)
 
 
 def _detail_markup(lines: list[str]) -> str:
@@ -170,16 +151,16 @@ def _detail_markup(lines: list[str]) -> str:
     return "\n".join(out)
 
 
-def _spaced_detail(lines: list[str]) -> list[str]:
-    """Exactly one blank line between logical lines, collapsing whatever
-    spacing the model chose — prose replies get a FIXED airy rhythm
-    regardless of how the answer was formatted."""
-    logical = [line for line in lines if line.strip()]
+def _normalized_detail(lines: list[str]) -> list[str]:
+    """Keep normal line spacing and collapse repeated paragraph gaps."""
     out: list[str] = []
-    for line in logical:
-        if out:
+    for line in lines:
+        if line.strip():
+            out.append(line)
+        elif out and out[-1] != "":
             out.append("")
-        out.append(line)
+    while out and out[-1] == "":
+        out.pop()
     return out
 
 
@@ -191,11 +172,7 @@ class PromptPill(Static):
 
 
 class TimelineItem(Static):
-    """A single Claude Code-style bullet line (⏺ marker + body markup).
-
-    Multi-line bodies of _SPACED_VARIANTS render with blank lines between
-    logical lines, so assistant replies breathe instead of packing tight.
-    """
+    """A single Claude Code-style bullet line (⏺ marker + body markup)."""
 
     def __init__(self, variant: str, body: str) -> None:
         self.variant = variant
@@ -204,8 +181,7 @@ class TimelineItem(Static):
 
     def _render_body(self, body: str) -> str:
         # Not named `_render`: that would shadow textual.Widget's internal hook.
-        rendered = _spaced_body(body) if self.variant in _SPACED_VARIANTS else body
-        return _bullet_markup(self.variant, rendered)
+        return _bullet_markup(self.variant, body)
 
     def set_body(self, body: str) -> None:
         """Replace the body in place — this is how a streaming reply grows."""
@@ -216,9 +192,8 @@ class TimelineItem(Static):
 class OutputPanel(Static):
     """A bullet with a title line and elbow-indented body lines (no box).
 
-    ``spaced=True`` gives the body the assistant-reply rhythm (one blank
-    line between logical lines, pre-existing blanks collapsed) — use it for
-    prose answers; tables and listings stay compact by default.
+    ``spaced=True`` normalizes repeated paragraph gaps while retaining normal
+    one-row line spacing. Tables and listings stay untouched by default.
     """
 
     def __init__(
@@ -226,7 +201,7 @@ class OutputPanel(Static):
     ) -> None:
         body_lines = body.split("\n") if body else []
         if spaced:
-            body_lines = _spaced_detail(body_lines)
+            body_lines = _normalized_detail(body_lines)
         detail = _detail_markup(body_lines) if body_lines else ""
         markup = _bullet_markup(variant, f"[bold #f2ede1]{title}[/]")
         if detail:
