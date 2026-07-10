@@ -404,6 +404,47 @@ def test_webui_stop_works_without_token(monkeypatch, tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_webui_rejects_non_object_json_body(tmp_path: Path) -> None:
+    # Valid JSON that is not an object must 400 like malformed JSON, not be
+    # silently coerced to {} and produce a misleading downstream error.
+    server, threads, base = _tokened_server(tmp_path, 1)
+    try:
+        req = urllib.request.Request(
+            f"{base}/api/command",
+            data=b"[1, 2, 3]",
+            headers={"Authorization": "Bearer s3cret"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            raise AssertionError("expected HTTP 400 for a non-object JSON body")
+        except urllib.error.HTTPError as err:
+            assert err.code == 400
+            assert json.loads(err.read())["kind"] == "error"
+    finally:
+        for t in threads:
+            t.join(timeout=5)
+        server.server_close()
+
+
+def test_webui_stop_with_small_body_still_returns_response(monkeypatch, tmp_path: Path) -> None:
+    # The stop handler answers before reading the body, then drains it — a
+    # normal browser POST (tiny JSON body) must still get the JSON response.
+    import jenai.webui.server as srv
+
+    monkeypatch.setattr(srv, "_do_stop", lambda *a, **k: {"kind": "info", "html": "stopped"})
+    server, threads, base = _tokened_server(tmp_path, 1)
+    try:
+        req = urllib.request.Request(f"{base}/api/stop", data=b"{}", method="POST")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            assert json.loads(resp.read())["kind"] == "info"
+    finally:
+        for t in threads:
+            t.join(timeout=5)
+        server.server_close()
+
+
 def test_webui_rejects_oversized_json_body(tmp_path: Path) -> None:
     server, threads, _ = _tokened_server(tmp_path, 1)
     host, port = server.server_address

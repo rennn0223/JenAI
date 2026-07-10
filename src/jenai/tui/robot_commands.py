@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 
 from rich.markup import escape
@@ -556,6 +557,19 @@ class RobotCommandsMixin:
         except BridgeError as exc:
             await self._mount_event(
                 TimelineItem("warn", f"Could not read the robot's position: {exc}")
+            )
+            return
+
+        if not all(math.isfinite(v) for v in (pose.x, pose.y, pose.yaw)):
+            # Pose2D rejects NaN/inf; pre-check so the user gets a diagnosis
+            # instead of a raw pydantic ValidationError from the generic net.
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"Robot pose from {pose.source} is not finite "
+                    f"(x={pose.x}, y={pose.y}, yaw={pose.yaw}) — location not saved. "
+                    "Check localization (AMCL / odometry) and try again.",
+                )
             )
             return
 

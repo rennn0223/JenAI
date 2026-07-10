@@ -433,6 +433,20 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(render_dashboard_html(self._status()), "text/html; charset=utf-8")
 
+    def _drain_body(self) -> None:
+        """Best-effort read of a small request body after the response is sent."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        if 0 < length <= _MAX_JSON_BODY:
+            # Timeout is mandatory: a client claiming a length it never sends
+            # would otherwise pin this handler thread forever (the endpoint is
+            # unauthenticated). TimeoutError is an OSError, so it's suppressed.
+            with contextlib.suppress(OSError):
+                self.connection.settimeout(2.0)
+                self.rfile.read(length)
+
     def _read_json(self) -> dict[str, Any] | None:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -460,7 +474,14 @@ class _Handler(BaseHTTPRequestHandler):
                 status=400,
             )
             return None
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            self._send(
+                '{"kind": "error", "html": "<p>JSON body must be an object.</p>"}',
+                "application/json; charset=utf-8",
+                status=400,
+            )
+            return None
+        return data
 
     def do_POST(self) -> None:  # noqa: N802 (http.server naming)
         path = self._route()
@@ -474,6 +495,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self.pending.clear()
             result = _do_stop(self.config, self.pose_cache)
             self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
+            # Drain a bounded body only AFTER the halt ran: closing the socket
+            # with unread bytes RSTs the connection, and the browser would show
+            # a network error for a stop that actually executed. An oversized
+            # claim is left unread — stalling the thread for an attacker-sized
+            # body is worse than one client-side error message.
+            self._drain_body()
             return
         if not self._authorized():
             self._reject()

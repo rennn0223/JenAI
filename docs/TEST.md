@@ -63,7 +63,7 @@
 | ✅ | `JenAI loc show <名>` | 該地點座標/別名/tags;不存在時誠實報錯 |
 | 🔶 | `JenAI route "<text>"` | 解析目的地 → 互動確認 → 送 Nav2;**前置:Nav2 + 地圖 + 地點**。現在會誠實報 Nav2 unavailable |
 | ✅ | `JenAI web` | 印出帶 `?token=…` 的網址;WebUI 起在 127.0.0.1:8760;含 STOP 鈕、地圖、批准卡 |
-| ✅ | WebUI auth | 無 token / 錯 token → 401;`?token=` 開頁 → 200 並種 session cookie;`Authorization: Bearer` 亦可;JSON body >64 KiB → 413;**POST `/api/stop` 免 token、免等 body 且撤銷舊確認** |
+| ✅ | WebUI auth | 無 token / 錯 token → 401;`?token=` 開頁 → 200 並種 session cookie;`Authorization: Bearer` 亦可;JSON body >64 KiB → 413、非 JSON object → 400;**POST `/api/stop` 免 token、先停車再讀 body 且撤銷舊確認** |
 | 🔶 | WebUI Camera 頁 | 需影像 topic。切到 Camera tab 才開始輪詢:**topic 下拉選單**(影像類優先,免猜 /rgb vs /rgb/image,選擇記憶於瀏覽器)+ `/api/frame` 每秒一幀 + odom 小格同步刷新;無相機時誠實 unavailable |
 | ✅ | WebUI API 頁 | 切到 API tab:ORDS 風格端點目錄(GET/POST 徽章、路徑、說明、auth 註記)+ **即時 ROS topics 清單**(`/api/topics`);指路 MCP 與文件 |
 | ✅ | `JenAI mcp` | MCP stdio server 起動,Claude Code/Desktop 可接;預設唯讀,`--allow-actions` 才有 `navigate_to` |
@@ -94,6 +94,7 @@
 | 狀態 | 測法 | 期望輸出 |
 |---|---|---|
 | ✅ | 權限模式(Shift+Tab) | 循環 審批→規劃→自動;底部狀態列顯示 chip;切到自動時時間軸警告記錄 |
+| ✅ | 寒暄(任一模式) | 「hi」「你好」→ 免工具直接串流回覆(帶 JenAI persona,不經 specialist/批准卡);對話寫入 session 記憶,下一輪 agent 記得 |
 | ✅ | 自然語言(審批模式,預設) | 「帶我去機械系館」→ **交給 /run agent**(要動的先彈批准卡;純問題由 supervisor 回答)—— 不再只是教你打什麼指令 |
 | ✅ | 自然語言(規劃模式) | 同句話 → /plan:產出步驟與教學,**零執行**(plan agent 無工具,結構保證) |
 | ✅ | 自然語言(自動模式) | 同句話 → agent 執行且**批准卡自動通過**,每次自動批准都寫進時間軸(可稽核);急停/硬限速/Twin Gate 不受影響 |

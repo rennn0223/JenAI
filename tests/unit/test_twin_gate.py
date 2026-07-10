@@ -335,6 +335,24 @@ def test_forbidden_zones_without_pose_samples_refer() -> None:
     assert "no twin pose samples" in report.reason
 
 
+def test_non_finite_pose_samples_do_not_count_for_g3() -> None:
+    # A NaN pose can never test zone containment (comparisons are all False):
+    # it must land in the inconclusive path, not count as a checked sample.
+    class NanPoseBridge(FakeTwinBridge):
+        async def get_pose(self, timeout: float = 3.0):
+            return SimpleNamespace(
+                x=float("nan"), y=float("nan"), yaw=0.0, frame_id="map", source="/amcl_pose"
+            )
+
+    zone = ForbiddenZone(name="stairs", x_min=5, y_min=5, x_max=6, y_max=6)
+    report = _rehearse(
+        _twin(forbidden_zones=[zone]), NanPoseBridge(nav_status="succeeded")
+    )
+
+    assert report.verdict == "refer"
+    assert _status(report, "G3") == "skipped"
+
+
 def test_unwatch_failure_is_swallowed_not_fatal() -> None:
     class UnwatchErrorBridge(FakeTwinBridge):
         async def unwatch(self, watch_id: int) -> None:

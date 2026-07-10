@@ -260,11 +260,16 @@ class TwinGate:
             except BridgeError:
                 pass  # transient (no pose yet / bridge respawning) — keep sampling
             else:
-                pose_samples[0] += 1
-                zone = self._zone_at(p.x, p.y)
-                if zone is not None:
-                    zone_hit.append(f"twin entered '{zone.name}' at ({p.x:.2f}, {p.y:.2f})")
-                    return
+                # Only a finite pose counts as G3 evidence. NaN/inf never falls
+                # inside any zone (contains() comparisons are False), so counting
+                # it would mark the trajectory "checked" while it is unknown —
+                # a broken twin localization must land in the inconclusive path.
+                if math.isfinite(p.x) and math.isfinite(p.y):
+                    pose_samples[0] += 1
+                    zone = self._zone_at(p.x, p.y)
+                    if zone is not None:
+                        zone_hit.append(f"twin entered '{zone.name}' at ({p.x:.2f}, {p.y:.2f})")
+                        return
             await asyncio.sleep(self._twin.pose_sample_s)
 
     def _zone_at(self, x: float, y: float) -> ForbiddenZone | None:

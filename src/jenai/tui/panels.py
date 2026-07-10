@@ -12,6 +12,7 @@ from typing import NamedTuple
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container
+from textual.markup import escape
 from textual.widgets import Static
 
 from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
@@ -168,7 +169,9 @@ class PromptPill(Static):
     """Echo of the user's submitted line, shown as a muted `>` prompt."""
 
     def __init__(self, text: str) -> None:
-        super().__init__(f"[{MUTED}]>[/] [#d9d3c7]{text}[/]", classes="prompt-line")
+        # User text goes into Textual markup: unescaped, a pasted "[/]" would
+        # raise MarkupError inside the compositor and crash the whole app.
+        super().__init__(f"[{MUTED}]>[/] [#d9d3c7]{escape(text)}[/]", classes="prompt-line")
 
 
 class TimelineItem(Static):

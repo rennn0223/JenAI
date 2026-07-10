@@ -97,6 +97,31 @@ def test_loc_add_without_pose_reports_warning_and_saves_nothing(
     asyncio.run(run())
 
 
+def test_loc_add_non_finite_pose_warns_and_saves_nothing(tmp_path: Path, monkeypatch) -> None:
+    # Pose2D rejects NaN/inf; the handler must diagnose the broken localization
+    # instead of surfacing a raw pydantic ValidationError.
+    async def run() -> None:
+        from jenai.tui.panels import TimelineItem
+
+        app = _app(tmp_path)
+        fake = _FakeBridge(
+            PoseInfo(x=float("nan"), y=float("nan"), yaw=0.0, frame_id="odom", source="/odom")
+        )
+
+        async def fake_get_bridge():
+            return fake
+
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        async with app.run_test():
+            await app.handle_user_text("/loc add here Ghost")
+            bodies = [item.body for item in app.query(TimelineItem)]
+
+        assert any("not finite" in body for body in bodies)
+        assert not (tmp_path / "locations.toml").exists()
+
+    asyncio.run(run())
+
+
 def test_loc_add_placeholder_and_empty_rejected(tmp_path: Path, monkeypatch) -> None:
     async def run() -> None:
         app = _app(tmp_path)
