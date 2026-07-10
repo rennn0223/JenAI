@@ -156,7 +156,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測（論文工具鏈）。
 >
-> ✅ **工程**：378 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：380 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、誠實回報原則貫穿每條路徑。
 >
 > ✅ **Twin Gate**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：導航目標先在數位孿生（獨立 ROS_DOMAIN_ID）預演，G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗 → pass／block／refer；`[twin]` 一行開關，所有導航入口與 daemon 全部過閘，daemon 自主路徑 refer 一律視同 block。
 >

@@ -14,7 +14,7 @@ JenAI 的命令分為兩層：
 |---|---|
 | `JenAI` | 主入口。首次使用進入 setup wizard，已設定則直接進 TUI |
 | `JenAI help` | 一頁總覽：全部 CLI 命令 + 一鍵常用範例（TUI 內的 slash 指令用 `/help` 查） |
-| `JenAI web` | 啟動 WebUI 監控中心（`--host` / `--port`，預設 127.0.0.1:8760）。**token 認證**：啟動時印出帶 `?token=…` 的網址，開那個網址（`--token` 可固定）；唯一例外 STOP 免認證 |
+| `JenAI web` | 啟動 WebUI 監控中心（`--host` / `--port`，預設 127.0.0.1:8760）。**token 認證**常開（`--token` 可固定，否則每次重啟換新）；唯一例外 STOP 免認證。啟動時**列印所有可開方式**：本機網址、SSH 轉發指令；`--host 0.0.0.0` 時逐一列出各介面的區網網址（只印真的打得開的） |
 | `JenAI mcp` | MCP stdio server：把機器人工具開放給 Claude Code/Desktop 等 client。預設唯讀，`--allow-actions` 才註冊 `navigate_to` |
 | `JenAI daemon` | 常駐規則引擎：監看 topics 觸發規則（`--rules` 指定檔案，預設 `~/.config/jenai/rules.toml`） |
 | `JenAI doctor` | 檢查 ROS2、provider、model、locations、環境（`--json` 機器可讀） |
