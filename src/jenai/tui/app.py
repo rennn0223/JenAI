@@ -18,6 +18,7 @@ from textual.widgets import Input, Static
 from jenai import __version__
 from jenai.agent import build_run_agent, orchestrator, review_plan, run_plan
 from jenai.agent.context import JenAIRunContext
+from jenai.agent.instructions import CHAT_INSTRUCTIONS
 from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
 from jenai.config.models import AppConfig, ProviderProfile
@@ -697,7 +698,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 else:  # approve / auto — the run agent answers questions too
                     await self._show_run(value)
             except Exception as exc:
-                await self._mount_event(TimelineItem("error", f"Failed: {exc}"))
+                await self._mount_event(TimelineItem("error", f"Failed: {escape(str(exc))}"))
         self._scroll_to_bottom()
 
     async def _stream_chat_reply(self, prompt: str) -> None:
@@ -717,7 +718,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
         last_paint = 0.0
         try:
-            async for delta in stream_provider(self.config, prompt):
+            async for delta in stream_provider(
+                self.config, prompt, system_prompt=CHAT_INSTRUCTIONS
+            ):
                 parts.append(delta)
                 now = time.monotonic()
                 if now - last_paint >= 0.05:
@@ -741,6 +744,14 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             await self._mount_event(TimelineItem("error", "Provider returned an empty response."))
             return
         _paint()
+        # This turn bypassed the run agent, so persist it ourselves — otherwise
+        # the agent's next run would have no memory the exchange ever happened.
+        await JenAIFileSession(self.session.session_id).add_items(
+            [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "".join(parts)},
+            ]
+        )
 
     def action_focus_composer(self) -> None:
         self._hide_command_palette()
@@ -872,7 +883,8 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             await self._mount_event(
                 TimelineItem(
                     "warn",
-                    f"Unknown command [bold #f2ede1]{command}[/]. Try [bold #f2ede1]/help[/].",
+                    f"Unknown command [bold #f2ede1]{escape(command)}[/]. "
+                    "Try [bold #f2ede1]/help[/].",
                 )
             )
             return
@@ -880,7 +892,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         try:
             await handler(handler_arg)
         except Exception as exc:
-            await self._mount_event(TimelineItem("error", f"{command} failed: {exc}"))
+            await self._mount_event(
+                TimelineItem("error", f"{escape(command)} failed: {escape(str(exc))}")
+            )
 
     def _all_slash_commands(self) -> list[SlashCommand]:
         """Built-ins plus file-defined skills, so user skills get the same

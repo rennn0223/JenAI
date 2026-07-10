@@ -1524,15 +1524,24 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
 
 def test_plain_greeting_uses_toolless_chat(monkeypatch) -> None:
     calls = []
+    recorded = []
 
-    async def fake_stream(config, prompt):
-        calls.append(prompt)
+    async def fake_stream(config, prompt, system_prompt=None):
+        calls.append((prompt, bool(system_prompt)))
         yield "Hello!"
 
     async def unexpected_run(self, arg):
         raise AssertionError(f"greeting was sent to the tool-calling agent: {arg}")
 
+    class FakeSession:
+        def __init__(self, session_id, directory=None):
+            pass
+
+        async def add_items(self, items):
+            recorded.extend(items)
+
     monkeypatch.setattr("jenai.tui.app.stream_provider", fake_stream)
+    monkeypatch.setattr("jenai.tui.app.JenAIFileSession", FakeSession)
     monkeypatch.setattr(JenAITuiApp, "_show_run", unexpected_run)
 
     async def run() -> None:
@@ -1541,7 +1550,31 @@ def test_plain_greeting_uses_toolless_chat(monkeypatch) -> None:
             await app.handle_user_text("hi")
 
     asyncio.run(run())
-    assert calls == ["hi"]
+    # The chat turn carries the JenAI persona prompt and lands in the same
+    # session memory the run agent reads, so the exchange is not forgotten.
+    assert calls == [("hi", True)]
+    assert [(i["role"], i["content"]) for i in recorded] == [
+        ("user", "hi"),
+        ("assistant", "Hello!"),
+    ]
+
+
+def test_user_text_with_markup_tokens_does_not_crash(monkeypatch) -> None:
+    # "[/]" in user input or in an exception message must render literally —
+    # unescaped it raises MarkupError inside the compositor and kills the app.
+    async def failing_run(self, arg):
+        raise RuntimeError("boom [/] with markup")
+
+    monkeypatch.setattr(JenAITuiApp, "_show_run", failing_run)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            await app.handle_user_text("look at [/] this")
+            await app.handle_user_text("/nosuch[/]cmd")  # markup inside the command token
+            await asyncio.sleep(0.05)  # let the compositor reflow the new widgets
+
+    asyncio.run(run())
 
 
 def test_auto_mode_skips_approval_card_but_logs(monkeypatch) -> None:
