@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -138,7 +139,7 @@ def render_package(plan: PackagePlan) -> dict[str, str]:
             '<package format="3">\n'
             f"  <name>{pkg}</name>\n"
             "  <version>0.0.0</version>\n"
-            f"  <description>{plan.description}</description>\n"
+            f"  <description>{xml_escape(plan.description)}</description>\n"
             "  <maintainer email=\"you@example.com\">you</maintainer>\n"
             "  <license>Apache-2.0</license>\n\n"
             "  <buildtool_depend>ament_python</buildtool_depend>\n"
@@ -168,7 +169,7 @@ def render_package(plan: PackagePlan) -> dict[str, str]:
             "    zip_safe=True,\n"
             '    maintainer="you",\n'
             '    maintainer_email="you@example.com",\n'
-            f'    description="{plan.description}",\n'
+            f"    description={plan.description!r},\n"
             '    license="Apache-2.0",\n'
             '    tests_require=["pytest"],\n'
             "    entry_points={\n"

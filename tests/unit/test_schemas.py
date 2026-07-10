@@ -10,6 +10,7 @@ from jenai.schemas import (
     JenAIError,
     ModelBindings,
     PlanStep,
+    Pose2D,
     RiskLevel,
     RunRecord,
     RunStatus,
@@ -19,6 +20,12 @@ from jenai.schemas import (
 def test_model_bindings_reject_blank_values() -> None:
     with pytest.raises(ValidationError):
         ModelBindings(chat="", plan="planner", vision="vision", route="route", default="default")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_pose_rejects_non_finite_coordinates(value: float) -> None:
+    with pytest.raises(ValidationError):
+        Pose2D(x=value, y=0.0, yaw=0.0)
 
 
 def test_run_record_defaults_match_state_machine() -> None:
@@ -66,4 +73,3 @@ def test_plan_step_defaults() -> None:
     assert step.status == "pending"
     assert step.requires_approval is False
     assert step.step_id.startswith("step_")
-

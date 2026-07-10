@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.27.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v0.28.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(Jetson 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -26,7 +26,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.27.0 基準 `409 passed`,約 25s,無 ROS 環境也全過);含安全鏈故障注入、指令 FIFO/批准暫停/stop 清隊列與架構鐵律測試 |
+| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.28.0 基準 `424 passed`,無 ROS 環境也全過);含安全鏈故障注入、輸入邊界、指令 FIFO/批准暫停/stop 清隊列與架構鐵律測試 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job(ruff+pytest,coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
 | Release gate | 推 `vX.Y.Z` tag,或手動 dispatch(輸入 tag) | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → tag push 建草稿(人工發佈);dispatch 由 workflow 建 tag 並以 `docs/releases/<tag>.md` 直接發佈 |
@@ -48,7 +48,7 @@
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.27.0`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 0.28.0`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |
@@ -63,7 +63,7 @@
 | ✅ | `JenAI loc show <名>` | 該地點座標/別名/tags;不存在時誠實報錯 |
 | 🔶 | `JenAI route "<text>"` | 解析目的地 → 互動確認 → 送 Nav2;**前置:Nav2 + 地圖 + 地點**。現在會誠實報 Nav2 unavailable |
 | ✅ | `JenAI web` | 印出帶 `?token=…` 的網址;WebUI 起在 127.0.0.1:8760;含 STOP 鈕、地圖、批准卡 |
-| ✅ | WebUI auth | 無 token / 錯 token → 401;`?token=` 開頁 → 200 並種 session cookie;`Authorization: Bearer` 亦可;**POST `/api/stop` 免 token 照樣 200** |
+| ✅ | WebUI auth | 無 token / 錯 token → 401;`?token=` 開頁 → 200 並種 session cookie;`Authorization: Bearer` 亦可;JSON body >64 KiB → 413;**POST `/api/stop` 免 token、免等 body 且撤銷舊確認** |
 | 🔶 | WebUI Camera 頁 | 需影像 topic。切到 Camera tab 才開始輪詢:**topic 下拉選單**(影像類優先,免猜 /rgb vs /rgb/image,選擇記憶於瀏覽器)+ `/api/frame` 每秒一幀 + odom 小格同步刷新;無相機時誠實 unavailable |
 | ✅ | WebUI API 頁 | 切到 API tab:ORDS 風格端點目錄(GET/POST 徽章、路徑、說明、auth 註記)+ **即時 ROS topics 清單**(`/api/topics`);指路 MCP 與文件 |
 | ✅ | `JenAI mcp` | MCP stdio server 起動,Claude Code/Desktop 可接;預設唯讀,`--allow-actions` 才有 `navigate_to` |

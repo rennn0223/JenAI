@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v0.23 系列(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v0.28 系列(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -115,7 +115,7 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 
 ### 3.2 WebUI(`jenai web`,預設 127.0.0.1:8760)
 
-**多頁式**(v0.15+):Console(chat + slash + **slash 指令選擇表**(輸入 `/` 彈出,↑↓ 選、Tab/點擊補完,清單與實作同源)+ **確認按鈕** + Map)、**Camera**(`/api/frame` 每秒抓一幀 RGB + 旁邊小格 odometry 即時更新;只在該頁時輪詢,不浪費 bridge)、Status(5 秒自動更新)、**API**(ORDS 風格端點目錄:GET/POST 徽章 + 路徑 + 說明)。動作類指令一律回 confirm token,由伺服器端一次性持有 —— 瀏覽器無法偽造或重放。
+**多頁式**(v0.15+):Console(chat + slash + **slash 指令選擇表**(輸入 `/` 彈出,↑↓ 選、Tab/點擊補完,清單與實作同源)+ **確認按鈕** + Map)、**Camera**(`/api/frame` 每秒抓一幀 RGB + 旁邊小格 odometry 即時更新;只在該頁時輪詢,不浪費 bridge)、Status(5 秒自動更新)、**API**(ORDS 風格端點目錄:GET/POST 徽章 + 路徑 + 說明)。動作類指令一律回 confirm token,由伺服器端一次性持有且 120 秒到期;STOP 會撤銷全部舊確認 —— 瀏覽器無法偽造或在急停後重放。
 
 **Token 認證**(v0.10+):啟動時自動生成 token 並印出帶 `?token=…` 的網址(`--token` 可固定);Bearer header、cookie、query 三種攜帶方式,首次 query 驗證通過即種 session cookie。唯一免認證端點 **`/api/stop`** —— 停車永遠安全(見 docs/THREAT_MODEL.md)。
 

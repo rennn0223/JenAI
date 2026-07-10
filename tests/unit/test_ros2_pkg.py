@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -52,6 +54,16 @@ def test_render_produces_buildable_layout() -> None:
     # entry point wires the console script to the node's main().
     assert '"stopper = obstacle_stop.stopper:main"' in files["setup.py"]
     assert files["resource/obstacle_stop"] == ""  # ament marker is empty
+
+
+def test_render_escapes_description_for_python_and_xml() -> None:
+    description = 'Say "hello" & move <slowly>\nthen stop'
+    files = render_package(_plan(description=description))
+
+    ast.parse(files["setup.py"])
+    root = ET.fromstring(files["package.xml"])
+
+    assert root.findtext("description") == description
 
 
 def test_empty_node_code_falls_back_to_runnable_skeleton() -> None:

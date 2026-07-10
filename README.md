@@ -151,7 +151,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v0.27，2026-07）
+## 狀態（v0.28，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
@@ -161,7 +161,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測（論文工具鏈）。
 >
-> ✅ **工程**：409 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：424 測試（無 ROS 的 CI 可全跑）、CI 三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >
 > ✅ **Twin Gate**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：導航目標先在數位孿生（獨立 ROS_DOMAIN_ID）預演，G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗 → pass／block／refer；`[twin]` 一行開關，所有導航入口與 daemon 全部過閘，daemon 自主路徑 refer 一律視同 block。
 >

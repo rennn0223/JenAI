@@ -21,7 +21,7 @@
 | H3 | 失控高速 | LLM 生成過大速度;指令打錯 | **R**:`[vehicle]` 硬夾限在 `/ros pub`、`/ros drive`、`/drive` 的執行路徑,LLM 碰不到夾限值;`/ros drive` 定時自動歸零 | test_ros2_core(夾限)、TEST.md `/drive` 實測 | 夾限值設錯 —— ⬜ TODO(客戶):確認場域安全速度上限並寫進 config |
 | H4 | 通訊失效後持續移動 | TUI/daemon 崩潰、網路斷、行程被 kill | **R**:bridge watchdog —— client 斷線/卡死 >6s 自主停車,每 2s 重發 halt;watchdog 武裝失敗 = 啟動失敗(絕不發無保護 bridge) | test_bridge_client(武裝失敗擋啟動)、v0.8 實測(watchdog 斷線停車) | DDS 本身斷連時 halt 到不了 —— 硬體 estop 是最後防線(⬜ TODO(客戶):實車硬體 estop 配置) |
 | H5 | AI 聽錯/亂決策(意圖層錯誤) | LLM 誤解自然語言;VLM 誤判場景 | **H**:敏感操作一律批准卡;daemon 自主動作需 `auto_approve`+nav2 明式授權;感知規則走同一套 gating 無捷徑;twin refer 在自主路徑視為 block | test_daemon(twin refer → NOT moved、confidence 亂填不觸發)、批准機制橫切驗收(TEST.md) | 人批准了「聽起來對」的錯指令 —— 由 G 接手(執行層) |
-| H6 | 緊急停止失效 | 停止路徑本身出 bug;停止被排隊 | **R+設計**:`/stop` 免批准、Esc 取消不了停止本身、halt publisher 預建、halt 先送零速度再做可能耗時的 cancel-all,最後再補零速度;WebUI STOP 免 token | test_safety_order + 安全鏈覆蓋 CI 倒退閘;halt 失敗誠實回報(test_daemon);TEST.md `/stop` 實測 | 多重防護後仍是軟體 —— 硬體 estop 為最後防線 |
+| H6 | 緊急停止失效 | 停止路徑本身出 bug;停止被排隊 | **R+設計**:`/stop` 免批准、Esc 取消不了停止本身、halt publisher 預建、halt 先送零速度再做可能耗時的跨程序 cancel-all,最後再補零速度;WebUI STOP 免 token、不等待 body 且撤銷舊確認 | test_safety_order + 安全鏈覆蓋 CI 倒退閘;halt 失敗誠實回報(test_daemon);TEST.md `/stop` 實測 | 多重防護後仍是軟體 —— 硬體 estop 為最後防線 |
 | H7 | 電量耗盡途中拋錨 | 任務過長、忘記回充 | **R**:daemon 電量規則自動回充(`goto Dock`);**P**:巡邏日報記錄 | rules.example.toml + test_daemon(goto gating) | 電量 topic 不準;dock 點未建(誠實提示) |
 | H8 | 未授權者操作(LAN) | WebUI 曝露、MCP 濫用 | token 認證(401 不洩 token)、MCP 預設唯讀、`/shell` 批准卡 | test_webui auth 6 例、THREAT_MODEL.md | 見 THREAT_MODEL「明確不在範圍」 |
 

@@ -27,6 +27,8 @@ from jenai.tools.safety import halt_robot
 from jenai.webui.commands import run_web_command, run_web_confirm
 from jenai.webui.render import render_dashboard_html, render_main
 
+_MAX_JSON_BODY = 64 * 1024
+
 
 class _PendingConfirms:
     """Server-side store binding a previewed robot action to a one-time token.
@@ -40,15 +42,26 @@ class _PendingConfirms:
     button — a second layer under the session token auth (see THREAT_MODEL.md).
     """
 
-    def __init__(self, max_entries: int = 32) -> None:
-        self._items: dict[str, dict] = {}
+    def __init__(self, max_entries: int = 32, ttl_s: float = 120.0) -> None:
+        self._items: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
         self._max = max_entries
+        self._ttl_s = max(0.0, ttl_s)
+
+    def _purge_expired(self, now: float) -> None:
+        expired = [
+            token for token, (created, _) in self._items.items()
+            if now - created >= self._ttl_s
+        ]
+        for token in expired:
+            self._items.pop(token, None)
 
     def put(self, action: dict) -> str:
         token = secrets.token_urlsafe(16)
         with self._lock:
-            self._items[token] = action
+            now = time.monotonic()
+            self._purge_expired(now)
+            self._items[token] = (now, action)
             while len(self._items) > self._max:  # bound memory; evict oldest
                 self._items.pop(next(iter(self._items)), None)
         return token
@@ -57,7 +70,17 @@ class _PendingConfirms:
         if not token:
             return None
         with self._lock:
-            return self._items.pop(token, None)
+            item = self._items.pop(token, None)
+            if item is None:
+                return None
+            created, action = item
+            if time.monotonic() - created >= self._ttl_s:
+                return None
+            return action
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
 
 
 class PoseCache:
@@ -410,13 +433,33 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(render_dashboard_html(self._status()), "text/html; charset=utf-8")
 
-    def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or 0)
+    def _read_json(self) -> dict[str, Any] | None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._send(
+                '{"kind": "error", "html": "<p>Invalid Content-Length.</p>"}',
+                "application/json; charset=utf-8",
+                status=400,
+            )
+            return None
+        if length < 0 or length > _MAX_JSON_BODY:
+            self._send(
+                '{"kind": "error", "html": "<p>Request body too large.</p>"}',
+                "application/json; charset=utf-8",
+                status=413,
+            )
+            return None
         raw = self.rfile.read(length) if length else b""
         try:
             data = json.loads(raw.decode("utf-8")) if raw else {}
         except (json.JSONDecodeError, UnicodeDecodeError):
-            data = {}
+            self._send(
+                '{"kind": "error", "html": "<p>Invalid JSON body.</p>"}',
+                "application/json; charset=utf-8",
+                status=400,
+            )
+            return None
         return data if isinstance(data, dict) else {}
 
     def do_POST(self) -> None:  # noqa: N802 (http.server naming)
@@ -424,10 +467,20 @@ class _Handler(BaseHTTPRequestHandler):
         # EMERGENCY STOP is the one unauthenticated endpoint: stopping is
         # always safe, and a phone with a stale/lost cookie must still be able
         # to halt the robot. Worst case for an attacker is stopping it too.
-        if path != "/api/stop" and not self._authorized():
+        if path == "/api/stop":
+            # A stop also revokes every preview created before it. Otherwise an
+            # old confirmation card could restart motion after the emergency.
+            if self.pending is not None:
+                self.pending.clear()
+            result = _do_stop(self.config, self.pose_cache)
+            self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
+            return
+        if not self._authorized():
             self._reject()
             return
         body = self._read_json()
+        if body is None:
+            return
         if path == "/api/command":
             result = asyncio.run(run_web_command(self.config, self.config_path, body.get("text", "")))
             # A previewed actuation is held server-side under a one-time id; the
@@ -443,10 +496,6 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             else:
                 result = asyncio.run(run_web_confirm(self.config, action))
-        elif path == "/api/stop":
-            # EMERGENCY STOP: no confirm token — stopping is always safe and
-            # must never queue behind a dialog.
-            result = _do_stop(self.config, self.pose_cache)
         else:
             result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")

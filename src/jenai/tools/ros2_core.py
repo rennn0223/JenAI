@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
 from dataclasses import dataclass
 
 from jenai.adapters import ros2_adapter
@@ -281,6 +282,15 @@ def _clamp(value, limit):
     # a plausible velocity.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return value
+    if not math.isfinite(value):
+        return 0
+    # AppConfig rejects invalid limits, but this primitive is also called
+    # directly by tools. Fail closed instead of turning a negative limit into
+    # positive full speed or letting infinity disable the safety boundary.
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+        return 0
+    if limit < 0 or not math.isfinite(limit):
+        return 0
     return max(-limit, min(limit, value))
 
 

@@ -320,6 +320,21 @@ def test_pose_unavailable_after_success_refers() -> None:
     assert "pose" in report.reason
 
 
+def test_forbidden_zones_without_pose_samples_refer() -> None:
+    class NoPoseBridge(FakeTwinBridge):
+        async def get_pose(self, timeout: float = 3.0):
+            raise BridgeError("no pose on the twin domain")
+
+    zone = ForbiddenZone(name="stairs", x_min=5, y_min=5, x_max=6, y_max=6)
+    report = _rehearse(
+        _twin(forbidden_zones=[zone]), NoPoseBridge(nav_status="succeeded")
+    )
+
+    assert report.verdict == "refer"
+    assert _status(report, "G3") == "skipped"
+    assert "no twin pose samples" in report.reason
+
+
 def test_unwatch_failure_is_swallowed_not_fatal() -> None:
     class UnwatchErrorBridge(FakeTwinBridge):
         async def unwatch(self, watch_id: int) -> None:

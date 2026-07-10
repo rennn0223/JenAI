@@ -1522,6 +1522,28 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
     assert calls == [("run", "帶我去機械系館"), ("plan", "帶我去機械系館")]
 
 
+def test_plain_greeting_uses_toolless_chat(monkeypatch) -> None:
+    calls = []
+
+    async def fake_stream(config, prompt):
+        calls.append(prompt)
+        yield "Hello!"
+
+    async def unexpected_run(self, arg):
+        raise AssertionError(f"greeting was sent to the tool-calling agent: {arg}")
+
+    monkeypatch.setattr("jenai.tui.app.stream_provider", fake_stream)
+    monkeypatch.setattr(JenAITuiApp, "_show_run", unexpected_run)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            await app.handle_user_text("hi")
+
+    asyncio.run(run())
+    assert calls == ["hi"]
+
+
 def test_auto_mode_skips_approval_card_but_logs(monkeypatch) -> None:
     from jenai.tools.mission_core import MissionReport, StepResult
 
