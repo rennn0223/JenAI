@@ -326,6 +326,14 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
         self.session = create_session(config, working_directory=str(Path.cwd()))
         self.run_store = RunStore(pending_dir=config_path.parent / "pending-runs")
+        # Freeze the startup set before Textual schedules restoration. A live
+        # /run may begin while the callback is waiting; scanning the mutable
+        # store then would mount its approval card twice.
+        self._runs_to_restore = [
+            run.run_id
+            for run in self.run_store.list_runs()
+            if run.status == "awaiting_approval"
+        ]
         self.history = InputHistory(self.session)
         self._last_history_value: str | None = None
         self._last_plan_ctx: JenAIRunContext | None = None
@@ -392,8 +400,10 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
     async def _restore_pending_runs(self) -> None:
         """Rebuild approval cards for SDK runs paused before the last exit."""
-        for run in self.run_store.list_runs():
-            if run.status != "awaiting_approval":
+        run_ids, self._runs_to_restore = self._runs_to_restore, []
+        for run_id in run_ids:
+            run = self.run_store.get(run_id)
+            if run is None or run.status != "awaiting_approval":
                 continue
             self.session.current_run_id = run.run_id
             restored_session = self.session.model_copy(
