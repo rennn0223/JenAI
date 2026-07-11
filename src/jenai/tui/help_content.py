@@ -26,6 +26,7 @@ _COMMAND_GROUPS = [
             "/ros schema <topic>",
             "/ros echo <topic> [count]",
             "/ros pub <topic> <payload>",
+            "/ros drive <topic> <payload> [秒]",
         ],
     ),
     CommandGroup(

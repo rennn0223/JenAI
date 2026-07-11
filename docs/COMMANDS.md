@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v0.30.0(2026-07)。
+> 對應版本:v0.30.1(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -60,6 +60,7 @@ JenAI 啟動流程：
 | `/help` | 顯示指令簡介、分類、範例與快捷鍵 | `/help` |
 | `/status` | 顯示 provider、model、config、doctor 摘要 | `/status` |
 | `/queue [clear]` | 顯示 FIFO 指令佇列;`clear` 清除等待項目。任務執行中也會立即回應，最多保留 20 項 | `/queue` |
+| `/mode [approve\|plan\|auto]` | 切換權限模式(Shift+Tab 的鍵盤備援);不帶參數循環,中文別名 審批/規劃/自動 也通 | `/mode plan` |
 | `/clear` | 清除目前對話畫面**與跨重啟記憶** | `/clear` |
 | `/quit` / `/exit` | 離開 JenAI | `/quit` |
 

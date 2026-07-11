@@ -1,6 +1,6 @@
 # CODE_TOUR — 全程式碼導讀(給補課用的逐檔解說)
 
-> 對應 v0.28.x。每個檔案講三件事:**做什麼**、**用了什麼 SDK/庫**、
+> 對應 v0.30.x。每個檔案講三件事:**做什麼**、**用了什麼 SDK/庫**、
 > **為什麼這樣寫**(關鍵段落的設計理由)。搭配各目錄 README 與
 > [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md) 服用;讀碼時對著原始檔開兩個視窗。
 
@@ -33,7 +33,7 @@
 
 # 第一層:橋接與載具(離鐵最近)
 
-### `bridge/ros_bridge.py`(767 行)——【全 repo 最重要的檔案】
+### `bridge/ros_bridge.py`(922 行)——【全 repo 最重要的檔案】
 - **做什麼**:常駐 rclpy 節點。ops:`pose`、`nav_send`(Nav2 action)、
   `drive_to_pose`(無 Nav2 的 odom→cmd_vel 直驅+stop-and-go detour)、
   `nav_cancel`、`halt`(急停)、`watchdog`、`capture_frame`、`watch`。
@@ -255,10 +255,10 @@
   (不存在的工具無法被呼叫 —— 又是結構保證優於 prompt 約束);
   stdout 是協定通道,所以全 repo 的診斷都走 stderr(cli/main.py 的 err_console)。
 
-### `cli/main.py`(568 行)
+### `cli/main.py`(627 行)
 - **SDK**:typer。callback 統一載入 `.env`(shell 優先);
   無子命令→doctor 快檢(跳過慢的 nav 探測)→TUI。
-- 各命令(doctor/web/mcp/daemon/route/loc/scaffold/eval/help)都是薄殼:
+- 各命令(doctor/web/mcp/daemon/route/loc/scaffold/eval/onboard/help)都是薄殼:
   解析參數→呼叫 core→rich 呈現。`scaffold --build` 的「生成→build→LLM 修一輪」
   策略邏輯在這裡(策略屬於入口,機制屬於 core)。
 

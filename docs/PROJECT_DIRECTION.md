@@ -140,6 +140,10 @@ ROS topics 就能算,不用碰 Isaac 內部 API,增量成本可控。
    Quadruped:Nav2 + 廠商 locomotion controller,步態參數/地形模式
 ```
 
+> 實作註記(v0.25+):上圖所有導航路徑在程式裡收斂於 **NavigationGateway 單一出口**
+> (Twin Gate/watchdog 政策無法被直呼繞過),並且 run/批准/工具/Gate verdict
+> 事件全部進 **SQLite audit**(跨重啟可回溯)。
+
 **架構鐵律(工程師條款)**:
 - LLM 永不進即時迴路;反射層永不依賴 LLM 與網路。
 - 技能層以上不得出現任何載具字眼;載具差異全部收在 vehicle profile。

@@ -34,7 +34,6 @@ ACCENT_DARK = "#c15f3c"
 MUTED = "#9c9689"
 GREEN = "#7d9b6a"
 ERROR = "#cb6250"
-BLUE = "#d97757"
 
 
 
@@ -130,7 +129,7 @@ BULLET = "⏺"
 ELBOW = "⎿"
 
 _MARKER_COLOR = {
-    "command": BLUE,
+    "command": ACCENT,
     "success": GREEN,
     "warn": ACCENT,
     "error": ERROR,
