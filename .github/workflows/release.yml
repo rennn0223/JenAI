@@ -87,6 +87,15 @@ jobs:
         run: |
           if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release upload "${TAG}" dist/* --clobber
+            # Manual dispatch is the human gate: it may also FINISH a
+            # tag-push draft — swap in the reviewed notes file and publish.
+            # A tag-push run still never touches an existing release's notes.
+            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
+               && [ -f "docs/releases/${TAG}.md" ] \
+               && [ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" = "true" ]; then
+              gh release edit "${TAG}" --title "${TAG}" \
+                --notes-file "docs/releases/${TAG}.md" --draft=false
+            fi
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             # Dispatch is the human gate; the reviewed notes file is mandatory.
             gh release create "${TAG}" dist/* \
