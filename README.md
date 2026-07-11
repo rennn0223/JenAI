@@ -123,7 +123,8 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 | 文件 | 說明 |
 |---|---|
-| [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（新人先讀這份） |
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | **零基礎上手手冊**：不熟終端機也能 20 分鐘從空機到第一句對話（小白先讀這份） |
+| [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（開發新人先讀這份） |
 | [docs/CODE_TOUR.md](docs/CODE_TOUR.md) | **全程式碼逐檔導讀**：每個檔案在做什麼、為什麼這樣設計 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | **前瞻主圖**：現況快照、演進五軌、工程健康度、風險登記 |
 | [docs/V1_GATE.md](docs/V1_GATE.md) | v1.0 驗收基準與兩層分工（agent 可獨力 vs 需客戶下場） |

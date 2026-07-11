@@ -23,10 +23,15 @@ _BANNER_LINES = (
     "╚█████╔╝███████╗██║ ╚████║██║  ██║██║",
     " ╚════╝ ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝",
 )
-# Cyan→magenta sweep, one shade per banner row.
+# Warm orange sweep (light→deep), one shade per banner row — the wizard wears
+# the same Claude-orange theme as the TUI (see ACCENT in tui/panels.py).
 _BANNER_COLORS = (
-    "cyan1", "deep_sky_blue1", "dodger_blue1", "slate_blue1", "medium_purple1", "magenta"
+    "#f2b28c", "#eda680", "#e69468", "#d97757", "#cb6a49", "#c15f3c"
 )
+
+# TUI palette twins (kept literal: config/ must not import the tui/ layer).
+_ACCENT = "#d97757"  # tui.panels.ACCENT
+_GREEN = "#7d9b6a"  # tui.panels.GREEN
 
 
 @dataclass(frozen=True)
@@ -137,12 +142,12 @@ def run_setup_wizard(config_path: Path) -> Path:
             "第一次使用,先接上一個模型供應商。之後隨時可用 [bold]/provider[/bold] 切換、"
             "[bold]JenAI config[/bold] 檢視。",
             title="Setup 1/3 — 選供應商",
-            border_style="cyan",
+            border_style=_ACCENT,
         )
     )
     for idx, preset in enumerate(PRESETS, start=1):
         console.print(
-            f"  [bold cyan]{idx}[/bold cyan]. [bold]{preset.title}[/bold]"
+            f"  [bold #d97757]{idx}[/bold #d97757]. [bold]{preset.title}[/bold]"
             f"  [dim]{preset.hint}[/dim]",
             highlight=False,
         )
@@ -157,7 +162,7 @@ def run_setup_wizard(config_path: Path) -> Path:
         Panel(
             "留白直接 Enter 用預設值;每欄都附範例。",
             title="Setup 2/3 — 連線細節",
-            border_style="cyan",
+            border_style=_ACCENT,
         )
     )
     provider_name = _prompt("Profile 名稱", default=preset.key, example="local")
@@ -178,7 +183,7 @@ def run_setup_wizard(config_path: Path) -> Path:
         Panel(
             "地點檔存 `/loc add here` 建的導航點。",
             title="Setup 3/3 — 地點檔",
-            border_style="cyan",
+            border_style=_ACCENT,
         )
     )
     locations_path = _prompt("Locations 檔路徑", default="locations.toml", example="locations.toml")
@@ -203,7 +208,7 @@ def run_setup_wizard(config_path: Path) -> Path:
     summary.add_row("[dim]Base URL[/dim]", base_url or "(供應商預設)")
     summary.add_row("[dim]API key env[/dim]", api_key_env or "(不需要)")
     summary.add_row("[dim]Config[/dim]", str(written))
-    console.print(Panel(summary, title="✓ 設定完成", border_style="green"))
+    console.print(Panel(summary, title="✓ 設定完成", border_style=_GREEN))
     if saved_credential_path is not None:
         console.print(
             f"  [green]金鑰已安全寫入:[/green] [bold]{saved_credential_path}[/bold] "

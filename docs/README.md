@@ -1,12 +1,14 @@
 # docs — 文件索引
 
-**先讀**:[PROJECT_DIRECTION](PROJECT_DIRECTION.md)(方向與架構收斂)→
+**新手**:先讀 [QUICKSTART](QUICKSTART.md)(零基礎 20 分鐘上手)。
+**開發者先讀**:[PROJECT_DIRECTION](PROJECT_DIRECTION.md)(方向與架構收斂)→
 [ROADMAP](ROADMAP.md)(演進與維護深度規劃、版本里程碑)→
 [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md)(模組導覽、設計決策)→
 [V1_GATE](V1_GATE.md)(v1.0 驗收基準與兩層待辦)。
 
 | 文件 | 內容 |
 |---|---|
+| [QUICKSTART](QUICKSTART.md) | **零基礎上手手冊**:裝 uv → 設定精靈 → 第一句話 → 第一次導航,含常見狀況對照 |
 | [ROADMAP](ROADMAP.md) | 現況快照、六條演進軌道、工程健康度/技術債、版本里程碑、風險登記 |
 | [HANDOFF](HANDOFF.md) | 交接備忘:狀態、AI 協作方法、誠實指正、下一步優先序 |
 | [V1_RELEASE_CHECKLIST](V1_RELEASE_CHECKLIST.md) | v1.0 上版程序(實測清單 + tag 當天指令) |
