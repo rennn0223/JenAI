@@ -16,6 +16,7 @@ from jenai.adapters.locations import (
 from jenai.adapters.ros2_adapter import Ros2NotAvailableError
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
+from jenai.state.audit import AuditStore
 from jenai.tools import ros2_core
 from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.safety import arm_watchdog, halt_robot
@@ -58,7 +59,12 @@ def build_mcp_server(
         await bridge.start()  # idempotent; raises BridgeError when ROS is absent
         return bridge
 
-    navigation = NavigationGateway(config, get_bridge=_get_bridge)
+    audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
+    navigation = NavigationGateway(
+        config,
+        get_bridge=_get_bridge,
+        audit_store=audit_store,
+    )
 
     def _locations_or_error() -> tuple[list, str | None]:
         return load_locations_tolerant(config.resolved_locations_path(config_path))

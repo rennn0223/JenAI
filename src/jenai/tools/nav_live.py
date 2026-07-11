@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
-from jenai.schemas import RouteOutput
+from jenai.schemas import GateReport, RouteOutput
 
 
 @dataclass(frozen=True)
@@ -148,6 +148,7 @@ async def navigate_with_fallback(
     *,
     on_progress: Callable[[NavProgress], None] | None = None,
     on_gate: Callable[[str], None] | None = None,
+    on_gate_report: Callable[[GateReport], None] | None = None,
 ) -> RouteOutput:
     """Execute a navigation action: live bridge (feedback + cancellation) when
     Nav2 is configured and ROS is present, otherwise the honest CLI adapter.
@@ -166,6 +167,8 @@ async def navigate_with_fallback(
         from jenai.twin import rehearse_goal
 
         report = await rehearse_goal(config.twin, outgoing_action, on_status=on_gate)
+        if on_gate_report is not None:
+            on_gate_report(report)
         if report.verdict != "pass":
             return RouteOutput(
                 input_text="",

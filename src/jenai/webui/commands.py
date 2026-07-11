@@ -16,6 +16,7 @@ from jenai.adapters.locations import (
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
 from jenai.providers.chat import ProviderChatError, ask_provider, chat_model_name
+from jenai.state.audit import AuditStore
 from jenai.tools import ros2_core
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.navigation_gateway import execute_navigation
@@ -294,10 +295,34 @@ def _loc(config: AppConfig, config_path: Path, rest: str) -> dict:
     return _error("Usage: /loc list | /loc show &lt;name&gt;")
 
 
-async def run_web_confirm(config: AppConfig, action: dict) -> dict:
+async def run_web_confirm(
+    config: AppConfig,
+    action: dict,
+    *,
+    config_path: Path | None = None,
+) -> dict:
     """Execute a previously-previewed actuation after the user confirmed it."""
+    audit_store = (
+        AuditStore.best_effort(config_path.parent / "audit.sqlite3")
+        if config_path is not None
+        else None
+    )
+    kind = action.get("type")
+
+    def _audit(event_type: str, status: str) -> None:
+        if audit_store is None:
+            return
+        try:
+            audit_store.record(
+                event_type,
+                status=status,
+                details={"source": "webui", "action_type": str(kind or "unknown")},
+            )
+        except Exception:
+            pass
+
+    _audit("approval_resolved", "approved")
     try:
-        kind = action.get("type")
         if kind == "drive":
             out = await ros2_core.ros_drive(
                 action["topic"],
@@ -307,6 +332,7 @@ async def run_web_confirm(config: AppConfig, action: dict) -> dict:
                 max_linear=config.vehicle.max_linear,
                 max_angular=config.vehicle.max_angular,
             )
+            _audit("tool_updated", out.execution_status)
             return _result(_p(out.result_message or "done"))
         if kind == "pub":
             out = await ros2_core.ros_pub_execute(
@@ -316,10 +342,18 @@ async def run_web_confirm(config: AppConfig, action: dict) -> dict:
                 max_linear=config.vehicle.max_linear,
                 max_angular=config.vehicle.max_angular,
             )
+            _audit("tool_updated", out.execution_status)
             return _result(_p(out.result_message or "done"))
         if kind == "route":
-            out = await execute_navigation(config, action["outgoing_action"])
+            out = await execute_navigation(
+                config,
+                action["outgoing_action"],
+                audit_store=audit_store,
+            )
+            _audit("tool_updated", out.execution_status)
             return _result(_p(out.route_preview))
+        _audit("tool_updated", "failed")
         return _error("Unknown action.")
     except Exception as exc:
+        _audit("tool_updated", "failed")
         return _error(f"Error: {exc}")

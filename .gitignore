@@ -15,6 +15,7 @@ venv/
 *.log
 .coverage
 coverage.xml
+audit.sqlite3*
 .DS_Store
 
 # Personal thesis planning (not part of the project)

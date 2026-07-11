@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.28.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v0.29.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(Jetson 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -26,11 +26,12 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 單元測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.28.0 基準 `424 passed`,無 ROS 環境也全過);含安全鏈故障注入、輸入邊界、指令 FIFO/批准暫停/stop 清隊列與架構鐵律測試 |
+| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v0.29.0 現況 430+ 項,無 ROS 環境也全過);含安全鏈故障注入、輸入邊界、指令 FIFO/批准暫停/stop 清隊列與架構鐵律測試 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
-| CI | push PR | `test` job(ruff+pytest,coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
+| CI | push PR | `test` job 以 Python 3.12／3.13／3.14 matrix 跑 ruff+pytest(coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
 | Release gate | 推 `vX.Y.Z` tag,或手動 dispatch(輸入 tag) | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → tag push 建草稿(人工發佈);dispatch 由 workflow 建 tag 並以 `docs/releases/<tag>.md` 直接發佈 |
 | 安全鏈覆蓋閘 | CI `test` job 自動跑 | `coverage report --fail-under=90`(estop/watchdog/bridge/gate/rules);現況 92%,倒退即紅 |
+| 稽核紀錄 | 自動化測試 + 執行任一 TUI run | `<config 目錄>/audit.sqlite3` 保存 run/approval/tool/gate 事件,重啟後仍在;最多 10,000 筆且不含 prompt/raw payload |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 
 ## 本機實測現況快照(v0.22.1,Jetson 工作機)
@@ -48,7 +49,7 @@
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.28.0`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 0.29.0`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |
@@ -66,6 +67,7 @@
 | ✅ | WebUI auth | 無 token / 錯 token → 401;`?token=` 開頁 → 200 並種 session cookie;`Authorization: Bearer` 亦可;JSON body >64 KiB → 413、非 JSON object → 400;**POST `/api/stop` 免 token、先停車再讀 body 且撤銷舊確認** |
 | 🔶 | WebUI Camera 頁 | 需影像 topic。切到 Camera tab 才開始輪詢:**topic 下拉選單**(影像類優先,免猜 /rgb vs /rgb/image,選擇記憶於瀏覽器)+ `/api/frame` 每秒一幀 + odom 小格同步刷新;無相機時誠實 unavailable |
 | ✅ | WebUI API 頁 | 切到 API tab:ORDS 風格端點目錄(GET/POST 徽章、路徑、說明、auth 註記)+ **即時 ROS topics 清單**(`/api/topics`);指路 MCP 與文件 |
+| 🧪 | WebUI 狀態快取 | 多個分頁輪詢共用 probe:doctor 30 秒最多一次、ROS graph 2 秒最多一次;STOP/confirm/frame 不經狀態快取鎖 |
 | ✅ | `JenAI mcp` | MCP stdio server 起動,Claude Code/Desktop 可接;預設唯讀,`--allow-actions` 才有 `navigate_to` |
 | ✅ | `JenAI daemon --rules <toml>` | 常駐規則引擎;規則觸發時 notify/halt/goto(goto 需 `auto_approve` + nav2) |
 | ✅ | `JenAI`(主入口) | 已設定 → 直接進 TUI;未設定 → setup wizard:ASCII banner → 3 步驟(供應商預設選單 local/NVIDIA/OpenAI/custom → 連線細節逐欄附範例 → 地點檔)→ 綠色摘要卡 + 金鑰放置提示 + 下一步指引 |
@@ -169,7 +171,7 @@
 
 | 狀態 | 項目 | 期望輸出 |
 |---|---|---|
-| 🧪 | Gate pipeline(G1–G5 判準、pass/block/refer、refer→daemon 視為 block) | 16 個單元測試涵蓋;`[twin]` 預設關閉 = 零行為變化 |
+| 🧪 | Gate pipeline(G1–G5 判準、pass/block/refer、refer→daemon 視為 block) | 21 個單元測試涵蓋;`[twin]` 預設關閉 = 零行為變化 |
 | 🔶 | 端到端預演(真孿生) | **前置:Isaac Sim 場景建置(TWIN_SETUP.md,工作站作業)**;建好後:`[twin]` 啟用 → 每個導航目標先在隔離 ROS_DOMAIN_ID 預演,硬違規(碰撞/禁區)block、無法判定 refer,**閘門啟用時絕不靜默放行**;`doctor` twin 區段回報孿生 graph/Nav2/接觸感測器 |
 
 ### 批准機制(橫切驗收)

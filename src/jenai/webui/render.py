@@ -546,7 +546,12 @@ const mapMeta = document.getElementById('map-meta');
 function mapDraw(data){
   const pts = data.locations.map(l => [l.x, l.y]);
   if(data.pose) pts.push([data.pose.x, data.pose.y]);
-  if(!pts.length){ mapMeta.textContent = 'no locations yet — save one with /loc add here <name> in the TUI'; return; }
+  if(!pts.length){
+    mapMeta.textContent = data.pose_error === 'invalid_pose'
+      ? 'localization invalid (pose contains NaN/inf) — check AMCL / odometry'
+      : 'no locations yet — save one with /loc add here <name> in the TUI';
+    return;
+  }
   const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
   const pad = Math.max(1.0, (Math.max(...xs)-Math.min(...xs))*0.15, (Math.max(...ys)-Math.min(...ys))*0.15);
   const x0 = Math.min(...xs)-pad, x1 = Math.max(...xs)+pad;
@@ -572,6 +577,8 @@ function mapDraw(data){
     out += `<circle class="robot-ring" cx="${px}" cy="${py}" r="2.6"/>`;
     out += `<polygon class="robot" points="2.4,0 -1.4,1.4 -1.4,-1.4" transform="translate(${px},${py}) rotate(${deg})"/>`;
     mapMeta.textContent = `robot at (${data.pose.x.toFixed(2)}, ${data.pose.y.toFixed(2)}) · ${data.pose.frame_id} · ${data.pose.source}`;
+  } else if(data.pose_error === 'invalid_pose') {
+    mapMeta.textContent = 'localization invalid (pose contains NaN/inf) — check AMCL / odometry';
   } else {
     mapMeta.textContent = data.ros ? 'no live pose (is the robot publishing /amcl_pose or /odom?)' : 'ROS2 not available on this host';
   }

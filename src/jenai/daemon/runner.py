@@ -11,6 +11,7 @@ from jenai.adapters.locations import LocationNotFoundError, find_location, load_
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.daemon.engine import Decision, Rule, RuleEngine
+from jenai.state.audit import AuditStore
 from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.perception import PerceptionLoop
 from jenai.tools.safety import arm_watchdog, halt_robot
@@ -43,7 +44,12 @@ async def run_daemon(
     async def _get_bridge() -> RosBridgeClient:
         return bridge
 
-    navigation = NavigationGateway(config, get_bridge=_get_bridge)
+    audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
+    navigation = NavigationGateway(
+        config,
+        get_bridge=_get_bridge,
+        audit_store=audit_store,
+    )
 
     loop = asyncio.get_running_loop()
     # One navigation at a time. The consumer loop is the only place that

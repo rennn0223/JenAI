@@ -115,7 +115,7 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 
 ### 3.2 WebUI(`jenai web`,預設 127.0.0.1:8760)
 
-**多頁式**(v0.15+):Console(chat + slash + **slash 指令選擇表**(輸入 `/` 彈出,↑↓ 選、Tab/點擊補完,清單與實作同源)+ **確認按鈕** + Map)、**Camera**(`/api/frame` 每秒抓一幀 RGB + 旁邊小格 odometry 即時更新;只在該頁時輪詢,不浪費 bridge)、Status(5 秒自動更新)、**API**(ORDS 風格端點目錄:GET/POST 徽章 + 路徑 + 說明)。動作類指令一律回 confirm token,由伺服器端一次性持有且 120 秒到期;STOP 會撤銷全部舊確認 —— 瀏覽器無法偽造或在急停後重放。
+**多頁式**(v0.15+):Console(chat + slash + **slash 指令選擇表**(輸入 `/` 彈出,↑↓ 選、Tab/點擊補完,清單與實作同源)+ **確認按鈕** + Map)、**Camera**(`/api/frame` 每秒抓一幀 RGB + 旁邊小格 odometry 即時更新;只在該頁時輪詢,不浪費 bridge)、Status(5 秒自動更新)、**API**(ORDS 風格端點目錄:GET/POST 徽章 + 路徑 + 說明)。StatusCache 讓所有瀏覽器共用 doctor 30 秒與 ROS graph 2 秒快照,避免每個分頁重跑 subprocess。動作類指令一律回 confirm token,由伺服器端一次性持有且 120 秒到期;STOP 會撤銷全部舊確認 —— 瀏覽器無法偽造或在急停後重放。
 
 **Token 認證**(v0.10+):啟動時自動生成 token 並印出帶 `?token=…` 的網址(`--token` 可固定);Bearer header、cookie、query 三種攜帶方式,首次 query 驗證通過即種 session cookie。唯一免認證端點 **`/api/stop`** —— 停車永遠安全(見 docs/THREAT_MODEL.md)。
 
@@ -221,7 +221,7 @@ env -u PYTHONPATH uv run pytest     # 必須 unset PYTHONPATH(ROS 遮蔽問題)
 env -u PYTHONPATH uv run ruff check src tests
 ```
 
-- **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test`(ruff + pytest,coverage 寫入 job summary,**安全鏈覆蓋 fail-under=90 倒退閘**)、`build`(`uv build` + `uvx` 全新環境裝 wheel 跑 `jenai --help`,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護
+- **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test` 以 Python 3.12／3.13／3.14 matrix 跑 ruff + pytest(coverage 寫入 job summary,**安全鏈覆蓋 fail-under=90 倒退閘**)、`build`(`uv build` + `uvx` 全新環境裝 wheel 跑 `jenai --help`,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護
 - **Release**(`.github/workflows/release.yml`):兩個入口,同一套閘(驗 tag 與 pyproject 版本一致、lint+測試、`uv build` + wheel 冒煙)——①推 `vX.Y.Z` tag:建**草稿** release(自動 notes),人工 `gh release edit vX.Y.Z --notes-file docs/releases/vX.Y.Z.md --draft=false` 發佈;②**手動 workflow_dispatch**(輸入 tag):由 workflow 建 tag 並直接以 `docs/releases/<tag>.md` **發佈**(dispatch 本身即人工授權;無 notes 檔即失敗)。手寫 notes 自 v0.23 版本化在 `docs/releases/`,隨 PR review。tag 已有 release 時只補上傳附件
 - **TUI 測試**:Textual `app.run_test()` + `handle_user_text()`;導航測試 patch `NavigationGateway.execute`,以安全入口為邊界
 - **本機 E2E 手法**(開發時驗真鏈路):`scratchpad` 裡跑假節點 —— fake Nav2 action server、fake camera publisher、fake battery —— 全是真 rclpy、真協定,TUI/daemon 分不出真假。參考 git log 中各功能 commit 的驗證描述

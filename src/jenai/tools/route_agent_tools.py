@@ -98,7 +98,14 @@ async def route_execute_tool(
             "execution_status": "failed",
             "route_preview": f"outgoing_action_json is not valid JSON: {exc}",
         }
-    output = await execute_navigation(ctx.context.config, outgoing_action)
+    run_ctx = ctx.context
+    output = await execute_navigation(
+        run_ctx.config,
+        outgoing_action,
+        audit_store=run_ctx.run_store.audit_store,
+        run_id=run_ctx.run.run_id,
+        session_id=run_ctx.run.session_id,
+    )
     _finish_call(ctx, call, ok=True, summary=output.execution_status)
     return output.model_dump(mode="json")
 

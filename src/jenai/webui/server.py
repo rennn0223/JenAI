@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import secrets
 import socket
 import threading
 import time
+from collections.abc import Callable
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +30,67 @@ from jenai.webui.commands import run_web_command, run_web_confirm
 from jenai.webui.render import render_dashboard_html, render_main
 
 _MAX_JSON_BODY = 64 * 1024
+
+
+class StatusCache:
+    """Coalesced health snapshots shared by every HTTP handler thread."""
+
+    def __init__(
+        self,
+        *,
+        doctor_ttl_s: float = 30.0,
+        ros_ttl_s: float = 2.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._doctor_ttl_s = max(0.0, doctor_ttl_s)
+        self._ros_ttl_s = max(0.0, ros_ttl_s)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._doctor: Any = None
+        self._doctor_at: float | None = None
+        self._ros: dict[str, Any] | None = None
+        self._ros_at: float | None = None
+
+    def doctor(self, config_path: Path):
+        """Run the subprocess-backed doctor at most once per TTL."""
+        with self._lock:
+            now = self._clock()
+            if (
+                self._doctor is None
+                or self._doctor_at is None
+                or now - self._doctor_at >= self._doctor_ttl_s
+            ):
+                self._doctor = run_doctor(config_path, include_nav=False)
+                self._doctor_at = now
+            return self._doctor
+
+    def ros_snapshot(self) -> dict[str, Any]:
+        """List the ROS graph at most once per TTL across all browser tabs."""
+        with self._lock:
+            now = self._clock()
+            if (
+                self._ros is None
+                or self._ros_at is None
+                or now - self._ros_at >= self._ros_ttl_s
+            ):
+                self._ros = _ros_snapshot()
+                self._ros_at = now
+            return self._ros
+
+    def build_status(
+        self,
+        config: AppConfig,
+        config_path: Path,
+        *,
+        run_store: RunStore | None = None,
+    ) -> dict[str, Any]:
+        return build_status_payload(
+            config,
+            config_path,
+            run_store=run_store,
+            doctor_result=self.doctor(config_path),
+            ros_snapshot=self.ros_snapshot(),
+        )
 
 
 class _PendingConfirms:
@@ -93,6 +156,7 @@ class PoseCache:
 
     def __init__(self, refresh_s: float = 1.0, retry_after_s: float = 30.0) -> None:
         self.latest: dict[str, Any] | None = None
+        self.pose_error: str | None = None
         self._refresh_s = refresh_s
         self._retry_after_s = retry_after_s
         self._started = False
@@ -136,6 +200,26 @@ class PoseCache:
             self._started = True
         threading.Thread(target=self._run_loop, daemon=True).start()
 
+    def _record_pose(self, pose: Any) -> None:
+        """Publish one finite pose, or invalidate the cache explicitly."""
+        if all(math.isfinite(value) for value in (pose.x, pose.y, pose.yaw)):
+            self.latest = {
+                "x": pose.x,
+                "y": pose.y,
+                "yaw": pose.yaw,
+                "frame_id": pose.frame_id,
+                "source": pose.source,
+                "ts": time.time(),
+            }
+            self.pose_error = None
+            return
+
+        # Python's json encoder emits NaN/Infinity by default, which
+        # response.json() rejects in the browser. More importantly, an invalid
+        # localization must not leave a previously-valid marker looking current.
+        self.latest = None
+        self.pose_error = "invalid_pose"
+
     def _run_loop(self) -> None:
         try:
             asyncio.run(self._loop())
@@ -147,6 +231,7 @@ class PoseCache:
             # thread has already published.
             with self._lock:
                 self.latest = None
+                self.pose_error = None
                 self._last_exit = time.monotonic()
                 self._started = False
 
@@ -159,16 +244,10 @@ class PoseCache:
             while True:
                 try:
                     pose = await client.get_pose(timeout=2.0)
-                    self.latest = {
-                        "x": pose.x,
-                        "y": pose.y,
-                        "yaw": pose.yaw,
-                        "frame_id": pose.frame_id,
-                        "source": pose.source,
-                        "ts": time.time(),
-                    }
+                    self._record_pose(pose)
                 except BridgeError:
                     self.latest = None
+                    self.pose_error = None
                 await asyncio.sleep(self._refresh_s)
         except BridgeError:
             pass
@@ -194,10 +273,26 @@ def build_map_payload(
         except LocationsFileError:
             pass
     pose = pose_cache.latest if pose_cache is not None else None
+    pose_error = pose_cache.pose_error if pose_cache is not None else None
     # A pose older than 5s is stale (bridge hiccup / robot stopped publishing).
     if pose is not None and time.time() - pose.get("ts", 0) > 5.0:
         pose = None
-    return {"locations": locations, "pose": pose, "ros": RosBridgeClient.available()}
+    if pose is not None:
+        try:
+            finite = all(math.isfinite(float(pose[key])) for key in ("x", "y", "yaw"))
+        except (KeyError, TypeError, ValueError):
+            finite = False
+        if not finite:
+            # Defence in depth for tests, restored state, or another producer
+            # assigning PoseCache.latest directly.
+            pose = None
+            pose_error = "invalid_pose"
+    return {
+        "locations": locations,
+        "pose": pose,
+        "pose_error": pose_error,
+        "ros": RosBridgeClient.available(),
+    }
 
 
 def _ros_snapshot() -> dict[str, Any]:
@@ -230,13 +325,19 @@ def build_status_payload(
     config_path: Path,
     *,
     run_store: RunStore | None = None,
+    doctor_result: Any = None,
+    ros_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the WebUI snapshot: provider/model, full doctor report and the
     live ROS2 graph. The transcript is drawn from a RunStore when one is passed
     (a stand-alone `jenai web` process starts with none).
     """
     # 5s-polled path: skip the nav-stack probes (seconds of ros2 CLI each).
-    doctor = run_doctor(config_path, include_nav=False)
+    doctor = (
+        doctor_result
+        if doctor_result is not None
+        else run_doctor(config_path, include_nav=False)
+    )
     profile = config.active_profile()
     runs = list(run_store.list_runs()) if run_store is not None else []
     transcript = [
@@ -268,7 +369,7 @@ def build_status_payload(
                 for item in doctor.items
             ],
         },
-        "ros": _ros_snapshot(),
+        "ros": ros_snapshot if ros_snapshot is not None else _ros_snapshot(),
         "run_count": len(transcript),
         "transcript": transcript,
     }
@@ -309,12 +410,19 @@ class _Handler(BaseHTTPRequestHandler):
     run_store: RunStore | None = None
     pending: _PendingConfirms | None = None
     pose_cache: PoseCache | None = None
+    status_cache: StatusCache | None = None
     token: str | None = None  # None = auth disabled (unit tests); CLI always sets one
 
     def log_message(self, *args: Any) -> None:  # silence default stderr logging
         pass
 
     def _status(self) -> dict[str, Any]:
+        if self.status_cache is not None:
+            return self.status_cache.build_status(
+                self.config,
+                self.config_path,
+                run_store=self.run_store,
+            )
         return build_status_payload(self.config, self.config_path, run_store=self.run_store)
 
     def _send(self, body: str, content_type: str, status: int = 200) -> None:
@@ -416,8 +524,13 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/topics":
             # Live graph snapshot — feeds the Camera page's topic picker and
             # the API page's reference list.
+            snapshot = (
+                self.status_cache.ros_snapshot()
+                if self.status_cache is not None
+                else _ros_snapshot()
+            )
             self._send(
-                json.dumps(_ros_snapshot(), ensure_ascii=False),
+                json.dumps(snapshot, ensure_ascii=False),
                 "application/json; charset=utf-8",
             )
         elif path == "/api/status":
@@ -427,7 +540,12 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif path == "/api/map":
             payload = build_map_payload(self.config, self.config_path, self.pose_cache)
-            self._send(json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+            # Never emit JavaScript-only NaN/Infinity tokens: API responses are
+            # standard JSON, and any missed non-finite value fails visibly here.
+            self._send(
+                json.dumps(payload, ensure_ascii=False, allow_nan=False),
+                "application/json; charset=utf-8",
+            )
         elif path == "/fragment":
             self._send(render_main(self._status()), "text/html; charset=utf-8")
         else:
@@ -522,7 +640,9 @@ class _Handler(BaseHTTPRequestHandler):
                     "html": "<p>This confirmation expired or was already used. Re-run the command.</p>",
                 }
             else:
-                result = asyncio.run(run_web_confirm(self.config, action))
+                result = asyncio.run(
+                    run_web_confirm(self.config, action, config_path=self.config_path)
+                )
         else:
             result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
@@ -573,6 +693,7 @@ def make_server(
             "run_store": run_store,
             "pending": _PendingConfirms(),
             "pose_cache": PoseCache(),
+            "status_cache": StatusCache(),
             "token": token,
         },
     )

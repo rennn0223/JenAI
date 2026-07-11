@@ -25,6 +25,11 @@ import threading
 import time
 
 import rclpy
+
+# Sibling imports: this file runs as a script under system Python, outside the
+# JenAI venv/package, so pure helpers must be importable from its own directory.
+from _navigation_state import nav_result_status, navigation_active
+from _watchdog import WatchdogState
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -174,10 +179,7 @@ class BridgeNode(Node):
 
             def _on_result(rfut) -> None:
                 self._nav_goal_handle = None
-                # GoalStatus: 4=SUCCEEDED, 5=CANCELED, 6=ABORTED
-                status = {4: "succeeded", 5: "canceled", 6: "aborted"}.get(
-                    rfut.result().status, "failed"
-                )
+                status = nav_result_status(rfut.result().status)
                 _emit({"event": "nav_result", "tag": tag, "status": status})
 
             result_future.add_done_callback(_on_result)
@@ -575,7 +577,11 @@ class BridgeNode(Node):
 
     @property
     def nav_active(self) -> bool:
-        return self._nav_goal_handle is not None or self._nav_pending or self._drive_active
+        return navigation_active(
+            has_goal_handle=self._nav_goal_handle is not None,
+            nav_pending=self._nav_pending,
+            drive_active=self._drive_active,
+        )
 
     # -- emergency stop -------------------------------------------------------
 
@@ -783,48 +789,6 @@ class BridgeNode(Node):
         if sub is not None:
             self.destroy_subscription(sub)
         return {"removed": sub is not None}
-
-
-class WatchdogState:
-    """Client-liveness watchdog: halt the robot when the client goes quiet.
-
-    Disabled (timeout 0) until the client opts in via the `watchdog` op, so
-    read-only uses of the bridge never publish anything.
-    """
-
-    RETRY_S = 2.0  # re-halt cadence while the client stays dead and nav stays active
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.last_rx = time.monotonic()
-        self.last_halt: float | None = None
-        self.timeout_s = 0.0
-        self.cmd_vel_topic = "/cmd_vel"
-        self.stamped = False
-
-    def touch(self) -> None:
-        with self.lock:
-            self.last_rx = time.monotonic()
-            self.last_halt = None  # client is back — watchdog state resets
-
-    def configure(self, req: dict) -> dict:
-        with self.lock:
-            self.timeout_s = float(req.get("timeout", 0.0))
-            self.cmd_vel_topic = str(req.get("cmd_vel_topic", "/cmd_vel"))
-            self.stamped = bool(req.get("stamped", False))
-        return {"watchdog_s": self.timeout_s}
-
-    def should_halt(self) -> bool:
-        """Expired, and either never halted or the retry cadence elapsed —
-        an unacknowledged cancel must be retried in seconds, not timeout_s."""
-        with self.lock:
-            if self.timeout_s <= 0 or time.monotonic() - self.last_rx <= self.timeout_s:
-                return False
-            return self.last_halt is None or time.monotonic() - self.last_halt > self.RETRY_S
-
-    def mark_halted(self) -> None:
-        with self.lock:
-            self.last_halt = time.monotonic()
 
 
 def _watchdog_loop(node: BridgeNode, state: WatchdogState, stop: threading.Event) -> None:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
+import threading
 from types import SimpleNamespace
 
 from jenai.agent.session import JenAIFileSession
@@ -19,6 +21,19 @@ def _config():
     return build_minimal_config(
         provider_name="t", provider="openai", default_model="m", api_key_env=""
     )
+
+
+def _hold_session_transaction(directory, entered, release) -> None:
+    session = JenAIFileSession("process-shared", directory=directory)
+    with session._transaction():
+        entered.set()
+        release.wait(timeout=5)
+
+
+def _enter_session_transaction(directory, acquired) -> None:
+    session = JenAIFileSession("process-shared", directory=directory)
+    with session._transaction():
+        acquired.set()
 
 
 def _handoff_names(agent) -> set[str]:
@@ -73,6 +88,75 @@ def test_session_persists_across_instances(tmp_path) -> None:
         assert len(await reloaded.get_items()) == 1
 
     asyncio.run(run())
+
+
+def test_session_serializes_writes_across_instances(tmp_path, monkeypatch) -> None:
+    """Two fresh Session objects for one path must not lose either update."""
+    first = JenAIFileSession("shared", directory=tmp_path)
+    second = JenAIFileSession("shared", directory=tmp_path)
+    barrier = threading.Barrier(2)
+
+    original_load = JenAIFileSession._load
+
+    def synchronized_load(self):
+        # If the instances have different locks, both enter _load together and
+        # then overwrite the same original history. A shared lock makes the
+        # second call wait, so the barrier deliberately breaks after timeout.
+        try:
+            barrier.wait(timeout=0.1)
+        except threading.BrokenBarrierError:
+            pass
+        return original_load(self)
+
+    monkeypatch.setattr(JenAIFileSession, "_load", synchronized_load)
+
+    errors: list[BaseException] = []
+
+    def append(session, content):
+        try:
+            session._append([{"content": content}])
+        except BaseException as exc:  # surface worker failures in the test thread
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=append, args=(first, "first")),
+        threading.Thread(target=append, args=(second, "second")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not errors
+    assert all(not thread.is_alive() for thread in threads)
+    items = original_load(first)
+    assert {item["content"] for item in items} == {"first", "second"}
+
+
+def test_session_lock_is_exclusive_across_processes(tmp_path) -> None:
+    ctx = multiprocessing.get_context("spawn")
+    entered = ctx.Event()
+    release = ctx.Event()
+    acquired = ctx.Event()
+    holder = ctx.Process(
+        target=_hold_session_transaction,
+        args=(tmp_path, entered, release),
+    )
+    waiter = ctx.Process(
+        target=_enter_session_transaction,
+        args=(tmp_path, acquired),
+    )
+
+    holder.start()
+    assert entered.wait(timeout=5)
+    waiter.start()
+    assert not acquired.wait(timeout=0.2), "a second process entered the locked transaction"
+
+    release.set()
+    assert acquired.wait(timeout=5)
+    holder.join(timeout=5)
+    waiter.join(timeout=5)
+    assert holder.exitcode == waiter.exitcode == 0
 
 
 def test_session_get_items_limit_zero_returns_empty(tmp_path) -> None:
