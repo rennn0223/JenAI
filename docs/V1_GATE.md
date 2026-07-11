@@ -32,7 +32,7 @@
 
 | # | 項目 | 內容 | 狀態 |
 |---|---|---|---|
-| B1 | 車端後端搭建 | 照 docs/ONBOARDING.md:RGB 相機 → odom/scan → slam_toolbox 建圖 → AMCL → Nav2 bringup(人要在車邊;agent 可陪跑除錯) | ☐ |
+| B1 | **原生 nav 接口確認**(2026-07 改向:兩台載具皆自帶 SLAM+Nav) | 車邊各跑一次 `ros2 action list | grep -i navigate` 與 map/amcl/odom topics 清點;有 `NavigateToPose` 即直通,否則回報接口讓層一寫薄 adapter。自建圖流程(ONBOARDING.md)降為無原生堆疊時的備案 | ☐ |
 | B2 | 建 locations | 車到定點 `/loc add here <名>`,含 `tags=["dock"]` 充電點 | 🚧 應科/機械系館已 GPS 註冊;dock 點待建 |
 | B3 | 解鎖 TEST.md 🔶 項 | B1/B2 完成後逐項實測 `/route` `/mission` `/patrol photo` `/dock` `/perception`,結果回填 TEST.md | ☐ |
 | B4 | 實車里程 | 累積 ≥20h / ≥50 次任務,0 安全事件;事件記錄表 | ☐ |

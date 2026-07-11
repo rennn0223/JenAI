@@ -1,13 +1,13 @@
 # ROADMAP — 演進與維護深度規劃
 
-> 對應版本:**v0.30.1**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
+> 對應版本:**v0.31.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
 > 六條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
 > 方向收斂邏輯見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md);v1.0 驗收與兩層分工見
 > [V1_GATE](V1_GATE.md);每次改動的驗收標準見根目錄 `CLAUDE.md`。
 
 ---
 
-## 1. 現況真實快照(v0.30.1)
+## 1. 現況真實快照(v0.31.0)
 
 過去的 M1–M6 表低估了實際進度。誠實盤點「真的 shipped 了什麼」:
 
@@ -29,8 +29,9 @@
 - **實機驗證數據**:里程、消融、onboarding 計時(客戶 B4/B5/B6)。
 
 ### 一句話定位
-> JenAI 已是「載具無關的任務層大腦 + 三層安全鏈 + 可重現實驗平台」,
-> 且自 v0.19 起多了一個新身分:**development copilot**(`JenAI scaffold` 生成 ROS2 套件)。
+> **JenAI = AI Decision Agent + 安全閘層,坐在載具原生導航堆疊之上**(2026-07 定調,
+> 見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md) 方向定調章):不寫一行運動控制,
+> 決策、閘控、監督、稽核才是本體;scaffold(development copilot)為第二身分。
 > v1.0 前缺的是**證據**(實機數據)不是程式;v2.0 的靈魂是 **M6 自主迴圈**。
 
 ---
@@ -51,24 +52,24 @@
 - **論文**:RQ1(情境→決策正確率)、RQ2(預演增量價值)、RQ4(邊緣 vs 雲)。
 - **層別**:A(核心可獨力);B(場景家族標註、實機延遲量測)。
 
-### 軌道 2 — 感知/避障深化
-- **價值**:從「開闊地反應式」升級到「複雜場景可靠」。
+### 軌道 2 — 感知深化(改向:餵腦不餵輪,2026-07)
+- **價值**:VLM 語意進**決策層**,幾何留給載具原生 nav。
 - **關鍵步驟**:
-  1. **depth → Nav2 local costmap**:把 `/depth` 轉 pointcloud/laserscan 餵 Nav2,得到真正的全域+局部規劃(現有 stop-and-go detour 當 Nav2 未起時的 fallback)。
-  2. **VLM 語意層進 Gate/規則**:場景異常(施工、人群)affordance → 影響決策/預演(語意避讓 vs 幾何避障分層)。
-  3. depth 融合 Twin Gate 的 G1(孿生接觸感測器 + 實機 depth 雙證)。
-- **依賴**:軌道 3 的 Nav2 bringup。
+  1. **VLM 語意進決策快照/規則**:場景異常(施工、人群)affordance → 影響 M6 決策與 Gate 判準(語意層)。
+  2. depth 融合 Twin Gate 的 G1(孿生接觸感測器 + 實機 depth 雙證)。
+  3. ~~depth → costmap / 幾何避障深化~~ **deprecated**:Isaac 實測單 depth 反應式避障不可行(負面結果入論文第五章);現有 stop-and-go detour 進 maintenance mode(bring-up fallback,只修 bug)。
+- **依賴**:軌道 3 的原生 nav 對接。
 - **論文**:第五章失效分析、sim-to-real 一致性(RQ3)。
-- **層別**:A(轉換與接線);B(車端跑 Nav2 costmap 調參)。
+- **層別**:A(語意接線);B(場域語意標註)。
 
-### 軌道 3 — 導航堆疊成熟(v1.0 關鍵路徑)
-- **價值**:讓「設定好就能用」變成「真的設定得起來」——v1.0 缺的最後一哩。
+### 軌道 3 — 原生導航對接(v1.0 關鍵路徑;2026-07 改向)
+- **價值**:兩台載具(阿克曼、四足)**皆自帶 SLAM+Nav**——JenAI 對接,不重建。
 - **關鍵步驟**:
-  1. Nav2 bringup 產品化(Ackermann:Smac Hybrid-A* + RPP 參數模板隨載具檔走)。
-  2. AMCL 定位 + map↔odom 一致性(現在 odom 直驅假設 map≈odom)。
+  1. **接口確認**(B1 新定義):兩台各跑 `ros2 action list | grep -i navigate`、`ros2 topic list | grep -iE "map|amcl|odom"`;有 `NavigateToPose` → bridge 現成直通,否則寫薄 adapter(接線,非控制)。
+  2. 載具檔補 **nav 後端欄位**(per-vehicle 原生堆疊描述)。
   3. **GPS datum 校正工具**:`/loc add gps` 後第一次導航的偏移 → 反推修正 `[map_datum]`(半自動)。
-  4. doctor nav 區段從 WARN 升級為「可操作的下一步」引導。
-- **依賴**:客戶 B1(建圖)。
+  4. doctor nav 區段從 WARN 升級為「可操作的下一步」引導(偵測原生堆疊)。
+- **依賴**:客戶 B1(接口確認,車邊一次)。
 - **論文**:第三章平台、附錄參數表。
 - **層別**:B 為主(車邊作業),A 陪跑除錯 + 工具。
 
