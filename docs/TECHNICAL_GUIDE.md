@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v0.28 系列(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v0.30 系列(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -96,7 +96,7 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 | 類別 | 指令 | 說明 |
 |---|---|---|
 | **安全** | **`/stop`** | **緊急停止:取消導航 + 零速度;免批准,任務執行中也能搶佔** |
-| 對話 | 直接打字 | 走 chat 模型,**token 串流即時渲染**;`!<cmd>` 跑 shell |
+| 對話 | 直接打字 | 裸自然語言依權限模式路由(見下);寒暄走免工具串流聊天;`!<cmd>` 跑 shell |
 | 任務 | `/plan <任務>`、`/run <任務>`、`/why`、`/review`、`/abort` | 代理規劃/執行(工具呼叫要批准) |
 | ROS 檢查 | `/ros topics`、`/ros topic-info <t>`、`/ros schema <t>`、`/ros echo <t>` | 唯讀,不需批准 |
 | 動作 | `/ros pub …`、`/ros drive …`、`/drive 前進兩秒` | 需批准;速度過 `[vehicle]` 硬限速 |
@@ -161,24 +161,30 @@ jenai daemon                                        # Ctrl-C 停止
 
 ### 4.2 模組導覽(每個檔案做什麼)
 
+> 行數為 v0.30.0 快照,僅供量級參考——以 `wc -l` 實測為準。
+
 | 模組 | 行數 | 職責 |
 |---|---|---|
-| `cli/main.py` | 568 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、**`eval`**、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
-| `tui/app.py` | 1386 | App 殼:輸入分發、**權限三模式(Shift+Tab)與裸自然語言路由**、spinner、Esc 中斷、`/stop` 搶佔、審批卡流程、mission/patrol 執行 |
-| `tui/robot_commands.py` | 689 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/loc` `/vision` + bridge 生命週期(含 watchdog 佈署) |
+| `cli/main.py` | 627 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、**`eval`**、**`onboard`**(重跑設定精靈,自動備份)、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
+| `tui/app.py` | 1715 | App 殼:輸入分發、**權限三模式(Shift+Tab)與裸自然語言路由**、spinner、Esc 中斷、`/stop` 搶佔、審批卡流程、mission/patrol 執行 |
+| `tui/robot_commands.py` | 923 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/loc` `/vision` + bridge 生命週期(含 watchdog 佈署) |
 | `tui/info_commands.py` | 292 | Mixin:`/help` `/status` `/doctor` `/model` `/provider` 等資訊類 |
-| `tui/panels.py` | 352 | 純視覺:WelcomePanel、TimelineItem(variant 決定行距)、OutputPanel、CommandPalette |
+| `tui/panels.py` | 433 | 純視覺:WelcomePanel、TimelineItem(variant 決定行距)、OutputPanel、CommandPalette |
 | `tui/widgets/` | ~200 | ApprovalCard(1/2/3 鍵選擇)、Plan/Tool/Error blocks |
-| `bridge/ros_bridge.py` | 412 | **系統 Python** 下的 rclpy 常駐節點:JSON-over-stdio;pose、nav_send/feedback/cancel、**halt(急停)**、**watchdog(斷線自主停車)**、capture_frame、watch |
-| `bridge/client.py` | 274 | venv 側非同步 client:spawn、request futures、事件路由、halt/configure_safety |
+| `bridge/ros_bridge.py` | 922 | **系統 Python** 下的 rclpy 常駐節點:JSON-over-stdio;pose、nav_send/feedback/cancel、**halt(急停)**、**watchdog(斷線自主停車)**、capture_frame、watch |
+| `bridge/client.py` | 366 | venv 側非同步 client:spawn、request futures、事件路由、halt/configure_safety |
 | `tools/*_core.py` | — | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
-| `tools/nav_live.py` | 143 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback`(nav2-vs-CLI 調度的唯一出處,TUI/MCP 共用)** |
+| `tools/nav_live.py` | 194 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback`(nav2-vs-CLI 調度的唯一出處,TUI/MCP 共用)** |
 | `tools/skills.py` | 145 | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
 | `tools/ros2_pkg_core.py` | 286 | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋;`--build` 生成即 colcon 驗證(失敗餵錯誤回 LLM 修一輪)。從 control agent 邁向 development copilot |
 | `tools/decision_core.py` | 104 | **M6 決策腦**(v0.21):`ContextSnapshot`(六欄位情境快照)→ 單次 `ask_json` 於封閉動作集單選 `Decision`;越界動作/幻覺目的地/解析失敗一律降級 refer_to_human,無自由文字可達致動 |
 | `tools/decision_eval.py` | 110 | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate(論文工具鏈) |
 | `tools/user_skills.py` | 85 | **檔案定義技能**(v0.20):`skills/*.toml` → 新 slash 指令;與內建指令同一張批准卡;保留字拒載 |
 | `tools/safety.py` | 32 | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
+| `tools/navigation_gateway.py` | 125 | **NavigationGateway(v0.25)**:所有導航的唯一出口——CLI/TUI/WebUI/MCP/daemon/任務/agent 工具全部經此;Twin Gate 與 watchdog 政策無法被直呼 route 執行繞過 |
+| `twin/gate.py` | 302 | **Twin Gate**:G1 碰撞/G2 逾時/G3 禁區/G4 終點偏差/G5 規劃失敗 → pass/block/refer;非有限 pose 不算有效樣本、缺孿生遙測回 refer(fail-closed) |
+| `state/`(runs/audit/reports/history/session) | ~700 | run 記錄、**SQLite audit store(v0.30)**:run/批准/工具/Gate verdict 跨重啟留痕,上限 10,000 筆、不落盤 prompt 與 raw payload,寫入失敗不阻塞安全動作;巡邏報告與輸入歷史 |
+| `config/setup.py` | 223 | **Setup Wizard**:橘色主題三步設定;誤貼金鑰自動安全搬遷至 `.env`(0600) |
 | `tools/perception.py` | ~180 | **PerceptionLoop**:持續相機→VLM→結構化 `SceneAnalysis`(場景/物件/affordances/建議動作);TUI `/perception`、daemon `@perception` 規則共用;只觀察不動作 |
 | `mcp_server/server.py` | 183 | FastMCP stdio server:唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |
 | `agent/orchestrator.py` 等 | ~600 | /run 代理:規劃、specialist 工具、批准中斷、guardrails、tracing |
@@ -190,12 +196,12 @@ jenai daemon                                        # Ctrl-C 停止
 | `bridge/_avoidance.py` + drive_loop | — | **局部避障(選配)**:depth camera(32FC1)→ 偽雷射 → 目標方向走廊判定 → stop-and-go detour。反射層不經 LLM;深度畫面逾時立即歸零並回報 `sensor_unavailable`,不使用陳舊影像繼續移動。**局部反應,非全域規劃**——複雜地圖仍需 Nav2 |
 | `daemon/engine.py` | 165 | 規則引擎純邏輯:條件、冷卻、安全 gating;動作 notify/goto/**halt**(可單測) |
 | `daemon/runner.py` | 115 | bridge watch → queue → engine → (獲准才)navigate_live;halt 決策優先搶佔 |
-| `webui/server.py` | 352 | http.server:`/api/status` `/api/command` `/api/confirm` `/api/map` **`/api/stop`**;PoseCache(退避重試) |
-| `webui/render.py` | 493 | 純渲染:儀表板 HTML/CSS/JS(含 SVG 地圖、紅色 STOP 鈕) |
+| `webui/server.py` | 717 | http.server:`/api/status` `/api/command` `/api/confirm` `/api/map` **`/api/stop`**;PoseCache(退避重試) |
+| `webui/render.py` | 699 | 純渲染:儀表板 HTML/CSS/JS(含 SVG 地圖、紅色 STOP 鈕) |
 | `webui/commands.py` | 303 | Web 版指令執行 + confirm 動作封存 |
-| `config/models.py` | ~90 | AppConfig + **VehicleProfile(`[vehicle]`:cmd_vel/限速/相機)** |
+| `config/models.py` | 220 | AppConfig + **VehicleProfile(`[vehicle]`:cmd_vel/限速/相機)** |
 | `config/store.py` | ~210 | config/.env 載入(`JENAI_CONFIG`/XDG/APPDATA;shell 優先於 .env) |
-| `doctor/checks.py` | 338 | 健檢:python/uv/venv/config/env_file/ros2/provider/locations/webui |
+| `doctor/checks.py` | 519 | 健檢:python/uv/venv/config/env_file/ros2/provider/locations/webui |
 | `schemas/` | ~500 | 全部 pydantic 模型(`extra="forbid"`):Location、RouteOutput、DoctorResult… |
 
 ### 4.3 關鍵設計決策(為什麼長這樣)

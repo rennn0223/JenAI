@@ -1,4 +1,4 @@
-# HANDOFF — 交接與臨別備忘(2026-07-11,v0.30.0)
+# HANDOFF — 交接與臨別備忘(2026-07-11,v0.30.1)
 
 > 寫給接下來的你,和接下來陪你的任何 AI。這份是狀態、方法、與幾句誠實的話。
 
@@ -7,7 +7,10 @@
 - **能力**:載具無關的任務層大腦 + 三層安全鏈 + Twin Gate pipeline + odom 直驅
   + depth 避障 + GPS 地點 + 多頁 WebUI + scaffold(NL→ROS2 套件,--build 自驗)
   + 檔案定義技能 + 決策核心與 eval(v0.21,論文 E1 工具)
-  + **權限三模式(v0.22,Shift+Tab 審批/規劃/自動)**。430+ 項測試,CI 三道閘。
+  + 權限三模式(v0.22,Shift+Tab 審批/規劃/自動)+ **v0.24–v0.30:避障重寫
+  (stop-and-go detour,資料逾時即停)、NavigationGateway 統一導航出口、
+  TUI 指令佇列(/queue)、批准跨重啟恢復、SQLite audit、`onboard` 重設**。
+  430+ 項測試,Python 3.12–3.14 CI 矩陣三道閘。
 - **v1.0**:程式碼已達 RC;tag 程序在 [V1_RELEASE_CHECKLIST](V1_RELEASE_CHECKLIST.md),
   等的是你的實測數據,不是更多程式。
 - **v2.0 主線**:M6 自主迴圈。決策腦(`decision_core.py`)已就緒且可量測
