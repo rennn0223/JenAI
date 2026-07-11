@@ -36,8 +36,9 @@ from jenai.schemas import (
     RunStatus,
     ToolCallCategory,
     ToolCallRecord,
+    ToolCallStatus,
 )
-from jenai.state import InputHistory, RunStore, create_session
+from jenai.state import AuditStore, InputHistory, RunStore, create_session
 from jenai.state.reports import save_patrol_log
 from jenai.tools.mission_core import run_mission
 from jenai.tools.ros2_core import (
@@ -343,7 +344,11 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self._mode = "approve"  # shift+tab cycles; see PERMISSION_MODES
 
         self.session = create_session(config, working_directory=str(Path.cwd()))
-        self.run_store = RunStore(pending_dir=config_path.parent / "pending-runs")
+        audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
+        self.run_store = RunStore(
+            pending_dir=config_path.parent / "pending-runs",
+            audit_store=audit_store,
+        )
         # Freeze the startup set before Textual schedules restoration. A live
         # /run may begin while the callback is waiting; scanning the mutable
         # store then would mount its approval card twice.
@@ -1210,7 +1215,21 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         )
         self.run_store.add_tool_call(ctx.run, tool_call)
         if "shell" in self._auto_approved:
-            await self._execute_direct({"kind": "shell", "ctx": ctx, "command": command})
+            self.run_store.audit_event(
+                ctx.run,
+                "approval_resolved",
+                entity_id=tool_call.tool_call_id,
+                status="approved",
+                details={"tool_name": tool_call.tool_name, "automatic": True},
+            )
+            await self._execute_direct(
+                {
+                    "kind": "shell",
+                    "ctx": ctx,
+                    "command": command,
+                    "tool_call_id": tool_call.tool_call_id,
+                }
+            )
             return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
@@ -1229,6 +1248,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "kind": "shell",
             "ctx": ctx,
             "command": command,
+            "tool_call_id": tool_call.tool_call_id,
         }
         await self._mount_event(ApprovalCard(approval))
         self._scroll_to_bottom()
@@ -1300,6 +1320,12 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self.run_store.resolve_interruption(ctx.run, tool_call_id, status)
 
         if not approved:
+            self._finish_direct_tool(
+                pending,
+                ok=False,
+                summary="rejected by operator",
+                status=ToolCallStatus.REJECTED,
+            )
             self.run_store.finish(ctx.run, status=RunStatus.BLOCKED)
             await self._mount_event(TimelineItem("warn", "Rejected. No action was taken."))
             self._scroll_to_bottom()
@@ -1320,6 +1346,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             await self._execute_direct(pending)
         except asyncio.CancelledError:
             # Esc: nav_live already cancelled the Nav2 goal; close out the run.
+            self._finish_direct_tool(pending, ok=False, summary="interrupted")
             if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
                 self.run_store.finish(
                     ctx.run, status=RunStatus.BLOCKED, final_output="interrupted"
@@ -1356,10 +1383,31 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         try:
             await self._run_direct(pending)
         except Exception as exc:
+            self._finish_direct_tool(pending, ok=False, summary=str(exc))
             if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
                 self.run_store.finish(ctx.run, status=RunStatus.FAILED, final_output=str(exc))
             await self._mount_event(TimelineItem("error", f"Action failed: {exc}"))
             self._scroll_to_bottom()
+
+    def _finish_direct_tool(
+        self,
+        pending: dict,
+        *,
+        ok: bool,
+        summary: str,
+        status: ToolCallStatus | None = None,
+    ) -> None:
+        """Keep direct-command ToolCallRecord and durable audit status in sync."""
+        tool_call_id = pending.get("tool_call_id")
+        if not tool_call_id:
+            return
+        ctx: JenAIRunContext = pending["ctx"]
+        self.run_store.update_tool_call(
+            ctx.run,
+            tool_call_id,
+            status=status or (ToolCallStatus.SUCCEEDED if ok else ToolCallStatus.FAILED),
+            output_summary=summary,
+        )
 
     async def _run_direct(self, pending: dict) -> None:
         ctx: JenAIRunContext = pending["ctx"]
@@ -1383,6 +1431,11 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                     max_linear=vehicle.max_linear,
                     max_angular=vehicle.max_angular,
                 )
+            self._finish_direct_tool(
+                pending,
+                ok=output.execution_status == "succeeded",
+                summary=output.result_message,
+            )
             self.run_store.finish(
                 ctx.run,
                 status=RunStatus.COMPLETED
@@ -1399,6 +1452,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         elif pending["kind"] == "route":
             output = await self._execute_route_action(pending["outgoing_action"])
             sent = output.execution_status == "succeeded"
+            self._finish_direct_tool(pending, ok=sent, summary=output.route_preview)
             self.run_store.finish(
                 ctx.run,
                 status=RunStatus.COMPLETED if sent else RunStatus.BLOCKED,
@@ -1424,6 +1478,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 navigate=self._execute_route_action,
             )
             ok = all(r.status == "succeeded" for r in report.results)
+            self._finish_direct_tool(pending, ok=ok, summary=report.summary)
             self.run_store.finish(
                 ctx.run,
                 status=RunStatus.COMPLETED if ok else RunStatus.BLOCKED,
@@ -1456,6 +1511,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 observe=_observe if spec.photo else None,
             )
             ok = all(r.status == "succeeded" for r in report.results)
+            self._finish_direct_tool(pending, ok=ok, summary=report.summary)
             self.run_store.finish(
                 ctx.run,
                 status=RunStatus.COMPLETED if ok else RunStatus.BLOCKED,
@@ -1472,6 +1528,11 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         elif pending["kind"] == "shell":
             shell_output = await run_shell(pending["command"])
             ok = shell_output.exit_code == 0
+            self._finish_direct_tool(
+                pending,
+                ok=ok,
+                summary=f"exit {shell_output.exit_code}",
+            )
             self.run_store.finish(
                 ctx.run,
                 status=RunStatus.COMPLETED if ok else RunStatus.FAILED,

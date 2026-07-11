@@ -7,7 +7,8 @@ from collections.abc import Awaitable, Callable
 
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
-from jenai.schemas import RouteOutput
+from jenai.schemas import GateReport, RouteOutput
+from jenai.state.audit import AuditStore
 from jenai.tools.nav_live import NavProgress, navigate_with_fallback
 from jenai.tools.safety import arm_watchdog
 
@@ -21,9 +22,16 @@ class NavigationGateway:
     one-shot bridge that is watchdog-armed before startup and closed after use.
     """
 
-    def __init__(self, config: AppConfig, *, get_bridge: BridgeProvider | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        get_bridge: BridgeProvider | None = None,
+        audit_store: AuditStore | None = None,
+    ) -> None:
         self._config = config
         self._external_get_bridge = get_bridge
+        self._audit_store = audit_store
         self._owned_bridge: RosBridgeClient | None = None
         self._armed_bridge: RosBridgeClient | None = None
 
@@ -48,13 +56,40 @@ class NavigationGateway:
         *,
         on_progress: Callable[[NavProgress], None] | None = None,
         on_gate: Callable[[str], None] | None = None,
+        run_id: str | None = None,
+        session_id: str | None = None,
     ) -> RouteOutput:
+        def _audit_gate(report: GateReport) -> None:
+            if self._audit_store is None:
+                return
+            try:
+                self._audit_store.record(
+                    "gate_verdict",
+                    run_id=run_id,
+                    session_id=session_id,
+                    status=report.verdict,
+                    summary=report.reason or None,
+                    details={
+                        "elapsed_s": report.twin_elapsed_s,
+                        "criteria": [
+                            {
+                                "id": criterion.criterion_id,
+                                "status": criterion.status,
+                            }
+                            for criterion in report.criteria
+                        ],
+                    },
+                )
+            except Exception:
+                pass  # audit must never decide whether the real robot moves
+
         return await navigate_with_fallback(
             self._config,
             self._get_bridge,
             outgoing_action,
             on_progress=on_progress,
             on_gate=on_gate,
+            on_gate_report=_audit_gate,
         )
 
     async def close(self) -> None:
@@ -72,12 +107,19 @@ async def execute_navigation(
     *,
     on_progress: Callable[[NavProgress], None] | None = None,
     on_gate: Callable[[str], None] | None = None,
+    audit_store: AuditStore | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
 ) -> RouteOutput:
     """Execute through a one-shot, always-cleaned-up NavigationGateway."""
-    gateway = NavigationGateway(config)
+    gateway = NavigationGateway(config, audit_store=audit_store)
     try:
         return await gateway.execute(
-            outgoing_action, on_progress=on_progress, on_gate=on_gate
+            outgoing_action,
+            on_progress=on_progress,
+            on_gate=on_gate,
+            run_id=run_id,
+            session_id=session_id,
         )
     finally:
         await gateway.close()

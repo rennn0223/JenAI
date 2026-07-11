@@ -14,6 +14,7 @@
 | `/shell`、`!` | 等同操作者 shell | HITL 批准卡 | **批准後即操作者級 RCE,by design** —— 它就是給操作者用的 shell;防護在批准卡,不在沙箱 |
 | bridge(rclpy sidecar) | ROS graph(DDS) | 速度硬夾限(`[vehicle]`)、watchdog 斷線自主停車、twin 隔離 ROS_DOMAIN_ID | DDS 本身無認證 —— 這是 ROS2 部署現實;場域 LAN 隔離是部署前提(可選 SROS2,不在 v1 範圍) |
 | 金鑰 | `~/.config/jenai/.env` | 檔案權限;不進版控(.gitignore) | — |
+| 稽核紀錄 | `<config 目錄>/audit.sqlite3` | 0600、有界 10,000 筆;只記事件 metadata,不記 user prompt、raw action、完整 tool payload | 稽核失敗不得阻擋急停或動作;需要完整內容時由人工 incident report 補充 |
 
 ## 主要威脅 → 對應
 

@@ -8,7 +8,7 @@ import pytest
 
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.bridge import client as client_module
-from jenai.schemas import Location, Pose2D, RouteOutput
+from jenai.schemas import GateReport, Location, Pose2D, RouteOutput
 from jenai.tools.mission_core import parse_mission, run_mission
 from jenai.tools.nav_live import navigate_live
 
@@ -153,3 +153,35 @@ def test_navigate_with_fallback_odom_dispatches_direct(fake_bridge, monkeypatch)
         await client.stop()
 
     asyncio.run(run())
+
+
+def test_navigate_with_fallback_surfaces_structured_gate_report(monkeypatch) -> None:
+    from jenai.config.store import build_minimal_config
+    from jenai.tools.nav_live import navigate_with_fallback
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.twin.enabled = True
+    report = GateReport(verdict="block", reason="collision")
+
+    async def fake_rehearse(*_args, **_kwargs):
+        return report
+
+    monkeypatch.setattr("jenai.twin.rehearse_goal", fake_rehearse)
+    seen: list[GateReport] = []
+
+    async def unused_bridge():
+        raise AssertionError("a blocked gate must not request the real bridge")
+
+    output = asyncio.run(
+        navigate_with_fallback(
+            config,
+            unused_bridge,
+            ACTION,
+            on_gate_report=seen.append,
+        )
+    )
+
+    assert seen == [report]
+    assert output.execution_status == "failed"

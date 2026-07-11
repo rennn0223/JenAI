@@ -229,7 +229,12 @@ def route(text: str, config: ConfigOption = None) -> None:
         console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(0)
 
-    result = asyncio.run(execute_navigation(loaded, output.outgoing_action))
+    from jenai.state.audit import AuditStore
+
+    audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
+    result = asyncio.run(
+        execute_navigation(loaded, output.outgoing_action, audit_store=audit_store)
+    )
     if result.execution_status == "succeeded":
         console.print(f"[green]{result.execution_status}[/green]")
     else:

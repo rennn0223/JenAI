@@ -51,6 +51,85 @@ def test_status_payload_includes_doctor_and_ros(tmp_path: Path) -> None:
     assert isinstance(payload["ros"]["topics"], list)
 
 
+def test_status_cache_coalesces_doctor_and_ros_probes(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from jenai.webui import server as server_module
+    from jenai.webui.server import StatusCache
+
+    now = [100.0]
+    calls = {"doctor": 0, "ros": 0}
+
+    def fake_doctor(_path, *, include_nav):
+        assert include_nav is False
+        calls["doctor"] += 1
+        return SimpleNamespace(overall="pass", items=[])
+
+    def fake_ros():
+        calls["ros"] += 1
+        return {"available": True, "topics": [], "count": 0, "error": None}
+
+    monkeypatch.setattr(server_module, "run_doctor", fake_doctor)
+    monkeypatch.setattr(server_module, "_ros_snapshot", fake_ros)
+    cache = StatusCache(doctor_ttl_s=30.0, ros_ttl_s=2.0, clock=lambda: now[0])
+    config_path = tmp_path / "config.toml"
+
+    cache.build_status(_config(), config_path)
+    cache.build_status(_config(), config_path)
+    cache.ros_snapshot()  # /api/topics shares the same ROS snapshot
+    assert calls == {"doctor": 1, "ros": 1}
+
+    now[0] += 2.0
+    cache.build_status(_config(), config_path)
+    assert calls == {"doctor": 1, "ros": 2}
+
+    now[0] += 28.0
+    cache.build_status(_config(), config_path)
+    assert calls == {"doctor": 2, "ros": 3}
+
+
+def test_status_cache_coalesces_concurrent_doctor_refresh(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from jenai.webui import server as server_module
+    from jenai.webui.server import StatusCache
+
+    entered = threading.Event()
+    release = threading.Event()
+    second_returned = threading.Event()
+    calls = 0
+
+    def slow_doctor(_path, *, include_nav):
+        nonlocal calls
+        assert include_nav is False
+        calls += 1
+        entered.set()
+        release.wait(timeout=5)
+        return SimpleNamespace(overall="pass", items=[])
+
+    monkeypatch.setattr(server_module, "run_doctor", slow_doctor)
+    cache = StatusCache()
+    config_path = tmp_path / "config.toml"
+    first = threading.Thread(target=cache.doctor, args=(config_path,))
+
+    def second_call() -> None:
+        cache.doctor(config_path)
+        second_returned.set()
+
+    second = threading.Thread(target=second_call)
+    first.start()
+    assert entered.wait(timeout=5)
+    second.start()
+    assert not second_returned.wait(timeout=0.1)
+    assert calls == 1
+
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert second_returned.is_set()
+    assert calls == 1
+
+
 def test_render_dashboard_html_renders_doctor_and_ros(tmp_path: Path) -> None:
     payload = build_status_payload(_config(), tmp_path / "config.toml")
     html = render_dashboard_html(payload)
@@ -169,9 +248,18 @@ def test_web_confirm_executes_drive(monkeypatch, tmp_path: Path) -> None:
         "message_type": "geometry_msgs/msg/Twist",
         "payload": {"linear": {"x": 0.2}}, "duration": 2.0,
     }
-    res = asyncio.run(run_web_confirm(_config(), action))
+    config_path = tmp_path / "config.toml"
+    res = asyncio.run(run_web_confirm(_config(), action, config_path=config_path))
     assert res["kind"] == "result" and "drove" in res["html"]
     assert called["duration"] == 2.0
+    from jenai.state.audit import AuditStore
+
+    events = AuditStore(tmp_path / "audit.sqlite3").list_events()
+    assert [(event.event_type, event.status) for event in reversed(events)] == [
+        ("approval_resolved", "approved"),
+        ("tool_updated", "succeeded"),
+    ]
+    assert all(event.details["source"] == "webui" for event in events)
 
 
 def test_web_command_unknown_is_error(tmp_path: Path) -> None:
@@ -283,6 +371,40 @@ def test_api_map_pose_staleness(tmp_path) -> None:
 
     cache.latest["ts"] = time.time() - 60  # stale → treated as no pose
     assert build_map_payload(config, config_path, cache)["pose"] is None
+
+
+def test_api_map_rejects_non_finite_pose_and_stays_valid_json(tmp_path) -> None:
+    import time
+    from types import SimpleNamespace
+
+    from jenai.config.store import build_minimal_config, save_config
+    from jenai.webui.server import PoseCache, build_map_payload
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config_path = tmp_path / "config.toml"
+    save_config(config, config_path)
+
+    cache = PoseCache()
+    cache._started = True  # don't spawn a bridge in tests
+    cache.latest = {"x": 1.0, "y": 2.0, "yaw": 0.0, "ts": time.time()}
+    cache._record_pose(
+        SimpleNamespace(
+            x=float("nan"),
+            y=2.0,
+            yaw=0.0,
+            frame_id="map",
+            source="/amcl_pose",
+        )
+    )
+
+    payload = build_map_payload(config, config_path, cache)
+
+    assert payload["pose"] is None
+    assert payload["pose_error"] == "invalid_pose"
+    assert "NaN" not in json.dumps(payload, allow_nan=False)
+    assert "localization invalid (pose contains NaN/inf)" in render_dashboard_html({})
 
 
 def test_pose_cache_backs_off_after_bridge_failure(monkeypatch) -> None:

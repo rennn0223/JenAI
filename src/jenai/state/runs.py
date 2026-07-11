@@ -20,6 +20,7 @@ from jenai.schemas import (
     ToolCallRecord,
 )
 from jenai.schemas.models import utc_now
+from jenai.state.audit import AuditStore
 
 TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED}
 
@@ -27,10 +28,16 @@ TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED}
 class RunStore:
     """Session runs and optional durable SDK state for approval interruptions."""
 
-    def __init__(self, pending_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        pending_dir: Path | None = None,
+        *,
+        audit_store: AuditStore | None = None,
+    ) -> None:
         self._runs: dict[str, RunRecord] = {}
         self._pending_state: dict[str, Any] = {}
         self._pending_dir = pending_dir
+        self.audit_store = audit_store
         # Position-aligned approval ids for the paused state's interruptions, so
         # resume can map each interruption back to its unique ApprovalRequest id
         # (the SDK often gives no call_id, so index alone would collide).
@@ -42,6 +49,7 @@ class RunStore:
     def create_run(self, session_id: str, user_input: str) -> RunRecord:
         run = RunRecord(session_id=session_id, user_input=user_input)
         self._runs[run.run_id] = run
+        self.audit_event(run, "run_created", status=run.status)
         return run
 
     def get(self, run_id: str) -> RunRecord | None:
@@ -52,25 +60,67 @@ class RunStore:
         return list(self._runs.values())
 
     def set_status(self, run: RunRecord, status: RunStatus) -> None:
+        previous = str(run.status)
         run.status = RunStatus(status).value
         if run.status in {s.value for s in TERMINAL_STATUSES}:
             run.finished_at = utc_now()
+        if run.status != previous:
+            self.audit_event(
+                run,
+                "run_status",
+                status=run.status,
+                details={"previous": previous},
+            )
 
     def add_plan_steps(self, run: RunRecord, steps: list[PlanStep]) -> None:
         run.plan_steps = steps
 
     def add_tool_call(self, run: RunRecord, tool_call: ToolCallRecord) -> None:
         run.tool_calls.append(tool_call)
+        self.audit_event(
+            run,
+            "tool_registered",
+            entity_id=tool_call.tool_call_id,
+            status=tool_call.status,
+            details={
+                "tool_name": tool_call.tool_name,
+                "category": str(tool_call.category),
+                "risk_level": str(tool_call.risk_level),
+                "effect_scope": str(tool_call.effect_scope),
+            },
+        )
 
     def update_tool_call(self, run: RunRecord, tool_call_id: str, **fields: Any) -> None:
         for call in run.tool_calls:
             if call.tool_call_id == tool_call_id:
                 for key, value in fields.items():
                     setattr(call, key, value)
+                self.audit_event(
+                    run,
+                    "tool_updated",
+                    entity_id=tool_call_id,
+                    status=call.status,
+                    details={
+                        "tool_name": call.tool_name,
+                        "changed_fields": sorted(fields),
+                        "has_error": call.error is not None,
+                    },
+                )
                 return
 
     def add_interruption(self, run: RunRecord, approval: ApprovalRequest) -> None:
         run.interruptions.append(approval)
+        self.audit_event(
+            run,
+            "approval_requested",
+            entity_id=approval.tool_call_id,
+            status=approval.status,
+            details={
+                "tool_name": approval.tool_name,
+                "risk_level": str(approval.risk_level),
+                "effect_scope": str(approval.effect_scope),
+            },
+        )
 
     def resolve_interruption(
         self,
@@ -82,6 +132,13 @@ class RunStore:
             if approval.tool_call_id == tool_call_id:
                 approval.status = ApprovalStatus(status).value
                 approval.resolved_at = utc_now()
+                self.audit_event(
+                    run,
+                    "approval_resolved",
+                    entity_id=tool_call_id,
+                    status=approval.status,
+                    details={"tool_name": approval.tool_name},
+                )
                 return
 
     def finish(
@@ -95,6 +152,41 @@ class RunStore:
         run.final_output = final_output
         run.error = error
         self.set_status(run, status)
+        self.audit_event(
+            run,
+            "run_finished",
+            status=run.status,
+            details={
+                "has_output": bool(final_output),
+                "error_type": str(error.error_type) if error is not None else None,
+            },
+        )
+
+    def audit_event(
+        self,
+        run: RunRecord,
+        event_type: str,
+        *,
+        entity_id: str | None = None,
+        status: object | None = None,
+        summary: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if self.audit_store is None:
+            return
+        try:
+            self.audit_store.record(
+                event_type,
+                run_id=run.run_id,
+                session_id=run.session_id,
+                entity_id=entity_id,
+                status=str(status) if status is not None else None,
+                summary=summary,
+                details=details,
+            )
+        except Exception:
+            # Audit failure must never block a stop, rejection, or robot action.
+            pass
 
     def stash_pending_state(
         self, run_id: str, state: Any, approval_ids: list[str] | None = None
@@ -174,3 +266,4 @@ class RunStore:
             except (OSError, KeyError, TypeError, ValueError):
                 continue
             self._runs[run.run_id] = run
+            self.audit_event(run, "run_restored", status=run.status)

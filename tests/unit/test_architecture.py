@@ -25,6 +25,10 @@ ROOT = SRC.parents[1]
 _REFLEX_MODULES = [
     "bridge/client.py",
     "bridge/ros_bridge.py",
+    "bridge/_avoidance.py",
+    "bridge/_navigation_state.py",
+    "bridge/_safety_order.py",
+    "bridge/_watchdog.py",
     "daemon/engine.py",
     "tools/safety.py",
     "twin/gate.py",
@@ -100,8 +104,10 @@ def test_navigation_surfaces_cannot_bypass_the_gateway() -> None:
     assert not violations, "Navigation must go through NavigationGateway:\n" + "\n".join(violations)
 
 
-def test_litellm_remains_a_declared_compatibility_dependency() -> None:
+def test_litellm_gateway_remains_server_side_not_a_client_dependency() -> None:
     with (ROOT / "pyproject.toml").open("rb") as handle:
         dependencies = tomllib.load(handle)["project"]["dependencies"]
 
-    assert any(dependency.lower().startswith("litellm") for dependency in dependencies)
+    # JenAI calls the gateway through its OpenAI-compatible HTTP endpoint;
+    # installing LiteLLM on the robot duplicates the server and its large tree.
+    assert not any(dependency.lower().startswith("litellm") for dependency in dependencies)

@@ -57,13 +57,28 @@ class RobotCommandsMixin:
         record the tool call, honor session auto-approval (auto_key falls back
         to the execution kind), otherwise raise the card and park the action."""
         self.run_store.add_tool_call(ctx.run, tool_call)
+        pending.setdefault("tool_call_id", tool_call.tool_call_id)
         if getattr(self, "_mode", "approve") == "auto":
             # Auto mode: execute without a card, but SAY so — an unlogged
             # auto-approval would make the transcript lie about consent.
             await self._mount_event(TimelineItem("warn", f"自動模式:已批准 {approval.title}"))
+            self.run_store.audit_event(
+                ctx.run,
+                "approval_resolved",
+                entity_id=approval.tool_call_id,
+                status="approved",
+                details={"tool_name": approval.tool_name, "automatic": True},
+            )
             await self._execute_direct(pending)
             return
         if pending.get("auto_key", pending["kind"]) in self._auto_approved:
+            self.run_store.audit_event(
+                ctx.run,
+                "approval_resolved",
+                entity_id=approval.tool_call_id,
+                status="approved",
+                details={"tool_name": approval.tool_name, "automatic": True},
+            )
             await self._execute_direct(pending)
             return
         self.run_store.add_interruption(ctx.run, approval)
@@ -889,8 +904,19 @@ class RobotCommandsMixin:
         def _gate(message: str) -> None:
             self._spinner_label = message
 
-        gateway = NavigationGateway(self.config, get_bridge=self._get_bridge)
-        return await gateway.execute(outgoing_action, on_progress=_progress, on_gate=_gate)
+        gateway = NavigationGateway(
+            self.config,
+            get_bridge=self._get_bridge,
+            audit_store=self.run_store.audit_store,
+        )
+        run = self._current_run()
+        return await gateway.execute(
+            outgoing_action,
+            on_progress=_progress,
+            on_gate=_gate,
+            run_id=run.run_id if run is not None else None,
+            session_id=run.session_id if run is not None else None,
+        )
 
     def _load_locations(self) -> list[Location]:
         locations, _error = load_locations_tolerant(self._locations_path())

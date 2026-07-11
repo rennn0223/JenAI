@@ -16,7 +16,7 @@ JenAI/
 │   ├── adapters/         # 外部系統 adapter（ROS2, route）
 │   ├── state/            # SessionState, RunRecord 管理
 │   ├── schemas/          # Pydantic 資料結構定義
-│   ├── providers/        # LiteLLM provider 管理
+│   ├── providers/        # OpenAI-compatible provider 管理
 │   └── config/           # 設定檔讀寫
 └── tests/
     ├── unit/
@@ -44,7 +44,7 @@ JenAI/
 - 基於 OpenAI Agents SDK
 - 管理 run lifecycle（idle → running → awaiting_approval → completed）
 - 處理 tool call interruptions 與 resume
-- 串接 LiteLLM 作為 model provider
+- 透過 OpenAI-compatible API 串接 provider（包含遠端 LiteLLM gateway）
 
 ### `tools/`
 - 每個 slash 指令背後的工具實作
@@ -65,7 +65,7 @@ JenAI/
 - 所有 Pydantic 資料結構（見 DATA_SCHEMAS.md）
 
 ### `providers/`
-- LiteLLM 初始化與 provider profile 管理
+- OpenAI-compatible client 與 provider profile 管理
 - ModelBindings 管理
 - Health check 整合
 
@@ -80,7 +80,7 @@ JenAI/
 | 套件 | 用途 |
 |---|---|
 | `openai-agents` | Agent framework, run state, tool calls, approvals |
-| `litellm` | 統一 LLM provider 接口 |
+| `openai` | OpenAI-compatible client(LiteLLM 可部署為遠端 gateway) |
 | `textual` | TUI 框架 |
 | `pydantic` | 資料結構驗證 |
 | `typer` | CLI 命令定義 |
@@ -124,4 +124,3 @@ RunRecord update (state/)
     ▼
 SummaryBlock 顯示 (tui/)
 ```
-

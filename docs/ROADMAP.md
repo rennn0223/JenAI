@@ -1,13 +1,13 @@
 # ROADMAP — 演進與維護深度規劃
 
-> 對應版本:**v0.28.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
-> 五條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
+> 對應版本:**v0.30.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
+> 六條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
 > 方向收斂邏輯見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md);v1.0 驗收與兩層分工見
 > [V1_GATE](V1_GATE.md);每次改動的驗收標準見根目錄 `CLAUDE.md`。
 
 ---
 
-## 1. 現況真實快照(v0.28.0)
+## 1. 現況真實快照(v0.30.0)
 
 過去的 M1–M6 表低估了實際進度。誠實盤點「真的 shipped 了什麼」:
 
@@ -21,7 +21,7 @@
 - **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
 - **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
 - **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
-- **工程基建**:424 測試、CI(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
+- **工程基建**:430+ 測試、Python 3.12／3.13／3.14 CI matrix(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
 
 ### 未完成的主線
 - **M6 自主決策迴圈**(A9):零件都在(感知、有界動作、odom 直驅、避障、Gate、規則引擎),但把它們串成「感知→情境快照→LLM 決策→預演→執行→回饋」的閉環**還沒建**。這是最大的未完成項,也是論文主軸。
@@ -115,14 +115,14 @@
 ### 3.1 技術債登記(Tech Debt Register)
 | # | 債務 | 影響 | 償還策略 |
 |---|---|---|---|
-| D1 | **bridge node 邏輯無法 venv 單元測試**(rclpy 隔離)——nav_send 狀態機、halt、watchdog、drive_loop 只有 E2E 覆蓋 | 安全相關邏輯的回歸靠人工 review + E2E,漏網風險高(v0.17.1 的跨程序急停回歸就是這樣漏的) | 沿用 `_avoidance.py` 的 **sibling 純模組**模式:把 bridge 的純決策邏輯(nav 狀態轉移、halt 判定、pseudo-scan 建構)逐步抽成 stdlib-only sibling → venv 可單測。目標:安全鏈純邏輯覆蓋 ~100% |
+| D1 | **bridge node 仍有無法 venv 單元測試的 rclpy 邏輯**——watchdog、導航結果/active-state、halt 順序、避障判斷已抽成 stdlib-only sibling;nav_send callback 與 drive_loop 的 ROS 接線仍只有 E2E 覆蓋 | 安全相關接線的回歸仍靠 review + E2E,漏網風險高(v0.17.1 的跨程序急停回歸就是這樣漏的) | 沿用 sibling 純模組模式,繼續抽出 nav callback 狀態轉移與控制迴圈判斷;保留薄 rclpy shell。目標:安全鏈純邏輯覆蓋 ~100% |
 | D2 | **雙 ROS 發行版**(車 Humble / 工作站 Jazzy) | bridge/DDS 相容、`ROS_SETUP` 需正確指向 | 文件化(已記 memory);CI 用 fake_bridge 不綁發行版;長期:bridge 協定版本化 |
 | D3 | **sim 測不到的真機路徑**(depth row padding、感測噪聲) | v0.18.1 的 stride bug 在 Isaac 永遠測不出 | 加 padded-image / noisy-depth fixture 單測 `_avoidance` 的輸入處理;真機冒煙清單 |
-| D4 | **無結構化觀測性** | 出事難回溯、延遲無數據 | 加 run 日誌(JSON)、決策軌跡、`bench` 延遲量測;接軌道 1 的可審計 |
+| D4 | **觀測性尚未完整**——run/status、批准、工具狀態與 Gate verdict 已進有界 SQLite audit;決策 prompt/延遲與查詢 UI 尚缺 | 基本事故序列可跨重啟回溯,但效能分析仍無數據 | 補 `bench` 延遲量測與唯讀 audit 查詢介面;敏感 prompt/raw payload 維持不落盤 |
 | D5 | **release 節奏過碎**(一天十幾 patch) | changelog 噪音、版本語意稀釋 | 收斂:feature 累積成有意義的 minor;patch 只留真 bug/安全修;semver 契約(VERSIONING)已立 |
 
 ### 3.2 測試策略演進
-- **現況**:424 單元測試(無 ROS 全綠)+ CI 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
+- **現況**:430+ 自動化測試(無 ROS 全綠)+ Python 3.12／3.13／3.14 CI matrix + 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
 - **下一步**:
   - D1 的 sibling 抽取 → 提升 bridge 邏輯覆蓋。
   - **HIL 冒煙**(選配):self-hosted runner 連 Isaac,跑一條 `/route` + 避障的端到端(現在只能人工 E2E)。
@@ -132,10 +132,10 @@
 ### 3.3 依賴與相容
 - `uv.lock` 鎖定;Python ≥3.12。定期 `uv lock --upgrade` + 全綠才進。
 - ROS Humble/Jazzy 雙軌:bridge 只用穩定 API;協定(JSON/stdio)是相容邊界,變更要版本化(併入 VERSIONING 的 public surface)。
-- Provider SDK(openai/litellm/agents)升級走相容測試。
+- Provider SDK(openai/agents)升級走相容測試;LiteLLM 僅作遠端 gateway,不裝在 robot client。
 
 ### 3.4 CI/CD 演進
-- 已有:test(ruff+pytest+覆蓋倒退閘)、build(wheel 冒煙)、release(tag→草稿;notes 版本化在 `docs/releases/`,發佈仍走人工閘)。
+- 已有:test(Python 3.12／3.13／3.14 matrix、ruff+pytest+覆蓋倒退閘)、build(wheel 冒煙)、release(tag→草稿;notes 版本化在 `docs/releases/`,發佈仍走人工閘)。
 - 規劃:Node20→24 actions 升級(release annotation 提醒過)、依賴掃描(pip-audit/Dependabot)、可選 HIL job、coverage 趨勢圖進 job summary。
 
 ### 3.5 文件可持續性

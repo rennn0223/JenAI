@@ -72,7 +72,8 @@
 ### `bridge/_avoidance.py` + `_safety_order.py`
 - **做什麼**:純 stop-and-go detour、目標走廊、depth freshness、StuckDetector
   與急停順序。
-- **為什麼**:stdlib-only 的**兄弟模組** —— bridge 當 sibling import、venv 測試當
+- **為什麼**:stdlib-only 的**兄弟模組**(`_avoidance` / `_safety_order` /
+  `_watchdog` / `_navigation_state`)—— bridge 當 sibling import、venv 測試當
   package import。把 bridge 裡的純決策抽出後,安全分支不依賴 ROS 也能單測。
 
 ### `adapters/ros2_adapter.py`(331 行)
@@ -213,7 +214,7 @@
 
 # 第四層:介面(四個門)
 
-### `tui/app.py`(1383 行,最大檔)
+### `tui/app.py`(約 1650 行,最大檔)
 - **SDK**:textual(App/Widget/CSS/set_interval)。
 - **結構**:`JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App)` ——
   指令 handler 按領域拆進 mixin,app 本體管:輸入分發(chat/`!`shell/slash)、
@@ -281,6 +282,8 @@
   monkeypatch typer.prompt 餵答案)。
 
 ### `state/`(runs/session/history/reports)
+- audit:有界 SQLite event log(`audit.sqlite3`,0600),保存 run/批准/工具/Gate
+  狀態序列,不保存 prompt、raw action 或完整 payload。
 - runs:RunStore —— RunRecord + SDK 原生 RunState JSON;批准中斷以原子檔案保存,
   重啟後重建 agent graph/context 與批准卡,claim 後刪檔避免重播已批准動作。
 - session/history:對話 session 檔與輸入歷史(↑↓)。
