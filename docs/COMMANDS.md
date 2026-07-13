@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v0.32.1(2026-07)。
+> 對應版本:v0.33.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -80,7 +80,7 @@ JenAI 啟動流程：
 |---|---|---|
 | `/provider [名]` | 顯示/切換 active provider（含編號快選），即時生效並持久化 | `/provider local` |
 | `/providers` | 列出所有 provider profiles | `/providers` |
-| `/model [名\|編號]` | 列出端點上真實可用的模型（含 Ollama）並切換 chat 綁定 | `/model qwen3:8b` 或 `/model 2` |
+| `/model [名\|編號]` | 列出端點上真實可用的模型（含 Ollama）並切換 chat 綁定 | `/model qwen3.6:35b` 或 `/model 2` |
 | `/models` | 顯示 model 綁定（chat/plan/vision/route/default） | `/models` |
 | `/permissions` | 顯示哪些指令需要批准 | `/permissions` |
 | `/config` | 顯示 config 檔重點 | `/config` |

@@ -1,6 +1,6 @@
 # providers — LLM 供應商抽象
 
-全部走 OpenAI 相容端點:一個抽象吃遍 NVIDIA NIM(雲)、Ollama(Jetson 地端)、
+全部走 OpenAI 相容端點:一個抽象吃遍 NVIDIA NIM(雲)、Ollama(DGX Spark 地端)、
 OpenAI、任何相容 server;`/provider` 一鍵切換,斷網照跑(local)。
 
 LiteLLM 若使用,部署在遠端伺服器作 gateway;JenAI 只設定該服務的 `base_url`,
