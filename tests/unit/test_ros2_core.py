@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -284,6 +285,47 @@ def test_safety_clamp_bounds_nested_twiststamped() -> None:
     out = ros2_core._safety_clamp({"twist": {"linear": {"x": 50.0}, "angular": {"z": 9.0}}})
     assert out["twist"]["linear"]["x"] == ros2_core.MAX_LINEAR
     assert out["twist"]["angular"]["z"] == ros2_core.MAX_ANGULAR
+
+
+def test_safety_clamp_bounds_ackermann_drive_variants() -> None:
+    direct = ros2_core._safety_clamp(
+        {"speed": 50.0, "steering_angle": -9.0},
+        1.0,
+        2.0,
+        message_type="ackermann_msgs/msg/AckermannDrive",
+    )
+    stamped = ros2_core._safety_clamp(
+        {"drive": {"speed": -50.0, "steering_angle": 9.0}},
+        1.0,
+        2.0,
+        message_type="ackermann_msgs/msg/AckermannDriveStamped",
+    )
+
+    assert direct == {"speed": 1.0, "steering_angle": -2.0}
+    assert stamped == {"drive": {"speed": -1.0, "steering_angle": 2.0}}
+
+
+def test_ros_pub_execute_applies_ackermann_vehicle_limits(monkeypatch) -> None:
+    captured = {}
+
+    def fake_pub(topic, message_type, payload_yaml):
+        captured["payload"] = json.loads(payload_yaml)
+        return ros2_adapter.PubResult(ok=True, message="published")
+
+    monkeypatch.setattr(ros2_adapter, "topic_pub", fake_pub)
+    asyncio.run(
+        ros2_core.ros_pub_execute(
+            "/ackermann_cmd",
+            "ackermann_msgs/msg/AckermannDriveStamped",
+            {"drive": {"speed": 99.0, "steering_angle": 9.0}},
+            max_linear=0.5,
+            max_angular=0.4,
+        )
+    )
+
+    assert captured["payload"] == {
+        "drive": {"speed": 0.5, "steering_angle": 0.4}
+    }
 
 
 def test_safety_clamp_does_not_treat_bool_as_speed() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,7 +32,7 @@ class AuditStore:
         self.path = path
         self.max_events = max(1, max_events)
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -81,7 +82,7 @@ class AuditStore:
         details_json = json.dumps(
             details or {}, ensure_ascii=False, allow_nan=False, default=str
         )
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             cursor = connection.execute(
                 """
                 INSERT INTO audit_events (
@@ -125,7 +126,7 @@ class AuditStore:
             params.append(run_id)
         query += " ORDER BY event_id DESC LIMIT ?"
         params.append(max(0, limit))
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.execute(query, params).fetchall()
         return [
             AuditEvent(

@@ -18,6 +18,7 @@ without ROS or a provider; `generate_package_plan` is the one LLM call.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
@@ -25,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_json
+from jenai.tools.shell_core import _run_process
 
 # ROS2 package names: lowercase, digits, underscores; must start with a letter.
 _PKG_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -62,7 +64,9 @@ class PackagePlan(BaseModel):
         # Drop unknown/hallucinated deps but always keep rclpy — a Python node
         # cannot run without it, and an unknown dep breaks the whole build.
         kept = [d for d in dict.fromkeys(deps) if d in _KNOWN_DEPS]
-        return kept or ["rclpy"]
+        if "rclpy" not in kept:
+            kept.insert(0, "rclpy")
+        return kept
 
 
 _PLAN_PROMPT = (
@@ -218,19 +222,15 @@ def build_package(ws_root: Path, package_name: str, *, timeout: float = 300.0) -
     are absent: (False, reason), never a fake success.
     """
     import os
-    import subprocess
-
     ros_setup = os.environ.get("ROS_SETUP", "/opt/ros/jazzy/setup.bash")
     command = (
         f'source "{ros_setup}" 2>/dev/null; '
         f"colcon build --packages-select {package_name}"
     )
     try:
-        proc = subprocess.run(
+        proc = _run_process(
             ["bash", "-c", command],
             cwd=ws_root,
-            capture_output=True,
-            text=True,
             timeout=timeout,
         )
     except FileNotFoundError:

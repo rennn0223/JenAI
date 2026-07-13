@@ -411,6 +411,7 @@ class _Handler(BaseHTTPRequestHandler):
     pending: _PendingConfirms | None = None
     pose_cache: PoseCache | None = None
     status_cache: StatusCache | None = None
+    action_lock: threading.Lock | None = None
     token: str | None = None  # None = auth disabled (unit tests); CLI always sets one
 
     def log_message(self, *args: Any) -> None:  # silence default stderr logging
@@ -633,16 +634,35 @@ class _Handler(BaseHTTPRequestHandler):
             if result.get("kind") == "confirm" and self.pending is not None:
                 result["confirm_id"] = self.pending.put(result.pop("action", {}))
         elif path == "/api/confirm":
-            action = self.pending.pop(body.get("confirm_id", "")) if self.pending else None
-            if action is None:
+            acquired = self.action_lock is None or self.action_lock.acquire(blocking=False)
+            if not acquired:
                 result = {
                     "kind": "error",
-                    "html": "<p>This confirmation expired or was already used. Re-run the command.</p>",
+                    "html": (
+                        "<p>Another robot action is already running. "
+                        "Try again when it finishes.</p>"
+                    ),
                 }
             else:
-                result = asyncio.run(
-                    run_web_confirm(self.config, action, config_path=self.config_path)
-                )
+                try:
+                    action = (
+                        self.pending.pop(body.get("confirm_id", "")) if self.pending else None
+                    )
+                    if action is None:
+                        result = {
+                            "kind": "error",
+                            "html": (
+                                "<p>This confirmation expired or was already used. "
+                                "Re-run the command.</p>"
+                            ),
+                        }
+                    else:
+                        result = asyncio.run(
+                            run_web_confirm(self.config, action, config_path=self.config_path)
+                        )
+                finally:
+                    if self.action_lock is not None:
+                        self.action_lock.release()
         else:
             result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
@@ -694,6 +714,7 @@ def make_server(
             "pending": _PendingConfirms(),
             "pose_cache": PoseCache(),
             "status_cache": StatusCache(),
+            "action_lock": threading.Lock(),
             "token": token,
         },
     )

@@ -311,6 +311,36 @@ def test_confirm_endpoint_rejects_unknown_id(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_confirm_endpoint_rejects_overlapping_robot_action(tmp_path: Path) -> None:
+    server = make_server(_config(), tmp_path / "config.toml", port=0)
+    handler = server.RequestHandlerClass
+    action = {"type": "drive"}
+    confirm_id = handler.pending.put(action)
+    assert handler.action_lock.acquire(blocking=False)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    try:
+        host, port = server.server_address
+        body = json.dumps({"confirm_id": confirm_id}).encode()
+        req = urllib.request.Request(
+            f"http://{host}:{port}/api/confirm",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read().decode())
+        assert payload["kind"] == "error"
+        assert "already running" in payload["html"]
+        # A busy response does not consume the one-shot approval; it can be
+        # retried after the current robot action finishes.
+        assert handler.pending.pop(confirm_id) == action
+    finally:
+        handler.action_lock.release()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_dashboard_has_command_console(tmp_path: Path) -> None:
     html = render_dashboard_html(build_status_payload(_config(), tmp_path / "c.toml"))
     assert 'id="cmdinput"' in html and 'id="transcript"' in html

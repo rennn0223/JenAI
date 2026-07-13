@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,51 @@ _HIGH_RISK_TOKENS = (
 )
 
 _OUTPUT_LIMIT = 2000
+
+
+def _run_process(
+    command: str | list[str],
+    *,
+    shell: bool = False,
+    cwd: str | Path | None = None,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run a process with a timeout that also terminates its descendants."""
+    popen_kwargs = {
+        "shell": shell,
+        "cwd": cwd,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "posix":
+        # Put the shell and every normal descendant in one group so a timeout
+        # cannot leave a background command running after JenAI reports exit 124.
+        popen_kwargs["start_new_session"] = True
+    process = subprocess.Popen(command, **popen_kwargs)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        else:  # pragma: no cover - ROS deployment and CI are Linux
+            process.terminate()
+        try:
+            process.communicate(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:  # pragma: no cover - ROS deployment and CI are Linux
+                process.kill()
+            process.communicate()
+        raise exc
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 @dataclass(frozen=True)
@@ -90,12 +137,10 @@ async def run_shell(command: str, *, cwd: str | None = None, timeout: float = 30
     risk = assess_command(command)
     try:
         completed = await asyncio.to_thread(
-            subprocess.run,
+            _run_process,
             command,
             shell=True,
             cwd=workdir,
-            capture_output=True,
-            text=True,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:

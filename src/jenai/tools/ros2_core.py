@@ -303,9 +303,9 @@ def _clamp_velocities(
     This covers plain ``geometry_msgs/Twist`` (top-level ``linear``/``angular``)
     *and* nested variants such as ``geometry_msgs/TwistStamped``
     (``{"twist": {"linear": ...}}``), which ROS2 Jazzy/Nav2 use on ``/cmd_vel``.
-    Non-Twist-family control messages (e.g. Ackermann ``.drive.speed`` or a raw
-    ``std_msgs/Float64``) are NOT velocity-clamped — we clamp only structures we
-    can interpret rather than pretend to bound arbitrary message types.
+    Other message families are not inferred from field names here. Ackermann
+    ``speed``/``steering_angle`` is handled separately, with its explicit ROS
+    message type, in ``_safety_clamp``.
     """
     if isinstance(node, dict):
         for key, limit in (("linear", max_linear), ("angular", max_angular)):
@@ -322,10 +322,15 @@ def _clamp_velocities(
 
 
 def _safety_clamp(
-    payload: dict, max_linear: float = MAX_LINEAR, max_angular: float = MAX_ANGULAR
+    payload: dict,
+    max_linear: float = MAX_LINEAR,
+    max_angular: float = MAX_ANGULAR,
+    *,
+    message_type: str = "",
 ) -> dict:
-    """Return a copy of a Twist-family payload with linear/angular velocities
-    clamped to the safe limits. Non-Twist payloads pass through unchanged.
+    """Return a copy with supported Twist/Ackermann velocities safely clamped.
+
+    Other payload fields pass through unchanged so ROS2 can validate them.
     """
     if not isinstance(payload, dict):
         return payload
@@ -333,6 +338,16 @@ def _safety_clamp(
     # the payload may hold non-JSON-native values and a round-trip would raise
     # or silently coerce types inside what must be a transparent copy-and-clamp.
     _clamp_velocities(clamped, max_linear, max_angular)
+    if message_type.rsplit("/", 1)[-1] in {"AckermannDrive", "AckermannDriveStamped"}:
+        # AckermannDrive stores speed/steering_angle directly; the stamped
+        # variant nests them under ``drive``. Keep the same vehicle limits as
+        # Twist so changing the configured command topic cannot bypass them.
+        drive = clamped.get("drive", clamped)
+        if isinstance(drive, dict):
+            if "speed" in drive:
+                drive["speed"] = _clamp(drive["speed"], max_linear)
+            if "steering_angle" in drive:
+                drive["steering_angle"] = _clamp(drive["steering_angle"], max_angular)
     return clamped
 
 
@@ -344,7 +359,7 @@ async def ros_pub_execute(
     max_linear: float = MAX_LINEAR,
     max_angular: float = MAX_ANGULAR,
 ) -> RosPubOutput:
-    payload = _safety_clamp(payload, max_linear, max_angular)
+    payload = _safety_clamp(payload, max_linear, max_angular, message_type=message_type)
     payload_yaml = _payload_to_yaml(payload)
     result = await asyncio.to_thread(ros2_adapter.topic_pub, topic, message_type, payload_yaml)
     return RosPubOutput(
@@ -372,7 +387,7 @@ async def ros_drive(
     single publish would only nudge the robot before the controller watchdog stops it.
     """
     duration_s = max(0.0, min(duration_s, 30.0))  # clamp to a safe window
-    payload = _safety_clamp(payload, max_linear, max_angular)
+    payload = _safety_clamp(payload, max_linear, max_angular, message_type=message_type)
     payload_yaml = _payload_to_yaml(payload)
     stop_yaml = _payload_to_yaml(_zero_like(payload))
     result = await asyncio.to_thread(
