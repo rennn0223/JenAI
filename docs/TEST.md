@@ -1,7 +1,7 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.32.1(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
-> 附本機(Jetson 工作機)實測現況快照。自動化測試見「自動化測試」節;
+> 對應版本:v0.33.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 附本機(DGX Spark 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
 **狀態圖例**
@@ -34,11 +34,11 @@
 | 稽核紀錄 | 自動化測試 + 執行任一 TUI run | `<config 目錄>/audit.sqlite3` 保存 run/approval/tool/gate 事件,重啟後仍在;最多 10,000 筆且不含 prompt/raw payload |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 
-## 本機實測現況快照(v0.22.1 實測,Jetson 工作機;軟體已至 v0.30,重跑後更新本節)
+## 本機實測現況快照(v0.22.1 實測,DGX Spark 工作機;軟體已至 v0.30,重跑後更新本節)
 
 - **doctor overall:`warn`**(source ROS 後):environment / config / provider / locations / webui 全 pass;nav 區段:無 `/map`、無 `/amcl_pose`、無 `/scan`、**Nav2 未跑**;`/cmd_vel` **有 controller 訂閱** ✅
 - **ROS graph**:`/cmd_vel`、`/ackermann_cmd`、`/depth`(**無 `/rgb`、`/odom`、`/scan`**)
-- **LLM**:ollama 本地 6 模型(qwen3:8b=chat/plan/route、qwen3.6=vision 等);nvidia-cloud 備援
+- **LLM**:ollama 本地 6 模型(當時 qwen3:8b=chat/plan/route、qwen3.6=vision;現行預設 qwen3.6:35b);nvidia-cloud 備援
 - **locations**:`No locations configured`(要測 `/loc`、`/route`、`/patrol` 得先建點)
 
 → 一句話:**對話層、感知層(depth 除外要 RGB)、直接駕駛層現在可測;導航層(route/mission/patrol/dock)缺 Nav2+地圖;twin 閘門缺 Isaac 場景。**
@@ -49,7 +49,7 @@
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.32.1`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 0.33.0`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |
@@ -112,7 +112,7 @@
 |---|---|---|---|
 | ✅ | `/provider` / `/provider local` | 顯示/切換(含編號快選) | 即時生效並持久化;重啟後仍是新 provider |
 | ✅ | `/providers` | 直接輸入 | 同 CLI providers 表 |
-| ✅ | `/model` / `/model qwen3:8b` | 直接輸入 | 列出**端點上真實可用**模型(打 ollama API)並切換 chat 綁定 |
+| ✅ | `/model` / `/model qwen3.6:35b` | 直接輸入 | 列出**端點上真實可用**模型(打 ollama API)並切換 chat 綁定 |
 | ✅ | `/models` | 直接輸入 | 綁定表(chat/plan/vision/route/default) |
 | ✅ | `/permissions` | 直接輸入 | 列出哪些指令需批准 |
 | ✅ | `/config` `/doctor` | 直接輸入 | TUI 內顯示設定重點 / 跑健檢 |

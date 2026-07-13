@@ -54,8 +54,8 @@ PRESETS: tuple[ProviderPreset, ...] = (
         provider="ollama",
         base_url="http://localhost:11434/v1",
         api_key_env="",
-        model_example="qwen3:8b",
-        hint="斷網可用;Jetson 實測過。先跑 `ollama pull qwen3:8b`",
+        model_example="qwen3.6:35b",
+        hint="斷網可用;DGX Spark 實測過。先跑 `ollama pull qwen3.6:35b`",
     ),
     ProviderPreset(
         key="nvidia-cloud",

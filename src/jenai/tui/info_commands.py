@@ -184,8 +184,8 @@ class InfoCommandsMixin:
             await self._mount_event(
                 TimelineItem(
                     "warn",
-                    "That looks like the usage placeholder — give a real model, "
-                    "e.g. [bold #f2ede1]/model qwen3:8b[/]. Run [bold #f2ede1]/model[/] to list.",
+                    "That looks like the usage placeholder — give a real model, e.g. "
+                    "[bold #f2ede1]/model qwen3.6:35b[/]. Run [bold #f2ede1]/model[/] to list.",
                 )
             )
             return None

@@ -1,6 +1,6 @@
 # THREAT_MODEL — 威脅模型(一頁)
 
-> 資產:一台會動的實體載具(最貴)、操作機(Jetson)、API 金鑰(`~/.config/jenai/.env`)。
+> 資產:一台會動的實體載具(最貴)、操作機(DGX Spark)、API 金鑰(`~/.config/jenai/.env`)。
 > 假設環境:實驗室/場域 LAN;**不設計給公網曝露**。
 
 ## 信任邊界與防護

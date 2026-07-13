@@ -13,7 +13,7 @@
 孿生  graph:ROS_DOMAIN_ID=42(可改)   ← Isaac Sim + 同一套 Nav2 + 同一張地圖
 ```
 
-JenAI 會在需要預演時,額外起一條**孿生 bridge**(同一支 `ros_bridge.py`,但以 `ROS_DOMAIN_ID=[twin].domain_id` 啟動),預演的 Nav2 goal、位姿取樣、碰撞事件全部走這條,**不可能誤發到真車**。孿生可以跑在同一台 Jetson,或跑在工作站上、與 Jetson 同網段(DDS 會自動發現同 domain 的節點)。
+JenAI 會在需要預演時,額外起一條**孿生 bridge**(同一支 `ros_bridge.py`,但以 `ROS_DOMAIN_ID=[twin].domain_id` 啟動),預演的 Nav2 goal、位姿取樣、碰撞事件全部走這條,**不可能誤發到真車**。孿生可以跑在同一台 DGX Spark 工作機,或另一台工作站、同網段(DDS 會自動發現同 domain 的節點)。
 
 ## 2. Isaac Sim 孿生場景(工作站)
 
