@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
+from pathlib import Path
+
+import pytest
 
 from jenai.schemas import EffectScope, RiskLevel
 from jenai.tools import shell_core
@@ -36,3 +41,15 @@ def test_run_shell_captures_output() -> None:
 def test_run_shell_reports_nonzero_exit() -> None:
     output = asyncio.run(shell_core.run_shell("exit 3"))
     assert output.exit_code == 3
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-specific")
+def test_run_shell_timeout_terminates_descendants(tmp_path: Path) -> None:
+    marker = tmp_path / "descendant-survived"
+    command = f"(sleep 0.4; touch {marker}) & wait"
+
+    output = asyncio.run(shell_core.run_shell(command, timeout=0.05))
+    time.sleep(0.5)
+
+    assert output.exit_code == 124
+    assert not marker.exists()

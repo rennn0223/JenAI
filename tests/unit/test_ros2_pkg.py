@@ -40,6 +40,7 @@ def test_unknown_dependencies_dropped_rclpy_kept() -> None:
     p = _plan(dependencies=["rclpy", "hallucinated_msgs", "sensor_msgs"])
     assert p.dependencies == ["rclpy", "sensor_msgs"]
     assert _plan(dependencies=["nonsense"]).dependencies == ["rclpy"]  # never empty
+    assert _plan(dependencies=["sensor_msgs"]).dependencies == ["rclpy", "sensor_msgs"]
 
 
 def test_render_produces_buildable_layout() -> None:
@@ -124,15 +125,17 @@ class _Proc:
 
 
 def test_build_package_reports_ok_and_tail(monkeypatch, tmp_path: Path) -> None:
-    import subprocess
+    import jenai.tools.ros2_pkg_core as mod
 
-    from jenai.tools.ros2_pkg_core import build_package
+    build_package = mod.build_package
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(0, "Summary: 1 package finished"))
+    monkeypatch.setattr(
+        mod, "_run_process", lambda *a, **k: _Proc(0, "Summary: 1 package finished")
+    )
     ok, tail = build_package(tmp_path, "demo")
     assert ok is True and "finished" in tail
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc(1, "", "SyntaxError: bad"))
+    monkeypatch.setattr(mod, "_run_process", lambda *a, **k: _Proc(1, "", "SyntaxError: bad"))
     ok, tail = build_package(tmp_path, "demo")
     assert ok is False and "SyntaxError" in tail
 
