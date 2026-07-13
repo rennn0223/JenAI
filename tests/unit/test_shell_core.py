@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -53,3 +54,19 @@ def test_run_shell_timeout_terminates_descendants(tmp_path: Path) -> None:
 
     assert output.exit_code == 124
     assert not marker.exists()
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or shutil.which("setsid") is None,
+    reason="needs POSIX sessions and setsid",
+)
+def test_run_shell_timeout_survives_escaped_descendant() -> None:
+    # A descendant that starts its own session escapes the group SIGKILL and
+    # keeps our stdout pipe open; the timeout path must reap the direct child
+    # and return instead of waiting for pipe EOF (up to 30s here).
+    started = time.monotonic()
+    output = asyncio.run(shell_core.run_shell("setsid sleep 30", timeout=0.05))
+    elapsed = time.monotonic() - started
+
+    assert output.exit_code == 124
+    assert elapsed < 10.0

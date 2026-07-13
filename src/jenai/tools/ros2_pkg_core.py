@@ -17,6 +17,7 @@ without ROS or a provider; `generate_package_plan` is the one LLM call.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -26,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_json
-from jenai.tools.shell_core import _run_process
+from jenai.tools.shell_core import run_process
 
 # ROS2 package names: lowercase, digits, underscores; must start with a letter.
 _PKG_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -221,14 +222,13 @@ def build_package(ws_root: Path, package_name: str, *, timeout: float = 300.0) -
     the repair round feeds back to the model. Honest failure when colcon/ROS
     are absent: (False, reason), never a fake success.
     """
-    import os
     ros_setup = os.environ.get("ROS_SETUP", "/opt/ros/jazzy/setup.bash")
     command = (
         f'source "{ros_setup}" 2>/dev/null; '
         f"colcon build --packages-select {package_name}"
     )
     try:
-        proc = _run_process(
+        proc = run_process(
             ["bash", "-c", command],
             cwd=ws_root,
             timeout=timeout,
