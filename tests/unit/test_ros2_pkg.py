@@ -130,12 +130,12 @@ def test_build_package_reports_ok_and_tail(monkeypatch, tmp_path: Path) -> None:
     build_package = mod.build_package
 
     monkeypatch.setattr(
-        mod, "_run_process", lambda *a, **k: _Proc(0, "Summary: 1 package finished")
+        mod, "run_process", lambda *a, **k: _Proc(0, "Summary: 1 package finished")
     )
     ok, tail = build_package(tmp_path, "demo")
     assert ok is True and "finished" in tail
 
-    monkeypatch.setattr(mod, "_run_process", lambda *a, **k: _Proc(1, "", "SyntaxError: bad"))
+    monkeypatch.setattr(mod, "run_process", lambda *a, **k: _Proc(1, "", "SyntaxError: bad"))
     ok, tail = build_package(tmp_path, "demo")
     assert ok is False and "SyntaxError" in tail
 

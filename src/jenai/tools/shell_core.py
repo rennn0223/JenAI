@@ -38,7 +38,43 @@ _HIGH_RISK_TOKENS = (
 _OUTPUT_LIMIT = 2000
 
 
-def _run_process(
+def _signal_group(process: subprocess.Popen[str], *, force: bool) -> None:
+    # signal.SIGKILL only exists on POSIX, so it must not be named outside
+    # this branch; non-POSIX falls back to signalling the direct child only.
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    elif force:  # pragma: no cover - ROS deployment and CI are Linux
+        process.kill()
+    else:  # pragma: no cover - ROS deployment and CI are Linux
+        process.terminate()
+
+
+def _terminate_tree(process: subprocess.Popen[str]) -> None:
+    """Stop the process group, escalating to SIGKILL, without ever blocking forever."""
+    _signal_group(process, force=False)
+    try:
+        process.communicate(timeout=1.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _signal_group(process, force=True)
+    try:
+        process.communicate(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        # A descendant that escaped the session (setsid/daemon) survived the
+        # group SIGKILL and still holds the pipes; communicate() would wait for
+        # EOF indefinitely. Stop reading and reap only the direct child, which
+        # the SIGKILL cannot have missed. Callers discard output on this path.
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        process.wait()
+
+
+def run_process(
     command: str | list[str],
     *,
     shell: bool = False,
@@ -60,26 +96,11 @@ def _run_process(
     process = subprocess.Popen(command, **popen_kwargs)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        else:  # pragma: no cover - ROS deployment and CI are Linux
-            process.terminate()
-        try:
-            process.communicate(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            else:  # pragma: no cover - ROS deployment and CI are Linux
-                process.kill()
-            process.communicate()
-        raise exc
+    except BaseException:
+        # Any exit path — timeout, Ctrl-C, cancellation — must not leave the
+        # child running (subprocess.run kills on every exception too).
+        _terminate_tree(process)
+        raise
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
@@ -137,7 +158,7 @@ async def run_shell(command: str, *, cwd: str | None = None, timeout: float = 30
     risk = assess_command(command)
     try:
         completed = await asyncio.to_thread(
-            _run_process,
+            run_process,
             command,
             shell=True,
             cwd=workdir,
