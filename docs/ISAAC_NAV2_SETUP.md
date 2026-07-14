@@ -45,8 +45,11 @@
    - **CALCULATE** → **VISUALIZE IMAGE**
    - Rotate Image = **180°**、Coordinate Type = **ROS Occupancy Map
      Parameters File (YAML)** → **RE-GENERATE IMAGE**
-   - 存 YAML+PNG 到
-     `<ros2_ws>/src/navigation/carter_navigation/maps/carter_warehouse_navigation.yaml`
+   - **存檔(注意:工具沒有「存 YAML」按鈕)**:`Save Image` 只存 PNG;
+     YAML 是 RE-GENERATE 後顯示在視窗下方的**那段文字**,要自己複製、
+     在 PNG 旁手建 `.yaml` 貼上,並確認 `image:` 行指向你存的 PNG 檔名
+     (同資料夾用相對路徑)。resolution/origin 照工具顯示的抄,不要手打。
+   - 存到 `<ros2_ws>/src/navigation/carter_navigation/maps/carter_warehouse_navigation.yaml`
 3. **按 Play ▶**(場景要在跑,topics 才會出現)。
 4. **起 Nav2**(工作站,另一個 sourced shell):
    ```bash
@@ -54,6 +57,28 @@
    ```
    RViz2 會載入佔位圖;定位偏了用 **2D Pose Estimate** 校正。
 5. **試跑**:RViz2 按 **Navigation2 Goal** 點目標 → Carter 應繞開貨架導航。
+
+### 路線 A 直接當驗證載具(sim-first 的捷徑,已實測可行)
+
+Carter 倉庫場景本身就能當 V1_GATE 的「載具側」用——RViz goal 能導航避障
+= B1 的 `/navigate_to_pose` 確認完成。接 JenAI 只要對齊 vehicle profile:
+
+```toml
+[vehicle]
+type = "diff"                 # Nova Carter 是差速,不是阿克曼
+cmd_vel_topic = "/cmd_vel"    # 以 `ros2 topic list` 實際看到的為準
+camera_topic = "/front_stereo_camera/left/image_raw"   # 同上,以實際 topic 為準
+max_linear = 0.8              # 倉庫內保守值
+max_angular = 1.0
+
+route_adapter = "nav2"
+```
+
+再照 [TWIN_SETUP](TWIN_SETUP.md) §5 走(doctor → 建點 → `/route`)即可開始
+B2–B4。**代價要知道**:Carter 是差速車,阿克曼運動學(Smac Hybrid-A* /
+最小轉彎半徑)的 sim 數據不會從這裡產生——論文若要阿克曼章節的模擬證據,
+之後仍需路線 B 的 Leatherback 場景;架構層(決策/Gate/安全鏈)的驗證數據
+則載具無關,Carter 收的完全算數。
 
 ## 路線 B|你的 Leatherback 場景(接 JenAI 的正式路線)
 
@@ -70,7 +95,8 @@
    - **TF**:`odom → base_link`(Isaac ROS2 bridge 的 TF publisher;檢查
      `ros2 run tf2_tools view_frames`)。
 3. **佔位圖**:同路線 A 的 Tools → Robotics → Occupancy Map,bound 你的
-   場景 prim,Z 帶用你感測器高度(小車低,約 0.05–0.3m),存 YAML+PNG。
+   場景 prim,Z 帶用你感測器高度(小車低,約 0.05–0.3m),存 PNG + 手貼 YAML
+   (工具只顯示 YAML 文字不存檔,見路線 A 步驟 2 的存檔說明)。
 4. **Nav2 bringup**(不用 carter 包,直接 nav2_bringup):
    ```bash
    ros2 launch nav2_bringup bringup_launch.py \
