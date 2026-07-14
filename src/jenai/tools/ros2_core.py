@@ -22,10 +22,67 @@ from jenai.schemas import (
 )
 from jenai.tools.summaries import summarize_ros_schema
 
+# Ordered: first match wins, so plumbing beats domain words (e.g.
+# /amcl/transition_event is infra, not nav).
 _KIND_HINTS = (
+    (
+        (
+            "transition_event",
+            "parameter_events",
+            "rosout",
+            "bond",
+            "clock",
+            "lifecycle",
+            "diagnostics",
+            "_action/",
+        ),
+        "infra",
+    ),
     (("cmd",), "control"),
-    (("scan", "image", "imu", "odom", "camera"), "sensor"),
-    (("debug", "diagnostics"), "debug"),
+    (
+        (
+            "scan",
+            "image",
+            "imu",
+            "odom",
+            "camera",
+            "lidar",
+            "pointcloud",
+            "points",
+            "depth",
+            "battery",
+            "joint_state",
+            "gps",
+            "/fix",
+        ),
+        "sensor",
+    ),
+    (
+        (
+            "map",
+            "plan",
+            "path",
+            "goal",
+            "waypoint",
+            "behavior_tree",
+            "navigate",
+            "amcl",
+            "particle",
+            "dock",
+            "footprint",
+            "cost_cloud",
+            "route",
+            "speed_limit",
+            "collision_monitor",
+            "controller_selector",
+            "initialpose",
+            "staging_pose",
+            "clicked_point",
+        ),
+        "nav",
+    ),
+    (("/tf", "tf_static"), "tf"),
+    (("debug",), "debug"),
 )
 
 

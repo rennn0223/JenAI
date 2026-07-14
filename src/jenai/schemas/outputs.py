@@ -19,7 +19,7 @@ from jenai.schemas.models import (
 
 class TopicItem(JenAIModel):
     name: str
-    kind_hint: Literal["control", "sensor", "debug", "unknown"] = "unknown"
+    kind_hint: Literal["control", "sensor", "nav", "tf", "infra", "debug", "unknown"] = "unknown"
 
 
 class RosTopicsOutput(JenAIModel):

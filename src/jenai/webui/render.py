@@ -22,7 +22,10 @@ def _esc(value: Any) -> str:
 _KIND_DOT = {
     "control": "var(--accent)",
     "sensor": "var(--teal)",
+    "nav": "var(--ok)",
+    "tf": "var(--gold)",
     "debug": "var(--gold)",
+    "infra": "var(--muted)",
     "unknown": "var(--muted)",
 }
 
@@ -118,16 +121,27 @@ def render_main(status: dict[str, Any]) -> str:
     elif not ros["topics"]:
         ros_html = '<div class="empty">No topics on the graph yet.</div>'
     else:
-        chips = "".join(
-            '<div class="chip">'
-            f'<span class="k-dot" style="background:{_KIND_DOT.get(t["kind"], "var(--muted)")}">'
-            "</span>"
-            f'<span class="chip-name">{html.escape(t["name"])}</span>'
-            f'<span class="chip-kind">{html.escape(t["kind"])}</span>'
-            "</div>"
-            for t in ros["topics"]
-        )
-        ros_html = f'<div class="chips">{chips}</div>'
+        # Domain topics up front; the Nav2/lifecycle plumbing folds away so a
+        # 110-topic graph reads as the ~20 that matter.
+        def _chip(t: dict) -> str:
+            return (
+                '<div class="chip">'
+                f'<span class="k-dot" style="background:{_KIND_DOT.get(t["kind"], "var(--muted)")}">'
+                "</span>"
+                f'<span class="chip-name">{html.escape(t["name"])}</span>'
+                f'<span class="chip-kind">{html.escape(t["kind"])}</span>'
+                "</div>"
+            )
+
+        main_topics = [t for t in ros["topics"] if t["kind"] != "infra"]
+        infra_topics = [t for t in ros["topics"] if t["kind"] == "infra"]
+        ros_html = f'<div class="chips">{"".join(_chip(t) for t in main_topics)}</div>'
+        if infra_topics:
+            ros_html += (
+                '<details class="infra-fold"><summary>'
+                f"infra(lifecycle/bond/rosout…)· {len(infra_topics)}</summary>"
+                f'<div class="chips">{"".join(_chip(t) for t in infra_topics)}</div></details>'
+            )
 
     updated = datetime.now().strftime("%H:%M:%S")
     return (
@@ -248,6 +262,8 @@ main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .
 .k-dot{width:8px;height:8px;border-radius:50%;flex:none}
 .chip-name{font-family:'Fraunces',ui-monospace,monospace; font-size:13.5px}
 .chip-kind{color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em}
+.infra-fold{margin-top:10px}
+.infra-fold summary{color:var(--muted); font-size:12.5px; cursor:pointer}
 .empty{color:var(--muted); font-size:14px; padding:6px 0}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; background:#efe9dc;
   padding:1px 6px; border-radius:6px; font-size:13px}
@@ -256,7 +272,12 @@ footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted
 
 /* Map (live pose + saved locations) */
 #map{width:100%; height:280px; background:linear-gradient(180deg,#faf6ef,#f3ede2);
-  border:1px solid var(--line); border-radius:12px; display:block}
+  border:1px solid var(--line); border-radius:12px; display:block;
+  touch-action:none; cursor:grab}
+.map-tools{margin-left:auto; display:flex; gap:6px}
+.map-tools button{width:30px; height:30px; border:1px solid var(--line); border-radius:8px;
+  background:var(--card); color:var(--ink-soft); font-size:15px; line-height:1; cursor:pointer}
+.map-tools button:hover{border-color:var(--accent); color:var(--accent)}
 #map .loc-dot{fill:#8a7f6f}
 #map .loc-label{fill:#6b6254; font:600 3.2px ui-sans-serif,system-ui; letter-spacing:.02em}
 #map .robot{fill:var(--accent)}
@@ -390,7 +411,12 @@ body:not(.view-api) #apicard{display:none}
   </form>
 </section>
 <section id="mapcard" class="card">
-  <div class="card-head"><h2>Map</h2><span class="dim" id="map-meta">waiting for robot pose…</span></div>
+  <div class="card-head"><h2>Map</h2><span class="dim" id="map-meta">waiting for robot pose…</span>
+    <div class="map-tools">
+      <button type="button" id="map-zout" title="zoom out">−</button>
+      <button type="button" id="map-zin" title="zoom in">+</button>
+      <button type="button" id="map-zfit" title="fit all">⤢</button>
+    </div></div>
   <svg id="map" viewBox="0 0 100 60" preserveAspectRatio="xMidYMid meet"></svg>
 </section>
 <section id="cameracard" class="card">
@@ -543,7 +569,11 @@ form.addEventListener('submit', async (e) => {
 
 const mapSvg = document.getElementById('map');
 const mapMeta = document.getElementById('map-meta');
+// Zoom/pan state: zoom=1 fits everything; center in world coords (null = auto).
+let mapZoom = 1, mapCenter = null, mapData = null;
 function mapDraw(data){
+  if(data) mapData = data; else data = mapData;
+  if(!data) return;
   const pts = data.locations.map(l => [l.x, l.y]);
   if(data.pose) pts.push([data.pose.x, data.pose.y]);
   if(!pts.length){
@@ -554,29 +584,50 @@ function mapDraw(data){
   }
   const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
   const pad = Math.max(1.0, (Math.max(...xs)-Math.min(...xs))*0.15, (Math.max(...ys)-Math.min(...ys))*0.15);
-  const x0 = Math.min(...xs)-pad, x1 = Math.max(...xs)+pad;
-  const y0 = Math.min(...ys)-pad, y1 = Math.max(...ys)+pad;
+  const fx0 = Math.min(...xs)-pad, fx1 = Math.max(...xs)+pad;
+  const fy0 = Math.min(...ys)-pad, fy1 = Math.max(...ys)+pad;
   const W = 100, H = 60;
+  // view = fit bounds shrunk by zoom around center (default: fit centre)
+  const cx = mapCenter ? mapCenter[0] : (fx0+fx1)/2;
+  const cy = mapCenter ? mapCenter[1] : (fy0+fy1)/2;
+  const spanX = (fx1-fx0)/mapZoom, spanY = (fy1-fy0)/mapZoom;
+  const x0 = cx - spanX/2, x1 = cx + spanX/2;
+  const y0 = cy - spanY/2, y1 = cy + spanY/2;
   const sc = Math.min(W/(x1-x0), H/(y1-y0));
   // world → svg: x right, y UP (RViz convention), centred
   const ox = (W - (x1-x0)*sc)/2, oy = (H - (y1-y0)*sc)/2;
   const X = wx => ox + (wx - x0)*sc;
   const Y = wy => H - (oy + (wy - y0)*sc);
+  mapSvg._view = {x0, y0, x1, y1, sc, X, Y};
   let out = '';
-  for(let gx = Math.ceil(x0); gx <= Math.floor(x1); gx++)
+  // Grid: pick a metre step that keeps ≲ 25 lines even on huge spans.
+  const step = [1,2,5,10,20,50,100].find(s => (x1-x0)/s <= 25) || 200;
+  for(let gx = Math.ceil(x0/step)*step; gx <= x1; gx += step)
     out += `<line class="grid" x1="${X(gx)}" y1="0" x2="${X(gx)}" y2="${H}"/>`;
-  for(let gy = Math.ceil(y0); gy <= Math.floor(y1); gy++)
+  for(let gy = Math.ceil(y0/step)*step; gy <= y1; gy += step)
     out += `<line class="grid" x1="0" y1="${Y(gy)}" x2="${W}" y2="${Y(gy)}"/>`;
+  // Labels: greedy declutter — draw a label only when its box doesn't overlap
+  // one already placed; suppressed points keep the dot + a hover tooltip.
+  const placed = [];
+  let hidden = 0;
   for(const l of data.locations){
-    out += `<circle class="loc-dot" cx="${X(l.x)}" cy="${Y(l.y)}" r="1.1"/>`;
-    out += `<text class="loc-label" x="${X(l.x)+1.8}" y="${Y(l.y)+1.1}">${esc(l.name)}</text>`;
+    const px = X(l.x), py = Y(l.y);
+    out += `<circle class="loc-dot" cx="${px}" cy="${py}" r="1.1"><title>${esc(l.name)}</title></circle>`;
+    const bw = 1.9 * String(l.name).length + 2, bh = 3.4;   // ~font 3px
+    const box = {x: px+1.4, y: py-1.6, w: bw, h: bh};
+    const clash = placed.some(b => box.x < b.x+b.w && b.x < box.x+box.w && box.y < b.y+b.h && b.y < box.y+box.h);
+    if(!clash && px >= 0 && px <= W && py >= 0 && py <= H){
+      placed.push(box);
+      out += `<text class="loc-label" x="${px+1.8}" y="${py+1.1}">${esc(l.name)}</text>`;
+    } else if(px >= 0 && px <= W && py >= 0 && py <= H){ hidden++; }
   }
   if(data.pose){
     const px = X(data.pose.x), py = Y(data.pose.y);
     const deg = -data.pose.yaw * 180 / Math.PI;
     out += `<circle class="robot-ring" cx="${px}" cy="${py}" r="2.6"/>`;
     out += `<polygon class="robot" points="2.4,0 -1.4,1.4 -1.4,-1.4" transform="translate(${px},${py}) rotate(${deg})"/>`;
-    mapMeta.textContent = `robot at (${data.pose.x.toFixed(2)}, ${data.pose.y.toFixed(2)}) · ${data.pose.frame_id} · ${data.pose.source}`;
+    mapMeta.textContent = `robot at (${data.pose.x.toFixed(2)}, ${data.pose.y.toFixed(2)}) · ${data.pose.frame_id} · ${data.pose.source}`
+      + (hidden ? ` · ${hidden} labels hidden (zoom in)` : '');
   } else if(data.pose_error === 'invalid_pose') {
     mapMeta.textContent = 'localization invalid (pose contains NaN/inf) — check AMCL / odometry';
   } else {
@@ -584,6 +635,42 @@ function mapDraw(data){
   }
   mapSvg.innerHTML = out;
 }
+function mapSetZoom(z, focus){
+  mapZoom = Math.min(64, Math.max(1, z));
+  if(mapZoom === 1){ mapCenter = null; }
+  else if(focus){ mapCenter = focus; }
+  else if(!mapCenter && mapData){
+    // First zoom-in centres on the robot when we have it — that's what you
+    // zoom for; otherwise the locations' centroid.
+    if(mapData.pose) mapCenter = [mapData.pose.x, mapData.pose.y];
+  }
+  mapDraw(null);
+}
+document.getElementById('map-zin').addEventListener('click', () => mapSetZoom(mapZoom*1.6));
+document.getElementById('map-zout').addEventListener('click', () => mapSetZoom(mapZoom/1.6));
+document.getElementById('map-zfit').addEventListener('click', () => { mapCenter = null; mapSetZoom(1); });
+mapSvg.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  mapSetZoom(mapZoom * (ev.deltaY < 0 ? 1.3 : 1/1.3));
+}, {passive: false});
+// Drag / touch-drag to pan (single pointer; SVG units → world via 1/sc).
+let panFrom = null;
+mapSvg.addEventListener('pointerdown', ev => {
+  panFrom = [ev.clientX, ev.clientY];
+  mapSvg.setPointerCapture(ev.pointerId);
+});
+mapSvg.addEventListener('pointermove', ev => {
+  if(!panFrom || !mapSvg._view || mapZoom === 1) return;
+  const v = mapSvg._view;
+  const pxPerUnit = mapSvg.clientWidth / 100;   // viewBox width = 100
+  const dx = (ev.clientX - panFrom[0]) / pxPerUnit / v.sc;
+  const dy = (ev.clientY - panFrom[1]) / pxPerUnit / v.sc;
+  panFrom = [ev.clientX, ev.clientY];
+  const c = mapCenter || [(v.x0+v.x1)/2, (v.y0+v.y1)/2];
+  mapCenter = [c[0] - dx, c[1] + dy];   // y is flipped in the projection
+  mapDraw(null);
+});
+mapSvg.addEventListener('pointerup', () => { panFrom = null; });
 async function pollMap(){
   try{ const r = await fetch('api/map', {cache:'no-store'}); if(r.ok) mapDraw(await r.json()); }
   catch(e){ /* keep last drawing */ }
@@ -661,7 +748,9 @@ async function camTopicsLoad(){
 function camStart(){ if(!camTimer){ camTopicsLoad(); camTick(); camTimer = setInterval(camTick, 1000); } }
 function camStop(){ if(camTimer){ clearInterval(camTimer); camTimer = null; } }
 
-// API page: one-shot live topics listing per visit.
+// API page: one-shot live topics listing per visit, grouped by kind with the
+// plumbing (lifecycle/bond/rosout…) folded away — 110 raw Nav2 topics is
+// noise, the ~20 domain topics are the signal.
 async function apiTopicsLoad(){
   const box = document.getElementById('api-topics');
   const meta = document.getElementById('api-topics-meta');
@@ -670,8 +759,23 @@ async function apiTopicsLoad(){
     const d = await r.json();
     if(!d.available){ meta.textContent = 'ROS2 not available on this host'; return; }
     if(d.error){ meta.textContent = d.error; return; }
-    meta.textContent = d.count + ' topics';
-    box.innerHTML = d.topics.map(t => `${esc(t.name)} <span class="dim">· ${esc(t.kind)}</span>`).join('<br>');
+    const order = ['control','sensor','nav','tf','debug','unknown'];
+    const groups = {};
+    for(const t of d.topics) (groups[t.kind] = groups[t.kind] || []).push(t.name);
+    const infra = groups['infra'] || [];
+    let html = '';
+    for(const k of order){
+      if(!groups[k] || !groups[k].length) continue;
+      html += `<div class="dim" style="margin-top:8px">${k} · ${groups[k].length}</div>`
+            + groups[k].map(esc).join('<br>');
+    }
+    if(infra.length){
+      html += `<details style="margin-top:10px"><summary class="dim" style="cursor:pointer">`
+            + `infra(lifecycle/bond/rosout…)· ${infra.length}</summary>`
+            + infra.map(esc).join('<br>') + '</details>';
+    }
+    meta.textContent = `${d.count} topics · ${d.count - infra.length} shown · ${infra.length} infra folded`;
+    box.innerHTML = html;
   }catch(e){ meta.textContent = 'failed to load topics'; }
 }
 
