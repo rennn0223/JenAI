@@ -23,7 +23,16 @@ def test_ros_topics_classifies_kind_hints(monkeypatch) -> None:
     monkeypatch.setattr(
         ros2_adapter,
         "list_topics",
-        lambda **kw: ["/cmd_vel", "/scan", "/rosout", "/diagnostics"],
+        lambda **kw: [
+            "/cmd_vel",
+            "/scan",
+            "/rosout",
+            "/diagnostics",
+            "/global_costmap/costmap",
+            "/amcl/transition_event",
+            "/tf_static",
+            "/front_3d_lidar/lidar_points",
+        ],
     )
 
     output = asyncio.run(ros2_core.ros_topics(_config()))
@@ -31,8 +40,13 @@ def test_ros_topics_classifies_kind_hints(monkeypatch) -> None:
     by_name = {item.name: item.kind_hint for item in output.topics}
     assert by_name["/cmd_vel"] == "control"
     assert by_name["/scan"] == "sensor"
-    assert by_name["/rosout"] == "unknown"
-    assert by_name["/diagnostics"] == "debug"
+    assert by_name["/rosout"] == "infra"
+    assert by_name["/diagnostics"] == "infra"
+    assert by_name["/global_costmap/costmap"] == "nav"
+    # plumbing beats the domain word: amcl's lifecycle event is infra, not nav
+    assert by_name["/amcl/transition_event"] == "infra"
+    assert by_name["/tf_static"] == "tf"
+    assert by_name["/front_3d_lidar/lidar_points"] == "sensor"
 
 
 def test_ros_schema_summarizes_via_llm_fallback(monkeypatch) -> None:
