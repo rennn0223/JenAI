@@ -104,10 +104,16 @@ async def resume_with_approvals(
 
     run_store.set_status(run, RunStatus.RUNNING)
     try:
+        # Deliberately NO `context=` here: approvals live on the state's own
+        # context wrapper (state.approve → wrapper._approvals), and the SDK's
+        # resolve_resumed_context REPLACES run_state._context with a fresh,
+        # empty wrapper whenever a context is passed — wiping every approval
+        # just recorded, so the tool re-interrupts instead of executing. The
+        # state already carries ctx: in-memory it was captured at pause; after
+        # a restart take_pending_state injects it via context_override.
         result = await Runner.run(
             agent,
             state,
-            context=ctx,
             max_turns=_MAX_TURNS,
             session=JenAIFileSession(run.session_id),
             run_config=RunConfig(workflow_name="JenAI /run (resume)"),

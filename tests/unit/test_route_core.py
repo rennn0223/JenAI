@@ -108,3 +108,10 @@ def test_route_preview_llm_fallback_accepts_empty_start(monkeypatch) -> None:
     )
     assert output.resolved_goal.name == "Mechanical Hall"
     assert "start" not in output.outgoing_action
+
+
+def test_route_preview_bare_location_name_is_the_goal() -> None:
+    # Agents pass the bare place name; it must resolve without a provider.
+    output = asyncio.run(route_core.route_preview(_config(), _locations(), "Mechanical Hall"))
+    assert output.resolved_goal.name == "Mechanical Hall"
+    assert "start" not in output.outgoing_action

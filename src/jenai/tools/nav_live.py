@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import uuid4
@@ -17,6 +18,29 @@ class NavProgress:
     distance_remaining: float
     recoveries: int
     elapsed: float
+
+
+def _goal_pose_error(outgoing_action: dict) -> str | None:
+    """Why this action must not reach any adapter, or None when it is sound.
+
+    Fail closed: a goal whose pose is missing or non-numeric would otherwise
+    default to the map origin (0, 0) — an LLM-fabricated action once drove the
+    robot there while honestly reporting "succeeded". Every entry point funnels
+    through navigate_with_fallback, so this single check floors them all.
+    """
+    goal = outgoing_action.get("goal")
+    if not isinstance(goal, dict):
+        return "goal is missing or not an object"
+    pose = goal.get("pose")
+    if not isinstance(pose, dict):
+        return "goal.pose is missing or not an object"
+    for axis in ("x", "y"):
+        value = pose.get(axis)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"goal.pose.{axis} is missing or not a number"
+        if not math.isfinite(value):
+            return f"goal.pose.{axis} is not finite"
+    return None
 
 
 async def navigate_live(
@@ -162,6 +186,19 @@ async def navigate_with_fallback(
     # Imported here: route_core pulls in the provider stack, which nav_live's
     # other callers (daemon, bridge tests) shouldn't need at import time.
     from jenai.tools.route_core import route_execute
+
+    pose_error = _goal_pose_error(outgoing_action)
+    if pose_error is not None:
+        return RouteOutput(
+            input_text="",
+            outgoing_action=outgoing_action,
+            approval_status="approved",
+            execution_status="failed",
+            route_preview=(
+                f"Malformed navigation action ({pose_error}) — nothing was sent. "
+                "Pass route_preview_tool's outgoing_action through unchanged."
+            ),
+        )
 
     if config.twin.enabled:
         from jenai.twin import rehearse_goal
