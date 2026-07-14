@@ -181,16 +181,24 @@ def interface_show(message_type: str, *, timeout: float = 5.0) -> str:
     return completed.stdout
 
 
-def topic_echo(topic: str, *, count: int = 1, timeout: float = 5.0) -> list[str]:
+def topic_echo(
+    topic: str, *, count: int = 1, timeout: float = 5.0, latched: bool = False
+) -> list[str]:
     """Capture up to `count` snapshot messages from a topic.
 
     Uses `ros2 topic echo <topic> --once`, invoked once per requested message.
     Returns the raw per-message text blocks; an empty list means no message
     arrived (empty topic or timeout), which the caller reports gracefully.
+    `latched` subscribes RELIABLE + TRANSIENT_LOCAL — required for topics like
+    /amcl_pose that only re-publish on updates (a volatile subscriber would
+    wait forever next to a stationary robot).
     """
+    args = ["topic", "echo", topic, "--once"]
+    if latched:
+        args += ["--qos-durability", "transient_local", "--qos-reliability", "reliable"]
     messages: list[str] = []
     for _ in range(max(1, count)):
-        completed = _run(["topic", "echo", topic, "--once"], timeout=timeout)
+        completed = _run(args, timeout=timeout)
         if completed.returncode != 0:
             raise Ros2CommandError(
                 f"ros2 topic echo {topic} exited with code {completed.returncode}: "

@@ -16,16 +16,26 @@ from jenai.schemas import Location, RouteOutput
 _SPLIT_PATTERN = re.compile(
     r"(?:從|\bfrom\b)\s*(.+?)\s*(?:到|\bto\b)\s*(.+)", re.IGNORECASE
 )
+# Destination-only phrasings ("去X", "go to X"). Tried only after the from-to
+# pattern fails, so 到/to acting as the from-to separator is never shadowed.
+_GOAL_ONLY_PATTERN = re.compile(
+    r"(?:去|前往|到|\bgo to\b|\bnavigate to\b|\btake me to\b|\bto\b)\s*(.+)", re.IGNORECASE
+)
 
 
 def _extract_via_regex(text: str) -> tuple[str, str] | None:
+    # An empty start is valid — only the goal is required (see route_preview).
     match = _SPLIT_PATTERN.search(text)
-    if not match:
-        return None
-    start, goal = match.group(1).strip(), match.group(2).strip()
-    if not start or not goal:
-        return None
-    return start, goal
+    if match:
+        start, goal = match.group(1).strip(), match.group(2).strip()
+        if start and goal:
+            return start, goal
+    match = _GOAL_ONLY_PATTERN.search(text)
+    if match:
+        goal = match.group(1).strip()
+        if goal:
+            return "", goal
+    return None
 
 
 async def _extract_via_llm(config: AppConfig, text: str) -> tuple[str, str] | None:
@@ -39,7 +49,10 @@ async def _extract_via_llm(config: AppConfig, text: str) -> tuple[str, str] | No
     if not isinstance(parsed, dict):
         return None
     start, goal = str(parsed.get("start", "")).strip(), str(parsed.get("goal", "")).strip()
-    if not start or not goal:
+    # Only the goal is required: the prompt above tells the model to leave a
+    # missing start empty, so rejecting an empty start here would make every
+    # destination-only request ("去A") unparseable by design.
+    if not goal:
         return None
     return start, goal
 
@@ -64,10 +77,11 @@ async def route_preview(config: AppConfig, locations: list[Location], text: str)
     # so the adapter uses the goal alone — a start we can't resolve is therefore
     # not fatal (we simply omit it) and we never imply travel from a place we do
     # not actually send.
-    try:
-        resolved_start = find_location(locations, start_query)
-    except LocationNotFoundError:
-        resolved_start = None
+    if start_query:
+        try:
+            resolved_start = find_location(locations, start_query)
+        except LocationNotFoundError:
+            resolved_start = None
 
     try:
         resolved_goal = find_location(locations, goal_query)

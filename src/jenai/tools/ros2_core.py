@@ -91,23 +91,30 @@ async def ros_topic_info(config: AppConfig, topic: str) -> RosTopicInfoOutput:
 async def ros_state(
     config: AppConfig, *, odom_topic: str = "/odom", scan_topic: str = "/scan"
 ) -> dict:
-    """Snapshot the robot's current state (pose from odometry, laser scan) so the
-    agent can *observe* before deciding — the closed-loop primitive behind
+    """Snapshot the robot's current state (localized pose, odometry, laser scan)
+    so the agent can *observe* before deciding — the closed-loop primitive behind
     "drive until arrived" / "stop if there's an obstacle". Each field is the raw
     one-shot message, or None if that topic is idle/absent (honest, never faked).
     """
     _ = config
 
-    async def _snap(topic: str) -> str | None:
+    async def _snap(topic: str, *, latched: bool = False) -> str | None:
         try:
-            blocks = await asyncio.to_thread(ros2_adapter.topic_echo, topic, count=1)
+            blocks = await asyncio.to_thread(
+                ros2_adapter.topic_echo, topic, count=1, latched=latched
+            )
         except ros2_adapter.Ros2AdapterError:
             return None
         return blocks[0] if blocks else None
 
+    # /amcl_pose is the map-frame truth and must be read latched (AMCL only
+    # re-publishes on updates). Vehicles may also rename odom (Carter uses
+    # /chassis/odom), so pose must never depend on /odom alone.
     return {
+        "pose_topic": "/amcl_pose",
         "odom_topic": odom_topic,
         "scan_topic": scan_topic,
+        "pose": await _snap("/amcl_pose", latched=True),
         "odom": await _snap(odom_topic),
         "scan": await _snap(scan_topic),
     }

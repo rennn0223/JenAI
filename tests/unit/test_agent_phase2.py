@@ -73,14 +73,22 @@ def test_guardrail_allows_benign_speed_questions() -> None:
 # -- world-state observation ---------------------------------------------------
 
 
-def test_ros_state_snapshots_odom_and_scan(monkeypatch) -> None:
+def test_ros_state_snapshots_pose_odom_and_scan(monkeypatch) -> None:
+    calls = {}
+
     def fake_echo(topic, **kw):
+        calls[topic] = kw
         return [f"data from {topic}"]
 
     monkeypatch.setattr(ros2_adapter, "topic_echo", fake_echo)
     state = asyncio.run(ros2_core.ros_state(_config()))
+    assert state["pose"] == "data from /amcl_pose"
     assert state["odom"] == "data from /odom"
     assert state["scan"] == "data from /scan"
+    # AMCL latches its pose; a volatile subscriber next to a stationary robot
+    # would wait forever, so the pose snap must request the latched QoS.
+    assert calls["/amcl_pose"]["latched"] is True
+    assert calls["/odom"].get("latched", False) is False
 
 
 def test_ros_state_graceful_when_idle(monkeypatch) -> None:
@@ -89,7 +97,7 @@ def test_ros_state_graceful_when_idle(monkeypatch) -> None:
 
     monkeypatch.setattr(ros2_adapter, "topic_echo", boom)
     state = asyncio.run(ros2_core.ros_state(_config()))
-    assert state["odom"] is None and state["scan"] is None
+    assert state["pose"] is None and state["odom"] is None and state["scan"] is None
 
 
 # -- honest Nav2 adapter -------------------------------------------------------
