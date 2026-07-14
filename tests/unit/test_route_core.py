@@ -77,3 +77,34 @@ def test_route_execute_reports_no_backend_honestly() -> None:
     # No navigation backend is wired: report "unavailable", never fake success.
     assert output.execution_status == "unavailable"
     assert "not sent" in output.route_preview.lower()
+
+
+def test_route_preview_goal_only_chinese_goes_from_current_position() -> None:
+    # 「去X」/「到X」 must resolve without a provider: goal-only regex fast path.
+    for text in ("去Mechanical Hall", "到Mechanical Hall", "前往Mechanical Hall"):
+        output = asyncio.run(route_core.route_preview(_config(), _locations(), text))
+        assert output.resolved_goal.name == "Mechanical Hall", text
+        assert "start" not in output.outgoing_action
+        assert "current position" in output.route_preview
+
+
+def test_route_preview_goal_only_english_goes_from_current_position() -> None:
+    # "Go to X" is what the /run agent itself produces on its first attempt.
+    for text in ("Go to Mechanical Hall", "navigate to Mechanical Hall", "to Mechanical Hall"):
+        output = asyncio.run(route_core.route_preview(_config(), _locations(), text))
+        assert output.resolved_goal.name == "Mechanical Hall", text
+        assert "start" not in output.outgoing_action
+
+
+def test_route_preview_llm_fallback_accepts_empty_start(monkeypatch) -> None:
+    # The LLM prompt says "use an empty string" for a missing start; the parser
+    # must accept that instead of rejecting every destination-only request.
+    async def fake_ask_json(config, prompt, *, binding="chat"):
+        return {"start": "", "goal": "Mechanical Hall"}
+
+    monkeypatch.setattr("jenai.tools.route_core.ask_json", fake_ask_json)
+    output = asyncio.run(
+        route_core.route_preview(_config(), _locations(), "head over towards the hall")
+    )
+    assert output.resolved_goal.name == "Mechanical Hall"
+    assert "start" not in output.outgoing_action
