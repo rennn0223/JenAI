@@ -37,6 +37,9 @@ _COMMAND_GROUPS = [
             "/loc show <name>",
             "/loc add here <name>",
             "/loc add gps <name> <lat> <lon>",
+            "/loc move <name>",
+            "/loc rename <old> <new>",
+            "/loc rm <name>",
         ],
     ),
     CommandGroup(

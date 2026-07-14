@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.33.2(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v0.34.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(DGX Spark 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -49,7 +49,7 @@
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.33.2`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 0.34.0`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |
@@ -137,9 +137,12 @@
 | ✅ | `/drive 前進兩秒` | 批准後 | 自然語言 → 速度指令定時發布到 `vehicle.cmd_vel_topic`,結束自動停(⚠️ 實體會動) |
 | 🔶 | 局部避障(`[avoidance] enabled=true`,route_adapter=odom) | 需 depth topic + 障礙 | odom 直驅時 depth→走廊判定→stop-and-go detour;depth 超過 `depth_timeout_s` 未更新即歸零並回報 `sensor_unavailable`,不沿用舊畫面盲走 |
 | ✅ | `/loc list` | 直接輸入 | 地點表;現在為空 |
-| 🔶 | `/loc add here 測試點` | 需 /amcl_pose 或 /odom | 抓當下位置存檔;**本機現在兩者皆無 → 誠實失敗** |
+| ✅ | `/loc add here 測試點` | 需 /amcl_pose 或 /odom | 抓當下位置存檔。實測(Isaac Carter,v0.34.0):靜止讀 /amcl_pose 四點入檔 ✅(QoS 修復後) |
 | ✅ | `/loc add gps <名> <緯> <經>` | 先在 config 設 `[map_datum]` | 未設基準點 → 誠實拒絕 + 設定教學;設好 → 換算 map 座標存檔(提示:實地驗證第一次導航,基準誤差會整批平移) |
 | ✅ | `/loc show <名>` | 建點後 | 座標/別名/tags |
+| 🔶 | `/loc move <名>` | 建點後,車移到新位置 | 既有地點更新為當前位姿(座標改、tags/aliases 保留);不存在 → 誠實列出已知名稱 |
+| 🔶 | `/loc rename <舊> <新>` | 建點後 | 改名保留座標;撞名/撞 alias → 誠實拒絕;含空白名稱用 `舊 -> 新` |
+| 🔶 | `/loc rm <名>` | 建點後 | 精確名稱才刪(alias/模糊不觸發);回報被刪座標;不存在 → 列已知名稱 |
 
 ### Skills(任務技能)
 
@@ -147,7 +150,7 @@
 |---|---|---|---|
 | 🔶 | `/mission 廚房, drive 左轉, 大廳` | Nav2+地點後測 | 批准一次跑整趟,逐步回報;drive 段可混排 |
 | 🔶 | `/patrol A, B x3 photo` | Nav2+地點+RGB 相機後測 | 點位×圈數;photo 時每到達點抓幀→VLM 觀察即時顯示 👁;一點失敗記錄後續行,**統計誠實 n/m**;Esc/`/stop` 可搶佔 |
-| 🔶 | `/dock` | 建 `tags=["dock"]` 地點後測 | 導航到 dock 點;無 dock 點時**誠實提示建法**(`/loc add here Dock`) |
+| ✅ | `/dock` | 建 `tags=["dock"]` 或名為 dock 的地點後測 | 導航到 dock 點;無 dock 點時**誠實提示建法**(`/loc add here Dock`)。實測(Isaac Carter):`Arrived at the goal` ✅,與 `/vision` 排隊互不干擾 |
 | ✅ | `/report` / `/report list` | 沒 log 時直接輸入;有 log 後再測 | 無 log → `No patrol logs yet`;有 log → 日報(時間/路線/n:m/逐點 ✓✗/👁 觀察)+ LLM 摘要段;provider 離線 → 誠實標示只有確定性內容 |
 | ✅ | `/skills` + 自訂技能 | 建 `skills/inspect.toml` 後重啟 | `/skills` 列出技能與載入警告;`/inspect` 出現在 palette、執行時**先過批准卡**再跑 mission;壞檔/保留字/重名 → 警告不炸(本機已裝 inspect=應科大樓→機械系館) |
 
@@ -156,7 +159,7 @@
 | 狀態 | 指令 | 測法 | 期望輸出 |
 |---|---|---|---|
 | ✅ | `/vision image /tmp/scene.jpg` | 準備一張圖 | VLM(qwen3.6)結構化觀察輸出 |
-| 🔶 | `/vision camera` | 需 RGB topic | 抓一幀→VLM 分析;**本機現在只有 /depth 無 /rgb → 誠實失敗**;`/vision camera /depth` 可測抓幀路徑 |
+| ✅ | `/vision camera` | 需 RGB topic | 抓一幀→VLM 分析。實測(Isaac Carter,`/front_stereo_camera/left/image_raw`,qwen3.6:35b):正確描述倉庫/堆高機/牆面,含 Objects/Anomalies/Suggested next ✅ |
 | 🔶 | `/perception start /rgb 1` | 需 RGB topic | 持續迴圈:定頻抓幀→SceneAnalysis(場景/物件/affordances/建議動作);**只觀察不動作**,建議動作標「需批准」;錯誤連發只報一次 |
 | 🔶 | `/perception stop` / `status` | 迴圈中 | 停止並回報分析幀數 / 顯示迴圈狀態 |
 

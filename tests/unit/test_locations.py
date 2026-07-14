@@ -112,3 +112,49 @@ def test_find_location_no_match_returns_empty_candidates() -> None:
         find_location(locations, "completely unrelated place")
 
     assert exc_info.value.candidates == []
+
+
+def test_remove_location_by_exact_name(tmp_path) -> None:
+    from jenai.adapters.locations import remove_location
+
+    path = tmp_path / "locations.toml"
+    save_locations(_sample_locations(), path)
+
+    removed = remove_location("mechanical hall", path)  # case-insensitive exact
+    assert removed.name == "Mechanical Hall"
+    assert [loc.name for loc in load_locations(path)] == ["Engineering Building"]
+
+    with pytest.raises(LocationsFileError, match="No location named"):
+        remove_location("mech hall", path)  # alias must NOT match a destructive op
+
+
+def test_rename_location_keeps_pose_and_refuses_collision(tmp_path) -> None:
+    from jenai.adapters.locations import rename_location
+
+    path = tmp_path / "locations.toml"
+    save_locations(_sample_locations(), path)
+
+    renamed = rename_location("Mechanical Hall", "Robot Lab", path)
+    assert renamed.name == "Robot Lab"
+    assert renamed.pose.x == 5.0 and renamed.aliases == ["mech hall"]
+
+    with pytest.raises(LocationsFileError, match="already exists"):
+        rename_location("Robot Lab", "engineering", path)  # collides with an alias
+    with pytest.raises(LocationsFileError, match="must not be empty"):
+        rename_location("Robot Lab", "   ", path)
+
+
+def test_update_location_pose_only_touches_target(tmp_path) -> None:
+    from jenai.adapters.locations import update_location_pose
+
+    path = tmp_path / "locations.toml"
+    save_locations(_sample_locations(), path)
+
+    updated = update_location_pose(
+        "Engineering Building", Pose2D(x=9.0, y=9.5, yaw=0.5), "map", path
+    )
+    assert (updated.pose.x, updated.pose.y, updated.pose.yaw) == (9.0, 9.5, 0.5)
+    reloaded = load_locations(path)
+    assert reloaded[0].pose.x == 9.0
+    assert reloaded[0].tags == ["building"]  # everything else preserved
+    assert reloaded[1].pose.x == 5.0  # the other entry untouched
