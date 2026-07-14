@@ -78,6 +78,16 @@ async def route_preview_tool(ctx: RunContextWrapper[JenAIRunContext], text: str)
     return output.model_dump(mode="json")
 
 
+def _unwrap_outgoing_action(parsed: dict) -> dict:
+    """Tolerate a model quoting the whole preview response instead of just the
+    action: unwrap ``{"outgoing_action": {...}}`` (weak local models do this).
+    The pose validation at the navigation exit still rejects anything unsound."""
+    inner = parsed.get("outgoing_action")
+    if isinstance(inner, dict) and "goal" not in parsed:
+        return inner
+    return parsed
+
+
 @function_tool(needs_approval=True)
 async def route_execute_tool(
     ctx: RunContextWrapper[JenAIRunContext],
@@ -88,7 +98,7 @@ async def route_execute_tool(
     the outgoing_action dict from route_preview_tool's response, JSON-encoded."""
     call = _record_call(ctx, "route_execute_tool", "execute route")
     try:
-        outgoing_action = json.loads(outgoing_action_json)
+        outgoing_action = _unwrap_outgoing_action(json.loads(outgoing_action_json))
     except json.JSONDecodeError as exc:
         _finish_call(ctx, call, ok=False, summary="invalid JSON action")
         return {
@@ -106,7 +116,8 @@ async def route_execute_tool(
         run_id=run_ctx.run.run_id,
         session_id=run_ctx.run.session_id,
     )
-    _finish_call(ctx, call, ok=True, summary=output.execution_status)
+    ok = output.execution_status == "succeeded"
+    _finish_call(ctx, call, ok=ok, summary=output.execution_status if ok else output.route_preview)
     return output.model_dump(mode="json")
 
 

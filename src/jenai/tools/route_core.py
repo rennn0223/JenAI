@@ -58,7 +58,15 @@ async def _extract_via_llm(config: AppConfig, text: str) -> tuple[str, str] | No
 
 
 async def route_preview(config: AppConfig, locations: list[Location], text: str) -> RouteOutput:
-    extraction = _extract_via_regex(text) or await _extract_via_llm(config, text)
+    extraction = _extract_via_regex(text)
+    if extraction is None:
+        # A bare known-location name ("map_right_down") is unambiguously the
+        # goal — agents pass exactly this form. Deterministic, no provider.
+        try:
+            find_location(locations, text)
+            extraction = ("", text.strip())
+        except LocationNotFoundError:
+            extraction = await _extract_via_llm(config, text)
     if extraction is None:
         return RouteOutput(
             input_text=text,

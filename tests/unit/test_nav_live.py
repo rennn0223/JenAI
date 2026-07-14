@@ -185,3 +185,43 @@ def test_navigate_with_fallback_surfaces_structured_gate_report(monkeypatch) -> 
 
     assert seen == [report]
     assert output.execution_status == "failed"
+
+
+def test_navigate_with_fallback_rejects_malformed_goal_fail_closed() -> None:
+    # An LLM-fabricated action without a proper goal.pose must be refused at
+    # the single navigation exit — never defaulted to the map origin (0, 0).
+
+    from jenai.config.store import build_minimal_config
+    from jenai.tools.nav_live import navigate_with_fallback
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "nav2"
+
+    async def get_bridge():  # pragma: no cover - must never be reached
+        raise AssertionError("a malformed action must not open a bridge")
+
+    bad_actions = [
+        {"outgoing_action": {"goal": "map_right_down"}},  # model quoted the wrapper
+        {"goal": "map_right_down"},                        # goal is a string
+        {"goal": {"name": "x"}},                           # no pose
+        {"goal": {"pose": {"x": float("nan"), "y": 0.0}}},  # non-finite
+        {"goal": {"pose": {"x": True, "y": 0.0}}},         # bool is not a coordinate
+        {},                                                 # empty
+    ]
+    for action in bad_actions:
+        out = asyncio.run(navigate_with_fallback(config, get_bridge, action))
+        assert out.execution_status == "failed", action
+        assert "nothing was sent" in out.route_preview, action
+
+
+def test_unwrap_outgoing_action_tolerates_quoted_preview() -> None:
+    import jenai.agent.specialists  # noqa: F401  (module init order: agent → tools)
+    from jenai.tools.route_agent_tools import _unwrap_outgoing_action
+
+    inner = {"goal": {"pose": {"x": 1.0, "y": 2.0}}}
+    assert _unwrap_outgoing_action({"outgoing_action": inner}) == inner
+    assert _unwrap_outgoing_action(inner) == inner  # already unwrapped: untouched
+    both = {"goal": inner["goal"], "outgoing_action": {"other": 1}}
+    assert _unwrap_outgoing_action(both) == both  # a real goal wins over the wrapper
