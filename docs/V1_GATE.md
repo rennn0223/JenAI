@@ -23,7 +23,7 @@
 | A3 | 安全鏈覆蓋率 | 92%(safety 100/engine 98/gate 94/client 93/runner 76);CI 加 fail-under=90 倒退閘,只升不降 | ✅ v0.12 |
 | A4 | 故障注入測試 | bridge 永不 ready / watchdog 武裝失敗 / 串流垃圾行 / twin 預演中斷→refer / pose 失聯→G4 跳過 / halt 失敗誠實回報 / 未知地點 / 無地點檔 → 全部證明誠實降級 | ✅ v0.11 |
 | A5 | 架構鐵律 CI 防護 | tests/unit/test_architecture.py:反射層(bridge/engine/safety/gate)禁 import LLM 堆疊;技能層以上禁載具字眼(AST + 逐行掃描) | ✅ v0.12 |
-| A6 | 24h soak 腳本 | `scripts/soak.py`:RSS 樹採樣 + warmup 校正 + PASS/WARN 判定;真 daemon 短跑驗證過(+0.0% PASS)。**24h 正式跑掛機時啟動**(見 TEST.md) | ✅ v0.13(24h 跑待排) |
+| A6 | 24h soak 腳本 | `scripts/soak.py`:RSS 樹採樣 + warmup 校正 + PASS/WARN 判定;真 daemon 短跑驗證過(+0.0% PASS)。**24h 正式跑 2026-07-15 已啟動**(結果出爐後回填 SAFETY_CASE) | ✅ v0.13(24h 進行中) |
 | A7 | Safety case 草稿 | docs/SAFETY_CASE.md:H1–H8 危害表 → R/G/H/P 防護對應 → 驗證證據 → 殘餘風險;⬜ TODO(客戶)欄待 B4/B5/B6 數據 | ✅ v0.13(草稿) |
 | A8 | 巡邏日報(C2) | patrol 結束自動存 log(`reports/patrol-*.json`);`/report` 確定性日報 + LLM 摘要(離線誠實降級)、`/report list` 回看歷次 | ✅ v0.12 |
 | A9 | M6 DecisionLoop 核心 | 有界動作集決策 + 延遲量測(**v2 線,不擋 v1.0**)。決策腦 `decision_core.py` + `JenAI eval`(E1)已於 v0.21 落地;剩常駐迴圈 perceive→decide→rehearse→act,詳見 [ROADMAP 軌道 1](ROADMAP.md) | 🚧 v2(腦已備) |
@@ -39,10 +39,10 @@
 | # | 項目 | 內容 | 狀態 |
 |---|---|---|---|
 | B5 | **Isaac 孿生場景**(關鍵路徑第一步) | 照 docs/TWIN_SETUP.md 建場景(DGX Spark GUI 作業)→ Twin Gate 端到端 + 消融數據(攔截率/誤攔率/延遲成本) | ☐ |
-| B1 | 原生 nav 接口確認 | 於 twin 車跑 `ros2 action list | grep -i navigate` 與 map/amcl/odom topics 清點;有 `NavigateToPose` 即直通(twin 車 = 第一個「原生 nav 載具」) | ☐(隨 B5) |
-| B2 | 建 locations | twin 場景內 `/loc add here <名>` 建點,含 `tags=["dock"]` 充電點 | 🚧 應科/機械系館已 GPS 註冊;sim 內點位與 dock 待建 |
-| B3 | 解鎖 TEST.md 🔶 項 | B1/B2 完成後於 Isaac Sim 逐項實測 `/route` `/mission` `/patrol photo` `/dock` `/perception`,結果回填 TEST.md | ☐ |
-| B4 | 模擬里程 | Isaac 場景累積 ≥20h / ≥50 次任務,0 安全事件;事件記錄表 | ☐ |
+| B1 | 原生 nav 接口確認 | 於 twin 車跑 `ros2 action list | grep -i navigate` 與 map/amcl/odom topics 清點;有 `NavigateToPose` 即直通(twin 車 = 第一個「原生 nav 載具」) | ✅ 2026-07-14(Carter 場景實測) |
+| B2 | 建 locations | twin 場景內 `/loc add here <名>` 建點,含 `tags=["dock"]` 充電點 | ✅ 2026-07-14(4 點含 dock;貼牆點以 /loc move 重定位) |
+| B3 | 解鎖 TEST.md 🔶 項 | B1/B2 完成後於 Isaac Sim 逐項實測 `/route` `/mission` `/patrol photo` `/dock` `/perception`,結果回填 TEST.md | ✅ 2026-07-14~15(slash + NL 全通;WebUI/MCP/daemon 亦實測,見 TEST.md) |
+| B4 | 模擬里程 | Isaac 場景累積 ≥20h / ≥50 次任務,0 安全事件;事件記錄表 | 🚧 2026-07-15 掛機啟動(patrol 圈,log:/tmp/b4_mileage.log + patrol reports + audit) |
 | B6 | Onboarding 計時 | 找 3 位新手照文件從裸機到第一次 sim `/route`,計時、記卡點(每個卡點=文件 bug,回報層一修) | ☐ |
 | B7 | Demo 排練 | 15 分鐘 scripted demo(Isaac Sim),含斷網切 local provider 的備援劇本 | ☐ |
 | B8 | 使用回饋 | 日常把 TEST.md ✅ 項當真用,意見開 issue 或直接講 | ☐ |

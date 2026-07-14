@@ -42,8 +42,9 @@
 - **LLM**:ollama 本地(全 binding = qwen3.6:35b);nvidia-cloud 備援
 - **locations**:6 點(含 `dock`;`map_left_up` 存得貼牆,終點逼近會失敗,`/loc move` 重存即修)
 
-→ 一句話:**對話/感知/導航層(route/mission/patrol/dock/report)全部實測可用;
-twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。**
+→ 一句話:**四介面(TUI slash/NL、WebUI、MCP、daemon)全部在 Carter 場景實測可用;
+twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→執行→免 token 急停
+(位移 0.0cm)、MCP 7 唯讀工具+stop、daemon 規則對活 topic 觸發,均 2026-07-15 實測。**
 
 **Known issues(2026-07-14 實測;1、2 已修)**:
 1. ~~route 解析器對 destination-only 句式(`去X`、`Go to X`)失敗~~ → **v0.35.0 已修**
@@ -81,7 +82,7 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。**
 | 🔶 | `JenAI route "<text>"` | 解析目的地 → 互動確認 → 送 Nav2;**前置:Nav2 + 地圖 + 地點**。現在會誠實報 Nav2 unavailable |
 | ✅ | `JenAI web` | 印出帶 `?token=…` 的網址;WebUI 起在 127.0.0.1:8760;含 STOP 鈕、地圖、批准卡 |
 | ✅ | WebUI auth | 無 token / 錯 token → 401;`?token=` 開頁 → 200 並種 session cookie;`Authorization: Bearer` 亦可;JSON body >64 KiB → 413、非 JSON object → 400;**POST `/api/stop` 免 token、先停車再讀 body 且撤銷舊確認** |
-| 🔶 | WebUI Camera 頁 | 需影像 topic。切到 Camera tab 才開始輪詢:**topic 下拉選單**(影像類優先,免猜 /rgb vs /rgb/image,選擇記憶於瀏覽器)+ `/api/frame` 每秒一幀 + odom 小格同步刷新;無相機時誠實 unavailable |
+| ✅ | WebUI Camera 頁 | 需影像 topic。切到 Camera tab 才開始輪詢:**topic 下拉選單** + `/api/frame` 每秒一幀 + odom 小格同步刷新。API 端實測(Carter):`/api/frame` 回 1920×1200 真影像(冷啟第一發 503,輪詢自癒);`/api/topics` 供下拉;頁面 UI 於瀏覽器驗 |
 | ✅ | WebUI API 頁 | 切到 API tab:ORDS 風格端點目錄(GET/POST 徽章、路徑、說明、auth 註記)+ **即時 ROS topics 清單**(`/api/topics`);指路 MCP 與文件 |
 | 🧪 | WebUI 狀態快取 | 多個分頁輪詢共用 probe:doctor 30 秒最多一次、ROS graph 2 秒最多一次;STOP/confirm/frame 不經狀態快取鎖 |
 | ✅ | `JenAI mcp` | MCP stdio server 起動,Claude Code/Desktop 可接;預設唯讀,`--allow-actions` 才有 `navigate_to` |
