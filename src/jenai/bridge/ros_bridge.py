@@ -86,8 +86,9 @@ class BridgeNode(Node):
         """Current robot pose from /amcl_pose, falling back to /odom."""
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from nav_msgs.msg import Odometry
+        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
-        def _try_topic(topic: str, msg_type, frame_id: str) -> dict | None:
+        def _try_topic(topic: str, msg_type, frame_id: str, qos) -> dict | None:
             got: list = []
             event = threading.Event()
 
@@ -95,9 +96,7 @@ class BridgeNode(Node):
                 got.append(msg.pose.pose)
                 event.set()
 
-            sub = self.create_subscription(
-                msg_type, topic, _cb, QoSPresetProfiles.SENSOR_DATA.value
-            )
+            sub = self.create_subscription(msg_type, topic, _cb, qos)
             try:
                 if not event.wait(timeout):
                     return None
@@ -112,8 +111,17 @@ class BridgeNode(Node):
                 "source": topic,
             }
 
-        result = _try_topic("/amcl_pose", PoseWithCovarianceStamped, "map") or _try_topic(
-            "/odom", Odometry, "odom"
+        # AMCL latches the last pose (RELIABLE + TRANSIENT_LOCAL) and only
+        # republishes on updates — a volatile subscriber gets nothing from a
+        # stationary robot. Match Nav2's QoS so the latched sample arrives
+        # immediately; /odom stays SENSOR_DATA (it is a continuous stream).
+        latched = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        result = _try_topic("/amcl_pose", PoseWithCovarianceStamped, "map", latched) or _try_topic(
+            "/odom", Odometry, "odom", QoSPresetProfiles.SENSOR_DATA.value
         )
         if result is None:
             raise RuntimeError("No pose received on /amcl_pose or /odom (are they publishing?)")
