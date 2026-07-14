@@ -1102,7 +1102,13 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             else:
                 await self._mount_event(TimelineItem("error", "Run failed."))
         elif run.status == "blocked":
-            await self._mount_event(TimelineItem("warn", "Run blocked."))
+            # The orchestrator writes WHY into final_output (e.g. the model-loop
+            # stop with a suggested manual command) — swallowing it would hide
+            # an honest report behind a four-word warning.
+            if run.final_output:
+                await self._mount_event(OutputPanel("Run blocked", run.final_output, spaced=True))
+            else:
+                await self._mount_event(TimelineItem("warn", "Run blocked."))
 
         self._scroll_to_bottom()
 

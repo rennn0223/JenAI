@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.34.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v0.34.1(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(DGX Spark 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -34,14 +34,24 @@
 | 稽核紀錄 | 自動化測試 + 執行任一 TUI run | `<config 目錄>/audit.sqlite3` 保存 run/approval/tool/gate 事件,重啟後仍在;最多 10,000 筆且不含 prompt/raw payload |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 
-## 本機實測現況快照(v0.22.1 實測,DGX Spark 工作機;軟體已至 v0.30,重跑後更新本節)
+## 本機實測現況快照(v0.34.0 實測,DGX Spark 工作機,Isaac Carter 倉庫場景)
 
-- **doctor overall:`warn`**(source ROS 後):environment / config / provider / locations / webui 全 pass;nav 區段:無 `/map`、無 `/amcl_pose`、無 `/scan`、**Nav2 未跑**;`/cmd_vel` **有 controller 訂閱** ✅
-- **ROS graph**:`/cmd_vel`、`/ackermann_cmd`、`/depth`(**無 `/rgb`、`/odom`、`/scan`**)
-- **LLM**:ollama 本地 6 模型(當時 qwen3:8b=chat/plan/route、qwen3.6=vision;現行預設 qwen3.6:35b);nvidia-cloud 備援
-- **locations**:`No locations configured`(要測 `/loc`、`/route`、`/patrol` 得先建點)
+- **doctor overall:`pass`**:全部區段綠,含 nav 五項(map / AMCL / laser / Nav2 / cmd_vel)
+- **ROS graph**:Nova Carter 倉庫(`/cmd_vel`=Twist、`/amcl_pose`、`/map`、`/scan`、
+  `/front_stereo_camera/left/image_raw`、Nav2 全家 + docking_server)
+- **LLM**:ollama 本地(全 binding = qwen3.6:35b);nvidia-cloud 備援
+- **locations**:6 點(含 `dock`;`map_left_up` 存得貼牆,終點逼近會失敗,`/loc move` 重存即修)
 
-→ 一句話:**對話層、感知層(depth 除外要 RGB)、直接駕駛層現在可測;導航層(route/mission/patrol/dock)缺 Nav2+地圖;twin 閘門缺 Isaac 場景。**
+→ 一句話:**對話/感知/導航層(route/mission/patrol/dock/report)全部實測可用;
+twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。**
+
+**Known issues(2026-07-14 實測)**:
+1. route 解析器對 destination-only 句式(`去X`、`Go to X`)回「Could not determine a
+   start and goal location」——`/run` agent 內部第一次嘗試也踩到(重試 `Navigate from
+   current location to X` 才過)。
+2. `/run` 以 qwen3.6:35b 執行:工具鏈(find place→plan route→批准卡→resume)全通,
+   但模型 resume 後重複請求同一動作 → 迴圈偵測器誠實 BLOCKED(論文的小模型失效
+   模式素材;換強模型或收斂 prompt 後重測)。
 
 ---
 
@@ -49,7 +59,7 @@
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.34.0`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 0.34.1`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |
@@ -101,7 +111,7 @@
 | ✅ | 自然語言(規劃模式) | 同句話 → /plan:產出步驟與教學,**零執行**(plan agent 無工具,結構保證) |
 | ✅ | 自然語言(自動模式) | 同句話 → agent 執行且**批准卡自動通過**,每次自動批准都寫進時間軸(可稽核);急停/硬限速/Twin Gate 不受影響 |
 | ✅ | `/plan 導航到 A 並回報電量` | 產出任務計畫,**不執行任何 side effect** |
-| 🔶 | `/run 帶我到大廳` | Supervisor handoff 給專職 agent 執行;side-effect 工具一律過批准卡。**前置:Nav2+地點**(無後端時誠實失敗) |
+| 🔶 | `/run 帶我到大廳` | Supervisor handoff 給專職 agent 執行;side-effect 工具一律過批准卡。**前置:Nav2+地點**(無後端時誠實失敗)。實測(Isaac Carter,qwen3.6:35b):工具鏈與批准卡全通,模型 resume 後重複同一動作 → 迴圈偵測 BLOCKED(誠實;見快照節 known issue 2) |
 | ✅ | `/why` | 解釋 agent 當前決策原因 |
 | ✅ | `/review` | 重新檢視 plan 並給修改建議 |
 | ✅ | `/abort` | 中止目前 run |
@@ -133,11 +143,11 @@
 
 | 狀態 | 指令 | 測法 | 期望輸出 |
 |---|---|---|---|
-| 🔶 | `/route 從應科大樓到機械系館` | 建點 + (Nav2 或 route_adapter=odom) | **兩端已知 → 先去 A 再去 B**(兩段導航);只認得目的地 → 從當前位置去。即時剩餘距離、Esc 真取消。`route_adapter="odom"` 時無 Nav2 也能在開闊地/ground plane 直驅(閉環 odom→cmd_vel);實測:Isaac ground plane 從 odom (0,0) 往 (88.413,-184.273),distance_remaining 單調遞減、方向正確 ✅ |
+| ✅ | `/route 從應科大樓到機械系館` | 建點 + (Nav2 或 route_adapter=odom) | **兩端已知 → 先去 A 再去 B**(兩段導航);只認得目的地 → 從當前位置去。即時剩餘距離、Esc 真取消。實測(Isaac Carter,nav2):`從dock到map_left_up` 兩段判讀正確、剩餘距離即時遞減、**Esc 取消後 5 秒位移 0.0 cm**、失敗段誠實 n/m ✅;known issue:`去X` destination-only 句式解析失敗(見快照節) |
 | ✅ | `/drive 前進兩秒` | 批准後 | 自然語言 → 速度指令定時發布到 `vehicle.cmd_vel_topic`,結束自動停(⚠️ 實體會動) |
 | 🔶 | 局部避障(`[avoidance] enabled=true`,route_adapter=odom) | 需 depth topic + 障礙 | odom 直驅時 depth→走廊判定→stop-and-go detour;depth 超過 `depth_timeout_s` 未更新即歸零並回報 `sensor_unavailable`,不沿用舊畫面盲走 |
 | ✅ | `/loc list` | 直接輸入 | 地點表;現在為空 |
-| ✅ | `/loc add here 測試點` | 需 /amcl_pose 或 /odom | 抓當下位置存檔。實測(Isaac Carter,v0.34.0):靜止讀 /amcl_pose 四點入檔 ✅(QoS 修復後) |
+| ✅ | `/loc add here 測試點` | 需 /amcl_pose 或 /odom | 抓當下位置存檔。實測(Isaac Carter,v0.34.1):靜止讀 /amcl_pose 四點入檔 ✅(QoS 修復後) |
 | ✅ | `/loc add gps <名> <緯> <經>` | 先在 config 設 `[map_datum]` | 未設基準點 → 誠實拒絕 + 設定教學;設好 → 換算 map 座標存檔(提示:實地驗證第一次導航,基準誤差會整批平移) |
 | ✅ | `/loc show <名>` | 建點後 | 座標/別名/tags |
 | 🔶 | `/loc move <名>` | 建點後,車移到新位置 | 既有地點更新為當前位姿(座標改、tags/aliases 保留);不存在 → 誠實列出已知名稱 |
@@ -148,8 +158,8 @@
 
 | 狀態 | 指令 | 測法 | 期望輸出 |
 |---|---|---|---|
-| 🔶 | `/mission 廚房, drive 左轉, 大廳` | Nav2+地點後測 | 批准一次跑整趟,逐步回報;drive 段可混排 |
-| 🔶 | `/patrol A, B x3 photo` | Nav2+地點+RGB 相機後測 | 點位×圈數;photo 時每到達點抓幀→VLM 觀察即時顯示 👁;一點失敗記錄後續行,**統計誠實 n/m**;Esc/`/stop` 可搶佔 |
+| ✅ | `/mission 廚房, drive 左轉, 大廳` | Nav2+地點後測 | 批准一次跑整趟,逐步回報;drive 段可混排。實測(Isaac Carter):兩點 mission 批准一次 → 2/2 succeeded ✅ |
+| ✅ | `/patrol A, B x3 photo` | Nav2+地點+RGB 相機後測 | 點位×圈數;photo 時每到達點抓幀→VLM 觀察即時顯示 👁;一點失敗記錄後續行,**統計誠實 n/m**;Esc/`/stop` 可搶佔。實測(Isaac Carter):x1 photo 兩點 → 2/2、每點 👁 場景描述正確、log 自動存 ✅ |
 | ✅ | `/dock` | 建 `tags=["dock"]` 或名為 dock 的地點後測 | 導航到 dock 點;無 dock 點時**誠實提示建法**(`/loc add here Dock`)。實測(Isaac Carter):`Arrived at the goal` ✅,與 `/vision` 排隊互不干擾 |
 | ✅ | `/report` / `/report list` | 沒 log 時直接輸入;有 log 後再測 | 無 log → `No patrol logs yet`;有 log → 日報(時間/路線/n:m/逐點 ✓✗/👁 觀察)+ LLM 摘要段;provider 離線 → 誠實標示只有確定性內容 |
 | ✅ | `/skills` + 自訂技能 | 建 `skills/inspect.toml` 後重啟 | `/skills` 列出技能與載入警告;`/inspect` 出現在 palette、執行時**先過批准卡**再跑 mission;壞檔/保留字/重名 → 警告不炸(本機已裝 inspect=應科大樓→機械系館) |
@@ -160,8 +170,8 @@
 |---|---|---|---|
 | ✅ | `/vision image /tmp/scene.jpg` | 準備一張圖 | VLM(qwen3.6)結構化觀察輸出 |
 | ✅ | `/vision camera` | 需 RGB topic | 抓一幀→VLM 分析。實測(Isaac Carter,`/front_stereo_camera/left/image_raw`,qwen3.6:35b):正確描述倉庫/堆高機/牆面,含 Objects/Anomalies/Suggested next ✅ |
-| 🔶 | `/perception start /rgb 1` | 需 RGB topic | 持續迴圈:定頻抓幀→SceneAnalysis(場景/物件/affordances/建議動作);**只觀察不動作**,建議動作標「需批准」;錯誤連發只報一次 |
-| 🔶 | `/perception stop` / `status` | 迴圈中 | 停止並回報分析幀數 / 顯示迴圈狀態 |
+| ✅ | `/perception start /rgb 1` | 需 RGB topic | 持續迴圈:定頻抓幀→SceneAnalysis(場景/物件/affordances/建議動作);**只觀察不動作**,建議動作標「需批准」;錯誤連發只報一次。實測(Isaac Carter,0.2Hz):`#path_clear #forklift_present` + 建議動作標 needs approval + 信心 95% ✅ |
+| ✅ | `/perception stop` / `status` | 迴圈中 | 停止並回報分析幀數 / 顯示迴圈狀態。實測:status 顯示 running·topic·幀數,stop 誠實回報幀數 ✅ |
 
 ### System
 
