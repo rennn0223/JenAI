@@ -4,6 +4,9 @@
 > 讓 `/route` 走真正的全域路徑規劃 + costmap 避障(取代 ground plane 的
 > odom 直驅)。依官方文件整理(2026-07,Isaac Sim latest);來源列文末。
 > 本機驗證組合:**Ubuntu 24.04 + ROS2 Jazzy — 官方推薦組合**,直接可用。
+>
+> 在整條 twin 建置路上,本文件是**階段 1(路線 A)與階段 2(路線 B)**;
+> 四階段總覽與後續的孿生側/Gate 設定見 [TWIN_SETUP](TWIN_SETUP.md) §0。
 
 ---
 
