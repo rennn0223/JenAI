@@ -24,12 +24,20 @@ sim-first 驗證(2026-07 定調)下,「載具」與「孿生」**都是 Isaac Si
 
 ## 1. 架構:孿生走自己的 ROS_DOMAIN_ID
 
-載具與孿生是**兩個完全隔離的 ROS graph**:
+載具與孿生是**兩個完全隔離的 ROS graph**。sim-first 推薦**倒置佈局**(2026-07-15
+實測上線):把**現在跑著、已驗證的場景直接當孿生**,新實例才是載具——已調好的
+Nav2、佔位圖、地圖全部留在最需要可靠的閘門側,而且不等第二個實例就能開始收
+Gate 數據(載具側空著,預演照跑,執行端誠實回報 unavailable):
 
 ```
-載具 graph:ROS_DOMAIN_ID=<環境預設,通常 0>  ← bridge、Nav2、感測器(sim-first:Isaac 實例 #1)
-孿生 graph:ROS_DOMAIN_ID=42(可改)          ← Isaac 實例 #2 + 同一套 Nav2 + 同一張佔位圖
+孿生 graph:ROS_DOMAIN_ID=<環境預設 0>  ← 現有 Isaac 實例(已驗證的 Nav2+地圖)+ Contact Sensor
+載具 graph:ROS_DOMAIN_ID=42            ← JenAI 與(未來的)Isaac 實例 #2 跑在這
 ```
+
+倒置佈局的啟用方式:config 設 `[twin] domain_id = 0`、`enabled = true`,
+JenAI 以 `export ROS_DOMAIN_ID=42` 啟動。`jenai doctor` 的 **twin_isolation**
+檢查會擋下「孿生與載具共用 domain」的誤設(共用時預演會直接動到真車)。
+傳統佈局(孿生=42)照舊支援,以下各節的 domain 值按你的佈局對調即可。
 
 JenAI 會在需要預演時,額外起一條**孿生 bridge**(同一支 `ros_bridge.py`,但以
 `ROS_DOMAIN_ID=[twin].domain_id` 啟動),預演的 Nav2 goal、位姿取樣、碰撞事件

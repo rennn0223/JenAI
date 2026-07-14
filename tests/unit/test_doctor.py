@@ -165,3 +165,32 @@ def test_run_doctor_include_nav_flag(monkeypatch, tmp_path) -> None:
     assert called == []
     run_doctor(tmp_path / "config.toml")
     assert called == [1]
+
+
+def test_twin_isolation_fails_when_domains_collide(monkeypatch) -> None:
+    # A twin sharing the vehicle's ROS domain means "rehearsal" physically
+    # drives the real robot — the check must fail loudly and probe no further.
+    from jenai.config.store import build_minimal_config
+    from jenai.doctor.checks import _check_twin
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.twin.enabled = True
+    config.twin.domain_id = 7
+    monkeypatch.setenv("ROS_DOMAIN_ID", "7")
+    items = _check_twin(config)
+    assert [i.check_name for i in items] == ["twin_isolation"]
+    assert items[0].status == "fail"
+
+    # Distinct domains (incl. twin=0 in the inverted sim-first layout) pass the
+    # isolation gate and fall through to the reachability probes.
+    monkeypatch.setenv("ROS_DOMAIN_ID", "42")
+    config.twin.domain_id = 0
+    monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: None)
+    assert _check_twin(config) == []  # ros2 missing → root cause reported elsewhere
+
+    # Unset ambient means domain 0 — colliding with twin domain 0 must fail.
+    monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
+    items = _check_twin(config)
+    assert [i.check_name for i in items] == ["twin_isolation"]

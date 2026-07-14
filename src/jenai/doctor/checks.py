@@ -303,12 +303,34 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
     """
     if config is None or not config.twin.enabled:
         return []
+
+    twin = config.twin
+    # The vehicle graph lives on the ambient ROS_DOMAIN_ID. If the twin shares
+    # it, "rehearsal" IS the real robot — the gate would physically move the
+    # vehicle while pretending to preview. Fail loudly; never probe further.
+    ambient = os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0"
+    if str(twin.domain_id) == ambient:
+        return [
+            DoctorCheckItem(
+                section="twin",
+                check_name="twin_isolation",
+                status=DoctorStatus.FAIL,
+                message=(
+                    f"[twin] domain_id={twin.domain_id} equals the vehicle's ROS_DOMAIN_ID "
+                    f"({ambient}) — rehearsal goals would drive the real robot."
+                ),
+                fix_suggestion=(
+                    "Give the twin its own domain (e.g. [twin] domain_id = 42), or run "
+                    "JenAI with a different ROS_DOMAIN_ID than the twin."
+                ),
+            )
+        ]
+
     if shutil.which("ros2") is None:
         return []  # ros2_cli already reports the root cause
 
     from jenai.adapters import ros2_adapter
 
-    twin = config.twin
     fix = "Start the Isaac Sim twin scene (docs/TWIN_SETUP.md) or set [twin] enabled = false."
     try:
         # First call may also spawn this domain's ros2 daemon — give it headroom.
