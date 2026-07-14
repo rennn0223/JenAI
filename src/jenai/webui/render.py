@@ -247,7 +247,7 @@ main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .
 .check{display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
   padding:11px 0; border-top:1px solid var(--line)}
 .check-name{font-weight:600; font-size:14px}
-.check-msg{display:block; color:var(--ink-soft); font-size:13.5px; margin-top:1px}
+.check-msg{display:block; color:var(--ink-soft); font-size:13.5px; margin-top:1px; overflow-wrap:anywhere}
 .fix{color:var(--accent); font-size:12.5px; margin-top:3px}
 .pill{flex:none; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.06em;
   padding:3px 10px; border-radius:999px; white-space:nowrap}
@@ -257,10 +257,12 @@ main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .
 .p-muted{color:var(--muted); background:var(--muted-bg)}
 .chips{display:flex; flex-wrap:wrap; gap:9px}
 .chip{display:flex; align-items:center; gap:9px; background:#faf7f0; border:1px solid var(--line);
-  border-radius:11px; padding:8px 12px; transition:transform .12s ease, box-shadow .12s ease}
+  border-radius:11px; padding:8px 12px; transition:transform .12s ease, box-shadow .12s ease;
+  max-width:100%; min-width:0}
 .chip:hover{transform:translateY(-1px); box-shadow:0 6px 16px -10px rgba(42,38,34,.35)}
 .k-dot{width:8px;height:8px;border-radius:50%;flex:none}
-.chip-name{font-family:'Fraunces',ui-monospace,monospace; font-size:13.5px}
+.chip-name{font-family:'Fraunces',ui-monospace,monospace; font-size:13.5px;
+  min-width:0; overflow-wrap:anywhere}
 .chip-kind{color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em}
 .infra-fold{margin-top:10px}
 .infra-fold summary{color:var(--muted); font-size:12.5px; cursor:pointer}
@@ -448,7 +450,7 @@ body:not(.view-api) #apicard{display:none}
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/stop</span><span class="api-d">緊急停止 — 唯一免 token</span></div>
   <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/topics</span><span class="api-d">即時 ROS graph topics(下表)</span></div>
   <div class="card-head" style="margin-top:14px"><h2 style="font-size:15px">ROS topics(即時)</h2><span class="dim" id="api-topics-meta">切到此頁時載入…</span></div>
-  <div id="api-topics" class="mono" style="font-size:12.5px; line-height:1.9"></div>
+  <div id="api-topics" class="mono" style="font-size:12.5px; line-height:1.9; overflow-wrap:anywhere"></div>
   <div class="dim" style="margin-top:8px">程式化整合建議走 <span class="mono">JenAI mcp</span>(MCP 協定,預設唯讀);完整規格見 docs/THREAT_MODEL.md 與 docs/COMMANDS.md。</div>
 </section>
 <main>__MAIN__</main>
