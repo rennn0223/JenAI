@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v0.33.2(2026-07)。
+> 對應版本:v0.34.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -107,6 +107,9 @@ JenAI 啟動流程：
 | `/loc show <名>` | 顯示地點詳細資料 | `/loc show 應科大樓` |
 | `/loc add here <名>` | **抓機器人當下位置**存成地點（讀 /amcl_pose，退回 /odom） | `/loc add here 走廊測試點` |
 | `/loc add gps <名> <緯> <經>` | **GPS 經緯度**存成地點：經 `[map_datum]`（map 原點經緯度 + yaw_deg）換算成 map 座標；未設基準點時誠實拒絕並給設定教學 | `/loc add gps 機械系館 24.1201 120.6773` |
+| `/loc move <名>` | 把**既有地點**更新為機器人目前位置（改座標＝重新站位再存） | `/loc move dock` |
+| `/loc rename <舊> <新>` | 改名（名稱含空白用 `舊名 -> 新名`）；撞名/撞 alias 誠實拒絕 | `/loc rename map_wall 西牆` |
+| `/loc rm <名>` | 刪除地點（**精確名稱**才刪，alias 與模糊比對不觸發刪除） | `/loc rm 走廊測試點` |
 
 ### Skills（任務技能）
 

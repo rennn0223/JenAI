@@ -20,6 +20,9 @@ from jenai.adapters.locations import (
     append_location,
     find_location,
     load_locations_tolerant,
+    remove_location,
+    rename_location,
+    update_location_pose,
 )
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.schemas import (
@@ -566,26 +569,8 @@ class RobotCommandsMixin:
             )
             return
 
-        try:
-            bridge = await self._get_bridge()
-            pose = await bridge.get_pose(timeout=3.0)
-        except BridgeError as exc:
-            await self._mount_event(
-                TimelineItem("warn", f"Could not read the robot's position: {exc}")
-            )
-            return
-
-        if not all(math.isfinite(v) for v in (pose.x, pose.y, pose.yaw)):
-            # Pose2D rejects NaN/inf; pre-check so the user gets a diagnosis
-            # instead of a raw pydantic ValidationError from the generic net.
-            await self._mount_event(
-                TimelineItem(
-                    "warn",
-                    f"Robot pose from {pose.source} is not finite "
-                    f"(x={pose.x}, y={pose.y}, yaw={pose.yaw}) — location not saved. "
-                    "Check localization (AMCL / odometry) and try again.",
-                )
-            )
+        pose = await self._read_current_pose()
+        if pose is None:
             return
 
         location = Location(
@@ -611,6 +596,130 @@ class RobotCommandsMixin:
                 f"Saved [bold #f2ede1]{name}[/] at x={location.pose.x} y={location.pose.y} "
                 f"yaw={location.pose.yaw} ({pose.frame_id}, from {pose.source}) · "
                 f"try [bold #f2ede1]/route from here to {name}[/]{note}",
+            )
+        )
+
+    async def _read_current_pose(self):
+        """Robot pose fit for saving into locations, or None (a warn was shown)."""
+        try:
+            bridge = await self._get_bridge()
+            pose = await bridge.get_pose(timeout=3.0)
+        except BridgeError as exc:
+            await self._mount_event(
+                TimelineItem("warn", f"Could not read the robot's position: {exc}")
+            )
+            return None
+        if not all(math.isfinite(v) for v in (pose.x, pose.y, pose.yaw)):
+            # Pose2D rejects NaN/inf; pre-check so the user gets a diagnosis
+            # instead of a raw pydantic ValidationError from the generic net.
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"Robot pose from {pose.source} is not finite "
+                    f"(x={pose.x}, y={pose.y}, yaw={pose.yaw}) — location not saved. "
+                    "Check localization (AMCL / odometry) and try again.",
+                )
+            )
+            return None
+        return pose
+
+    async def _show_loc_rm(self, arg: str) -> None:
+        name = arg.strip()
+        if not name:
+            await self._mount_event(TimelineItem("warn", "Usage: [bold #f2ede1]/loc rm <name>[/]"))
+            return
+        locations_path = self.config.resolved_locations_path(self.config_path)
+        if locations_path is None:
+            await self._mount_event(
+                TimelineItem("warn", "No locations_path is configured — add one to the config.")
+            )
+            return
+        try:
+            removed = await asyncio.to_thread(remove_location, name, locations_path)
+        except LocationsFileError as exc:
+            await self._mount_event(TimelineItem("warn", str(exc)))
+            return
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Removed [bold #f2ede1]{removed.name}[/] "
+                f"(was x={removed.pose.x} y={removed.pose.y} yaw={removed.pose.yaw})",
+            )
+        )
+
+    async def _show_loc_rename(self, arg: str) -> None:
+        # Names may contain spaces, so "old -> new" is the unambiguous form;
+        # the bare two-token form covers the common case.
+        if "->" in arg:
+            old, _, new = arg.partition("->")
+            old, new = old.strip(), new.strip()
+        else:
+            parts = arg.split()
+            old, new = (parts[0], parts[1]) if len(parts) == 2 else ("", "")
+        if not old or not new:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "Usage: [bold #f2ede1]/loc rename <old> <new>[/] "
+                    "(names with spaces: [bold #f2ede1]/loc rename old name -> new name[/])",
+                )
+            )
+            return
+        locations_path = self.config.resolved_locations_path(self.config_path)
+        if locations_path is None:
+            await self._mount_event(
+                TimelineItem("warn", "No locations_path is configured — add one to the config.")
+            )
+            return
+        try:
+            renamed = await asyncio.to_thread(rename_location, old, new, locations_path)
+        except LocationsFileError as exc:
+            await self._mount_event(TimelineItem("warn", str(exc)))
+            return
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Renamed [bold #f2ede1]{old}[/] → [bold #f2ede1]{renamed.name}[/]",
+            )
+        )
+
+    async def _show_loc_move(self, arg: str) -> None:
+        name = arg.strip()
+        if not name:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "Usage: [bold #f2ede1]/loc move <name>[/] — re-save an existing "
+                    "location at the robot's current position",
+                )
+            )
+            return
+        locations_path = self.config.resolved_locations_path(self.config_path)
+        if locations_path is None:
+            await self._mount_event(
+                TimelineItem("warn", "No locations_path is configured — add one to the config.")
+            )
+            return
+        pose = await self._read_current_pose()
+        if pose is None:
+            return
+        try:
+            updated = await asyncio.to_thread(
+                update_location_pose,
+                name,
+                Pose2D(x=round(pose.x, 3), y=round(pose.y, 3), yaw=round(pose.yaw, 3)),
+                pose.frame_id,
+                locations_path,
+            )
+        except LocationsFileError as exc:
+            await self._mount_event(TimelineItem("warn", str(exc)))
+            return
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Moved [bold #f2ede1]{updated.name}[/] to x={updated.pose.x} "
+                f"y={updated.pose.y} yaw={updated.pose.yaw} "
+                f"({pose.frame_id}, from {pose.source})",
             )
         )
 

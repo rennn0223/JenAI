@@ -136,6 +136,11 @@ SLASH_COMMANDS = [
         "/loc add here <name> · /loc add gps <name> <lat> <lon>",
     ),
     SlashCommand("/loc show", "Show a location's details", "/loc show <name>"),
+    SlashCommand("/loc move", "Re-save a location at the robot's position", "/loc move <name>"),
+    SlashCommand(
+        "/loc rename", "Rename a location", "/loc rename <old> <new> (spaces: old -> new)"
+    ),
+    SlashCommand("/loc rm", "Delete a location", "/loc rm <name>"),
     SlashCommand("/vision image", "Analyze a local image with the VLM", "/vision image <path>"),
     SlashCommand(
         "/vision camera", "Capture a camera frame and describe it", "/vision camera [topic]"
@@ -956,6 +961,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 "list": self._show_loc_list,
                 "add": self._show_loc_add,
                 "show": self._show_loc_show,
+                "rm": self._show_loc_rm,
+                "rename": self._show_loc_rename,
+                "move": self._show_loc_move,
             }
             return loc_handlers.get(subcommand), rest.strip()
 

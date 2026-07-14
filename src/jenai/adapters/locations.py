@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from jenai.schemas import Location
+from jenai.schemas import Location, Pose2D
 
 _EARTH_RADIUS_M = 6378137.0  # WGS-84 equatorial
 
@@ -129,6 +129,55 @@ def append_location(location: Location, path: Path) -> list[Location]:
     locations.append(location)
     save_locations(locations, path)
     return locations
+
+
+def _find_index(locations: list[Location], name: str) -> int:
+    """Exact (case-insensitive) name match — destructive ops must never fuzzy-guess."""
+    normalized = name.strip().lower()
+    for index, location in enumerate(locations):
+        if location.name.strip().lower() == normalized:
+            return index
+    known = ", ".join(location.name for location in locations)
+    raise LocationsFileError(
+        f"No location named '{name}'." + (f" Known: {known}" if known else "")
+    )
+
+
+def remove_location(name: str, path: Path) -> Location:
+    """Delete one location by exact name; returns the removed entry."""
+    locations = load_locations(path) if path.exists() else []
+    removed = locations.pop(_find_index(locations, name))
+    save_locations(locations, path)
+    return removed
+
+
+def rename_location(old: str, new: str, path: Path) -> Location:
+    """Rename by exact name, refusing collisions with other names/aliases."""
+    locations = load_locations(path) if path.exists() else []
+    index = _find_index(locations, old)
+    new_name = new.strip()
+    if not new_name:
+        raise LocationsFileError("New name must not be empty.")
+    taken: set[str] = set()
+    for i, location in enumerate(locations):
+        if i == index:
+            continue
+        taken.add(location.name.strip().lower())
+        taken.update(alias.strip().lower() for alias in location.aliases)
+    if new_name.lower() in taken:
+        raise LocationsFileError(f"A location named '{new_name}' already exists.")
+    locations[index] = locations[index].model_copy(update={"name": new_name})
+    save_locations(locations, path)
+    return locations[index]
+
+
+def update_location_pose(name: str, pose: Pose2D, frame_id: str, path: Path) -> Location:
+    """Re-point an existing location at a new pose (e.g. the robot's current one)."""
+    locations = load_locations(path) if path.exists() else []
+    index = _find_index(locations, name)
+    locations[index] = locations[index].model_copy(update={"pose": pose, "frame_id": frame_id})
+    save_locations(locations, path)
+    return locations[index]
 
 
 def find_location(locations: list[Location], query: str, *, limit: int = 5) -> Location:
