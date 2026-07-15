@@ -142,7 +142,12 @@ class BridgeNode(Node):
 
         if self._nav_client is None:
             self._nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
-        if not self._nav_client.wait_for_server(timeout_sec=2.0):
+        # A freshly spawned bridge needs DDS discovery to find the action
+        # server; 2 s intermittently loses that race on a busy graph (measured
+        # ~45% of cold rehearsals on a 111-topic sim), producing avoidable
+        # "Nav2 not running" refers. 10 s only delays the honest failure when
+        # Nav2 is truly absent — when present, discovery returns early.
+        if not self._nav_client.wait_for_server(timeout_sec=10.0):
             raise RuntimeError("Nav2 (/navigate_to_pose) action server is not running.")
 
         goal = NavigateToPose.Goal()
