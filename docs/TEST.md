@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v0.36.2(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v0.36.3(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(DGX Spark 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -47,14 +47,14 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→
 (位移 0.0cm)、MCP 7 唯讀工具+stop、daemon 規則對活 topic 觸發,均 2026-07-15 實測。**
 
 **Known issues(2026-07-14 實測;1、2 已修)**:
-1. ~~route 解析器對 destination-only 句式(`去X`、`Go to X`)失敗~~ → **v0.36.2 已修**
+1. ~~route 解析器對 destination-only 句式(`去X`、`Go to X`)失敗~~ → **v0.36.3 已修**
    (goal-only regex 快路 + LLM fallback 接受空 start;起點一律取機器人當前位置)。
-2. ~~agent 的 `ros_state` 讀不到位姿~~ → **v0.36.2 已修**(新增 `pose` 欄位,latched QoS
+2. ~~agent 的 `ros_state` 讀不到位姿~~ → **v0.36.3 已修**(新增 `pose` 欄位,latched QoS
    讀 `/amcl_pose`;`/odom` 被載具改名(Carter=`/chassis/odom`)時位姿不再落空)。
 3. **【最高優先】`/run` 批准後工具不執行**:audit 證據——resume 轉 running 到 blocked
    僅 **28ms**(模型未被呼叫、車未動);`state.approve()` 已呼叫、approval_resolved 已
    記錄,但 SDK(openai-agents 0.17.7)原樣重吐同一 interruption → 被迴圈偵測器誤判
-   「模型迴圈」。先前 v0.36.2 notes 的「35b 模型迴圈」敘事**是錯的**,真兇在 approval
+   「模型迴圈」。先前 v0.36.3 notes 的「35b 模型迴圈」敘事**是錯的**,真兇在 approval
    對帳(嫌疑:handoff 後 tool namespace 的 key 解析)。影響:自然語言與 `/run` 的所有
    動作路徑;slash 直接指令不受影響。下一步:真 SDK + scripted fake model 重現測試定位。
 4. qwen3.6:35b 偶發幻覺工具名(`navigation_look_up_location`)→ SDK 誠實報
@@ -66,7 +66,7 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 0.36.2`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 0.36.3`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |
@@ -118,7 +118,7 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→
 | ✅ | 自然語言(規劃模式) | 同句話 → /plan:產出步驟與教學,**零執行**(plan agent 無工具,結構保證) |
 | ✅ | 自然語言(自動模式) | 同句話 → agent 執行且**批准卡自動通過**,每次自動批准都寫進時間軸(可稽核);急停/硬限速/Twin Gate 不受影響 |
 | ✅ | `/plan 導航到 A 並回報電量` | 產出任務計畫,**不執行任何 side effect** |
-| ✅ | `/run 帶我到大廳` | Supervisor handoff 給專職 agent 執行;side-effect 工具一律過批准卡。**前置:Nav2+地點**(無後端時誠實失敗)。實測(Isaac Carter,qwen3.6:35b,v0.36.2):NL「帶我去dock」全鏈 E2E ✅——解析→批准→執行→Nav2 到點 0.06m;模型第一次給壞 JSON 被誠實拒絕後自行重試成功 |
+| ✅ | `/run 帶我到大廳` | Supervisor handoff 給專職 agent 執行;side-effect 工具一律過批准卡。**前置:Nav2+地點**(無後端時誠實失敗)。實測(Isaac Carter,qwen3.6:35b,v0.36.3):NL「帶我去dock」全鏈 E2E ✅——解析→批准→執行→Nav2 到點 0.06m;模型第一次給壞 JSON 被誠實拒絕後自行重試成功 |
 | ✅ | `/why` | 解釋 agent 當前決策原因 |
 | ✅ | `/review` | 重新檢視 plan 並給修改建議 |
 | ✅ | `/abort` | 中止目前 run |
@@ -154,7 +154,7 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→
 | ✅ | `/drive 前進兩秒` | 批准後 | 自然語言 → 速度指令定時發布到 `vehicle.cmd_vel_topic`,結束自動停(⚠️ 實體會動) |
 | 🔶 | 局部避障(`[avoidance] enabled=true`,route_adapter=odom) | 需 depth topic + 障礙 | odom 直驅時 depth→走廊判定→stop-and-go detour;depth 超過 `depth_timeout_s` 未更新即歸零並回報 `sensor_unavailable`,不沿用舊畫面盲走 |
 | ✅ | `/loc list` | 直接輸入 | 地點表;現在為空 |
-| ✅ | `/loc add here 測試點` | 需 /amcl_pose 或 /odom | 抓當下位置存檔。實測(Isaac Carter,v0.36.2):靜止讀 /amcl_pose 四點入檔 ✅(QoS 修復後) |
+| ✅ | `/loc add here 測試點` | 需 /amcl_pose 或 /odom | 抓當下位置存檔。實測(Isaac Carter,v0.36.3):靜止讀 /amcl_pose 四點入檔 ✅(QoS 修復後) |
 | ✅ | `/loc add gps <名> <緯> <經>` | 先在 config 設 `[map_datum]` | 未設基準點 → 誠實拒絕 + 設定教學;設好 → 換算 map 座標存檔(提示:實地驗證第一次導航,基準誤差會整批平移) |
 | ✅ | `/loc show <名>` | 建點後 | 座標/別名/tags |
 | 🔶 | `/loc move <名>` | 建點後,車移到新位置 | 既有地點更新為當前位姿(座標改、tags/aliases 保留);不存在 → 誠實列出已知名稱 |
