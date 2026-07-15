@@ -135,15 +135,50 @@ def sample_targets(grid: Grid, per_class: int, rng: random.Random):
     return targets
 
 
+HOME = {"x": 0.5, "y": -1.5, "yaw": 0.0}  # 固定起點:倉庫中央開闊區,遠離禁區
+
+
+async def go_home(client) -> bool:
+    """趟間重置:直接導航回固定起點(不經閘門、不計入量測)。
+
+    protocol 教訓(第一輪 100 趟作廢的原因):不重置起點時,一趟把車留在
+    禁區旁,之後每趟的起始軌跡樣本都落在禁區,G3 對所有類別誤攔 —— 起始
+    狀態污染。每趟自同一起點出發也讓 crossing 類的幾何構造有明確意義。
+    """
+    import asyncio
+    from uuid import uuid4
+
+    tag = uuid4().hex[:8]
+    done: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    def _on_result(event: dict) -> None:
+        if event.get("tag", "") in ("", tag) and not done.done():
+            done.set_result(str(event.get("status", "failed")))
+
+    client.on_event("nav_result", _on_result)
+    try:
+        await client.nav_send(HOME["x"], HOME["y"], HOME["yaw"], tag=tag)
+        status = await asyncio.wait_for(done, timeout=180.0)
+        return status == "succeeded"
+    except Exception:
+        return False
+    finally:
+        client.off_event("nav_result", _on_result)
+
+
 async def run_trials(targets, out_path: Path):
+    from jenai.bridge import RosBridgeClient
     from jenai.config.store import load_config
     from jenai.twin import rehearse_goal
 
     config = load_config()
     twin = config.twin.model_copy(update={"enabled": True, "domain_id": 0})
+    client = RosBridgeClient(domain_id=0)
+    await client.start()
     done = 0
     with out_path.open("a", encoding="utf-8") as fh:
         for t in targets:
+            homed = await go_home(client)
             action = {"goal": {"name": f"e2_{t['class']}_{done}", "frame_id": "map",
                                "pose": {"x": t["x"], "y": t["y"], "yaw": t["yaw"]}}}
             start = time.monotonic()
@@ -156,6 +191,7 @@ async def run_trials(targets, out_path: Path):
                     "reason": report.reason,
                     "elapsed_s": round(report.twin_elapsed_s or (time.monotonic() - start), 2),
                     "criteria": {c.criterion_id: c.status for c in report.criteria},
+                    "homed": homed,
                 }
             except Exception as exc:  # 單趟失敗誠實記錄,實驗續行
                 row = {"ts": datetime.now().isoformat(timespec="seconds"),
