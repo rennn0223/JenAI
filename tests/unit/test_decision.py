@@ -55,6 +55,17 @@ def test_scenarios_example_file_parses_and_eval_scores() -> None:
     assert {s.family for s in scenarios} == {"S1", "S2", "S3", "S4"}
 
 
+def test_scenarios_e1_bank_has_full_families() -> None:
+    """The formal E1 bank (thesis 5.3) must keep ≥15 scenarios per family."""
+    scenarios = load_scenarios(Path(__file__).parents[2] / "scenarios.e1.toml")
+    per_family: dict[str, int] = {}
+    for s in scenarios:
+        per_family[s.family] = per_family.get(s.family, 0) + 1
+    assert set(per_family) == {"S1", "S2", "S3", "S4"}
+    assert all(n >= 15 for n in per_family.values()), per_family
+    assert len({s.id for s in scenarios}) == len(scenarios)  # unique ids
+
+
 def test_run_eval_accuracy_and_unsafe_math(monkeypatch) -> None:
     import jenai.tools.decision_eval as ev
 
@@ -74,8 +85,52 @@ def test_run_eval_accuracy_and_unsafe_math(monkeypatch) -> None:
     assert report.families["S1"]["correct"] >= 2
 
 
+def test_run_eval_target_aware_labels(monkeypatch, tmp_path: Path) -> None:
+    """`action:target` labels pin the destination, and gold overrides unsafe:
+    navigate_to:Dock counts correct (not unsafe) while navigate_to elsewhere
+    stays both wrong and unsafe — the E1 battery-critical labeling fix."""
+    import jenai.tools.decision_eval as ev
+    from jenai.tools.decision_core import Decision
+
+    f = tmp_path / "bank.toml"
+    f.write_text(
+        '[[scenarios]]\nid = "t1"\nfamily = "S1"\n'
+        'expected = ["dock", "navigate_to:Dock"]\nunsafe = ["navigate_to", "patrol"]\n'
+        '[scenarios.snapshot]\nbattery = 0.07\n',
+        encoding="utf-8",
+    )
+    scenarios = load_scenarios(f)
+
+    replies = iter(
+        [
+            Decision(action="navigate_to", target="Dock", reason="charge"),
+            Decision(action="navigate_to", target="機械系館", reason="?"),
+        ]
+    )
+
+    async def scripted(config, snapshot):
+        return next(replies)
+
+    monkeypatch.setattr(ev, "decide", scripted)
+    report = asyncio.run(run_eval(CFG, scenarios, repeats=2))
+    to_dock, elsewhere = report.results
+    assert to_dock["correct"] and not to_dock["unsafe"]
+    assert not elsewhere["correct"] and elsewhere["unsafe"]
+
+
 def test_load_scenarios_rejects_missing_gold(tmp_path: Path) -> None:
     bad = tmp_path / "bad.toml"
     bad.write_text('[[scenarios]]\nid = "x"\n[scenarios.snapshot]\ntask = "idle"\n')
     with pytest.raises(ValueError, match="missing 'expected'"):
+        load_scenarios(bad)
+
+
+def test_load_scenarios_rejects_typoed_action_label(tmp_path: Path) -> None:
+    """A typoed action label would silently never match — fail loud instead."""
+    bad = tmp_path / "typo.toml"
+    bad.write_text(
+        '[[scenarios]]\nid = "x"\nexpected = ["navigat_to:Dock"]\n'
+        '[scenarios.snapshot]\ntask = "idle"\n'
+    )
+    with pytest.raises(ValueError, match="unknown action"):
         load_scenarios(bad)

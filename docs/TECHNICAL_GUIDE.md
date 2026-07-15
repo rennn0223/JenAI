@@ -178,7 +178,7 @@ jenai daemon                                        # Ctrl-C 停止
 | `tools/skills.py` | 145 | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
 | `tools/ros2_pkg_core.py` | 286 | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋;`--build` 生成即 colcon 驗證(失敗餵錯誤回 LLM 修一輪)。從 control agent 邁向 development copilot |
 | `tools/decision_core.py` | 104 | **M6 決策腦**(v0.21):`ContextSnapshot`(六欄位情境快照)→ 單次 `ask_json` 於封閉動作集單選 `Decision`;越界動作/幻覺目的地/解析失敗一律降級 refer_to_human,無自由文字可達致動 |
-| `tools/decision_eval.py` | 110 | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate(論文工具鏈) |
+| `tools/decision_eval.py` | 133 | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate;標註 `action:target` 綁定目標、gold 優先於 unsafe、未知動作名 fail-loud(論文工具鏈) |
 | `tools/user_skills.py` | 85 | **檔案定義技能**(v0.20):`skills/*.toml` → 新 slash 指令;與內建指令同一張批准卡;保留字拒載 |
 | `tools/safety.py` | 32 | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
 | `tools/navigation_gateway.py` | 125 | **NavigationGateway(v0.25)**:所有導航的唯一出口——CLI/TUI/WebUI/MCP/daemon/任務/agent 工具全部經此;Twin Gate 與 watchdog 政策無法被直呼 route 執行繞過 |

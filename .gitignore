@@ -23,6 +23,8 @@ docs/THESIS_*.md
 log/
 
 # experiment run outputs (archive final data deliberately, not live)
+e1-*.json
+e1-*.stderr
 e2-*/
 e4-*.jsonl
 soak-*/

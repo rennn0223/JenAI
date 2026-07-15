@@ -23,7 +23,7 @@
 | A3 | 安全鏈覆蓋率 | 92%(safety 100/engine 98/gate 94/client 93/runner 76);CI 加 fail-under=90 倒退閘,只升不降 | ✅ v0.12 |
 | A4 | 故障注入測試 | bridge 永不 ready / watchdog 武裝失敗 / 串流垃圾行 / twin 預演中斷→refer / pose 失聯→G4 跳過 / halt 失敗誠實回報 / 未知地點 / 無地點檔 → 全部證明誠實降級 | ✅ v0.11 |
 | A5 | 架構鐵律 CI 防護 | tests/unit/test_architecture.py:反射層(bridge/engine/safety/gate)禁 import LLM 堆疊;技能層以上禁載具字眼(AST + 逐行掃描) | ✅ v0.12 |
-| A6 | 24h soak 腳本 | `scripts/soak.py`:RSS 樹採樣 + warmup 校正 + PASS/WARN 判定;真 daemon 短跑驗證過(+0.0% PASS)。**24h 正式跑 2026-07-15 已啟動**(結果出爐後回填 SAFETY_CASE) | ✅ v0.13(24h 進行中) |
+| A6 | 24h soak 腳本 | `scripts/soak.py`:RSS 樹採樣 + warmup 校正 + PASS/WARN 判定;真 daemon 短跑驗證過(+0.0% PASS)。**24h 正式跑 PASS**(2026-07-15 01:25 → 07-16 01:25,1439.6 min/2880 樣本,RSS baseline 212188 kB → final 214728 kB,**+1.2%**,限 20%;報告 `soak-20260715-012527/report.md`) | ✅ v0.13 + 24h PASS(2026-07-16) |
 | A7 | Safety case 草稿 | docs/SAFETY_CASE.md:H1–H8 危害表 → R/G/H/P 防護對應 → 驗證證據 → 殘餘風險;⬜ TODO(客戶)欄待 B4/B5/B6 數據 | ✅ v0.13(草稿) |
 | A8 | 巡邏日報(C2) | patrol 結束自動存 log(`reports/patrol-*.json`);`/report` 確定性日報 + LLM 摘要(離線誠實降級)、`/report list` 回看歷次 | ✅ v0.12 |
 | A9 | M6 DecisionLoop 核心 | 有界動作集決策 + 延遲量測(**v2 線,不擋 v1.0**)。決策腦 `decision_core.py` + `JenAI eval`(E1)已於 v0.21 落地;剩常駐迴圈 perceive→decide→rehearse→act,詳見 [ROADMAP 軌道 1](ROADMAP.md) | 🚧 v2(腦已備) |
@@ -38,12 +38,12 @@
 
 | # | 項目 | 內容 | 狀態 |
 |---|---|---|---|
-| B5 | **Isaac 孿生場景**(關鍵路徑第一步) | 照 docs/TWIN_SETUP.md 建場景(DGX Spark GUI 作業)→ Twin Gate 端到端 + 消融數據(攔截率/誤攔率/延遲成本) | ✅ 2026-07-15 **場景建置完成**:contact sensor 上線,doctor twin 三檢查全綠;帶 G1 的完整過閘實測(38.6s,G1–G5 全評,audit 留檔)。剩消融數據(E2,實驗參數定案後跑) |
+| B5 | **Isaac 孿生場景**(關鍵路徑第一步) | 照 docs/TWIN_SETUP.md 建場景(DGX Spark GUI 作業)→ Twin Gate 端到端 + 消融數據(攔截率/誤攔率/延遲成本) | ✅ 2026-07-15 **場景建置完成**:contact sensor 上線,doctor twin 三檢查全綠;帶 G1 的完整過閘實測(38.6s,G1–G5 全評,audit 留檔)。**消融數據完成(E2,2026-07-15)**:N=100(每類 20),硬陷阱 SIR 60/60=100%、良性 FPR 0/20=0%、zone_crossing 預演裁定 8/20 攔(餘 12 趟軌跡繞行未進區,放行正確);原始數據 `e2-20260715c/`,結果表已回填 THESIS_DRAFT 5.4 |
 | B1 | 原生 nav 接口確認 | 於 twin 車跑 `ros2 action list | grep -i navigate` 與 map/amcl/odom topics 清點;有 `NavigateToPose` 即直通(twin 車 = 第一個「原生 nav 載具」) | ✅ 2026-07-14(Carter 場景實測) |
 | B2 | 建 locations | twin 場景內 `/loc add here <名>` 建點,含 `tags=["dock"]` 充電點 | ✅ 2026-07-14(4 點含 dock;貼牆點以 /loc move 重定位) |
 | B3 | 解鎖 TEST.md 🔶 項 | B1/B2 完成後於 Isaac Sim 逐項實測 `/route` `/mission` `/patrol photo` `/dock` `/perception`,結果回填 TEST.md | ✅ 2026-07-14~15(slash + NL 全通;WebUI/MCP/daemon 亦實測,見 TEST.md) |
-| B4 | 模擬里程 | Isaac 場景累積 ≥20h / ≥50 次任務,0 安全事件;事件記錄表 | 🚧 2026-07-15 掛機啟動(patrol 圈,log:/tmp/b4_mileage.log + patrol reports + audit) |
-| B6 | Onboarding 計時 | 找 3 位新手照文件從裸機到第一次 sim `/route`,計時、記卡點(每個卡點=文件 bug,回報層一修) | ☐ |
+| B4 | 模擬里程 | Isaac 場景累積 ≥20h / ≥50 次任務,0 安全事件;事件記錄表 | ✅ 2026-07-16 完成(2026-07-15 01:25 起算):**20.0h 任務時數(driver log)/ 102 趟 patrol / 408 個 waypoint goals(407 到達)/ 0 安全事件**。唯一非 4/4(07-15 17:27,3/4)= Nav2 action 發現逾時、goal 未送出、誠實回報 unavailable(#92 已修),非安全事件。原始記錄:`/tmp/b4_mileage.log` + `~/.config/jenai/reports/patrol-*.json` + audit;掛機工具 `scripts/b4_driver.sh` |
+| B6 | Onboarding 計時 | 找 3 位新手照文件從裸機到第一次 sim `/route`,計時、記卡點(每個卡點=文件 bug,回報層一修) | ✅ 2026-07-16 客戶簽核:學弟妹(≥3)照文件上手全數順跑、零卡點回報。註:新手由客戶親自教學,非純冷啟動;正式碼表計時未執行,客戶判定文件路徑已驗證足夠 |
 | B7 | Demo 排練 | 15 分鐘 scripted demo(Isaac Sim),含斷網切 local provider 的備援劇本 | ☐ |
 | B8 | 使用回饋 | 日常把 TEST.md ✅ 項當真用,意見開 issue 或直接講 | ☐ |
 

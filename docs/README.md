@@ -16,6 +16,7 @@
 | [CODE_TOUR](CODE_TOUR.md) | 全程式碼逐檔導讀:功能/SDK/為什麼這樣寫 + 6 小時閱讀路徑 |
 | [COMMANDS](COMMANDS.md) | CLI 與 slash 指令規格、批准清單、快捷鍵 |
 | [TEST](TEST.md) | 全部可測項目 + 期望輸出 + 環境須知(驗收手冊) |
+| [EXPERIMENTS](EXPERIMENTS.md) | 實驗 runbook:E1–E4/B4/soak 的指令、輸出位置、數據回填對照 |
 | [ONBOARDING](ONBOARDING.md) | 裸 ROS2 → 第一次導航的手把手(建圖/AMCL/Nav2) |
 | [TWIN_SETUP](TWIN_SETUP.md) | Isaac Sim 孿生場景建置、domain 隔離、G1–G5 |
 | [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) | Isaac 佔位圖生成 + Nav2 試跑完整流程(官方文件整理,接 JenAI /route) |
