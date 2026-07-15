@@ -21,3 +21,8 @@ audit.sqlite3*
 # Personal thesis planning (not part of the project)
 docs/THESIS_*.md
 log/
+
+# experiment run outputs (archive final data deliberately, not live)
+e2-*/
+e4-*.jsonl
+soak-*/
