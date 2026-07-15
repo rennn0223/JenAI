@@ -38,7 +38,7 @@
 
 | # | 項目 | 內容 | 狀態 |
 |---|---|---|---|
-| B5 | **Isaac 孿生場景**(關鍵路徑第一步) | 照 docs/TWIN_SETUP.md 建場景(DGX Spark GUI 作業)→ Twin Gate 端到端 + 消融數據(攔截率/誤攔率/延遲成本) | 🚧 2026-07-15 **倒置佈局上線**:pass 與 G3 block 兩路實測過閘(audit 留檔,預演 56s 孿生實跑);剩 G1 contact sensor(GUI)+ 消融數據 |
+| B5 | **Isaac 孿生場景**(關鍵路徑第一步) | 照 docs/TWIN_SETUP.md 建場景(DGX Spark GUI 作業)→ Twin Gate 端到端 + 消融數據(攔截率/誤攔率/延遲成本) | ✅ 2026-07-15 **場景建置完成**:contact sensor 上線,doctor twin 三檢查全綠;帶 G1 的完整過閘實測(38.6s,G1–G5 全評,audit 留檔)。剩消融數據(E2,實驗參數定案後跑) |
 | B1 | 原生 nav 接口確認 | 於 twin 車跑 `ros2 action list | grep -i navigate` 與 map/amcl/odom topics 清點;有 `NavigateToPose` 即直通(twin 車 = 第一個「原生 nav 載具」) | ✅ 2026-07-14(Carter 場景實測) |
 | B2 | 建 locations | twin 場景內 `/loc add here <名>` 建點,含 `tags=["dock"]` 充電點 | ✅ 2026-07-14(4 點含 dock;貼牆點以 /loc move 重定位) |
 | B3 | 解鎖 TEST.md 🔶 項 | B1/B2 完成後於 Isaac Sim 逐項實測 `/route` `/mission` `/patrol photo` `/dock` `/perception`,結果回填 TEST.md | ✅ 2026-07-14~15(slash + NL 全通;WebUI/MCP/daemon 亦實測,見 TEST.md) |

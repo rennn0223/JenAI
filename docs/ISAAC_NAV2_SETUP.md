@@ -131,6 +131,7 @@ B2–B4。**代價要知道**:Carter 是差速車,阿克曼運動學(Smac Hybrid
 | 症狀 | 原因/解法 |
 |---|---|
 | 佔位圖全白/全黑 | Z 帶沒切到障礙物高度;或忘了 BOUND SELECTION |
+| 場景缺 2D 雷射(AMCL 沒 /scan) | 重載場景後 2D lidar graph 遺失 | 用 3D 光達轉:`ros2 run pointcloud_to_laserscan pointcloud_to_laserscan_node --ros-args -r cloud_in:=/front_3d_lidar/lidar_points -r scan:=/scan -p target_frame:=front_3d_lidar -p min_height:=-0.3 -p max_height:=0.5 -p range_max:=25.0`(2026-07-15 實測可行,AMCL/Nav2 照常) |
 | Nav2 起了但 RViz 沒地圖 | map yaml 路徑錯,或 map_server 沒起(看 bringup log) |
 | 車不動、RViz 能規劃 | `/cmd_vel` 沒接到車(Isaac 端 topic 名對齊;或 controller 輸出 remap) |
 | AMCL 不收斂 | 先 2D Pose Estimate;雷射高度帶與佔位圖 Z 帶不一致也會 |

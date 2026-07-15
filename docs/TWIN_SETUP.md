@@ -94,7 +94,7 @@ G1 需要孿生場景在車體碰到東西時,於 `/twin/collision` 發 `std_msg
    ROS_DOMAIN_ID=42 ros2 topic echo /twin/collision   # 撞到時應看到 data: true
    ```
 
-沒有這個 topic 時 Gate 仍可運作,但 G1 會標記 `skipped`(doctor 會提醒)。
+沒有這個 topic 時 Gate 仍可運作,但 G1 會標記 `skipped`(doctor 會提醒)。**一鍵重建**:場景重載後感測器不見時,Script Editor 執行 `~/isaac_scenes/add_contact_sensor.py` 自動重建感測器與發布 graph(可重複執行)。
 
 ## 4. JenAI 設定
 
