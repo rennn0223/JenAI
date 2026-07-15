@@ -1,0 +1,2 @@
+{"ts": "2026-07-15T16:15:54", "class": "over_far", "x": 11.41, "y": 22.7, "verdict": "refer", "reason": "twin Nav2 ended with 'aborted'", "elapsed_s": 1.97, "criteria": {"G1": "pass", "G2": "pass", "G3": "pass", "G4": "skipped", "G5": "fail"}, "homed": true}
+{"ts": "2026-07-15T16:16:31", "class": "normal", "x": 1.81, "y": -7.03, "verdict": "pass", "reason": "", "elapsed_s": 37.51, "criteria": {"G1": "pass", "G2": "pass", "G3": "pass", "G4": "pass", "G5": "pass"}, "homed": true}

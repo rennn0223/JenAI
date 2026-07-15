@@ -31,7 +31,7 @@ ACTIONS = ("navigate_to", "patrol", "dock", "wait", "capture_and_report", "refer
 class ContextSnapshot(BaseModel):
     """Everything the brain sees for one decision — structured, compact text.
 
-    Keep this SMALL on purpose: an 8B edge model decides far more reliably
+    Keep this SMALL on purpose: a compact edge model decides far more reliably
     over six labeled fields than over a page of prose (Inner-Monologue-style
     feedback, structured instead of free text).
     """
