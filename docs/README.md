@@ -17,6 +17,7 @@
 | [COMMANDS](COMMANDS.md) | CLI 與 slash 指令規格、批准清單、快捷鍵 |
 | [TEST](TEST.md) | 全部可測項目 + 期望輸出 + 環境須知(驗收手冊) |
 | [EXPERIMENTS](EXPERIMENTS.md) | 實驗 runbook:E1–E4/B4/soak 的指令、輸出位置、數據回填對照 |
+| [DEMO_SCRIPT](DEMO_SCRIPT.md) | 15 分鐘 demo 劇本(B7):時間軸、指令、斷網備援橋段、各段救場台詞 |
 | [ONBOARDING](ONBOARDING.md) | 裸 ROS2 → 第一次導航的手把手(建圖/AMCL/Nav2) |
 | [TWIN_SETUP](TWIN_SETUP.md) | Isaac Sim 孿生場景建置、domain 隔離、G1–G5 |
 | [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) | Isaac 佔位圖生成 + Nav2 試跑完整流程(官方文件整理,接 JenAI /route) |
