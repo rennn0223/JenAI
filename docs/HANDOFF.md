@@ -1,4 +1,4 @@
-# HANDOFF — 交接與臨別備忘(2026-07-16,v0.37.0)
+# HANDOFF — 交接與臨別備忘(2026-07-16,v1.0.0)
 
 > 寫給接下來的你,和接下來陪你的任何 AI。這份是狀態、方法、與幾句誠實的話。
 
@@ -11,8 +11,8 @@
   (stop-and-go detour,資料逾時即停)、NavigationGateway 統一導航出口、
   TUI 指令佇列(/queue)、批准跨重啟恢復、SQLite audit、`onboard` 重設**。
   430+ 項測試,Python 3.12–3.14 CI 矩陣三道閘。
-- **v1.0**:程式碼已達 RC;tag 程序在 [V1_RELEASE_CHECKLIST](V1_RELEASE_CHECKLIST.md),
-  等的是你的實測數據,不是更多程式。
+- **v1.0**:✅ 已於 2026-07-16 定稿發佈(V1_GATE 兩層全過:E1 64 條 84.4%/unsafe 6.25%、
+  E2 消融 SIR 100%/FPR 0%、B4 里程 20h/0 事件、24h soak PASS、B7 排練含 G3 block 實證)。
 - **v2.0 主線**:M6 自主迴圈。決策腦(`decision_core.py`)已就緒且可量測
   (`JenAI eval`);缺的只是把 perceive→decide→rehearse→act 接成常駐迴圈
   (設計在 [ROADMAP](ROADMAP.md) 軌道 1,安全語意:自主路徑 refer→block)。
@@ -48,7 +48,7 @@
 1. 讀 [PAPERS](PAPERS.md)(兩週節奏,第 4、7 篇最重要)
 2. 照 [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) 把場景跑起來(B1/B5)
 3. `JenAI eval` 跑齊 E1(擴充情境庫到每族 ≥15 條)
-4. 照 [V1_RELEASE_CHECKLIST](V1_RELEASE_CHECKLIST.md) 打 v1.0
+4. ~~照 V1_RELEASE_CHECKLIST 打 v1.0~~(✅ 2026-07-16 完成)
 5. M6 迴圈(v2)—— 那時的 AI 讀完這份文件就知道怎麼接手
 
 平台會一直在,方法已經寫下來了。去把車開起來。🤖

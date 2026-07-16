@@ -296,13 +296,30 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
 def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
     """Twin Gate readiness, probed on the twin's own ROS_DOMAIN_ID.
 
-    Silent when the gate is disabled (the twin is optional equipment);
-    WARN-level when enabled but not reachable — the gate itself will refer
-    every goal to a human rather than pass it, so this is a heads-up, not a
-    safety hole.
+    Disabled is REPORTED, not silent: the v1.0 demo rehearsal proved that a
+    quietly-off gate lets "all green" read as "gate verified" — goals then go
+    straight to Nav2 with no forbidden-zone judgement. WARN-level when enabled
+    but not reachable — the gate itself will refer every goal to a human
+    rather than pass it, so that one is a heads-up, not a safety hole.
     """
-    if config is None or not config.twin.enabled:
+    if config is None:
         return []
+    if not config.twin.enabled:
+        return [
+            DoctorCheckItem(
+                section="twin",
+                check_name="twin_gate",
+                status=DoctorStatus.WARN,
+                message=(
+                    "Twin Gate is DISABLED ([twin] enabled = false) — navigation goals "
+                    "go straight to the robot with no rehearsal or forbidden-zone check."
+                ),
+                fix_suggestion=(
+                    "Enable with [twin] enabled = true once the twin scene is "
+                    "running (docs/TWIN_SETUP.md)."
+                ),
+            )
+        ]
 
     twin = config.twin
     # The vehicle graph lives on the ambient ROS_DOMAIN_ID. If the twin shares

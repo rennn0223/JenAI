@@ -269,11 +269,19 @@ def test_doctor_twin_checks_probe_the_twin_domain(monkeypatch) -> None:
     }
 
 
-def test_doctor_twin_silent_when_disabled_and_warns_when_unreachable(monkeypatch) -> None:
+def test_doctor_twin_disabled_reported_and_warns_when_unreachable(monkeypatch) -> None:
+    # Disabled must surface as an explicit WARN, never as silence: a quietly-off
+    # gate let "doctor all green" read as "gate verified" during the v1.0 demo
+    # rehearsal (goals went straight to Nav2, no forbidden-zone judgement).
     from jenai.adapters.ros2_adapter import Ros2AdapterError
     from jenai.doctor.checks import _check_twin
 
-    assert _check_twin(AppConfig()) == []
+    assert _check_twin(None) == []  # no config at all: nothing to judge
+
+    disabled = _check_twin(AppConfig())
+    assert [i.check_name for i in disabled] == ["twin_gate"]
+    assert disabled[0].status == "warn"
+    assert "DISABLED" in disabled[0].message
 
     config = AppConfig(twin=TwinProfile(enabled=True))
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
