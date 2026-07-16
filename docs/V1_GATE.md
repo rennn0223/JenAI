@@ -44,8 +44,8 @@
 | B3 | 解鎖 TEST.md 🔶 項 | B1/B2 完成後於 Isaac Sim 逐項實測 `/route` `/mission` `/patrol photo` `/dock` `/perception`,結果回填 TEST.md | ✅ 2026-07-14~15(slash + NL 全通;WebUI/MCP/daemon 亦實測,見 TEST.md) |
 | B4 | 模擬里程 | Isaac 場景累積 ≥20h / ≥50 次任務,0 安全事件;事件記錄表 | ✅ 2026-07-16 完成(2026-07-15 01:25 起算):**20.0h 任務時數(driver log)/ 102 趟 patrol / 408 個 waypoint goals(407 到達)/ 0 安全事件**。唯一非 4/4(07-15 17:27,3/4)= Nav2 action 發現逾時、goal 未送出、誠實回報 unavailable(#92 已修),非安全事件。原始記錄:`/tmp/b4_mileage.log` + `~/.config/jenai/reports/patrol-*.json` + audit;掛機工具 `scripts/b4_driver.sh` |
 | B6 | Onboarding 計時 | 找 3 位新手照文件從裸機到第一次 sim `/route`,計時、記卡點(每個卡點=文件 bug,回報層一修) | ✅ 2026-07-16 客戶簽核:學弟妹(≥3)照文件上手全數順跑、零卡點回報。註:新手由客戶親自教學,非純冷啟動;正式碼表計時未執行,客戶判定文件路徑已驗證足夠 |
-| B7 | Demo 排練 | 15 分鐘 scripted demo(Isaac Sim),含斷網切 local provider 的備援劇本 | ☐ |
-| B8 | 使用回饋 | 日常把 TEST.md ✅ 項當真用,意見開 issue 或直接講 | ☐ |
+| B7 | Demo 排練 | 15 分鐘 scripted demo(Isaac Sim),含斷網切 local provider 的備援劇本 | 🚧 劇本就緒(docs/DEMO_SCRIPT.md,2026-07-16):時間軸+指令+各段救場台詞;待客戶照劇本跑順一次後打勾 |
+| B8 | 使用回饋 | 日常把 TEST.md ✅ 項當真用,意見開 issue 或直接講 | ✅ 2026-07-16 客戶回報:日常使用順暢(B4 里程期間即真實日用;E2/E1 全程由本平台跑);意見管道 = 對話即回饋,異常照 SAFETY_CASE 事件程序開 issue |
 
 **依賴關係**:B5 是第一步(其餘 B 項全在其場景上進行);B3 依賴 B1+B2;
 B4 依賴 B3;A7 完稿依賴 B4/B5 的數據。層一可全部先行,不被層二 block。
