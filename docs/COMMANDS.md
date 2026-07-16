@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v0.36.3(2026-07)。
+> 對應版本:v0.37.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -24,7 +24,7 @@ JenAI 的命令分為兩層：
 | `JenAI models` | 顯示 model 綁定 |
 | `JenAI route "<text>"` | 非互動式 route 任務（互動確認後送出） |
 | `JenAI scaffold "<描述>"` | **自然語言生成 ROS2 (ament_python) 套件**：確定性 boilerplate + LLM 寫的 node 主體（送出前確認）。**`--build`：寫完即 colcon build，失敗自動餵錯誤給 LLM 修一輪（生成即驗證）**；`--ws` 指定工作區 |
-| `JenAI eval <scenarios.toml>` | **決策腦 E1 評測**(v0.21):跑場景庫(種子庫見 `scenarios.example.toml`),輸出 per-family accuracy / refer rate / unsafe rate;`--repeats/-k` 每場景重複數、`--json` 機器可讀 |
+| `JenAI eval <scenarios.toml>` | **決策腦 E1 評測**(v0.21):跑場景庫(種子庫 `scenarios.example.toml`、正式庫 `scenarios.e1.toml`),輸出 per-family accuracy / refer rate / unsafe rate;標註支援 `action:target` 綁定目標且 gold 優先於 unsafe(v0.37);`--repeats/-k` 每場景重複數、`--json` 機器可讀 |
 | `JenAI loc list` / `loc show <名>` | 非互動式 location 查詢 |
 | `JenAI version` | 顯示版本資訊 |
 
