@@ -15,7 +15,71 @@ from jenai.schemas import (
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
 from jenai.tui.panels import OutputPanel, PromptPill, TimelineItem, pixel_mark
-from jenai.tui.widgets import ApprovalCard
+from jenai.tui.widgets import ApprovalCard, ModelPicker
+
+
+class _Key:
+    """Minimal stand-in for a Textual key event (on_key only reads .key/.stop)."""
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+    def stop(self) -> None:
+        pass
+
+
+def test_model_picker_starts_on_current_and_wraps() -> None:
+    picker = ModelPicker(["a", "b", "c"], current="b")
+    assert picker._selected == 1  # cursor starts on the active model
+    picker.on_key(_Key("up"))
+    assert picker._selected == 0
+    picker.on_key(_Key("up"))
+    assert picker._selected == 2  # wraps past the top
+
+
+def test_tui_model_picker_arrow_select_switches_binding(monkeypatch) -> None:
+    async def fake_list_models(config):
+        return ["model-one", "model-two", "model-three"]
+
+    monkeypatch.setattr("jenai.tui.info_commands.list_provider_models", fake_list_models)
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/model")  # bare → opens the picker
+            pickers = list(app.query(ModelPicker))
+            assert len(pickers) == 1
+
+            await pilot.press("down")  # move off model-one → model-two
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert list(app.query(ModelPicker)) == []  # picker closed
+            assert app.config.model_bindings.chat == "model-two"
+            assert app.config.model_bindings.default == "model-two"
+
+    asyncio.run(run())
+
+
+def test_tui_model_picker_escape_keeps_current(monkeypatch) -> None:
+    async def fake_list_models(config):
+        return ["model-one", "model-two"]
+
+    monkeypatch.setattr("jenai.tui.info_commands.list_provider_models", fake_list_models)
+
+    async def run() -> None:
+        app = _app()
+        before = app.config.model_bindings.chat
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/model")
+            await pilot.press("down")  # move the cursor…
+            await pilot.press("escape")  # …but cancel
+            await pilot.pause()
+
+            assert list(app.query(ModelPicker)) == []
+            assert app.config.model_bindings.chat == before  # unchanged
+
+    asyncio.run(run())
 
 
 def test_tui_uses_colored_dachshund_mascot() -> None:

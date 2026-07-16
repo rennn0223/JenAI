@@ -105,7 +105,10 @@ class InfoCommandsMixin:
 
     async def _show_model(self, arg: str = "") -> None:
         if not arg:
-            await self._list_provider_models()
+            # Bare "/model" opens the arrow-navigable picker (Enter selects); the
+            # numbered text list stays reachable as the fallback when the endpoint
+            # can't be listed, so scripts/pipes still get a readable answer.
+            await self._open_model_picker()
             return
 
         first, _, rest = arg.partition(" ")
@@ -122,7 +125,28 @@ class InfoCommandsMixin:
         model = await self._resolve_model_spec(spec)
         if model is None:
             return
+        await self._apply_model_choice(model, targets)
 
+    async def _open_model_picker(self) -> None:
+        """Fetch the endpoint's models and mount the interactive picker; fall
+        back to the numbered text list if the endpoint can't be queried."""
+        try:
+            self._available_models = await list_provider_models(self.config)
+        except ProviderChatError:
+            await self._list_provider_models()  # shows the honest error inline
+            return
+        if not self._available_models:
+            await self._list_provider_models()
+            return
+        from jenai.tui.widgets import ModelPicker
+
+        await self._mount_event(
+            ModelPicker(self._available_models, self._chat_model_display())
+        )
+
+    async def _apply_model_choice(self, model: str, targets: tuple[str, ...]) -> None:
+        """Write the chosen model into the given bindings and persist. Shared by
+        `/model <name|number>` and the interactive picker so both save the same."""
         bindings = self.config.model_bindings
         if bindings is None:
             await self._mount_event(

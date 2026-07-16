@@ -62,7 +62,7 @@ from jenai.tui.panels import (
     status_color,
 )
 from jenai.tui.robot_commands import RobotCommandsMixin
-from jenai.tui.widgets import ApprovalCard, ErrorBlock, PlanBlock, ToolBlock
+from jenai.tui.widgets import ApprovalCard, ErrorBlock, ModelPicker, PlanBlock, ToolBlock
 
 APPROVAL_REQUIRED_COMMANDS = ("/ros pub", "/route", "/shell", "/run")
 
@@ -1266,6 +1266,15 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         }
         await self._mount_event(ApprovalCard(approval))
         self._scroll_to_bottom()
+
+    async def on_model_picker_selected(self, message: ModelPicker.Selected) -> None:
+        for picker in self.query(ModelPicker):
+            await picker.remove()
+        if message.model_id is not None:
+            # Bare /model picks the conversation model (chat + default fallback),
+            # matching `/model <name>`; specialised bindings stay untouched.
+            await self._apply_model_choice(message.model_id, ("chat", "default"))
+        self.query_one("#composer", Input).focus()
 
     async def on_approval_card_decision(self, message: ApprovalCard.Decision) -> None:
         # Two approval sources share one card + message: deterministic slash
