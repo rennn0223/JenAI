@@ -8,20 +8,20 @@
 
 按順序,每項完成就在這裡打勾(直接 commit 這個檔):
 
-- [ ] **B1 車端後端**:照 [ONBOARDING](ONBOARDING.md) + [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md):
+- [x] **B1 車端後端**(✅ 2026-07-14,Carter 場景):照 [ONBOARDING](ONBOARDING.md) + [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md):
       RGB/odom/scan → 建圖 → AMCL → Nav2(sim 先行,實車跟上)
-- [ ] **B2 完成**:dock 點建立(`/loc add here Dock`);GPS 兩點第一次導航實測,
+- [x] **B2 完成**(✅ 2026-07-14,4 點含 dock):dock 點建立(`/loc add here Dock`);GPS 兩點第一次導航實測,
       偏移大就修 `[map_datum]`(整批平移特性)
-- [ ] **B3 解鎖 TEST.md 全部 🔶 項**:`/route`(nav2 模式)、`/mission`、
+- [x] **B3 解鎖 TEST.md 全部 🔶 項**(✅ 2026-07-14~15,含 WebUI/MCP/daemon):`/route`(nav2 模式)、`/mission`、
       `/patrol photo`、`/dock`、`/perception`、Camera 頁 —— 結果回填 TEST.md
-- [ ] **B4 里程**:≥20h / ≥50 次任務、0 安全事件(事件表記在 SAFETY_CASE)
-- [ ] **B5 Isaac 場景 + Twin Gate 端到端**:`[twin]` 啟用實跑,
+- [x] **B4 里程**(✅ 2026-07-16:20.0h / 102 趟 / 0 事件):≥20h / ≥50 次任務、0 安全事件(事件表記在 SAFETY_CASE)
+- [x] **B5 Isaac 場景 + Twin Gate 端到端**(✅ 2026-07-15,E2 N=100:硬陷阱 SIR 100%、FPR 0%):`[twin]` 啟用實跑,
       攔截率/誤攔率記下(消融數據 = 論文 E2)
-- [ ] **B6 Onboarding 計時**:≥3 位新手,卡點記錄(每個卡點=文件 bug,先修再繼續)
-- [ ] **B7 Demo 排練**:15 分鐘劇本 + 斷網切 local 備援,跑順一次
-- [ ] **A6 尾巴:24h soak 正式跑**:`python3 scripts/soak.py --rules rules.example.toml`,
+- [x] **B6 Onboarding 計時**(✅ 2026-07-16 客戶簽核:學弟妹 ≥3 順跑零卡點;非純冷啟動、未碼表計時):≥3 位新手,卡點記錄(每個卡點=文件 bug,先修再繼續)
+- [x] **B7 Demo 排練**(✅ 2026-07-16 第二輪跑順:twin 實啟、G3 block 當場確認):15 分鐘劇本 + 斷網切 local 備援,跑順一次
+- [x] **A6 尾巴:24h soak 正式跑**(✅ 2026-07-16 PASS,RSS +1.2%/限 20%):`python3 scripts/soak.py --rules rules.example.toml`,
       `report.md` 為 PASS
-- [ ] **SAFETY_CASE 完稿**:把 B4/B5 數據填進 ⬜ TODO 欄
+- [x] **SAFETY_CASE 完稿**(✅ 2026-07-16,B4/B5 數據已填,實車項標選配):把 B4/B5 數據填進 ⬜ TODO 欄
 
 ## B|tag 當天的程序(跟平常 release 一樣,只是版本是 1.0.0)
 

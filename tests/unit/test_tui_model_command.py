@@ -7,6 +7,7 @@ from jenai.config import load_config
 from jenai.config.store import build_minimal_config
 from jenai.providers import ProviderChatError
 from jenai.tui import JenAITuiApp
+from jenai.tui.widgets import ModelPicker
 
 
 def _app(tmp_path: Path) -> JenAITuiApp:
@@ -27,7 +28,7 @@ def _fake_listing(models: list[str]):
     return fake
 
 
-def test_model_command_lists_provider_models(tmp_path: Path, monkeypatch) -> None:
+def test_model_command_opens_picker(tmp_path: Path, monkeypatch) -> None:
     async def run() -> None:
         app = _app(tmp_path)
         monkeypatch.setattr(
@@ -37,8 +38,69 @@ def test_model_command_lists_provider_models(tmp_path: Path, monkeypatch) -> Non
             await app.handle_user_text("/model")
 
             assert app._available_models == ["llama3.2", "qwen2.5"]
-            panel_text = app.query_one("#events").children[-1].render_str("")  # smoke: mounted
-            assert panel_text is not None
+            assert len(list(app.query(ModelPicker))) == 1  # bare /model = interactive picker
+
+    asyncio.run(run())
+
+
+class _Key:
+    """Minimal stand-in for a Textual key event (on_key only reads .key/.stop)."""
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+    def stop(self) -> None:
+        pass
+
+
+def test_model_picker_starts_on_current_and_wraps() -> None:
+    picker = ModelPicker(["a", "b", "c"], current="b")
+    assert picker._selected == 1  # cursor starts on the active model
+    picker.on_key(_Key("up"))
+    assert picker._selected == 0
+    picker.on_key(_Key("up"))
+    assert picker._selected == 2  # wraps past the top
+
+
+def test_model_picker_arrow_select_switches_binding(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jenai.tui.info_commands.list_provider_models",
+        _fake_listing(["model-one", "model-two", "model-three"]),
+    )
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/model")  # bare → opens the picker
+            assert len(list(app.query(ModelPicker))) == 1
+
+            await pilot.press("down")  # move off model-one → model-two
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert list(app.query(ModelPicker)) == []  # picker closed
+            assert app.config.model_bindings.chat == "model-two"
+            assert app.config.model_bindings.default == "model-two"
+
+    asyncio.run(run())
+
+
+def test_model_picker_escape_keeps_current(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jenai.tui.info_commands.list_provider_models", _fake_listing(["model-one", "model-two"])
+    )
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        before = app.config.model_bindings.chat
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/model")
+            await pilot.press("down")  # move the cursor…
+            await pilot.press("escape")  # …but cancel
+            await pilot.pause()
+
+            assert list(app.query(ModelPicker)) == []
+            assert app.config.model_bindings.chat == before  # unchanged
 
     asyncio.run(run())
 

@@ -12,9 +12,9 @@
 #    否則 7:00 的禁區 block 橋段完全失效(閘關著 = 直接送 Nav2,不會擋)。
 #    twin 需在自己的 ROS_DOMAIN_ID 上跑孿生場景(見 TWIN_SETUP);enabled 但場景沒起
 #    → 每個 route 都會 refer(twin unreachable),一樣做不了 demo。
-# 3) 健檢:doctor 必須「主動」印出 twin 段且為 ready。
-#    ⚠️ 陷阱:enabled = false 時 doctor 對 twin 完全靜默(不是紅、是沒有)——
-#    「全綠」會騙過你。看到 twin 段有 PASS 才算數。
+# 3) 健檢:doctor 的 twin 段必須是 PASS。
+#    v1.0 起 enabled = false 會顯示 WARN「Twin Gate is DISABLED」——看到它就是還沒開。
+#    (v1.0 前 doctor 對關閉的 twin 完全靜默,B7 首輪排練因此踩坑,已修)
 source /opt/ros/jazzy/setup.bash && uv run JenAI doctor
 # 4) 雲端金鑰活著(斷網橋段要先「在線」才有戲):
 uv run JenAI providers        # nvidia-cloud 要在
