@@ -204,6 +204,54 @@ async def ros_drive_execute_tool(
     return output.model_dump()
 
 
+@function_tool(needs_approval=True)
+async def ros_drive_verified_tool(
+    ctx: RunContextWrapper[JenAIRunContext],
+    topic: str,
+    message_type: str,
+    payload_json: str,
+    duration_seconds: float = 1.0,
+    feedback_topic: str = "/odom",
+) -> dict:
+    """Atomically read baseline odometry, drive once for a bounded duration, auto-stop,
+    then read odometry again. Prefer this over ros_drive_execute_tool whenever the request
+    asks whether motion actually occurred. Missing baseline prevents movement; missing
+    post-action feedback returns unverified and never repeats actuation."""
+    call = _record_call(
+        ctx,
+        "ros_drive_verified_tool",
+        f"verified drive {topic} for {duration_seconds}s using {feedback_topic}",
+    )
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError as exc:
+        _finish_call(ctx, call, ok=False, summary="invalid JSON payload")
+        return {
+            "verdict": "not_executed",
+            "actuation_performed": False,
+            "message": f"payload_json is not valid JSON: {exc}",
+        }
+    vehicle = ctx.context.config.vehicle
+    output = await ros2_core.ros_drive_verified(
+        ctx.context.config,
+        topic,
+        message_type,
+        payload,
+        duration_s=duration_seconds,
+        feedback_topic=feedback_topic,
+        max_linear=vehicle.max_linear,
+        max_angular=vehicle.max_angular,
+    )
+    verdict = output["verdict"]
+    _finish_call(
+        ctx,
+        call,
+        ok=verdict in {"verified", "unverified"},
+        summary=f"{verdict}: {output['message']}",
+    )
+    return output
+
+
 ROS2_TOOL_NAMES: dict[str, ToolRiskInfo] = {
     "ros_topics_tool": ToolRiskInfo(
         risk_level=RiskLevel.P0,
@@ -252,6 +300,12 @@ ROS2_TOOL_NAMES: dict[str, ToolRiskInfo] = {
         effect_scope=EffectScope.SIM_CONTROL,
         needs_approval=True,
         description="Drive the robot for a fixed duration, then auto-stop.",
+    ),
+    "ros_drive_verified_tool": ToolRiskInfo(
+        risk_level=RiskLevel.P1,
+        effect_scope=EffectScope.SIM_CONTROL,
+        needs_approval=True,
+        description="Read odometry, drive once, auto-stop, and verify post-action odometry.",
     ),
 }
 

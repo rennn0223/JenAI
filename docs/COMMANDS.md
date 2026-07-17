@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v1.0.0(2026-07)。
+> 對應版本:v1.1.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -117,6 +117,7 @@ JenAI 啟動流程：
 |---|---|---|
 | `/mission <地點, …>` | 多步任務：依序導航/移動各點並回報（批准一次跑整趟；`drive <動作>` 段落可混排） | `/mission 廚房, drive 左轉, 大廳` |
 | `/patrol <地點, …> [xN] [photo]` | **循環巡邏**：點位 × 圈數；`photo` 時每個到達點抓相機幀給 VLM 並即時回報觀察。一點失敗記錄後續行 | `/patrol A, B x3 photo` |
+| `/explore [時間] [goals=N] [failures=N] [tag=標籤] [photo] [seed=N]` | **有界隨機巡遊**：在已儲存點位中，隨機選擇目前造訪次數最少者；同一趟不重試失敗點。預設 5 分鐘／最多 8 個目標／連續失敗 2 次即停。排除 dock 與 `restricted`、`hazard`、`no-explore` 標籤。這是已知點位巡遊，不是未知地圖的 frontier SLAM | `/explore 5m goals=8 tag=room photo` |
 | `/dock` | 回充：導航到 `tags = ["dock"]` 的地點（名字/別名是 Dock、充電站也認得） | `/dock` |
 | `/report` | 顯示最近一次巡邏日報（確定性內容 + LLM 摘要段；provider 離線時誠實只給前者）。log 存 `<config 目錄>/reports/`，patrol 結束自動寫入 | `/report`、`/report list` |
 | `/skills` | 列出**檔案定義技能**：`<config 目錄>/skills/*.toml`（name/description/steps=/mission 語法）→ 重啟後 `/名稱` 即新指令，進 palette、走同一張批准卡；保留字（stop/route…）拒載。範例見 repo 根目錄 `skills.example.toml` | `/skills`、`/inspect` |
@@ -158,7 +159,7 @@ JenAI 啟動流程：
 以下指令在執行前一律顯示 approval card：
 
 - `/ros pub`、`/ros drive`、`/drive`
-- `/route`、`/mission`、`/patrol`、`/dock`
+- `/route`、`/mission`、`/patrol`、`/explore`、`/dock`
 - `/shell`（含 `!` bash 模式）
 - `/run` 內部觸發的任何 side-effect tool
 

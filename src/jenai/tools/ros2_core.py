@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import math
+import re
 from dataclasses import dataclass
 
 from jenai.adapters import ros2_adapter
@@ -471,6 +472,176 @@ async def ros_drive(
         execution_status="succeeded" if result.ok else "failed",
         result_message=result.message,
     )
+
+
+_FLOAT_PATTERN = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+
+
+def _planar_odom_pose(raw: str) -> dict[str, float] | None:
+    """Extract planar pose from the stable text shape of nav_msgs/Odometry."""
+    position = re.search(
+        rf"position:\s*\n\s*x:\s*({_FLOAT_PATTERN})\s*\n\s*y:\s*({_FLOAT_PATTERN})",
+        raw,
+    )
+    orientation = re.search(
+        rf"orientation:\s*\n(?:\s*[xy]:\s*{_FLOAT_PATTERN}\s*\n)*"
+        rf"\s*z:\s*({_FLOAT_PATTERN})\s*\n\s*w:\s*({_FLOAT_PATTERN})",
+        raw,
+    )
+    if not position or not orientation:
+        return None
+    x, y = (float(value) for value in position.groups())
+    z, w = (float(value) for value in orientation.groups())
+    return {"x": x, "y": y, "yaw": 2.0 * math.atan2(z, w)}
+
+
+def _requested_planar_motion(payload: object) -> tuple[bool, bool]:
+    """Return whether a payload requests linear and/or angular planar motion."""
+    wants_linear = False
+    wants_angular = False
+    if isinstance(payload, dict):
+        linear = payload.get("linear")
+        angular = payload.get("angular")
+        if isinstance(linear, dict):
+            wants_linear |= any(
+                abs(value) > 1e-9
+                for value in linear.values()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            )
+        if isinstance(angular, dict):
+            wants_angular |= any(
+                abs(value) > 1e-9
+                for value in angular.values()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            )
+        speed = payload.get("speed")
+        steering = payload.get("steering_angle")
+        wants_linear |= (
+            isinstance(speed, (int, float))
+            and not isinstance(speed, bool)
+            and abs(speed) > 1e-9
+        )
+        wants_angular |= (
+            isinstance(steering, (int, float))
+            and not isinstance(steering, bool)
+            and abs(steering) > 1e-9
+        )
+        for value in payload.values():
+            child_linear, child_angular = _requested_planar_motion(value)
+            wants_linear |= child_linear
+            wants_angular |= child_angular
+    elif isinstance(payload, list):
+        for value in payload:
+            child_linear, child_angular = _requested_planar_motion(value)
+            wants_linear |= child_linear
+            wants_angular |= child_angular
+    return wants_linear, wants_angular
+
+
+def _angle_delta(after: float, before: float) -> float:
+    return abs((after - before + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+async def ros_drive_verified(
+    config: AppConfig,
+    topic: str,
+    message_type: str,
+    payload: dict,
+    *,
+    duration_s: float = 1.0,
+    feedback_topic: str = "/odom",
+    max_linear: float = MAX_LINEAR,
+    max_angular: float = MAX_ANGULAR,
+    min_position_change: float = 0.005,
+    min_yaw_change: float = 0.005,
+) -> dict:
+    """Atomically capture baseline, drive once, stop, and verify odometry.
+
+    Missing baseline prevents actuation. Missing post-action feedback returns an
+    honest unverified verdict and never retries the drive.
+    """
+    baseline = await ros_echo(config, feedback_topic, limit=1)
+    baseline_raw = baseline.messages[0]["raw"] if baseline.messages else ""
+    baseline_pose = _planar_odom_pose(baseline_raw)
+    if baseline_pose is None:
+        return {
+            "verdict": "not_executed",
+            "actuation_performed": False,
+            "feedback_topic": feedback_topic,
+            "baseline_pose": None,
+            "post_pose": None,
+            "position_change": None,
+            "yaw_change": None,
+            "message": (
+                "Baseline odometry was unavailable or could not be parsed; "
+                "no actuation sent."
+            ),
+        }
+
+    drive = await ros_drive(
+        topic,
+        message_type,
+        payload,
+        duration_s=duration_s,
+        max_linear=max_linear,
+        max_angular=max_angular,
+    )
+    if drive.execution_status != "succeeded":
+        return {
+            "verdict": "failed",
+            "actuation_performed": True,
+            "feedback_topic": feedback_topic,
+            "baseline_pose": baseline_pose,
+            "post_pose": None,
+            "position_change": None,
+            "yaw_change": None,
+            "message": drive.result_message,
+        }
+
+    post = await ros_echo(config, feedback_topic, limit=1)
+    post_raw = post.messages[0]["raw"] if post.messages else ""
+    post_pose = _planar_odom_pose(post_raw)
+    if post_pose is None:
+        return {
+            "verdict": "unverified",
+            "actuation_performed": True,
+            "feedback_topic": feedback_topic,
+            "baseline_pose": baseline_pose,
+            "post_pose": None,
+            "position_change": None,
+            "yaw_change": None,
+            "message": (
+                "The bounded action auto-stopped, but no parseable post-action "
+                "odometry arrived."
+            ),
+        }
+
+    position_change = math.hypot(
+        post_pose["x"] - baseline_pose["x"],
+        post_pose["y"] - baseline_pose["y"],
+    )
+    yaw_change = _angle_delta(post_pose["yaw"], baseline_pose["yaw"])
+    wants_linear, wants_angular = _requested_planar_motion(payload)
+    observed = (not wants_linear or position_change >= min_position_change) and (
+        not wants_angular or yaw_change >= min_yaw_change
+    )
+    if not wants_linear and not wants_angular:
+        observed = False
+    verdict = "verified" if observed else "failed"
+    return {
+        "verdict": verdict,
+        "actuation_performed": True,
+        "feedback_topic": feedback_topic,
+        "baseline_pose": baseline_pose,
+        "post_pose": post_pose,
+        "position_change": position_change,
+        "yaw_change": yaw_change,
+        "message": (
+            "Observed the requested odometry change."
+            if observed
+            else "Post-action odometry arrived, but the requested motion was not observed."
+        ),
+    }
 
 
 def _zero_like(value):

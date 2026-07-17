@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from jenai.agent.session import JenAIFileSession
 from jenai.agent.specialists import (
     build_motion_agent,
+    build_navigation_agent,
+    build_ros_developer_agent,
     build_ros_explorer_agent,
     build_supervisor_agent,
 )
@@ -46,7 +48,16 @@ def _handoff_names(agent) -> set[str]:
 def test_supervisor_hands_off_to_specialists() -> None:
     sup = build_supervisor_agent(_config())
     assert sup.name == "JenAI"
-    assert _handoff_names(sup) == {"ROS Explorer", "Motion", "Navigation", "Perception"}
+    assert _handoff_names(sup) == {
+        "ROS Developer",
+        "ROS Explorer",
+        "Motion",
+        "Navigation",
+        "Perception",
+    }
+    supervisor_tools = {tool.name for tool in sup.tools}
+    assert "explore_area_tool" in supervisor_tools
+    assert "route_execute_tool" not in supervisor_tools
 
 
 def test_specialists_carry_focused_toolsets() -> None:
@@ -58,6 +69,19 @@ def test_specialists_carry_focused_toolsets() -> None:
     assert "ros_drive_execute_tool" not in explorer_tools
     assert "ros_drive_execute_tool" in motion_tools
     assert "ros_topics_tool" in explorer_tools
+
+    developer = build_ros_developer_agent(_config())
+    developer_tools = {t.name for t in developer.tools}
+    assert {"ros_topics_tool", "ros_schema_tool", "ros_drive_verified_tool", "ros_state_tool"} <= (
+        developer_tools
+    )
+    assert "ros_drive_execute_tool" not in developer_tools
+    assert "shell_run_tool" not in developer_tools
+
+    navigation = build_navigation_agent(_config())
+    navigation_tools = {tool.name for tool in navigation.tools}
+    assert "explore_area_tool" in navigation_tools
+    assert "ros_drive_execute_tool" not in navigation_tools
 
 
 def test_session_roundtrip(tmp_path) -> None:

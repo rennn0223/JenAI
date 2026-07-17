@@ -211,7 +211,14 @@ async def navigate_with_fallback(
                 input_text="",
                 outgoing_action=outgoing_action,
                 approval_status="approved",
-                execution_status="failed",
+                # Preserve the gate's three-valued verdict instead of
+                # flattening both outcomes into a generic navigation failure.
+                # Callers still treat every non-success status as "do not
+                # continue", while the operator can now distinguish a hard
+                # safety block from an inconclusive result that needs review.
+                execution_status=(
+                    "blocked" if report.verdict == "block" else "referred"
+                ),
                 route_preview=f"{report.summary} — the real robot was NOT moved.",
             )
 

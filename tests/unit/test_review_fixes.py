@@ -8,7 +8,11 @@ from jenai.adapters import locations as loc
 from jenai.adapters.ros2_adapter import _parse_topic_info, _safe_int
 from jenai.schemas import Location, Pose2D
 from jenai.tools import route_core
-from jenai.tools.approval_formatters import format_ros_pub_approval, format_route_approval
+from jenai.tools.approval_formatters import (
+    format_explore_approval,
+    format_ros_pub_approval,
+    format_route_approval,
+)
 
 
 def test_ros_pub_approval_reads_payload_json() -> None:
@@ -30,6 +34,23 @@ def test_route_approval_reads_outgoing_action_json() -> None:
     )
     assert "lab" in fields.raw_action and "kitchen" in fields.raw_action
     assert "outgoing_action_json" not in fields.raw_action
+
+
+def test_explore_approval_shows_all_hard_bounds() -> None:
+    fields = format_explore_approval(
+        {
+            "duration_minutes": 3,
+            "max_goals": 5,
+            "max_failures": 2,
+            "tag": "room",
+            "seed": 7,
+        }
+    )
+    assert "5 navigation goals" in fields.title
+    assert "3 minutes" in fields.summary
+    assert "2 consecutive failures" in fields.summary
+    assert "seed=7" in fields.raw_action
+    assert "same seed repeats" in fields.summary
 
 
 def test_route_regex_does_not_match_to_inside_words() -> None:

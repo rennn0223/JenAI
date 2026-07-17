@@ -13,7 +13,7 @@
 name = "Kitchen"
 aliases = ["廚房", "kitchen"]   # optional alternate names / nicknames
 frame_id = "map"                # the TF frame the pose is expressed in
-tags = ["room"]                 # optional, for grouping
+tags = ["room"]                 # optional; /explore tag=room limits candidates
 
 [locations.pose]
 x = 2.0
@@ -25,6 +25,10 @@ name = "Lobby"
 aliases = ["大廳", "lobby", "entrance"]
 frame_id = "map"
 tags = ["room"]
+
+# /explore always excludes a dock and any location tagged restricted, hazard,
+# no-explore, no_explore, or forbidden. Add one of those tags to keep a saved
+# navigation point available to /route while preventing autonomous selection.
 
 [locations.pose]
 x = 0.0

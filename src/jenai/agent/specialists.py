@@ -11,6 +11,7 @@ from jenai.agent.instructions import (
     MOTION_AGENT_INSTRUCTIONS,
     NAVIGATION_AGENT_INSTRUCTIONS,
     PERCEPTION_AGENT_INSTRUCTIONS,
+    ROS_DEVELOPER_INSTRUCTIONS,
     ROS_EXPLORER_INSTRUCTIONS,
     SUPERVISOR_INSTRUCTIONS,
 )
@@ -19,6 +20,7 @@ from jenai.config.models import AppConfig
 from jenai.providers.agent_model import make_agent_client
 from jenai.tools.ros2_agent_tools import (
     ros_drive_execute_tool,
+    ros_drive_verified_tool,
     ros_echo_tool,
     ros_pub_execute_tool,
     ros_pub_validate_tool,
@@ -28,6 +30,7 @@ from jenai.tools.ros2_agent_tools import (
     ros_topics_tool,
 )
 from jenai.tools.route_agent_tools import (
+    explore_area_tool,
     loc_lookup_tool,
     route_execute_tool,
     route_preview_tool,
@@ -59,6 +62,30 @@ def build_ros_explorer_agent(
     )
 
 
+def build_ros_developer_agent(
+    config: AppConfig, client: AsyncOpenAI | None = None
+) -> Agent[JenAIRunContext]:
+    """One bounded specialist for live interface discovery, action, and feedback."""
+    return Agent[JenAIRunContext](
+        name="ROS Developer",
+        handoff_description=(
+            "Discover a ROS2 interface, run one approved bounded test, and verify feedback."
+        ),
+        instructions=ROS_DEVELOPER_INSTRUCTIONS,
+        model=build_model(config, binding="chat", client=client),
+        tools=[
+            ros_topics_tool,
+            ros_topic_info_tool,
+            ros_schema_tool,
+            ros_echo_tool,
+            ros_state_tool,
+            ros_pub_validate_tool,
+            ros_pub_execute_tool,
+            ros_drive_verified_tool,
+        ],
+    )
+
+
 def build_motion_agent(
     config: AppConfig, client: AsyncOpenAI | None = None
 ) -> Agent[JenAIRunContext]:
@@ -76,10 +103,18 @@ def build_navigation_agent(
 ) -> Agent[JenAIRunContext]:
     return Agent[JenAIRunContext](
         name="Navigation",
-        handoff_description="Navigate to a named location (needs approval).",
+        handoff_description=(
+            "Navigate to a named location or run bounded known-location exploration "
+            "(needs approval)."
+        ),
         instructions=NAVIGATION_AGENT_INSTRUCTIONS,
         model=build_model(config, binding="route", client=client),
-        tools=[loc_lookup_tool, route_preview_tool, route_execute_tool],
+        tools=[
+            loc_lookup_tool,
+            route_preview_tool,
+            route_execute_tool,
+            explore_area_tool,
+        ],
     )
 
 
@@ -107,9 +142,15 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
         name="JenAI",
         instructions=SUPERVISOR_INSTRUCTIONS,
         model=build_model(config, binding="chat", client=client),
-        tools=[shell_run_tool],
+        # Keep the bounded exploration API directly reachable as well as on
+        # the Navigation specialist. Some OpenAI-compatible local models
+        # correctly select the tool by name but omit the handoff wrapper; if
+        # it is absent here the SDK rejects an otherwise valid patrol request
+        # with ``Tool not found`` before the approval boundary can run.
+        tools=[shell_run_tool, explore_area_tool],
         input_guardrails=[unsafe_command_guardrail],
         handoffs=[
+            build_ros_developer_agent(config, client),
             build_ros_explorer_agent(config, client),
             build_motion_agent(config, client),
             build_navigation_agent(config, client),

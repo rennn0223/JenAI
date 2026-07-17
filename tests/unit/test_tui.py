@@ -990,6 +990,60 @@ def test_tui_patrol_shows_card_and_runs(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_tui_explore_shows_bounded_card_and_runs(monkeypatch) -> None:
+    from jenai.schemas import Location, Pose2D
+    from jenai.tools.skills import ExploreReport, ExploreStepResult
+
+    ran = {}
+
+    async def fake_run_explore(
+        config,
+        locations,
+        spec,
+        *,
+        navigate,
+        on_step=None,
+        observe=None,
+    ):
+        ran["spec"] = spec
+        ran["observe"] = observe
+        result = ExploreStepResult(1, "A", "succeeded", "arrived")
+        if on_step:
+            await on_step(result)
+        return ExploreReport(spec, ["A", "B"], [result], "max_goals")
+
+    monkeypatch.setattr("jenai.tui.app.run_explore", fake_run_explore)
+
+    async def run() -> None:
+        app = _app()
+        monkeypatch.setattr(
+            app,
+            "_load_locations",
+            lambda: [
+                Location(name="A", frame_id="map", pose=Pose2D(x=0, y=0, yaw=0)),
+                Location(name="B", frame_id="map", pose=Pose2D(x=1, y=1, yaw=0)),
+            ],
+        )
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/explore 2m goals=4 photo seed=9")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert "up to 4 navigation goals" in cards[0].approval.title
+            assert "A, B" in cards[0].approval.summary
+            assert "same seed repeats" in cards[0].approval.summary
+
+            await pilot.press("enter")
+            await pilot.pause()
+            if app._active_task is not None:
+                await app._active_task
+            assert ran["spec"].duration_s == 120
+            assert ran["spec"].max_goals == 4
+            assert ran["spec"].seed == 9
+            assert ran["observe"] is not None
+
+    asyncio.run(run())
+
+
 def test_tui_dock_without_dock_location_warns(tmp_path) -> None:
     async def run() -> None:
         app = _app(tmp_path)  # locations file exists but holds no dock

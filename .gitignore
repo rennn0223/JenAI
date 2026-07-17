@@ -28,4 +28,5 @@ e1-*.json
 e1-*.stderr
 e2-*/
 e4-*.jsonl
+e4-*.jsonl.meta.json
 soak-*/

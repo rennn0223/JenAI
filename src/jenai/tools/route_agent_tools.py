@@ -17,6 +17,7 @@ from jenai.schemas import EffectScope, RiskLevel, ToolCallCategory, ToolCallReco
 from jenai.tools import route_core
 from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.registry import ToolRiskInfo, register_tool
+from jenai.tools.skills import ExploreSpec, exploration_candidates, run_explore
 
 
 def _locations_path(ctx: RunContextWrapper[JenAIRunContext]):
@@ -121,6 +122,94 @@ async def route_execute_tool(
     return output.model_dump(mode="json")
 
 
+@function_tool(needs_approval=True)
+async def explore_area_tool(
+    ctx: RunContextWrapper[JenAIRunContext],
+    duration_minutes: float = 5.0,
+    max_goals: int = 8,
+    max_failures: int = 2,
+    tag: str = "",
+    seed: int = -1,
+) -> dict:
+    """Run one bounded, low-repeat exploration over eligible saved locations.
+
+    This is known-location exploration, not frontier SLAM: the deterministic
+    selector chooses among the least-visited saved poses and every goal still
+    passes through the normal navigation gateway. ``seed=-1`` means a fresh
+    random order; non-negative seeds make an experiment reproducible.
+    """
+    call = _record_call(
+        ctx,
+        "explore_area_tool",
+        f"{duration_minutes:g} min, up to {max_goals} goals",
+    )
+    try:
+        if seed < -1:
+            raise ValueError("seed must be -1 or a non-negative integer")
+        spec = ExploreSpec(
+            duration_s=duration_minutes * 60,
+            max_goals=max_goals,
+            max_failures=max_failures,
+            tag=tag.strip() or None,
+            seed=None if seed == -1 else seed,
+        )
+    except ValueError as exc:
+        message = f"Invalid exploration bounds: {exc}"
+        _finish_call(ctx, call, ok=False, summary=message)
+        return {"execution_status": "failed", "summary": message}
+
+    locations = _load_locations(ctx)
+    candidates = exploration_candidates(locations, spec.tag)
+    if len(candidates) < 2:
+        message = (
+            "Exploration requires at least two eligible saved locations; "
+            f"found {len(candidates)}."
+        )
+        _finish_call(ctx, call, ok=False, summary=message)
+        return {
+            "execution_status": "failed",
+            "summary": message,
+            "candidates": [location.name for location in candidates],
+        }
+
+    run_ctx = ctx.context
+
+    async def _navigate(action: dict):
+        return await execute_navigation(
+            run_ctx.config,
+            action,
+            audit_store=run_ctx.run_store.audit_store,
+            run_id=run_ctx.run.run_id,
+            session_id=run_ctx.run.session_id,
+        )
+
+    report = await run_explore(
+        run_ctx.config,
+        locations,
+        spec,
+        navigate=_navigate,
+    )
+    ok = report.completed_normally and report.success_count > 0
+    _finish_call(ctx, call, ok=ok, summary=report.summary)
+    return {
+        "execution_status": "succeeded" if ok else "failed",
+        "summary": report.summary,
+        "stop_reason": report.stop_reason,
+        "success_count": report.success_count,
+        "attempt_count": len(report.results),
+        "candidates": report.candidates,
+        "results": [
+            {
+                "attempt": result.attempt,
+                "point": result.point,
+                "status": result.status,
+                "detail": result.detail,
+            }
+            for result in report.results
+        ],
+    }
+
+
 @function_tool
 async def loc_lookup_tool(ctx: RunContextWrapper[JenAIRunContext], name: str) -> dict:
     """Look up a known location by name or alias (fuzzy-matched)."""
@@ -147,6 +236,12 @@ ROUTE_TOOL_NAMES: dict[str, ToolRiskInfo] = {
         effect_scope=EffectScope.SIM_CONTROL,
         needs_approval=True,
         description="Send a navigation route.",
+    ),
+    "explore_area_tool": ToolRiskInfo(
+        risk_level=RiskLevel.P1,
+        effect_scope=EffectScope.SIM_CONTROL,
+        needs_approval=True,
+        description="Explore eligible saved locations within hard time and goal limits.",
     ),
     "loc_lookup_tool": ToolRiskInfo(
         risk_level=RiskLevel.P0,

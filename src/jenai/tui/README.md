@@ -6,8 +6,8 @@ Claude Code 風格的 TUI:時間軸 bullet、slash palette(Tab 補完)、
 
 | 檔案 | 職責 |
 |---|---|
-| `app.py` | App 殼:輸入分發(裸語言依權限模式路由 / `!` shell / slash)、spinner、批准卡流程(自動模式明示自動批准)、mission/patrol 執行與日報存檔、`SLASH_COMMANDS` 表(palette 資料源) |
-| `robot_commands.py` | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/loc` `/vision` `/perception` `/report` + bridge 生命週期(watchdog 佈署) |
+| `app.py` | App 殼:輸入分發(裸語言依權限模式路由 / `!` shell / slash)、spinner、批准卡流程(自動模式明示自動批准)、mission/patrol/explore 執行與日報存檔、`SLASH_COMMANDS` 表(palette 資料源) |
+| `robot_commands.py` | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/explore` `/dock` `/drive` `/loc` `/vision` `/perception` `/report` + bridge 生命週期(watchdog 佈署) |
 | `info_commands.py` | Mixin:`/help` `/status` `/doctor` `/model` `/provider` `/config` 等資訊類 |
 | `panels.py` | 純視覺:WelcomePanel(吉祥物)、TimelineItem(variant 決定行距)、OutputPanel、CommandPalette |
 | `help_content.py` | `/help` 的分組指令內容 |

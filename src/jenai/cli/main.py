@@ -489,12 +489,31 @@ def eval_command(
 
     report = asyncio.run(run_eval(loaded, scenarios, repeats=repeats))
     if json_output:
+        metadata = {
+            "schema_version": 2,
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "scenario_file": str(scenarios_file.resolve()),
+            "scenario_count": len(scenarios),
+            "repeats": repeats,
+            "active_provider": loaded.active_provider,
+            "model_bindings": (
+                loaded.model_bindings.model_dump(mode="json")
+                if loaded.model_bindings is not None
+                else None
+            ),
+        }
         typer.echo(json.dumps(
-            {"summary": report.summary, "families": report.families, "results": report.results},
+            {
+                "metadata": metadata,
+                "summary": report.summary,
+                "families": report.families,
+                "consensus_results": report.consensus_results,
+                "results": report.results,
+            },
             ensure_ascii=False, indent=2,
         ))
         return
-    table = Table(title=f"Decision eval · {len(scenarios)} scenarios × {repeats}")
+    table = Table(title=f"Decision eval · {len(scenarios)} scenarios × {repeats} (majority)")
     table.add_column("Family")
     table.add_column("n", justify="right")
     table.add_column("accuracy", justify="right")

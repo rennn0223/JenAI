@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
-import time
 from dataclasses import dataclass, field
 
 
@@ -286,7 +286,27 @@ def topic_pub_for(
         raise Ros2NotAvailableError(
             "ros2 command was not found on PATH. Install ROS2 Jazzy and source its setup script."
         )
-    args = ["ros2", "topic", "pub", topic, message_type, payload_yaml, "--rate", str(rate_hz)]
+    if duration_s <= 0.0:
+        if stop_yaml is not None:
+            topic_pub(topic, message_type, stop_yaml)
+        return PubResult(ok=True, message=f"zero-duration drive on {topic}; sent stop only")
+    publish_count = max(1, math.ceil(max(0.0, duration_s) * rate_hz))
+    args = [
+        "ros2",
+        "topic",
+        "pub",
+        topic,
+        message_type,
+        payload_yaml,
+        "--rate",
+        str(rate_hz),
+        "--times",
+        str(publish_count),
+        "--wait-matching-subscriptions",
+        "1",
+        "--max-wait-time-secs",
+        "5",
+    ]
     try:
         # stdout is DEVNULL: `ros2 topic pub --rate` prints one line per publish,
         # which we never read — piping it risks filling the ~64KB OS buffer and
@@ -298,31 +318,31 @@ def topic_pub_for(
     except OSError as exc:
         raise Ros2CommandError(f"ros2 topic pub could not start: {exc}") from exc
 
+    timeout = 7.0 + max(0.0, duration_s)
     try:
-        time.sleep(max(0.0, duration_s))
-    finally:
-        # If the process exited on its own before the duration elapsed, the drive
-        # FAILED (bad message type/topic, ros2 not sourced, immediate crash) — a
-        # publisher we asked to run at a fixed rate should still be alive here.
-        # Distinguish that from our own deliberate termination below.
-        exited_early = proc.poll() is not None
-        if exited_early:
-            stderr_text = (proc.stderr.read() if proc.stderr else "") or ""
-        else:
-            stderr_text = ""
-            proc.terminate()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return PubResult(
+            ok=False,
+            message=(
+                f"drive failed: timed out waiting for a subscriber or publishing "
+                f"{publish_count} messages on {topic}"
+            ),
+        )
 
-    if exited_early:
+    if returncode != 0:
+        stderr_text = (proc.stderr.read() if proc.stderr else "") or ""
         detail = stderr_text.strip().splitlines()[-1] if stderr_text.strip() else ""
         return PubResult(
             ok=False,
             message=(
-                f"drive failed: ros2 topic pub on {topic} exited early "
-                f"(code {proc.returncode})" + (f": {detail}" if detail else "")
+                f"drive failed: ros2 topic pub on {topic} exited with code "
+                f"{returncode}" + (f": {detail}" if detail else "")
             ),
         )
 
@@ -335,5 +355,8 @@ def topic_pub_for(
 
     return PubResult(
         ok=True,
-        message=f"drove {topic} at {rate_hz:g} Hz for {duration_s:g}s, then sent stop",
+        message=(
+            f"drove {topic} with {publish_count} messages at {rate_hz:g} Hz "
+            f"after subscriber discovery, then sent stop"
+        ),
     )

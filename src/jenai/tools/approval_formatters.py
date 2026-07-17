@@ -73,6 +73,34 @@ def format_route_approval(arguments: dict) -> ApprovalCardFields:
     )
 
 
+def format_explore_approval(arguments: dict) -> ApprovalCardFields:
+    duration = arguments.get("duration_minutes", 5.0)
+    goals = arguments.get("max_goals", 8)
+    failures = arguments.get("max_failures", 2)
+    tag = arguments.get("tag") or "all eligible saved locations"
+    seed = arguments.get("seed", -1)
+    seed_text = (
+        "fresh random order"
+        if seed == -1
+        else f"reproducible order (seed={seed}; same seed repeats)"
+    )
+    goal_word = "navigation goal" if goals == 1 else "navigation goals"
+    return ApprovalCardFields(
+        title=f"Explore · up to {goals} {goal_word}",
+        summary=(
+            f"Navigate among {tag} for up to {duration} minutes; stop after "
+            f"{failures} consecutive failures; use a {seed_text}."
+        ),
+        raw_action=(
+            f"bounded known-location exploration: duration={duration}m, goals={goals}, "
+            f"failures={failures}, {seed_text}"
+        ),
+        justification=(
+            "The agent needs one approved, bounded navigation run to explore the area."
+        ),
+    )
+
+
 def format_shell_approval(arguments: dict) -> ApprovalCardFields:
     command = arguments.get("command", "?")
     cwd = arguments.get("cwd") or "(current directory)"
@@ -98,7 +126,9 @@ def format_generic_approval(tool_name: str, arguments: dict) -> ApprovalCardFiel
 APPROVAL_FORMATTERS: dict[str, Callable[[dict], ApprovalCardFields]] = {
     "ros_pub_execute_tool": format_ros_pub_approval,
     "ros_drive_execute_tool": format_ros_drive_approval,
+    "ros_drive_verified_tool": format_ros_drive_approval,
     "route_execute_tool": format_route_approval,
+    "explore_area_tool": format_explore_approval,
     "shell_run_tool": format_shell_approval,
 }
 

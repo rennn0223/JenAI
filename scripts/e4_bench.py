@@ -14,10 +14,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import statistics as st
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 SNAPSHOT_FIELDS = {
     "pose": "x=0.50 y=-1.50 yaw=0.00 (map)",
@@ -29,29 +31,43 @@ SNAPSHOT_FIELDS = {
 }
 
 
-async def run(config, n: int, out_path: Path) -> list[float]:
+async def run(config, n: int, out_path: Path, *, run_id: str) -> tuple[list[float], int]:
     from jenai.tools.decision_core import ContextSnapshot, decide
 
     snapshot = ContextSnapshot(**SNAPSHOT_FIELDS)
     latencies: list[float] = []
+    errors = 0
     with out_path.open("a", encoding="utf-8") as fh:
         for i in range(n):
             t0 = time.perf_counter()
             try:
                 decision = await decide(config, snapshot)
                 dt = time.perf_counter() - t0
-                row = {"i": i, "latency_s": round(dt, 3), "action": decision.action,
-                       "ts": datetime.now().isoformat(timespec="seconds")}
-            except Exception as exc:  # 供應端錯誤誠實記錄,不中斷量測
+                row = {
+                    "run_id": run_id,
+                    "i": i,
+                    "success": True,
+                    "latency_s": round(dt, 3),
+                    "action": decision.action,
+                    "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+                }
+                latencies.append(dt)
+            except Exception as exc:
                 dt = time.perf_counter() - t0
-                row = {"i": i, "latency_s": round(dt, 3), "action": "error",
-                       "error": str(exc)[:120],
-                       "ts": datetime.now().isoformat(timespec="seconds")}
-            latencies.append(dt)
+                errors += 1
+                row = {
+                    "run_id": run_id,
+                    "i": i,
+                    "success": False,
+                    "latency_s": round(dt, 3),
+                    "action": "error",
+                    "error": str(exc)[:120],
+                    "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+                }
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             fh.flush()
-            print(f"[{i+1}/{n}] {dt:6.2f}s {row['action']}")
-    return latencies
+            print(f"[{i + 1}/{n}] {dt:6.2f}s {row['action']}")
+    return latencies, errors
 
 
 def main() -> None:
@@ -73,12 +89,32 @@ def main() -> None:
         )
 
     out_path = Path(args.out)
-    latencies = asyncio.run(run(config, args.n, out_path))
-    ls = sorted(latencies)
-    n = len(ls)
+    if out_path.exists() and out_path.stat().st_size:
+        raise SystemExit(f"輸出已存在:{out_path};每個 E4 run 請使用新檔名")
+    run_id = f"e4-{datetime.now():%Y%m%dT%H%M%S}-{uuid4().hex[:6]}"
+    metadata = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "n_requested": args.n,
+        "provider": config.active_provider,
+        "model": config.model_bindings.plan if config.model_bindings is not None else None,
+        "metric": "decision-layer end-to-end latency; successful calls only",
+        "snapshot": SNAPSHOT_FIELDS,
+    }
+    metadata_path = out_path.with_suffix(out_path.suffix + ".meta.json")
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    latencies, errors = asyncio.run(run(config, args.n, out_path, run_id=run_id))
+    if not latencies:
+        raise SystemExit(f"沒有成功樣本(errors={errors}/{args.n});不產生延遲統計")
+    ordered = sorted(latencies)
+    p95 = ordered[math.ceil(len(ordered) * 0.95) - 1]
     print(
-        f"\nn={n} 中位={st.median(ls):.2f}s P95={ls[int(n*0.95)-1]:.2f}s "
-        f"平均={st.mean(ls):.2f}s min={ls[0]:.2f}s max={ls[-1]:.2f}s"
+        f"\nsuccess={len(ordered)}/{args.n} errors={errors} "
+        f"中位={st.median(ordered):.2f}s P95={p95:.2f}s "
+        f"平均={st.mean(ordered):.2f}s min={ordered[0]:.2f}s max={ordered[-1]:.2f}s"
     )
 
 

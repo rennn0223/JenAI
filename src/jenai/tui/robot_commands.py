@@ -48,7 +48,12 @@ from jenai.tools.ros2_core import (
 )
 from jenai.tools.route_core import route_preview
 from jenai.tools.safety import arm_watchdog, halt_robot
-from jenai.tools.skills import find_dock, parse_patrol
+from jenai.tools.skills import (
+    exploration_candidates,
+    find_dock,
+    parse_explore,
+    parse_patrol,
+)
 from jenai.tools.vision_core import VisionError, analyze_image, capture_and_analyze
 from jenai.tui.panels import MUTED, OutputPanel, TimelineItem, _is_number
 from jenai.tui.widgets import ApprovalCard
@@ -373,6 +378,70 @@ class RobotCommandsMixin:
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
             justification=f"Requested via /patrol: {arg}",
+        )
+        await self._request_direct_approval(ctx, tool_call, pending, approval)
+
+    async def _show_explore(self, arg: str) -> None:
+        # /explore 5m goals=8 tag=room photo → bounded, low-repeat patrol.
+        spec = parse_explore(arg)
+        if spec is None:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "Usage: /explore [5m] [goals=8] [failures=2] "
+                    "[tag=room] [photo] [seed=42]. Omit seed for a fresh "
+                    "random route; the same seed repeats the same order.",
+                )
+            )
+            return
+
+        locations = self._load_locations()
+        candidates = exploration_candidates(locations, spec.tag)
+        if len(candidates) < 2:
+            qualifier = f" tagged '{spec.tag}'" if spec.tag else ""
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"Exploration needs at least 2 eligible saved locations{qualifier}; "
+                    f"found {len(candidates)}. Dock, restricted, hazard, and no-explore "
+                    "locations are excluded.",
+                )
+            )
+            return
+
+        plan = spec.describe()
+        names = ", ".join(location.name for location in candidates)
+        ctx = self._new_run_context(f"/explore {arg}".rstrip())
+        tool_call = ToolCallRecord(
+            tool_name="explore_area_tool",
+            category=ToolCallCategory.ROUTE,
+            input_summary=plan,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+        )
+        pending = {
+            "kind": "explore",
+            "ctx": ctx,
+            "spec": spec,
+            "locations": locations,
+        }
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=tool_call.tool_call_id,
+            tool_name="explore_area_tool",
+            title=(
+                "Explore · up to "
+                f"{spec.max_goals} "
+                f"{'navigation goal' if spec.max_goals == 1 else 'navigation goals'}"
+            ),
+            summary=(
+                f"The robot will choose among the least-visited saved locations "
+                f"within these bounds: {plan}. Candidates: {names}."
+            ),
+            raw_action=f"bounded known-location exploration: {plan}",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification=f"Requested via /explore: {arg or '(defaults)'}",
         )
         await self._request_direct_approval(ctx, tool_call, pending, approval)
 

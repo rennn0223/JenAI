@@ -26,6 +26,7 @@ answers; run k>1 to sample output stability.
 from __future__ import annotations
 
 import tomllib
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,28 +45,80 @@ class Scenario:
 
 @dataclass
 class EvalReport:
-    results: list[dict] = field(default_factory=list)  # per-scenario rows
+    results: list[dict] = field(default_factory=list)  # raw repeated samples
+
+    @property
+    def consensus_results(self) -> list[dict]:
+        """Return one majority-vote row per scenario and keep raw samples intact."""
+        grouped: dict[str, list[dict]] = {}
+        for row in self.results:
+            grouped.setdefault(row["id"], []).append(row)
+        consensus = []
+        for rows in grouped.values():
+            counts = Counter((r["action"], r.get("target")) for r in rows)
+            top_count = max(counts.values())
+            winners = [label for label, count in counts.items() if count == top_count]
+            base = rows[0]
+            if len(winners) > 1:
+                action, target = "tie", None
+                correct = False
+                # A tied decision is unstable; retain any observed unsafe action
+                # instead of silently converting the scenario to safe.
+                unsafe = any(r["unsafe"] for r in rows)
+                reason = "no unique majority"
+            else:
+                action, target = winners[0]
+                winning_row = next(
+                    r for r in rows if (r["action"], r.get("target")) == winners[0]
+                )
+                correct, unsafe = winning_row["correct"], winning_row["unsafe"]
+                reason = winning_row["reason"]
+            consensus.append(
+                {
+                    "id": base["id"],
+                    "family": base["family"],
+                    "action": action,
+                    "target": target,
+                    "correct": correct,
+                    "unsafe": unsafe,
+                    "reason": reason,
+                    "samples": len(rows),
+                    "agreement": top_count / len(rows),
+                    "tie": len(winners) > 1,
+                }
+            )
+        return consensus
 
     @property
     def families(self) -> dict[str, dict]:
-        """family → {n, correct, unsafe, refer} aggregates."""
+        """Aggregate majority decisions, not repeated samples."""
         out: dict[str, dict] = {}
-        for row in self.results:
-            f = out.setdefault(row["family"], {"n": 0, "correct": 0, "unsafe": 0, "refer": 0})
-            f["n"] += 1
-            f["correct"] += row["correct"]
-            f["unsafe"] += row["unsafe"]
-            f["refer"] += row["action"] == "refer_to_human"
+        for row in self.consensus_results:
+            family = out.setdefault(
+                row["family"], {"n": 0, "correct": 0, "unsafe": 0, "refer": 0, "ties": 0}
+            )
+            family["n"] += 1
+            family["correct"] += row["correct"]
+            family["unsafe"] += row["unsafe"]
+            family["refer"] += row["action"] == "refer_to_human"
+            family["ties"] += row["tie"]
         return out
 
     @property
     def summary(self) -> dict:
-        n = len(self.results) or 1
+        rows = self.consensus_results
+        n = len(rows) or 1
         return {
-            "n": len(self.results),
-            "accuracy": sum(r["correct"] for r in self.results) / n,
-            "unsafe_rate": sum(r["unsafe"] for r in self.results) / n,
-            "refer_rate": sum(r["action"] == "refer_to_human" for r in self.results) / n,
+            "n": len(rows),
+            "samples": len(self.results),
+            "accuracy": sum(r["correct"] for r in rows) / n,
+            "unsafe_rate": sum(r["unsafe"] for r in rows) / n,
+            "sample_unsafe_rate": (
+                sum(r["unsafe"] for r in self.results) / (len(self.results) or 1)
+            ),
+            "refer_rate": sum(r["action"] == "refer_to_human" for r in rows) / n,
+            "agreement_rate": sum(r["agreement"] for r in rows) / n,
+            "tie_rate": sum(r["tie"] for r in rows) / n,
         }
 
 

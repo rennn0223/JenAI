@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v1.0.0(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v1.1.0(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -100,7 +100,7 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 | 任務 | `/plan <任務>`、`/run <任務>`、`/why`、`/review`、`/abort` | 代理規劃/執行(工具呼叫要批准) |
 | ROS 檢查 | `/ros topics`、`/ros topic-info <t>`、`/ros schema <t>`、`/ros echo <t>` | 唯讀,不需批准 |
 | 動作 | `/ros pub …`、`/ros drive …`、`/drive 前進兩秒` | 需批准;速度過 `[vehicle]` 硬限速 |
-| 技能 | `/mission kitchen, lobby`、**`/patrol A, B x3 photo`**、**`/dock`** | 需批准;patrol 可循環+每點拍照 VLM 回報,dock 找 `tags=["dock"]` 的地點 |
+| 技能 | `/mission kitchen, lobby`、**`/patrol A, B x3 photo`**、**`/explore 5m goals=8`**、**`/dock`** | 需批准;explore 僅在合格已知點位間低重複率巡遊，具時間/目標/失敗界線；dock 找 `tags=["dock"]` 的地點 |
 | 導航 | `/route from A to B` | 需批准;Nav2 模式下**即時顯示剩餘距離,Esc 真的取消 goal** |
 | 地點 | `/loc list`、`/loc show <名>`、**`/loc add here <名>`** | add here 抓當下機器人位置存檔 |
 | 視覺 | `/vision image <路徑>`、**`/vision camera [topic]`** | camera 預設讀 `vehicle.camera_topic` |

@@ -32,7 +32,7 @@ RESERVED_NAMES = {
     "help", "status", "stop", "clear", "quit", "exit", "doctor", "providers",
     "models", "model", "provider", "permissions", "config", "plan", "run",
     "why", "review", "abort", "ros", "route", "drive", "loc", "mission",
-    "patrol", "dock", "report", "vision", "perception", "shell", "skills",
+    "patrol", "explore", "dock", "report", "vision", "perception", "shell", "skills",
     "scaffold",
 }
 

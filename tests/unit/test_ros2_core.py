@@ -7,6 +7,7 @@ import pytest
 
 from jenai.adapters import ros2_adapter
 from jenai.config.store import build_minimal_config
+from jenai.schemas import RosEchoOutput, RosPubOutput
 from jenai.tools import ros2_core
 
 
@@ -272,6 +273,134 @@ def test_ros_drive_clamps_duration(monkeypatch) -> None:
     assert captured["duration_s"] == 30.0  # clamped to the safe window
 
 
+def _odom(x: float, y: float = 0.0, z: float = 0.0, w: float = 1.0) -> str:
+    return (
+        "pose:\n"
+        "  pose:\n"
+        "    position:\n"
+        f"      x: {x}\n"
+        f"      y: {y}\n"
+        "      z: 0.0\n"
+        "    orientation:\n"
+        "      x: 0.0\n"
+        "      y: 0.0\n"
+        f"      z: {z}\n"
+        f"      w: {w}\n"
+    )
+
+
+def test_planar_odom_pose_extracts_position_and_yaw() -> None:
+    pose = ros2_core._planar_odom_pose(_odom(1.25, -0.5, z=0.1, w=0.995))
+    assert pose is not None
+    assert pose["x"] == 1.25
+    assert pose["y"] == -0.5
+    assert pose["yaw"] > 0.19
+
+
+def test_verified_drive_observes_position_change(monkeypatch) -> None:
+    snapshots = iter([_odom(0.0), _odom(0.1)])
+    drives = 0
+
+    async def fake_echo(config, topic, *, limit):
+        return RosEchoOutput(
+            topic=topic,
+            mode="snapshot",
+            messages=[{"raw": next(snapshots)}],
+            summary="captured",
+        )
+
+    async def fake_drive(*args, **kwargs):
+        nonlocal drives
+        drives += 1
+        return RosPubOutput(
+            topic="/cmd_vel",
+            message_type="geometry_msgs/msg/Twist",
+            payload_preview={},
+            approval_status="approved",
+            execution_status="succeeded",
+            result_message="stopped",
+        )
+
+    monkeypatch.setattr(ros2_core, "ros_echo", fake_echo)
+    monkeypatch.setattr(ros2_core, "ros_drive", fake_drive)
+    result = asyncio.run(
+        ros2_core.ros_drive_verified(
+            _config(),
+            "/cmd_vel",
+            "geometry_msgs/msg/Twist",
+            {"linear": {"x": 0.1}},
+        )
+    )
+    assert result["verdict"] == "verified"
+    assert result["position_change"] == pytest.approx(0.1)
+    assert drives == 1
+
+
+def test_verified_drive_does_not_move_without_baseline(monkeypatch) -> None:
+    async def no_echo(config, topic, *, limit):
+        return RosEchoOutput(topic=topic, mode="snapshot", messages=[], summary="none")
+
+    async def forbidden_drive(*args, **kwargs):
+        raise AssertionError("drive must not run without a baseline")
+
+    monkeypatch.setattr(ros2_core, "ros_echo", no_echo)
+    monkeypatch.setattr(ros2_core, "ros_drive", forbidden_drive)
+    result = asyncio.run(
+        ros2_core.ros_drive_verified(
+            _config(),
+            "/cmd_vel",
+            "geometry_msgs/msg/Twist",
+            {"linear": {"x": 0.1}},
+        )
+    )
+    assert result["verdict"] == "not_executed"
+    assert result["actuation_performed"] is False
+
+
+def test_verified_drive_missing_post_feedback_is_unverified(monkeypatch) -> None:
+    snapshots = iter(
+        [
+            RosEchoOutput(
+                topic="/odom",
+                mode="snapshot",
+                messages=[{"raw": _odom(0.0)}],
+                summary="captured",
+            ),
+            RosEchoOutput(topic="/odom", mode="snapshot", messages=[], summary="none"),
+        ]
+    )
+    drives = 0
+
+    async def fake_echo(config, topic, *, limit):
+        return next(snapshots)
+
+    async def fake_drive(*args, **kwargs):
+        nonlocal drives
+        drives += 1
+        return RosPubOutput(
+            topic="/cmd_vel",
+            message_type="geometry_msgs/msg/Twist",
+            payload_preview={},
+            approval_status="approved",
+            execution_status="succeeded",
+            result_message="stopped",
+        )
+
+    monkeypatch.setattr(ros2_core, "ros_echo", fake_echo)
+    monkeypatch.setattr(ros2_core, "ros_drive", fake_drive)
+    result = asyncio.run(
+        ros2_core.ros_drive_verified(
+            _config(),
+            "/cmd_vel",
+            "geometry_msgs/msg/Twist",
+            {"linear": {"x": 0.1}},
+        )
+    )
+    assert result["verdict"] == "unverified"
+    assert result["post_pose"] is None
+    assert drives == 1
+
+
 def test_ros_pub_execute_reports_success(monkeypatch) -> None:
     monkeypatch.setattr(
         ros2_adapter,
@@ -348,31 +477,70 @@ def test_safety_clamp_does_not_treat_bool_as_speed() -> None:
     assert out["linear"]["x"] is True
 
 
-def test_topic_pub_for_reports_failure_when_process_exits_early(monkeypatch) -> None:
+def test_topic_pub_for_reports_publisher_failure(monkeypatch) -> None:
+    captured = {}
+
     class _DeadProc:
         returncode = 1
 
         def __init__(self) -> None:
             self.stderr = _Stderr()
 
-        def poll(self):  # already exited on its own -> the drive failed
+        def wait(self, *, timeout):
+            captured["timeout"] = timeout
             return 1
-
-        def terminate(self):  # pragma: no cover - not reached on the failure path
-            raise AssertionError("should not terminate an already-dead process")
 
     class _Stderr:
         def read(self):
             return "invalid message type"
 
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
-    monkeypatch.setattr(ros2_adapter.subprocess, "Popen", lambda *a, **kw: _DeadProc())
-    monkeypatch.setattr(ros2_adapter.time, "sleep", lambda *_: None)
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        return _DeadProc()
 
-    result = ros2_adapter.topic_pub_for("/cmd_vel", "bad/type", "{}", duration_s=0.0)
+    monkeypatch.setattr(ros2_adapter.subprocess, "Popen", fake_popen)
+
+    result = ros2_adapter.topic_pub_for("/cmd_vel", "bad/type", "{}", duration_s=0.5)
     assert result.ok is False
-    assert "exited early" in result.message
+    assert "exited with code 1" in result.message
     assert "invalid message type" in result.message
+    assert captured["args"][-8:] == [
+        "--rate",
+        "10.0",
+        "--times",
+        "5",
+        "--wait-matching-subscriptions",
+        "1",
+        "--max-wait-time-secs",
+        "5",
+    ]
+    assert captured["timeout"] == 7.5
+
+
+def test_topic_pub_for_zero_duration_sends_stop_only(monkeypatch) -> None:
+    published = []
+
+    monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        ros2_adapter,
+        "topic_pub",
+        lambda topic, message_type, payload: published.append(payload),
+    )
+    monkeypatch.setattr(
+        ros2_adapter.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("motion publisher must not start for zero duration")
+        ),
+    )
+
+    result = ros2_adapter.topic_pub_for(
+        "/cmd_vel", "geometry_msgs/msg/Twist", "{linear: {x: 1.0}}", duration_s=0.0,
+        stop_yaml="{linear: {x: 0.0}}",
+    )
+    assert result.ok is True
+    assert published == ["{linear: {x: 0.0}}"]
 
 
 def test_example_payload_survives_type_only_comment_line() -> None:
