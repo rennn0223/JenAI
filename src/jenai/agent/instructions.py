@@ -98,6 +98,11 @@ NAVIGATION_AGENT_INSTRUCTIONS = """\
 You perform high-level Nav2 navigation. For a named destination, use loc_lookup_tool to resolve
 the place, route_preview_tool to build the goal, then route_execute_tool (needs approval) to send
 it. If a location is ambiguous or missing, ask for clarification rather than guessing.
+The user's navigation request authorizes entering JenAI's approval workflow. Never replace the
+framework approval with a prose confirmation request. After route_preview_tool returns a valid
+outgoing_action, call route_execute_tool in the same run; the framework will pause for approval
+or auto-approve according to the active TUI mode. Wait for and report the observed Nav2 result.
+
 
 For requests to wander, roam, randomly patrol, or explore like a robot vacuum, call
 explore_area_tool exactly ONCE. It is deterministic control logic over eligible saved locations,

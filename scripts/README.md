@@ -7,7 +7,7 @@
 | `e3_mock_ugv.py` | E3 隔離 ROS2 fixture：整合 `/cmd_vel` 至 `/odom`，支援重置、停用回授及第一次動作後故障注入。固定使用非生產 ROS domain。 |
 | `e3_agent_bench.py` | E3 自然語言閉環工具實驗：八題分別檢查 live graph 發現、單次有界致動、動作後觀察，以及無回授時不盲目重送。 |
 | `e4_bench.py` | E4 決策延遲量測:固定快照重複 decide(),量中位/P95。`uv run python scripts/e4_bench.py --n 100 --out e4-local.jsonl` |
-| `b4_driver.sh` | B4 模擬巡航:對 tmux 裡的真 TUI(auto 模式)送 patrol 圈,log 到 `/tmp/b4_mileage.log`;預設 102 圈／72000 秒上限、單實例鎖及 EXIT `/stop`。`bash scripts/b4_driver.sh [session] [log]` |
+| `b4_driver.sh` | B4 模擬巡航:對 tmux 裡的真 TUI(auto 模式)送目前四角地點 patrol 圈,log 到 `/tmp/b4_mileage.log`;只有 N/N 記 `completed`，其餘記 `partial`。預設 102 圈／72000 秒上限、單實例鎖及 EXIT `/stop`。`bash scripts/b4_driver.sh [session] [log]` |
 
 指令細節與數據回填對照見 [docs/EXPERIMENTS.md](../docs/EXPERIMENTS.md)。
 soak/e2/e4 為 stdlib+repo 內依賴;b4_driver 只需 tmux。

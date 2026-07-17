@@ -56,11 +56,15 @@ uv run python scripts/e3_agent_bench.py --out e3-agent-boundary-$(date +%Y%m%d).
 ```
 
 - 八題分為介面發現、有限時閉環動作與失效邊界；每題使用全新 Agent session。
-- 動作題必須使用一次 `ros_drive_verified_tool`：同一工具擷取基準 `/odom`、等待控制訂閱者、執行固定筆數的有限時命令、自動停止並擷取後驗 `/odom`。基準缺席不致動；後驗缺席回傳 `unverified`，不會重送。
+- 動作題必須使用一次 `ros_drive_verified_tool`：同一工具擷取基準 `/odom`、等待控制訂閱者，並由同一個 rclpy publisher 依指定 rate/duration 發布有限時命令及連續 zero-stop pulses，再擷取後驗 `/odom`。基準缺席不致動；後驗缺席回傳 `unverified`，不會重送。
 - 第一個複合致動可批准，第二次一律拒絕；評分直接檢查工具的 `verified`／`unverified` 裁決，不以 Agent 的文字宣稱代替回授。
 - fixture 在 domain 42 提供 `/cmd_vel`、`/odom`、重置與「第一次動作後中斷回授」故障注入。fixture 與 benchmark 在 `ROS_DOMAIN_ID` 不是 42 時均拒絕啟動，不碰 domain 0 的 Isaac Sim/Nav2。
 - 輸出 JSONL 保存工具序列、工具摘要、延遲、批准輪次、最終回報與逐項通過條件；旁檔 `.meta.json` 保存模型與 run ID。
 - 2026-07-17 的失效導向紀錄依序保留原始基準、turn regression、compound initial、compound regression 與 compound final；不得以修正後結果覆蓋先前失敗。
+- 2026-07-18 的 v1.1.1 完整批次為 7/8、無重複致動 8/8；唯一失敗是模型在致動前
+  呼叫不存在工具。獨立的三項 D2 定向重跑為 3/3，兩份 JSONL 必須分開保存與報告，
+  不可以定向重跑覆蓋完整批次失敗。
+
 
 ## E4|本地 vs 雲端 LLM 延遲(論文 5.6 素材;選配)
 
@@ -87,13 +91,14 @@ B4_MAX_LAPS=102 B4_MAX_SECONDS=72000 \
 
 ```bash
 ls ~/.config/jenai/reports/patrol-*.json | wc -l   # 任務數
-awk '/lap=/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+s$/){sub(/s$/,"",$i); t+=$i}} \
+awk '/ lap=/{for(i=1;i<=NF;i++) if($i ~ /^elapsed_s=/){sub(/^elapsed_s=/,"",$i); t+=$i}} \
     END{printf "%.1f h\n", t/3600}' /tmp/b4_mileage.log    # 累計任務時數
-grep -vE '4/4' /tmp/b4_mileage.log                 # 異常圈(非 4/4 / timeout / 重啟)
+grep ' lap=' /tmp/b4_mileage.log | grep -v 'status=completed' # partial / timeout
 ```
 
-- 每次 driver 啟動產生 `run_id`;每圈只接受啟動後新增的 `Patrol finished`,避免把舊畫面誤認為新完成
-- driver 預設最多 102 圈或 72000 秒,同一 log 以 `flock` 保證單實例;正常結束或收到 HUP/INT/TERM 時會向同一 TUI 送 `/stop`
+- 每次 driver 啟動產生 `run_id`;每圈只接受啟動後新增的 `Patrol finished`,避免把舊畫面誤認為新完成。只有 N/N 才記 `completed`，其餘記 `partial`
+- driver 預設最多 102 圈或 72000 秒,路線可用 `B4_PATROL_ROUTE` 覆寫；同一 log 以
+  `flock` 保證單實例;正常結束或收到 HUP/INT/TERM 時會向同一 TUI 送 `/stop`
 - `SIGKILL`、主機故障或外部程序仍可能略過清理;每次 Isaac Sim Play 前都要重新清查 `b4_driver`、活動 Nav2 goal 與非零 `/cmd_vel`,不能只依賴 EXIT trap
 - 回填:V1_GATE B4;非預期實體行為照 SAFETY_CASE「事件記錄」程序開 issue
 

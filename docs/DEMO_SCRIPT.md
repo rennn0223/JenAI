@@ -33,7 +33,7 @@ uv run JenAI web --host 0.0.0.0
 |---|---|---|
 | 0:00–1:00 | 開場 | 一句話定位(LLM 決策 + 三層安全鏈 + 數位孿生閘門)。秀 `doctor` 全綠畫面 |
 | 1:00–2:00 | TUI | `uv run JenAI` 進 TUI → `/status`。台詞:LLM 永不進即時迴路,急停/限速/watchdog 不依賴模型與網路 |
-| 2:00–4:00 | 自然語言導航 | 輸入 `去 map_wall`。**注意:agent 可能先反問確認**(如「要我帶你去 map_wall 嗎?」)——這時回 `Go`/`好` 才出批准卡,這正是 HITL 在運作,不是 bug。要百分百穩就改用 slash `/route map_wall`(確定性出卡)。批准 → Isaac 裡車動、TUI 即時剩餘距離 → 到達 |
+| 2:00–4:00 | 自然語言導航 | 輸入 `去 map_right_up`。Agent 應在同一輪完成地點解析與 route preview，接著呼叫執行工具；批准由框架的批准卡處理，不應用文字再問一次。批准 → Twin Gate → Nav2 action → TUI 回報實際 succeeded/failed。上台要最穩可用 Slash `/route map_right_up`（確定性出卡，且不等待 LLM）。 |
 | 4:00–7:00 | 巡邏 + 視覺 | `/patrol map_right_down, dock x1 photo` → 每個到達點抓相機幀給 VLM、即時回報觀察 → 結束後 `/report` 秀自動日報 |
 | 7:00–9:00 | **Twin Gate** | `/route 去 sw_test_zone`(禁區內測試點)→ 批准 → 孿生車先跑、實體車不動 → 預演軌跡進禁區 → **G3 block,誠實拒絕**。台詞:人批准了也擋——HITL 攔意圖層,Twin Gate 攔執行層,邏輯正交 |
 | 9:00–10:00 | 急停 | `/route 去 map_left_up` → 車動起來後 `/stop` → **1 秒內停 + 清空佇列**(免批准:停下來永遠安全) |
@@ -44,7 +44,7 @@ uv run JenAI web --host 0.0.0.0
 ## 已知眉角(2026-07-16 首次排練實測)
 
 - **切模型用編號不是箭頭**:`/model` 列出**帶編號**清單,切換是 `/model 2` 或 `/model qwen3.6:35b`——**上下鍵不會選模型**(上下鍵是輸入歷史/palette)。demo 前先 `/model` 記好號碼
-- **NL 導航可能先被反問**:見 2:00 段;不是漏批准,是 agent 在澄清意圖。沒有「沒批准就動」的情況(動作一律過批准卡)
+- **NL 導航不應用文字重複詢問**:v1.1.1 會把已解析的導航請求直接交給框架批准流程；若本地模型產生不完整 action，出口會 fail closed 且不送 goal。需要穩定節奏時直接用 `/route`
 - **禁區沒 block = twin 沒開**:見前置 ★必做★;開演前務必空跑 `/route 去 sw_test_zone` 見到 G3
 
 ## 各段備援(出事就照講)
