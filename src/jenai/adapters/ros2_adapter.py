@@ -292,7 +292,7 @@ def topic_pub_for(
         return PubResult(ok=True, message=f"zero-duration drive on {topic}; sent stop only")
 
     stop_yaml = stop_yaml or "{}"
-    helper = Path(__file__).resolve().parents[1] / "bridge" / "_bounded_publisher.py"
+    helper = Path(__file__).resolve().parents[1] / "bridge" / "ros_bounded_publisher.py"
     ros_python = os.environ.get("JENAI_ROS_PYTHON", "/usr/bin/python3")
     args = [
         ros_python,

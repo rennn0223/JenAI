@@ -498,7 +498,7 @@ def test_topic_pub_for_reports_publisher_failure(monkeypatch) -> None:
     assert "exited with code 1" in result.message
     assert "invalid message type" in result.message
     assert captured["args"][0] == "/usr/bin/python3"
-    assert captured["args"][1].endswith("bridge/_bounded_publisher.py")
+    assert captured["args"][1].endswith("bridge/ros_bounded_publisher.py")
     assert captured["args"][2:] == [
         "/cmd_vel", "bad/type", "{}", "{}", "10.0", "0.5", "5"
     ]

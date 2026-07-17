@@ -1,4 +1,4 @@
-"""ROS-system-Python helper for one precisely timed, bounded publication.
+"""ROS-system-Python sidecar for one precisely timed, bounded publication.
 
 The main JenAI environment intentionally does not import ``rclpy``. This
 small sidecar runs with the ROS system interpreter so the motion command and
