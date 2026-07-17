@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_json
 from jenai.schemas import FieldSummary
+
+# Schema lookup is an interactive developer aid. A slow local model must not
+# hold the entire TUI (and its FIFO command queue) indefinitely.
+SCHEMA_SUMMARY_TIMEOUT_SECONDS = 8.0
 
 
 async def summarize_ros_schema(
@@ -24,7 +30,11 @@ async def summarize_ros_schema(
         f"{raw_interface}"
     )
 
-    parsed = await ask_json(config, prompt)
+    try:
+        async with asyncio.timeout(SCHEMA_SUMMARY_TIMEOUT_SECONDS):
+            parsed = await ask_json(config, prompt)
+    except TimeoutError:
+        parsed = None
     if parsed is None:
         return _naive_field_summary(raw_interface)
 

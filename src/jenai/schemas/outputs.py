@@ -102,7 +102,9 @@ class LocShowOutput(JenAIModel):
 class PlanOutput(JenAIModel):
     task_summary: str
     assumptions: list[str] = Field(default_factory=list)
-    plan_steps: list[PlanStep] = Field(default_factory=list)
+    # A successful plan with no steps cannot be reviewed or explained.
+    # Requiring one prevents a blank /review result from looking successful.
+    plan_steps: list[PlanStep] = Field(min_length=1)
     candidate_tools: list[str] = Field(default_factory=list)
     approval_checkpoints: list[str] = Field(default_factory=list)
     expected_output: str = ""

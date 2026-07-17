@@ -51,7 +51,12 @@ def test_run_plan_produces_completed_run_with_tool_less_agent(monkeypatch) -> No
         plan_output = PlanOutput(
             task_summary="Patrol area A",
             plan_steps=[
-                PlanStep(title="Move to A", description="drive there", reason="task asked")
+                PlanStep(
+                    title="Move to A",
+                    description="drive there",
+                    reason="task asked",
+                    status="done",
+                )
             ],
             expected_output="Patrol complete report",
         )
@@ -66,6 +71,7 @@ def test_run_plan_produces_completed_run_with_tool_less_agent(monkeypatch) -> No
     assert result.task_summary == "Patrol area A"
     assert result.final_output == "Patrol complete report"
     assert len(result.plan_steps) == 1
+    assert result.plan_steps[0].status == "pending"
     assert captured_agents[0].tools == []
 
 
@@ -121,4 +127,5 @@ def test_review_plan_replaces_plan_steps(monkeypatch) -> None:
     assert result.task_summary == "Revised plan"
     assert len(result.plan_steps) == 1
     assert result.plan_steps[0].title == "Better step"
-    assert result.status == "planning"
+    assert result.status == "completed"
+    assert result.final_output == "revised"

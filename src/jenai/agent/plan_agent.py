@@ -6,7 +6,7 @@ from agents import Runner
 
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.runtime import build_plan_agent, build_review_agent
-from jenai.schemas import PlanOutput, PlanStep, RunRecord, RunStatus
+from jenai.schemas import PlanOutput, PlanStep, PlanStepStatus, RunRecord, RunStatus
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 
 
@@ -18,7 +18,13 @@ def _steps_with_approval_flags(plan_output: PlanOutput) -> list[PlanStep]:
             for tool_name in step.candidate_tools
             if tool_name in TOOL_RISK_REGISTRY
         )
-        steps.append(step.model_copy(update={"requires_approval": needs_approval}))
+        # A planner has not executed anything. Model-authored status values
+        # are therefore untrusted; only the runtime may advance a plan step.
+        steps.append(
+            step.model_copy(
+                update={"requires_approval": needs_approval, "status": PlanStepStatus.PENDING}
+            )
+        )
     return steps
 
 
@@ -42,6 +48,7 @@ async def review_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
     """Re-plan the current task, asking the model to critique/revise the existing plan."""
     run, run_store = ctx.run, ctx.run_store
 
+    run_store.set_status(run, RunStatus.PLANNING)
     existing_steps = "\n".join(
         f"- {step.title}: {step.description} (reason: {step.reason})" for step in run.plan_steps
     )
@@ -56,5 +63,5 @@ async def review_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
 
     run_store.add_plan_steps(run, _steps_with_approval_flags(plan_output))
     run.task_summary = plan_output.task_summary
-    run_store.set_status(run, RunStatus.PLANNING)
+    run_store.finish(run, status=RunStatus.COMPLETED, final_output=plan_output.expected_output)
     return run
