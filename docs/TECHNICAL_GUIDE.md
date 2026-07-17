@@ -227,6 +227,8 @@ env -u PYTHONPATH uv run pytest     # 必須 unset PYTHONPATH(ROS 遮蔽問題)
 env -u PYTHONPATH uv run ruff check src tests
 ```
 
+- **目前基準**:2026-07-17 本機完整回歸為 505/505 通過；不含於 GitHub release artifact，是否提交測試變更由維護者決定。
+- **真實 TUI 驗收**:[TUI_LIVE_ACCEPTANCE_2026-07-17.md](TUI_LIVE_ACCEPTANCE_2026-07-17.md) 記錄 Isaac Sim/Nav2 的 ROS introspection、有限時致動、stop、vision/perception、patrol、Slash/NL explore 與四角 inspect。該紀錄是描述性系統驗收，不代替實體安全或使用者效率實驗。
 - **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test` 以 Python 3.12／3.13／3.14 matrix 跑 ruff + pytest(coverage 寫入 job summary,**安全鏈覆蓋 fail-under=90 倒退閘**)、`build`(`uv build` + `uvx` 全新環境裝 wheel 跑 `jenai --help`,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護
 - **Release**(`.github/workflows/release.yml`):兩個入口,同一套閘(驗 tag 與 pyproject 版本一致、lint+測試、`uv build` + wheel 冒煙)——①推 `vX.Y.Z` tag:建**草稿** release(自動 notes),人工 `gh release edit vX.Y.Z --notes-file docs/releases/vX.Y.Z.md --draft=false` 發佈;②**手動 workflow_dispatch**(輸入 tag):由 workflow 建 tag 並直接以 `docs/releases/<tag>.md` **發佈**(dispatch 本身即人工授權;無 notes 檔即失敗)。手寫 notes 自 v0.23 版本化在 `docs/releases/`,隨 PR review。tag 已有 release 時只補上傳附件
 - **TUI 測試**:Textual `app.run_test()` + `handle_user_text()`;導航測試 patch `NavigationGateway.execute`,以安全入口為邊界

@@ -20,13 +20,21 @@ audit.sqlite3*
 
 # Personal thesis planning (not part of the project)
 docs/THESIS_*.md
+docs/PAPERS.md
+docs/thesis-assets/
+docs/thesis-v*-media/
+scripts/build_thesis_*.py
+scripts/export_thesis_markdown.py
 *.docx
+林書任*論文*.pdf
 log/
 
 # experiment run outputs (archive final data deliberately, not live)
 e1-*.json
 e1-*.stderr
 e2-*/
+e3-*.jsonl
+e3-*.jsonl.meta.json
 e4-*.jsonl
 e4-*.jsonl.meta.json
 soak-*/

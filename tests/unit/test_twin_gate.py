@@ -103,6 +103,16 @@ def test_clean_rehearsal_passes() -> None:
     assert bridge.unwatched  # the contact watch is always released
 
 
+def test_immediate_success_uses_synchronous_pose_sample_for_g3() -> None:
+    # FakeTwinBridge reports success inside nav_send(), before the sampler task
+    # can run. A valid current/final pose must still make G3 conclusive.
+    zone = ForbiddenZone(name="stairs", x_min=5, y_min=5, x_max=6, y_max=6)
+    report = _rehearse(_twin(forbidden_zones=[zone]), FakeTwinBridge())
+
+    assert report.verdict == "pass"
+    assert _status(report, "G3") == "pass"
+
+
 def test_goal_inside_forbidden_zone_blocks_without_simulating() -> None:
     zone = ForbiddenZone(name="pit", x_min=0, y_min=0, x_max=5, y_max=5)
     bridge = FakeTwinBridge()

@@ -137,6 +137,17 @@ class TwinGate:
         except BridgeError:
             pass  # no contact sensor in the scene: G1 will be reported as skipped
 
+        # Capture an initial pose synchronously. An already-satisfied Nav2 goal
+        # can return before the background sampler gets its first timeslice;
+        # without this sample G3 would be inconclusive even though the pose is
+        # available and the robot never moved.
+        try:
+            initial_pose = await self._bridge.get_pose(timeout=2.0)
+        except BridgeError:
+            pass
+        else:
+            self._record_pose_sample(initial_pose, zone_hit, pose_samples)
+
         sampler = asyncio.create_task(self._sample_trajectory(zone_hit, pose_samples))
         status, timed_out, we_canceled = "failed", False, False
         try:
@@ -177,6 +188,7 @@ class TwinGate:
         if status == "succeeded":
             try:
                 p = await self._bridge.get_pose(timeout=2.0)
+                self._record_pose_sample(p, zone_hit, pose_samples)
                 deviation = math.hypot(p.x - gx, p.y - gy)
             except BridgeError:
                 pass  # twin pose unavailable: G4 stays skipped
@@ -260,17 +272,23 @@ class TwinGate:
             except BridgeError:
                 pass  # transient (no pose yet / bridge respawning) — keep sampling
             else:
-                # Only a finite pose counts as G3 evidence. NaN/inf never falls
-                # inside any zone (contains() comparisons are False), so counting
-                # it would mark the trajectory "checked" while it is unknown —
-                # a broken twin localization must land in the inconclusive path.
-                if math.isfinite(p.x) and math.isfinite(p.y):
-                    pose_samples[0] += 1
-                    zone = self._zone_at(p.x, p.y)
-                    if zone is not None:
-                        zone_hit.append(f"twin entered '{zone.name}' at ({p.x:.2f}, {p.y:.2f})")
-                        return
+                self._record_pose_sample(p, zone_hit, pose_samples)
+                if zone_hit:
+                    return
             await asyncio.sleep(self._twin.pose_sample_s)
+
+    def _record_pose_sample(self, pose, zone_hit: list[str], pose_samples: list[int]) -> None:
+        """Count finite G3 evidence and record the first forbidden-zone hit."""
+        # NaN/inf never falls inside a zone, so counting it would falsely mark
+        # a broken twin localization as checked.
+        if not (math.isfinite(pose.x) and math.isfinite(pose.y)):
+            return
+        pose_samples[0] += 1
+        zone = self._zone_at(pose.x, pose.y)
+        if zone is not None and not zone_hit:
+            zone_hit.append(
+                f"twin entered '{zone.name}' at ({pose.x:.2f}, {pose.y:.2f})"
+            )
 
     def _zone_at(self, x: float, y: float) -> ForbiddenZone | None:
         return next((z for z in self._twin.forbidden_zones if z.contains(x, y)), None)

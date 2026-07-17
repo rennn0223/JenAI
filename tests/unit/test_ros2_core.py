@@ -8,7 +8,7 @@ import pytest
 from jenai.adapters import ros2_adapter
 from jenai.config.store import build_minimal_config
 from jenai.schemas import RosEchoOutput, RosPubOutput
-from jenai.tools import ros2_core
+from jenai.tools import ros2_core, summaries
 
 
 def _config():
@@ -575,3 +575,25 @@ def test_safety_clamp_fails_closed_for_invalid_limits() -> None:
     assert negative == {"linear": {"x": 0}, "angular": {"z": 0}}
     assert infinite == {"linear": {"x": 0}, "angular": {"z": 0}}
     assert invalid_values == {"linear": {"x": 0}, "angular": {"z": 0}}
+
+
+def test_schema_summary_timeout_falls_back_to_deterministic_fields(monkeypatch) -> None:
+    async def slow_ask_json(config, prompt):
+        await asyncio.sleep(1)
+        return []
+
+    monkeypatch.setattr(summaries, "ask_json", slow_ask_json)
+    monkeypatch.setattr(summaries, "SCHEMA_SUMMARY_TIMEOUT_SECONDS", 0.001)
+
+    result = asyncio.run(
+        summaries.summarize_ros_schema(
+            _config(),
+            "geometry_msgs/msg/Point",
+            "float64 x\nfloat64 y\n",
+        )
+    )
+
+    assert [(field.field_name, field.field_type) for field in result] == [
+        ("x", "float64"),
+        ("y", "float64"),
+    ]

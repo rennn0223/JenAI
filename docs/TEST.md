@@ -26,7 +26,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v1.1.0 現況 503 項,無 ROS 環境也全過);含安全鏈故障注入、輸入邊界、指令 FIFO/批准暫停/stop 清隊列與架構鐵律測試 |
+| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(v1.1.0 現況 505 項,無 ROS 環境也全過);含安全鏈故障注入、輸入邊界、指令 FIFO/批准暫停/stop 清隊列與架構鐵律測試 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job 以 Python 3.12／3.13／3.14 matrix 跑 ruff+pytest(coverage 表進 job summary,基準 74%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
 | Release gate | 推 `vX.Y.Z` tag,或手動 dispatch(輸入 tag) | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → tag push 建草稿(人工發佈);dispatch 由 workflow 建 tag 並以 `docs/releases/<tag>.md` 直接發佈 |
@@ -34,31 +34,30 @@
 | 稽核紀錄 | 自動化測試 + 執行任一 TUI run | `<config 目錄>/audit.sqlite3` 保存 run/approval/tool/gate 事件,重啟後仍在;最多 10,000 筆且不含 prompt/raw payload |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 
-## 本機實測現況快照(v0.34.0 實測,DGX Spark 工作機,Isaac Carter 倉庫場景)
+## 本機實測現況快照(v1.1.0 實測,DGX Spark 工作機,Isaac Sim 倉庫場景)
 
-- **doctor overall:`pass`**:全部區段綠,含 nav 五項(map / AMCL / laser / Nav2 / cmd_vel)
-- **ROS graph**:Nova Carter 倉庫(`/cmd_vel`=Twist、`/amcl_pose`、`/map`、`/scan`、
+- **doctor**:ROS/Nav2/地圖／相機皆可用；同 domain 0 純模擬驗收時 `twin_isolation` 的警告／失敗屬預期,不得寫成隔離通過
+- **ROS graph**:Isaac Sim 倉庫場景(`/cmd_vel`=Twist、`/amcl_pose`、`/map`、`/scan`、
   `/front_stereo_camera/left/image_raw`、Nav2 全家 + docking_server)
 - **LLM**:ollama 本地(全 binding = qwen3.6:35b);nvidia-cloud 備援
-- **locations**:6 點(含 `dock`;`map_left_up` 存得貼牆,終點逼近會失敗,`/loc move` 重存即修)
+- **locations**:5 點:`dock` 加 RViz2 地圖左上、右上、左下、右下四點;四角均具 1.0 m free-space 周界,12 組有向 Nav2 規劃全數成功
 
-→ 一句話:**四介面(TUI slash/NL、WebUI、MCP、daemon)全部在 Carter 場景實測可用;
-twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→執行→免 token 急停
-(位移 0.0cm)、MCP 7 唯讀工具+stop、daemon 規則對活 topic 觸發,均 2026-07-15 實測。**
+→ 一句話:**TUI 的 Slash、自然語言、ROS2 introspection、Nav2、vision、perception、
+patrol/explore/inspect 與報告已在 2026-07-17 以真實 Isaac Sim graph 逐項驗收;完整紀錄見
+[TUI_LIVE_ACCEPTANCE_2026-07-17.md](TUI_LIVE_ACCEPTANCE_2026-07-17.md)。WebUI、MCP 與 daemon
+保留既有 2026-07-15 驗收證據。**
 
-**Known issues(2026-07-14 實測;1、2 已修)**:
+**已修正與仍需注意(更新至 2026-07-17)**:
 1. ~~route 解析器對 destination-only 句式(`去X`、`Go to X`)失敗~~ → **v0.36.3 已修**
    (goal-only regex 快路 + LLM fallback 接受空 start;起點一律取機器人當前位置)。
 2. ~~agent 的 `ros_state` 讀不到位姿~~ → **v0.36.3 已修**(新增 `pose` 欄位,latched QoS
    讀 `/amcl_pose`;`/odom` 被載具改名(Carter=`/chassis/odom`)時位姿不再落空)。
-3. **【最高優先】`/run` 批准後工具不執行**:audit 證據——resume 轉 running 到 blocked
-   僅 **28ms**(模型未被呼叫、車未動);`state.approve()` 已呼叫、approval_resolved 已
-   記錄,但 SDK(openai-agents 0.17.7)原樣重吐同一 interruption → 被迴圈偵測器誤判
-   「模型迴圈」。先前 v0.36.3 notes 的「35b 模型迴圈」敘事**是錯的**,真兇在 approval
-   對帳(嫌疑:handoff 後 tool namespace 的 key 解析)。影響:自然語言與 `/run` 的所有
-   動作路徑;slash 直接指令不受影響。下一步:真 SDK + scripted fake model 重現測試定位。
-4. qwen3.6:35b 偶發幻覺工具名(`navigation_look_up_location`)→ SDK 誠實報
+3. ~~`/run` 批准後工具不執行~~ → **已修並於 2026-07-17 真實驗證**:自然語言探索
+   正確呼叫 Explore,走兩個不同地點並以 `2/2` 完成;批准恢復與工具續跑鏈路成立。
+4. qwen3.6:35b 仍可能偶發幻覺工具名(`navigation_look_up_location`)→ SDK 誠實報
    「The AI hit a limit」,run failed(改善方向:未知工具名回饋模型重試一輪)。
+5. 本機 qwen3.6:35b 的自然語言與 report 摘要需數十秒至約兩分鐘;Slash 指令不經此
+   推理等待。這是高階決策延遲,不能讓 LLM 進入即時控制迴路。
 
 ---
 
@@ -150,10 +149,10 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→
 
 | 狀態 | 指令 | 測法 | 期望輸出 |
 |---|---|---|---|
-| ✅ | `/route 從應科大樓到機械系館` | 建點 + (Nav2 或 route_adapter=odom) | **兩端已知 → 先去 A 再去 B**(兩段導航);只認得目的地 → 從當前位置去。即時剩餘距離、Esc 真取消。實測(Isaac Carter,nav2):`從dock到map_left_up` 兩段判讀正確、剩餘距離即時遞減、**Esc 取消後 5 秒位移 0.0 cm**、失敗段誠實 n/m ✅;known issue:`去X` destination-only 句式解析失敗(見快照節) |
+| ✅ | `/route 從應科大樓到機械系館` | 建點 + (Nav2 或 route_adapter=odom) | **兩端已知 → 先去 A 再去 B**(兩段導航);只認得目的地 → 從當前位置去。即時剩餘距離、Esc 真取消。2026-07-17 實測導航中 `/stop`:action cancelled、零速度送出,5 秒漂移約 0.0025 m ✅ |
 | ✅ | `/drive 前進兩秒` | 批准後 | 自然語言 → 速度指令定時發布到 `vehicle.cmd_vel_topic`,結束自動停(⚠️ 實體會動) |
 | 🔶 | 局部避障(`[avoidance] enabled=true`,route_adapter=odom) | 需 depth topic + 障礙 | odom 直驅時 depth→走廊判定→stop-and-go detour;depth 超過 `depth_timeout_s` 未更新即歸零並回報 `sensor_unavailable`,不沿用舊畫面盲走 |
-| ✅ | `/loc list` | 直接輸入 | 地點表;現在為空 |
+| ✅ | `/loc list` | 直接輸入 | 地點表;2026-07-17 正式設定為 `dock` + 地圖四角共 5 點 |
 | ✅ | `/loc add here 測試點` | 需 /amcl_pose 或 /odom | 抓當下位置存檔。實測(Isaac Carter,v0.36.3):靜止讀 /amcl_pose 四點入檔 ✅(QoS 修復後) |
 | ✅ | `/loc add gps <名> <緯> <經>` | 先在 config 設 `[map_datum]` | 未設基準點 → 誠實拒絕 + 設定教學;設好 → 換算 map 座標存檔(提示:實地驗證第一次導航,基準誤差會整批平移) |
 | ✅ | `/loc show <名>` | 建點後 | 座標/別名/tags |
@@ -169,7 +168,7 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→
 | ✅ | `/patrol A, B x3 photo` | Nav2+地點+RGB 相機後測 | 點位×圈數;photo 時每到達點抓幀→VLM 觀察即時顯示 👁;一點失敗記錄後續行,**統計誠實 n/m**;Esc/`/stop` 可搶佔。實測(Isaac Carter):x1 photo 兩點 → 2/2、每點 👁 場景描述正確、log 自動存 ✅ |
 | ✅ | `/dock` | 建 `tags=["dock"]` 或名為 dock 的地點後測 | 導航到 dock 點;無 dock 點時**誠實提示建法**(`/loc add here Dock`)。實測(Isaac Carter):`Arrived at the goal` ✅,與 `/vision` 排隊互不干擾 |
 | ✅ | `/report` / `/report list` | 沒 log 時直接輸入;有 log 後再測 | 無 log → `No patrol logs yet`;有 log → 日報(時間/路線/n:m/逐點 ✓✗/👁 觀察)+ LLM 摘要段;provider 離線 → 誠實標示只有確定性內容 |
-| ✅ | `/skills` + 自訂技能 | 建 `skills/inspect.toml` 後重啟 | `/skills` 列出技能與載入警告;`/inspect` 出現在 palette、執行時**先過批准卡**再跑 mission;壞檔/保留字/重名 → 警告不炸(本機已裝 inspect=應科大樓→機械系館) |
+| ✅ | `/skills` + 自訂技能 | 建 `skills/inspect.toml` 後重啟 | `/skills` 列出技能與載入警告;`/inspect` 出現在 palette、執行時**先過批准卡**再跑 mission;壞檔/保留字/重名 → 警告不炸。2026-07-17 四角 inspect 實跑 `4/4` 成功 |
 
 ### Vision / Perception
 
@@ -191,8 +190,8 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→
 
 | 狀態 | 項目 | 期望輸出 |
 |---|---|---|
-| 🧪 | Gate pipeline(G1–G5 判準、pass/block/refer、refer→daemon 視為 block) | 21 個單元測試涵蓋;`[twin]` 預設關閉 = 零行為變化 |
-| ✅ | 端到端預演(真孿生) | `[twin]` 啟用 → 每個導航目標先在隔離 ROS_DOMAIN_ID 預演。實測(2026-07-15,倒置佈局 twin=0/車=42):**pass** 路——孿生實跑 56s、G1–G5 全評、verdict 進 audit、載具側誠實執行;**block** 路——G3 禁區目標被攔「the real robot was NOT moved」。G1 contact sensor 未建時誠實 skip/warn;`doctor` twin 區段含 **twin_isolation**(domain 相撞即 fail) |
+| 🧪 | Gate pipeline(G1–G5 判準、pass/block/refer、refer→daemon 視為 block) | 23 個 Twin Gate 單元測試涵蓋;`[twin]` 預設關閉 = 零行為變化 |
+| ✅ | 端到端預演(真孿生) | 隔離部署時每個導航目標先在獨立 ROS domain 預演。2026-07-17 的單一 Isaac Sim 驗收刻意令 `twin.domain_id=0`,預演與執行作用於同一模擬車;此設定只供純模擬展示,不可聲稱通訊隔離通過。G1 contact sensor 未建時誠實 skip/warn;G3/G4/G5 與 audit verdict 仍照常評估 |
 
 ### 批准機制(橫切驗收)
 
@@ -211,12 +210,11 @@ twin 閘門剩孿生側(第二 Isaac 實例 + `[twin]`)未建。WebUI confirm→
 
 ---
 
-## 現在不能測的,各缺什麼(補齊順序照 ONBOARDING.md)
+## 尚未完成的實體／跨平台驗證
 
-| 缺口 | 解鎖的測項 | 補法 |
+| 跨平台缺口 | 尚未能宣稱的結論 | 建議補法 |
 |---|---|---|
-| RGB 相機 topic(現只有 /depth) | `/vision camera`、`/perception`、`/patrol photo` | 起 Isaac bridge 的 RGB 相機或接實機相機(`vehicle.camera_topic`) |
-| /odom + /scan | `ros_state`(agent 工具)、`/loc add here`(odom 退路) | 起車端 odometry 與雷射 |
-| 地圖 + AMCL | `/loc add here`(正路)、定位回報 | slam_toolbox 建圖 → AMCL(ONBOARDING.md 手把手) |
-| Nav2 | `/route` `/mission` `/patrol` `/dock`、daemon `goto` | Nav2 bringup(Ackermann:Smac Hybrid-A* + RPP) |
-| Isaac Sim 孿生場景 | Twin Gate 端到端、M6 消融實驗 | TWIN_SETUP.md(工作站作業,M3 唯一剩餘項) |
+| 實體小型 Ackermann 車 | 不可由模擬成功直接推論物理路徑誤差、煞停距離或碰撞安全 | 後續以相同 high-level API 做低速、空曠場地試驗並量測軌跡誤差 |
+| 四足平台 adapter | 不可宣稱已完成不同運動學的通用控制 | 維持 capability schema,只新增 adapter,比較修改量與任務成功率 |
+| 使用者對照組 | 不可量化宣稱降低學習曲線或提升效率 | 初學者／熟練者交叉比較原生 ROS2 CLI 與 JenAI 的時間、錯誤率與主觀負荷 |
+| 虛實同時上線之通訊隔離 | domain 0 純模擬驗收不代表實體部署安全 | 分離 ROS domain、topic/action 白名單與硬體急停,再做誤送與斷線測試 |
