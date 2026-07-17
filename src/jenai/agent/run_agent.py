@@ -13,7 +13,8 @@ from jenai.schemas import RunRecord
 
 def build_run_agent(config: AppConfig) -> Agent[JenAIRunContext]:
     """The agent driving `/run`: a Supervisor that hands off to specialist agents
-    (ROS Explorer / Motion / Navigation / Perception) via the openai-agents SDK.
+    (ROS Developer / Explorer / Motion / Navigation / Perception) via the
+    openai-agents SDK.
     """
     return build_supervisor_agent(config)
 

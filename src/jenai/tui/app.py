@@ -46,7 +46,7 @@ from jenai.tools.ros2_core import (
     ros_pub_execute,
 )
 from jenai.tools.shell_core import assess_command, preview_command, run_shell
-from jenai.tools.skills import run_patrol
+from jenai.tools.skills import run_explore, run_patrol
 from jenai.tools.user_skills import load_user_skills
 from jenai.tools.vision_core import capture_and_analyze
 from jenai.tui.info_commands import InfoCommandsMixin
@@ -63,8 +63,6 @@ from jenai.tui.panels import (
 )
 from jenai.tui.robot_commands import RobotCommandsMixin
 from jenai.tui.widgets import ApprovalCard, ErrorBlock, ModelPicker, PlanBlock, ToolBlock
-
-APPROVAL_REQUIRED_COMMANDS = ("/ros pub", "/route", "/shell", "/run")
 
 MODEL_BINDING_NAMES = ("chat", "plan", "vision", "route", "default")
 
@@ -122,6 +120,11 @@ SLASH_COMMANDS = [
         "/patrol",
         "Loop waypoints, optional photo report (needs approval)",
         "/patrol A, B x2 photo",
+    ),
+    SlashCommand(
+        "/explore",
+        "Bounded low-repeat exploration of saved places (needs approval)",
+        "/explore 5m goals=8 tag=room photo",
     ),
     SlashCommand("/dock", "Return to the charging dock (needs approval)"),
     SlashCommand("/report", "Show the latest patrol report (+LLM digest)", "/report [list]"),
@@ -989,6 +992,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "/drive": self._show_drive,
             "/mission": self._show_mission,
             "/patrol": self._show_patrol,
+            "/explore": self._show_explore,
             "/dock": self._show_dock,
             "/report": self._show_report,
             "/skills": self._show_skills,
@@ -1548,6 +1552,41 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 )
             except OSError as exc:  # a full disk must not eat the patrol result
                 await self._mount_event(TimelineItem("warn", f"Patrol log not saved: {exc}"))
+        elif pending["kind"] == "explore":
+            spec = pending["spec"]
+
+            async def _on_explore_step(result):
+                body = (
+                    f"Goal {result.attempt}/{spec.max_goals} · {result.point}: "
+                    f"{result.status} — {result.detail}"
+                )
+                if result.observation:
+                    body += f"\n[#9c9689]👁 {result.observation}[/]"
+                await self._mount_step_line(result.status, body)
+
+            async def _observe_explore() -> str | None:
+                bridge = await self._get_bridge()
+                output = await capture_and_analyze(
+                    self.config, bridge, self.config.vehicle.camera_topic
+                )
+                return output.summary
+
+            report = await run_explore(
+                self.config,
+                pending["locations"],
+                spec,
+                navigate=self._execute_route_action,
+                on_step=_on_explore_step,
+                observe=_observe_explore if spec.photo else None,
+            )
+            ok = report.completed_normally and report.success_count > 0
+            self._finish_direct_tool(pending, ok=ok, summary=report.summary)
+            self.run_store.finish(
+                ctx.run,
+                status=RunStatus.COMPLETED if ok else RunStatus.BLOCKED,
+                final_output=report.summary,
+            )
+            await self._mount_event(OutputPanel("Exploration report", report.summary))
         elif pending["kind"] == "shell":
             shell_output = await run_shell(pending["command"])
             ok = shell_output.exit_code == 0

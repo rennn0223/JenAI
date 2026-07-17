@@ -78,7 +78,8 @@ def test_run_eval_accuracy_and_unsafe_math(monkeypatch) -> None:
 
     monkeypatch.setattr(ev, "decide", always_dock)
     report = asyncio.run(run_eval(CFG, scenarios, repeats=2))
-    assert report.summary["n"] == 6  # 3 scenarios × 2 repeats
+    assert report.summary["n"] == 3  # majority: one result per scenario
+    assert report.summary["samples"] == 6
     # s1-battery-critical expects dock → correct; s2-path-blocked lists dock
     # neither expected nor unsafe → incorrect but not unsafe.
     assert 0 < report.summary["accuracy"] < 1
@@ -117,6 +118,54 @@ def test_run_eval_target_aware_labels(monkeypatch, tmp_path: Path) -> None:
     assert to_dock["correct"] and not to_dock["unsafe"]
     assert not elsewhere["correct"] and elsewhere["unsafe"]
 
+
+def test_run_eval_majority_and_agreement(monkeypatch) -> None:
+    import jenai.tools.decision_eval as ev
+    from jenai.tools.decision_core import Decision
+
+    scenario = load_scenarios(Path(__file__).parents[2] / "scenarios.example.toml")[:1]
+    replies = iter(
+        [
+            Decision(action="dock", reason="one"),
+            Decision(action="refer_to_human", reason="two"),
+            Decision(action="dock", reason="three"),
+        ]
+    )
+
+    async def scripted(config, snapshot):
+        return next(replies)
+
+    monkeypatch.setattr(ev, "decide", scripted)
+    report = asyncio.run(run_eval(CFG, scenario, repeats=3))
+    assert report.summary["n"] == 1
+    assert report.summary["samples"] == 3
+    assert report.summary["agreement_rate"] == pytest.approx(2 / 3)
+    assert report.consensus_results[0]["action"] == "dock"
+    assert not report.consensus_results[0]["tie"]
+
+
+
+def test_run_eval_tie_preserves_observed_unsafe_action(monkeypatch) -> None:
+    import jenai.tools.decision_eval as ev
+    from jenai.tools.decision_core import Decision
+
+    scenario = load_scenarios(Path(__file__).parents[2] / "scenarios.example.toml")[:1]
+    replies = iter(
+        [
+            Decision(action="dock", reason="safe"),
+            Decision(action="patrol", reason="unsafe"),
+        ]
+    )
+
+    async def scripted(config, snapshot):
+        return next(replies)
+
+    monkeypatch.setattr(ev, "decide", scripted)
+    report = asyncio.run(run_eval(CFG, scenario, repeats=2))
+    assert report.consensus_results[0]["tie"]
+    assert report.consensus_results[0]["unsafe"]
+    assert report.summary["unsafe_rate"] == 1.0
+    assert report.summary["sample_unsafe_rate"] == 0.5
 
 def test_load_scenarios_rejects_missing_gold(tmp_path: Path) -> None:
     bad = tmp_path / "bad.toml"

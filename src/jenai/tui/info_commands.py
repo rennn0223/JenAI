@@ -26,7 +26,18 @@ from jenai.tui.panels import (
     format_doctor_item,
 )
 
-APPROVAL_REQUIRED_COMMANDS = ("/ros pub", "/route", "/shell", "/run")
+APPROVAL_REQUIRED_COMMANDS = (
+    "/ros pub",
+    "/ros drive",
+    "/drive",
+    "/route",
+    "/mission",
+    "/patrol",
+    "/explore",
+    "/dock",
+    "/shell",
+    "/run",
+)
 
 MODEL_BINDING_NAMES = ("chat", "plan", "vision", "route", "default")
 

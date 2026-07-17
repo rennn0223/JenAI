@@ -203,9 +203,25 @@ def test_navigate_with_fallback_blocks_before_the_robot(monkeypatch) -> None:
     out = asyncio.run(
         navigate_with_fallback(config, get_bridge, _goal(), on_gate=seen.append)
     )
-    assert out.execution_status == "failed"
+    assert out.execution_status == "blocked"
     assert "NOT moved" in out.route_preview
     assert "pit" in out.route_preview
+
+
+def test_navigate_with_fallback_preserves_refer_verdict(monkeypatch) -> None:
+    config = AppConfig(twin=TwinProfile(enabled=True))
+
+    async def fake_rehearse(twin, action, *, on_status=None, bridge=None):
+        return GateReport(verdict="refer", reason="endpoint deviation")
+
+    monkeypatch.setattr("jenai.twin.rehearse_goal", fake_rehearse)
+
+    async def get_bridge():
+        raise AssertionError("the real bridge must never be touched on a refer")
+
+    out = asyncio.run(navigate_with_fallback(config, get_bridge, _goal()))
+    assert out.execution_status == "referred"
+    assert "endpoint deviation" in out.route_preview
 
 
 def test_navigate_with_fallback_pass_proceeds_to_execution(monkeypatch) -> None:

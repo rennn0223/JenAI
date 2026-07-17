@@ -11,6 +11,7 @@ JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人
 - **自然語言任務規劃與執行**：以 `/plan` 與 `/run` 驅動 agent 完成多步驟任務
 - **ROS2 整合**：topics 探索、schema 解析、echo 監看、pub 控制
 - **即時導航**：`/route`、`/mission` 走 Nav2，剩餘距離即時顯示、Esc 真的取消 goal（rclpy bridge）
+- **有界自主巡遊**：`/explore` 在已儲存安全點位間低重複率隨機導航，具時間、目標數與連續失敗上限；自然語言 `/run` 亦可觸發同一能力
 - **地點管理**：`/loc add here <名字>` 抓機器人當下位置存檔，邊走邊建地圖點位
 - **視覺理解**：`/vision image <路徑>` 分析圖片；`/vision camera` 直接抓相機畫面問「你看到什麼」
 - **持續感知**：`/perception start` 相機→VLM 定頻迴圈，輸出結構化場景分析（affordances 可觸發 daemon 規則；只觀察，動作一律走批准）
@@ -152,18 +153,18 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v1.0.0，2026-07）
+## 狀態（v1.1.0，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
-> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、忙碌時 FIFO 指令排隊（`/queue` 管理）、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（Nav2／odom 直驅雙路徑，剩餘距離+Esc 真取消）、depth stop-and-go 局部繞障（資料逾時即停）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/dock`、`/loc add here|gps` 現場建點與 GPS 註冊、`/vision image|camera`、`/perception` 持續感知、`/report` 巡邏日報、`/model`／`/provider` 雲地即時切換。
+> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、忙碌時 FIFO 指令排隊（`/queue` 管理）、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（Nav2／odom 直驅雙路徑，剩餘距離+Esc 真取消）、depth stop-and-go 局部繞障（資料逾時即停）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/explore`（已知點位有界隨機巡遊）／`/dock`、`/loc add here|gps` 現場建點與 GPS 註冊、`/vision image|camera`、`/perception` 持續感知、`/report` 巡邏日報、`/model`／`/provider` 雲地即時切換。
 >
 > ✅ **介面**：Claude 風格 TUI（會動的吉祥物+權限三模式 Shift+Tab）、多頁 WebUI（Console／Camera／Status／API，token 認證+手機批准+即時地圖+STOP）、MCP server、daemon 常駐、`skills/*.toml` 檔案定義技能。全部走同一套共用原語（導航調度、急停、相機分析、地點載入各只有一份）。
 >
-> ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測（論文工具鏈）。
+> ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測；ROS Developer 依 live graph 完成 topic/schema 發現，並以單一 `ros_drive_verified` 能力原子化基準里程計、一次性受批准動作、自動停止與後驗回授，不持有任意 shell。
 >
-> ✅ **工程**：430+ 自動化測試（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道閘（安全鏈覆蓋倒退閘+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：503 項自動化測試（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >
-> ✅ **Twin Gate**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：導航目標先在數位孿生（獨立 ROS_DOMAIN_ID）預演，G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗 → pass／block／refer；`[twin]` 一行開關，所有導航入口與 daemon 全部過閘，daemon 自主路徑 refer 一律視同 block。
+> ✅ **執行邊界與數位分身驗證**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：Agent 被限制在觀察、決策、能力、權限與執行驗證五類邊界內；導航可選擇先在數位分身預演，依 G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗輸出 pass／block／refer。數位分身是執行驗證的一種機制，不是 Agent 的全部。
 >
-> 🚧 **進行中**（見 [ROADMAP.md](docs/ROADMAP.md)／[V1_GATE.md](docs/V1_GATE.md)）：v1.0 等實機驗測數據（客戶層二 B1–B7）；M6 自主決策常駐迴圈是 v2 主軸（決策腦零件已備）。
+> 🚧 **研究驗證狀態**（見 [EXPERIMENTS.md](docs/EXPERIMENTS.md)）：E1 決策品質、E2 配對執行驗證消融、E3 隔離 ROS domain 的自然語言發現—執行—驗證、E4 本地延遲、B4 約 20 小時模擬巡航與 A6 soak 已有正式資料。正式跨載具物理泛化、實體 Sim-to-Real 與使用者效率比較仍列為後續工作。

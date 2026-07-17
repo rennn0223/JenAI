@@ -184,7 +184,7 @@ def test_navigate_with_fallback_surfaces_structured_gate_report(monkeypatch) -> 
     )
 
     assert seen == [report]
-    assert output.execution_status == "failed"
+    assert output.execution_status == "blocked"
 
 
 def test_navigate_with_fallback_rejects_malformed_goal_fail_closed() -> None:

@@ -34,9 +34,13 @@ from jenai.tools.registry import TOOL_RISK_REGISTRY
 
 _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
 
-# Cap agent turns so a weak model that loops (e.g. re-issuing a drive to sustain
-# motion) is stopped quickly instead of prompting for approval over and over.
-_MAX_TURNS = 6
+# A discover → validate → execute → verify workflow commonly needs more than six
+# turns once an approval pause is included. Duplicate side-effect requests are
+# blocked separately below, so twelve turns permit the observation loop without
+# weakening the actuation boundary.
+_MAX_TURNS = 12
+_RAW_ACTUATION_TOOLS = {"ros_drive_execute_tool", "ros_pub_execute_tool"}
+_POST_ACTION_OBSERVATION_TOOLS = {"ros_echo_tool", "ros_state_tool"}
 
 
 async def start_run(
@@ -131,7 +135,19 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
     interruptions = state.get_interruptions()
 
     if not interruptions:
-        run_store.finish(run, status=RunStatus.COMPLETED, final_output=_final_text(result))
+        if _ros_developer_actuation_is_unverified(result, run):
+            run_store.finish(
+                run,
+                status=RunStatus.BLOCKED,
+                final_output=(
+                    "Unverified: ROS Developer executed one bounded action but did not "
+                    "record any post-action echo/state observation. The action will not "
+                    "be repeated; inspect feedback or refer to the operator."
+                ),
+            )
+            return run
+        final_output = _final_text(result) or _tool_result_summary(run)
+        run_store.finish(run, status=RunStatus.COMPLETED, final_output=final_output)
         return run
 
     # Build the approval request for each raised interruption. A weak model (or
@@ -194,6 +210,45 @@ def _final_text(result: Any) -> str:
     return str(final) if final not in (None, "") else ""
 
 
+def _tool_result_summary(run: RunRecord) -> str:
+    """Deterministic honest fallback when a model ends after its tool calls.
+
+    Some local OpenAI-compatible models return a terminal tool-call turn with
+    no assistant text. A completed run must not look like nothing happened;
+    summarize only recorded outcomes and never invent a success claim.
+    """
+    if not run.tool_calls:
+        return "Completed without a textual result or recorded tool call."
+    parts = []
+    for call in run.tool_calls:
+        outcome = call.output_summary or (call.error.message if call.error else call.status)
+        parts.append(f"{call.tool_name}: {outcome}")
+    return "Recorded tool results — " + "; ".join(parts)
+
+
+def _ros_developer_actuation_is_unverified(result: Any, run: RunRecord) -> bool:
+    """Prevent a ROS Developer run from completing after unverified raw motion.
+
+    The normal Motion specialist remains suitable for an explicitly requested
+    one-shot drive. The combined ROS Developer workflow, however, promises a
+    discover → execute → verify loop and must fail closed when a weak model ends
+    immediately after the actuation tool result.
+    """
+    last_agent = getattr(result, "last_agent", None)
+    if getattr(last_agent, "name", "") != "ROS Developer":
+        return False
+    names = [call.tool_name for call in run.tool_calls]
+    actuation_indexes = [
+        index for index, name in enumerate(names) if name in _RAW_ACTUATION_TOOLS
+    ]
+    if not actuation_indexes:
+        return False
+    last_actuation = actuation_indexes[-1]
+    return not any(
+        name in _POST_ACTION_OBSERVATION_TOOLS for name in names[last_actuation + 1 :]
+    )
+
+
 def _error_from_exc(exc: Exception) -> JenAIError:
     """Classify a run failure so the UI shows an actionable message instead of a
     blanket 'tool_error' (which used to hide max-turns loops and provider faults).
@@ -209,8 +264,8 @@ def _error_from_exc(exc: Exception) -> JenAIError:
             error_type=ErrorType.MODEL_ERROR,
             message="The agent kept taking actions and hit its turn limit.",
             fix_suggestion=(
-                "It likely looped (e.g. re-publishing to sustain motion). Ask for a single "
-                "action, or use a duration-based command like 'drive forward for 1 second'."
+                "The workflow may be too broad or the model may be looping. Split unrelated "
+                "work into separate runs; movement should remain a single duration-based action."
             ),
         )
     if isinstance(exc, ToolTimeoutError):

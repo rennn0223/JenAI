@@ -25,7 +25,7 @@ class MissionStep:
 class StepResult:
     kind: str
     target: str
-    status: str  # succeeded | failed | unavailable
+    status: str  # succeeded | failed | unavailable | blocked | referred
     detail: str
 
 

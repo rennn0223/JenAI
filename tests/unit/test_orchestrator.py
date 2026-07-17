@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from agents import Agent, MaxTurnsExceeded, Runner
@@ -10,7 +11,7 @@ from agents import Agent, MaxTurnsExceeded, Runner
 from jenai.agent import orchestrator
 from jenai.agent.context import JenAIRunContext
 from jenai.config.store import build_minimal_config
-from jenai.schemas import EffectScope, RiskLevel
+from jenai.schemas import EffectScope, RiskLevel, ToolCallCategory, ToolCallRecord
 from jenai.state.runs import RunStore
 from jenai.state.session import create_session
 from jenai.tools.registry import TOOL_RISK_REGISTRY, ToolRiskInfo
@@ -42,9 +43,12 @@ class _FakeState:
 
 
 class _FakeResult:
-    def __init__(self, state: _FakeState, final_output: str = "") -> None:
+    def __init__(
+        self, state: _FakeState, final_output: str = "", last_agent=None
+    ) -> None:
         self._state = state
         self.final_output = final_output
+        self.last_agent = last_agent
 
     def to_state(self) -> _FakeState:
         return self._state
@@ -72,6 +76,41 @@ def _ctx(monkeypatch) -> JenAIRunContext:
 
 def _agent() -> Agent:
     return Agent(name="test-agent", instructions="test", tools=[])
+
+
+def test_tool_result_summary_falls_back_to_recorded_outcomes(monkeypatch) -> None:
+    ctx = _ctx(monkeypatch)
+    ctx.run.tool_calls.append(
+        ToolCallRecord(
+            tool_name="ros_schema_tool",
+            category=ToolCallCategory.ROS2,
+            input_summary="schema for /cmd_vel",
+            output_summary="geometry_msgs/msg/Twist",
+        )
+    )
+    summary = orchestrator._tool_result_summary(ctx.run)
+    assert "ros_schema_tool" in summary
+    assert "geometry_msgs/msg/Twist" in summary
+
+
+def test_ros_developer_cannot_complete_after_unverified_actuation(monkeypatch) -> None:
+    ctx = _ctx(monkeypatch)
+    ctx.run.tool_calls.append(
+        ToolCallRecord(
+            tool_name="ros_drive_execute_tool",
+            category=ToolCallCategory.ROS2,
+            input_summary="bounded drive",
+            output_summary="drove and stopped",
+        )
+    )
+    result = _FakeResult(
+        _FakeState([]),
+        final_output="done",
+        last_agent=SimpleNamespace(name="ROS Developer"),
+    )
+    processed = orchestrator._process_result(ctx, result)
+    assert processed.status == "blocked"
+    assert "Unverified" in processed.final_output
 
 
 def test_start_run_with_interruption_sets_awaiting_approval(monkeypatch) -> None:
@@ -197,6 +236,7 @@ def test_resume_asks_again_for_a_genuinely_new_action(monkeypatch) -> None:
 
 def test_start_run_handles_max_turns_exceeded(monkeypatch) -> None:
     async def fake_run(agent, task_input, *, context=None, **kwargs):
+        assert kwargs["max_turns"] == 12
         raise MaxTurnsExceeded("too many turns")
 
     monkeypatch.setattr(Runner, "run", fake_run)
