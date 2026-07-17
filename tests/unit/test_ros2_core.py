@@ -480,42 +480,29 @@ def test_safety_clamp_does_not_treat_bool_as_speed() -> None:
 def test_topic_pub_for_reports_publisher_failure(monkeypatch) -> None:
     captured = {}
 
-    class _DeadProc:
-        returncode = 1
-
-        def __init__(self) -> None:
-            self.stderr = _Stderr()
-
-        def wait(self, *, timeout):
-            captured["timeout"] = timeout
-            return 1
-
-    class _Stderr:
-        def read(self):
-            return "invalid message type"
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["timeout"] = kwargs["timeout"]
+        return ros2_adapter.subprocess.CompletedProcess(
+            args=args, returncode=1, stdout="", stderr="invalid message type"
+        )
 
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
-    def fake_popen(args, **kwargs):
-        captured["args"] = args
-        return _DeadProc()
+    monkeypatch.setattr(ros2_adapter.subprocess, "run", fake_run)
 
-    monkeypatch.setattr(ros2_adapter.subprocess, "Popen", fake_popen)
+    result = ros2_adapter.topic_pub_for(
+        "/cmd_vel", "bad/type", "{}", duration_s=0.5
+    )
 
-    result = ros2_adapter.topic_pub_for("/cmd_vel", "bad/type", "{}", duration_s=0.5)
     assert result.ok is False
     assert "exited with code 1" in result.message
     assert "invalid message type" in result.message
-    assert captured["args"][-8:] == [
-        "--rate",
-        "10.0",
-        "--times",
-        "5",
-        "--wait-matching-subscriptions",
-        "1",
-        "--max-wait-time-secs",
-        "5",
+    assert captured["args"][0] == "/usr/bin/python3"
+    assert captured["args"][1].endswith("bridge/_bounded_publisher.py")
+    assert captured["args"][2:] == [
+        "/cmd_vel", "bad/type", "{}", "{}", "10.0", "0.5", "5"
     ]
-    assert captured["timeout"] == 7.5
+    assert captured["timeout"] == 8.5
 
 
 def test_topic_pub_for_zero_duration_sends_stop_only(monkeypatch) -> None:

@@ -27,7 +27,7 @@ SNAPSHOT_FIELDS = {
     "scene": "warehouse aisle clear; one forklift parked left; no people",
     "task": "patrol 2/4 points done",
     "request": "patrol the four waypoints, report anything unusual",
-    "locations": ["map_left_up", "map_wall", "map_right_down", "dock"],
+    "locations": ["map_left_up", "map_right_up", "map_right_down", "dock"],
 }
 
 

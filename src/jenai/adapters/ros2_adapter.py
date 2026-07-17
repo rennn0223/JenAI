@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import math
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 class Ros2AdapterError(Exception):
@@ -274,13 +274,13 @@ def topic_pub_for(
     duration_s: float = 1.0,
     stop_yaml: str | None = None,
 ) -> PubResult:
-    """Publish a message at `rate_hz` for `duration_s`, then optionally send a
-    single stop message (e.g. a zero Twist).
+    """Publish a message at rate_hz for duration_s, then send a stop.
 
     Robot velocity controllers usually watchdog-stop when commands stop arriving,
-    so a single `--once` publish only nudges the robot. This drives it for a fixed
-    duration by running `ros2 topic pub --rate` and terminating it after the time
-    window, then publishing `stop_yaml` once so the robot halts deterministically.
+    so a single publish only nudges the robot. A ROS-system-Python helper owns one
+    publisher for both the timed motion and stop pulses. Two separate ROS CLI
+    processes are deliberately avoided: startup of the stop process can leave the
+    previous non-zero command active for another second on short motions.
     """
     if not is_available():
         raise Ros2NotAvailableError(
@@ -290,73 +290,52 @@ def topic_pub_for(
         if stop_yaml is not None:
             topic_pub(topic, message_type, stop_yaml)
         return PubResult(ok=True, message=f"zero-duration drive on {topic}; sent stop only")
-    publish_count = max(1, math.ceil(max(0.0, duration_s) * rate_hz))
+
+    stop_yaml = stop_yaml or "{}"
+    helper = Path(__file__).resolve().parents[1] / "bridge" / "_bounded_publisher.py"
+    ros_python = os.environ.get("JENAI_ROS_PYTHON", "/usr/bin/python3")
     args = [
-        "ros2",
-        "topic",
-        "pub",
+        ros_python,
+        str(helper),
         topic,
         message_type,
         payload_yaml,
-        "--rate",
+        stop_yaml,
         str(rate_hz),
-        "--times",
-        str(publish_count),
-        "--wait-matching-subscriptions",
-        "1",
-        "--max-wait-time-secs",
+        str(duration_s),
         "5",
     ]
     try:
-        # stdout is DEVNULL: `ros2 topic pub --rate` prints one line per publish,
-        # which we never read — piping it risks filling the ~64KB OS buffer and
-        # blocking the child mid-drive. stderr stays piped (low volume) so a fast
-        # failure's error message is available for an honest report.
-        proc = subprocess.Popen(  # noqa: S603 - args are constructed, not shell
-            args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+        completed = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8.0 + max(0.0, duration_s),
         )
-    except OSError as exc:
-        raise Ros2CommandError(f"ros2 topic pub could not start: {exc}") from exc
-
-    timeout = 7.0 + max(0.0, duration_s)
-    try:
-        returncode = proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.terminate()
-        try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        return PubResult(
-            ok=False,
-            message=(
-                f"drive failed: timed out waiting for a subscriber or publishing "
-                f"{publish_count} messages on {topic}"
-            ),
-        )
-
-    if returncode != 0:
-        stderr_text = (proc.stderr.read() if proc.stderr else "") or ""
-        detail = stderr_text.strip().splitlines()[-1] if stderr_text.strip() else ""
-        return PubResult(
-            ok=False,
-            message=(
-                f"drive failed: ros2 topic pub on {topic} exited with code "
-                f"{returncode}" + (f": {detail}" if detail else "")
-            ),
-        )
-
-    if stop_yaml is not None:
-        # Best-effort stop pulse; ignore its failure so a completed drive still reports ok.
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # The helper normally stops in finally. If the parent had to terminate
+        # it, send one last best-effort stop through the CLI.
         try:
             topic_pub(topic, message_type, stop_yaml)
         except Ros2AdapterError:
             pass
+        return PubResult(
+            ok=False,
+            message=f"drive failed: bounded publisher could not complete on {topic}: {exc}",
+        )
+
+    if completed.returncode != 0:
+        detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else ""
+        return PubResult(
+            ok=False,
+            message=(
+                f"drive failed: bounded publisher on {topic} exited with code "
+                f"{completed.returncode}" + (f": {detail}" if detail else "")
+            ),
+        )
 
     return PubResult(
         ok=True,
-        message=(
-            f"drove {topic} with {publish_count} messages at {rate_hz:g} Hz "
-            f"after subscriber discovery, then sent stop"
-        ),
+        message=completed.stdout.strip() or f"drove {topic} for {duration_s:g}s, then stopped",
     )
