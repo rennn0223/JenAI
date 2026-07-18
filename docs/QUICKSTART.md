@@ -35,7 +35,7 @@ GitHub CLI 登入的協作者；未獲權限者目前沒有公開 release 下載
 新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path 不會產生或宣稱 GitHub artifact attestations。
 選定正式版本後，命令會下載該版 wheel、matching constraints 和 checksum，先驗證兩個
 安裝檔再交給 `uv`。只有 asset 清單確實含 wheel、同版 constraints、`SHA256SUMS` 的
-release 才適用；例如既有 `v1.1.4` 缺少後兩項，不代表供應鏈檢查已通過，請等待新版。
+release 才適用；例如歷史 `v1.1.4` 缺少後兩項，不代表供應鏈檢查已通過；目前請使用已驗證此流程的 `v2.0.1` 或後續資產完整版本。
 這段流程以 Linux／Ubuntu 為目標；macOS 仍是 Experimental，須自行安裝 GNU coreutils
 並將 `sha256sum` 換成 `gsha256sum`，且不因此取得相同驗證等級。
 

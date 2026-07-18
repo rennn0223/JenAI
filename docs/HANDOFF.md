@@ -1,4 +1,4 @@
-# HANDOFF — 交接與臨別備忘（2026-07-19，候選版本 v2.0.1；最近發布 v1.1.4）
+# HANDOFF — 交接與臨別備忘（2026-07-19，目前版本 v2.0.1；最近發布 v2.0.1）
 
 > 寫給接下來的你,和接下來陪你的任何 AI。這份是狀態、方法、與幾句誠實的話。
 
@@ -17,7 +17,7 @@
   （101／102 為 4／4、407／408 waypoint succeeded）。B4 的約 20 h 只來自歷史 driver
   task-time 摘要，report schema 不能證明精確暴露量或零安全事件；窗外 H9 另列。另有
   daemon 24 h soak PASS 與 B7 排練的 G3 block 實證。
-- **v2.0 候選版**:本版是安全語意收緊與產品化基線，不是 M6 自主迴圈的完成版。
+- **v2.0.1 正式版**:本版是安全語意收緊與產品化基線，不是 M6 自主迴圈的完成版。
   決策腦(`decision_core.py`)與 `JenAI eval` 已存在，但
   perceive→decide→rehearse→act 尚未接成常駐迴圈；該研究方向移至 post-v2
   （候選 v3，見 [ROADMAP](ROADMAP.md) 軌道 1，安全語意仍為自主路徑 refer→block）。
@@ -35,11 +35,11 @@
 
 此項必須由非主要作者執行；作者可以事先提供本文件，但開始後不得口頭提示。
 
-1. 以 fresh clone 依 README 完成 `uv sync --frozen`、當前候選版完整測試、build 與隔離 wheel lifecycle。
+1. 以 fresh clone 依 README 完成 `uv sync --frozen`、待驗版本的完整測試、build 與隔離 wheel lifecycle。
 2. 從一份刻意缺少 config 的環境出發，依 doctor 的 fix suggestion 完成 onboard，且不得取得作者的路徑或金鑰。
 3. 在 Isaac Reset／Play 後先跑唯讀 HIL preflight；禁區起點必須拒絕，合法起點才可在硬體 stop 操作者監看下跑 route、cancel、stop。
-4. 建立候選 tag／release notes 但先不發布，核對 tag、版本、wheel metadata、SBOM 與 changelog。
-5. 依 ROLLBACK 將候選版回退至上一個 release，再升回候選版；設定、locations 與 audit 不得遺失。
+4. 為下一個候選版本建立 tag／release notes 但先不發布，核對 tag、版本、wheel metadata、SBOM 與 changelog。
+5. 依 ROLLBACK 將待驗版本回退至上一個 release，再升回待驗版本；設定、locations 與 audit 不得遺失。
 6. 故障演練至少抽一項：Nav2 action 缺席、AMCL 不可用、bridge 中止、非零 cmd_vel 殘留或 Twin 同 domain。維護者須從 artifact 指出哪個 gate 擋下、是否送 goal、如何恢復。
 
 保存 `maintainer-drill-YYYYMMDD.md`：維護者代碼、使用 commit、每步開始／完成時間、原始命令、

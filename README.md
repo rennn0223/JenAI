@@ -61,7 +61,7 @@ uv run JenAI web
 確認下載資產與同一份 manifest 一致。private path 缺少簽署的 provenance，不能據此證明
 來源真實性或抵禦 manifest 與資產一同遭替換。只有 asset 清單實際包含這三項的 release
 才適用此流程；例如既有
-`v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證，請等待新版。
+`v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證；目前請使用已通過此流程的 `v2.0.1` 或後續資產完整版本。
 
 下列已驗證的 copy-paste 流程以 Linux／Ubuntu 為目標，使用系統提供的 GNU
 `sha256sum`。macOS 在 [SUPPORT_MATRIX](docs/SUPPORT_MATRIX.md) 仍是 Experimental；可自行

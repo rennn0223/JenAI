@@ -26,7 +26,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | 全綠(精確收集數以當前候選版 CI artifact 為準,無 ROS 環境也全過);含安全鏈故障注入、輸入邊界、指令 FIFO/批准暫停/stop 清隊列與架構鐵律測試 |
+| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.0.1/main@`79a295a` 為 597/597 全綠；[main CI 29654418747](https://github.com/rennn0223/JenAI/actions/runs/29654418747) 在 Python 3.12／3.13／3.14 重跑。無 ROS 環境也全過；含安全鏈故障注入、輸入邊界、指令 FIFO／批准暫停／stop 清隊列與架構鐵律測試 |
 | Isaac HIL（人工啟動） | Actions → `Isaac HIL Acceptance`，或依 `docs/ISAAC_HIL_ACCEPTANCE.md` 執行 | 一般 CI 絕不動車；精確確認後在 self-hosted runner 驗 route、cancel、hard stop、可選 Twin verdict，並上傳不可覆寫 JSON artifact。尚未產生首份 workflow artifact 前不列為通過 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job 以 Python 3.12／3.13／3.14 matrix 跑 ruff+pytest(coverage 表進 job summary,基準 76%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |

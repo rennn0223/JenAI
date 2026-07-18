@@ -40,8 +40,8 @@ def test_release_version_is_consistent_across_package_lock_and_living_docs() -> 
     handoff = (ROOT / "docs" / "HANDOFF.md").read_text(encoding="utf-8")
     assert f"## 狀態（v{version}" in readme
     handoff_title = handoff.splitlines()[0]
-    assert f"候選版本 v{version}" in handoff_title
-    assert "最近發布 v1.1.4" in handoff_title
+    assert f"目前版本 v{version}" in handoff_title
+    assert f"最近發布 v{version}" in handoff_title
 
     test_manual = (ROOT / "docs" / "TEST.md").read_text(encoding="utf-8")
     assert f"`JenAI {version}`" in test_manual
