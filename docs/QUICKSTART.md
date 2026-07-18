@@ -1,7 +1,8 @@
 # QUICKSTART — 零基礎上手手冊
 
-> 這份寫給**完全沒碰過這個專案、甚至不太熟終端機**的人:照著做,
-> 20 分鐘內從一台空電腦走到「跟 JenAI 講第一句話」。
+> 這份寫給**完全沒碰過這個專案、甚至不太熟終端機**的人：照著做，
+> 從一台空電腦走到「跟 JenAI 講第一句話」。實際完成時間會受下載、模型與 ROS 環境
+> 影響；正式冷啟動研究完成前不承諾固定分鐘數。
 > 看完想深入:開發者看 [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md),
 > 指令查 [COMMANDS](COMMANDS.md),接真機器人照 [ONBOARDING](ONBOARDING.md)。
 

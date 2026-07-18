@@ -16,6 +16,7 @@
 | B4-20260716 | Isaac Sim/Nav2 四點巡航 | 20.0 h；102 趟；407/408 waypoint 到達；0 安全事件；唯一 partial 的 goal 未送出 | 長時間模擬任務穩定性與誠實失敗 | 實車里程、統計上的零風險 | `/tmp/b4_mileage.log`、patrol reports、audit；摘要見 `V1_GATE` |
 | A6-20260716 | daemon 24 h soak | 1439.6 min／2880 樣本；RSS +1.2%（門檻 20%）；PASS | daemon 在該 workload 的記憶體穩定性 | 任意 workload 或整個機器人 stack 的 24 h 穩定性 | `soak-20260715-012527/report.md`；SHA-256 `884345…492` |
 | TUI-20260717 | Isaac Sim/Nav2 人工互動驗收 | 詳見逐項紀錄；四角補充預檢曾 3/4，左下由 G5 refer | 當日互動功能與誠實失敗行為 | 不取代 E1–E4／B4，不是實車驗證 | `TUI_LIVE_ACCEPTANCE_2026-07-17.md` |
+| TUI-R2-20260718 | Isaac Sim/Nav2；approve TUI；同 session NL follow-up | 修正前 1 次 `loc_lookup_tool` not found；修後 follow-up 到批准卡且拒絕後未移動；Esc session marker 通過；成功導航 0 次 | 導航 fallback、批准／拒絕與中斷後誠實收尾 | 不支持 Hero 10-run、成功導航、Twin 隔離或實體安全 | `TUI_LIVE_ACCEPTANCE_2026-07-18.md`；本機 trace IDs 詳見該檔 |
 
 雜湊在表內採前 6＋後 3 位方便閱讀；交付或投稿時需以 `sha256sum` 輸出完整值並與封存
 artifact 一起保存。

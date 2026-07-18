@@ -41,6 +41,26 @@ _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
 _MAX_TURNS = 12
 _RAW_ACTUATION_TOOLS = {"ros_drive_execute_tool", "ros_pub_execute_tool"}
 _POST_ACTION_OBSERVATION_TOOLS = {"ros_echo_tool", "ros_state_tool"}
+_FAILED_TURN_MEMORY = (
+    "The previous JenAI run failed before completion. Do not assume any unreported action "
+    "succeeded; use only recorded tool results."
+)
+
+
+async def _append_failed_turn_memory(session_id: str) -> None:
+    """Close a failed session turn so the next request has coherent history."""
+
+    try:
+        session = JenAIFileSession(session_id)
+        tail = await session.get_items(limit=1)
+        if not tail or tail[-1].get("role") == "assistant":
+            return
+        await session.add_items(
+            [{"role": "assistant", "content": _FAILED_TURN_MEMORY}]
+        )
+    except Exception:
+        # Conversation memory is best-effort; never hide the original run error.
+        pass
 
 
 async def start_run(
@@ -65,6 +85,7 @@ async def start_run(
         )
     except Exception as exc:  # includes provider/API errors, not just _RUN_ERRORS
         run_store.finish(run, status=RunStatus.FAILED, error=_error_from_exc(exc))
+        await _append_failed_turn_memory(run.session_id)
         return run
 
     return _process_result(ctx, result)
@@ -85,9 +106,7 @@ async def resume_with_approvals(
     collide across resume cycles and leave stale approvals pending).
     """
     run, run_store = ctx.run, ctx.run_store
-    pending = await run_store.take_pending_state(
-        run.run_id, initial_agent=agent, context=ctx
-    )
+    pending = await run_store.take_pending_state(run.run_id, initial_agent=agent, context=ctx)
     if pending is None:
         raise ValueError(f"No pending approval state for run {run.run_id}")
     state, approval_ids = pending
@@ -124,6 +143,7 @@ async def resume_with_approvals(
         )
     except Exception as exc:  # includes provider/API errors, not just _RUN_ERRORS
         run_store.finish(run, status=RunStatus.FAILED, error=_error_from_exc(exc))
+        await _append_failed_turn_memory(run.session_id)
         return run
 
     return _process_result(ctx, result)
@@ -192,7 +212,7 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
             or (
                 "Stopped: the agent kept re-requesting an action it had already asked to "
                 "approve this run (a model loop). Start a new /run for the next step, or run "
-                "the action directly, e.g. /ros drive /cmd_vel '{\"linear\": {\"x\": 0.2}}' 1"
+                'the action directly, e.g. /ros drive /cmd_vel \'{"linear": {"x": 0.2}}\' 1'
             ),
         )
         return run
@@ -238,15 +258,11 @@ def _ros_developer_actuation_is_unverified(result: Any, run: RunRecord) -> bool:
     if getattr(last_agent, "name", "") != "ROS Developer":
         return False
     names = [call.tool_name for call in run.tool_calls]
-    actuation_indexes = [
-        index for index, name in enumerate(names) if name in _RAW_ACTUATION_TOOLS
-    ]
+    actuation_indexes = [index for index, name in enumerate(names) if name in _RAW_ACTUATION_TOOLS]
     if not actuation_indexes:
         return False
     last_actuation = actuation_indexes[-1]
-    return not any(
-        name in _POST_ACTION_OBSERVATION_TOOLS for name in names[last_actuation + 1 :]
-    )
+    return not any(name in _POST_ACTION_OBSERVATION_TOOLS for name in names[last_actuation + 1 :])
 
 
 def _error_from_exc(exc: Exception) -> JenAIError:

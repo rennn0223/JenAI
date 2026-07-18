@@ -56,9 +56,14 @@ def test_supervisor_hands_off_to_specialists() -> None:
         "Perception",
     }
     supervisor_tools = {tool.name for tool in sup.tools}
-    assert "explore_area_tool" in supervisor_tools
-    assert "route_execute_tool" not in supervisor_tools
+    assert {
+        "loc_lookup_tool",
+        "route_preview_tool",
+        "route_execute_tool",
+        "explore_area_tool",
+    } <= supervisor_tools
 
+    assert "ros_drive_execute_tool" not in supervisor_tools
 
 def test_specialists_carry_focused_toolsets() -> None:
     explorer = build_ros_explorer_agent(_config())
