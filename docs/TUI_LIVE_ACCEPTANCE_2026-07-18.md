@@ -47,3 +47,8 @@ turn 只在 session 末端確實未由 assistant 收尾時追加誠實 marker，
 
 - trace：`~/.config/jenai/traces/traces.jsonl`
 - 修正前 tool error：`trace_b485d1f9b46d408ebcf409a48f141218`
+- 修正後固定鏈：`trace_b937f5fd4ba84c6a8e0b3710d67bead7`、`trace_724a049741674e729256a2357903b4ac`
+- audit：`~/.config/jenai/audit.sqlite3`
+- session：`~/.config/jenai/sessions/session_36979cd3022e.json`（驗收後已用 `/clear` 清除）
+
+修正已由 PR #102 合併，程式 merge commit 為 `31bff20aad0b7ea31751eedbf8b5453ebdc4e2b6`。

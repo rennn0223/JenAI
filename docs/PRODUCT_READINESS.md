@@ -17,7 +17,7 @@ JenAI v1 是一個**受監督、具執行邊界的 ROS2 高階決策與工作流
 
 | ID | 角色 | 驗收條件 | 目前證據 | 狀態 | 關閉條件 |
 |---|---|---|---|---|---|
-| ENG-1 | 工程師 | 無 ROS 的單元／整合測試、lint、三版本 CI、wheel 冒煙全綠 | 511 tests 與完整 lint 本機全綠；Python 3.12–3.14 CI；安全鏈 coverage gate；v1.1.2 wheel | PASS | 每次 PR 持續維持 |
+| ENG-1 | 工程師 | 無 ROS 的單元／整合測試、lint、三版本 CI、wheel 冒煙全綠 | 511 tests 與完整 lint 本機全綠；Python 3.12–3.14 CI；安全鏈 coverage gate；v1.1.3 wheel | PASS | 每次 PR 持續維持 |
 | ENG-2 | 工程師 | ROS／Isaac 關鍵路徑可自動回歸，不只人工 TUI 實測 | 現有 fake bridge、E2/E3/B4 runbook；TUI-R2 找出並修正 follow-up 工具失配與中斷 session；尚無 self-hosted Isaac/HIL job | PARTIAL | 自動跑 `/route`、取消、stop、Twin verdict 並保存 artifact |
 | ENG-3 | 工程師 | 核心模組職責可維護 | `tui/app.py`、`tui/robot_commands.py`、`bridge/ros_bridge.py` 仍是大型熱點 | PARTIAL | 依狀態、導航、批准、呈現責任拆模組且行為測試不變 |
 | ENG-4 | 工程師 | 依賴與供應鏈可稽核 | Dependabot、locked runtime `pip-audit` 與 uv CycloneDX workflow；PR #101 遠端 audit／SBOM 全綠，無已知漏洞 | PASS | 每週掃描；此私人個人 repo 無 GHAS dependency review，若移至合資格方案再啟用 |
