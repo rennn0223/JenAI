@@ -10,7 +10,7 @@
   + 權限三模式(v0.22,Shift+Tab 審批/規劃/自動)+ **v0.24–v0.30:避障重寫
   (stop-and-go detour,資料逾時即停)、NavigationGateway 統一導航出口、
   TUI 指令佇列(/queue)、批准跨重啟恢復、SQLite audit、`onboard` 重設**。
-  430+ 項測試,Python 3.12–3.14 CI 矩陣三道閘。
+  511 項測試,Python 3.12–3.14 CI 矩陣三道閘。
 - **v1.0**:✅ 已於 2026-07-16 定稿發佈(V1_GATE 兩層全過:E1 64 條 84.4%/unsafe 6.25%、
   E2 消融 SIR 100%/FPR 0%、B4 里程 20h/0 事件、24h soak PASS、B7 排練含 G3 block 實證)。
 - **v2.0 主線**:M6 自主迴圈。決策腦(`decision_core.py`)已就緒且可量測

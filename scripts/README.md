@@ -8,6 +8,7 @@
 | `e3_agent_bench.py` | E3 自然語言閉環工具實驗：八題分別檢查 live graph 發現、單次有界致動、動作後觀察，以及無回授時不盲目重送。 |
 | `e4_bench.py` | E4 決策延遲量測:固定快照重複 decide(),量中位/P95。`uv run python scripts/e4_bench.py --n 100 --out e4-local.jsonl` |
 | `b4_driver.sh` | B4 模擬巡航:對 tmux 裡的真 TUI(auto 模式)送目前四角地點 patrol 圈,log 到 `/tmp/b4_mileage.log`;只有 N/N 記 `completed`，其餘記 `partial`。預設 102 圈／72000 秒上限、單實例鎖及 EXIT `/stop`。`bash scripts/b4_driver.sh [session] [log]` |
+| `usability_study.py` | 產生平衡受試順序、計時並彙整手動 ROS2／Slash／自然語言三種操作條件；只存匿名量化欄位，不收原始 prompt 或終端內容。流程見 [USABILITY_STUDY](../docs/USABILITY_STUDY.md)。 |
 
 指令細節與數據回填對照見 [docs/EXPERIMENTS.md](../docs/EXPERIMENTS.md)。
-soak/e2/e4 為 stdlib+repo 內依賴;b4_driver 只需 tmux。
+soak/e2/e4/usability 為 stdlib+repo 內依賴;b4_driver 只需 tmux。

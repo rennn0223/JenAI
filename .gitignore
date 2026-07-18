@@ -38,3 +38,7 @@ e3-*.jsonl.meta.json
 e4-*.jsonl
 e4-*.jsonl.meta.json
 soak-*/
+usability-*.csv
+usability-*.jsonl
+usability-*.md
+.usability-active.json
