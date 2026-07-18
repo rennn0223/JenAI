@@ -1,6 +1,6 @@
 [project]
 name = "jenai"
-version = "2.0.0"
+version = "2.0.1"
 description = "Terminal-first AI agent interface for ROS2 robot workflows."
 readme = "README.md"
 authors = [{ name = "林書任 / LIN, SHU-JEN" }]

@@ -54,9 +54,13 @@ uv run JenAI web
 登入的協作者能從 Releases 安裝；未獲 repository 權限的使用者目前沒有公開下載通道，
 不能把匿名 `curl` 當成可交付的安裝方式。若未來改為公開發行，才另提供公開下載流程。
 
+新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path 不會產生或宣稱 GitHub artifact attestations。
+
 已授權協作者請選定正式版本，同時下載該版本的 wheel、constraints 與 `SHA256SUMS`。
-三者必須是**同一個 release**；constraints 固定該版通過發布閘的依賴解析，checksum 則
-防止下載內容被替換。只有 asset 清單實際包含這三項的 release 才適用此流程；例如既有
+三者必須是**同一個 release**；constraints 固定該版通過發布閘的依賴解析，checksum 用來
+確認下載資產與同一份 manifest 一致。private path 缺少簽署的 provenance，不能據此證明
+來源真實性或抵禦 manifest 與資產一同遭替換。只有 asset 清單實際包含這三項的 release
+才適用此流程；例如既有
 `v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證，請等待新版。
 
 下列已驗證的 copy-paste 流程以 Linux／Ubuntu 為目標，使用系統提供的 GNU
@@ -82,8 +86,9 @@ uv tool install \
 uv tool update-shell
 ```
 
-若該 release 的說明**明確標示已發布 GitHub attestation**，且電腦已安裝支援
-`gh attestation` 的新版 GitHub CLI 並已登入，可在 checksum 通過後額外執行：
+只有 repository 在該版發布時為 **public**、release 說明明確標示已發布 GitHub
+attestation，且 assets 實際包含 `.sigstore.json` bundles 時，才可在 checksum 通過後
+選配第二層驗證（電腦須安裝支援 `gh attestation` 的新版 GitHub CLI 並已登入）：
 
 ```bash
 gh attestation verify "jenai-${VERSION}-py3-none-any.whl" \
@@ -92,7 +97,7 @@ gh attestation verify "jenai-${VERSION}-constraints.txt" \
   --repo rennn0223/JenAI
 ```
 
-這是選配的第二層驗證；不能因為舊 release 沒有 attestation 就宣稱驗證通過。
+這是 public release 才可能具有的選配第二層驗證；private 或舊 release 沒有 attestation 時，不能執行或宣稱這一層已通過。
 
 重開 shell 後，`JenAI version` 與 `jenai --help` 都應可執行。wheel 會建立大小寫兩個
 entry point，不需要另寫 shell wrapper 或 symlink。若曾把 repo 的 `scripts/jenai` 連到
@@ -251,7 +256,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v2.0.0，2026-07）
+## 狀態（v2.0.1，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >

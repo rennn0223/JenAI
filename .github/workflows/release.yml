@@ -1,7 +1,8 @@
 # Fires on a version tag push, or via manual workflow_dispatch (which creates
 # the tag itself when it is new). Existing tags are rebuilt only when the
-# workflow itself was dispatched from that tag, so GitHub's signed provenance
-# and the checked-out source commit cannot disagree.
+# workflow itself was dispatched from that tag, so the checked-out source and
+# release tag cannot disagree. Public releases additionally bind that source
+# with GitHub signed provenance; private releases make no provenance claim.
 #
 # Notes policy: manual dispatch publishes from docs/releases/<tag>.md (the
 # dispatch click is the human gate; a missing notes file fails the run). A tag
@@ -284,8 +285,28 @@ jobs:
             exit 1
           fi
 
+      - name: Declare release integrity mode
+        id: integrity_mode
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${REPOSITORY_VISIBILITY}" = "public" ]; then
+            echo "attestations_enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "Public repository: GitHub artifact attestations are required."
+          else
+            echo "attestations_enabled=false" >> "${GITHUB_OUTPUT}"
+            if [ "${REPOSITORY_VISIBILITY}" = "private" ]; then
+              echo "::notice::User-owned private repositories cannot persist GitHub artifact attestations; publishing SBOM and checksums without provenance claims."
+            else
+              echo "::notice::Repository visibility ${REPOSITORY_VISIBILITY} is not public; publishing SBOM and checksums without provenance claims."
+            fi
+          fi
+
       - name: Generate signed build provenance
         id: provenance
+        if: github.event.repository.visibility == 'public' && steps.integrity_mode.outputs.attestations_enabled == 'true'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: |
@@ -296,6 +317,7 @@ jobs:
 
       - name: Generate signed SBOM attestation
         id: sbom_attestation
+        if: github.event.repository.visibility == 'public' && steps.integrity_mode.outputs.attestations_enabled == 'true'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: |
@@ -303,30 +325,119 @@ jobs:
             dist/*.tar.gz
           sbom-path: dist/jenai-${{ steps.source.outputs.version }}.cdx.json
 
-      - name: Bundle attestations and SHA-256 checksums
+      - name: Bundle optional public attestations and SHA-256 checksums
+        env:
+          ATTESTATIONS_ENABLED: ${{ steps.integrity_mode.outputs.attestations_enabled }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          RELEASE_ASSET_MANIFEST: ${{ runner.temp }}/jenai-release-assets.txt
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          SBOM_ATTESTATION_BUNDLE: ${{ steps.sbom_attestation.outputs.bundle-path }}
+        shell: bash
         run: |
-          version="${{ steps.source.outputs.version }}"
-          cp "${{ steps.provenance.outputs.bundle-path }}" \
-            "dist/jenai-${version}.provenance.sigstore.json"
-          cp "${{ steps.sbom_attestation.outputs.bundle-path }}" \
-            "dist/jenai-${version}.sbom.sigstore.json"
+          set -euo pipefail
+          assets=(
+            "jenai-${RELEASE_VERSION}-py3-none-any.whl"
+            "jenai-${RELEASE_VERSION}.tar.gz"
+            "jenai-${RELEASE_VERSION}-constraints.txt"
+            "jenai-${RELEASE_VERSION}.cdx.json"
+          )
+          if [ "${REPOSITORY_VISIBILITY}" = "public" ]; then
+            if [ "${ATTESTATIONS_ENABLED}" != "true" ]; then
+              echo "::error::public releases require GitHub artifact attestations"
+              exit 1
+            fi
+            if [ -z "${PROVENANCE_BUNDLE}" ] || [ ! -f "${PROVENANCE_BUNDLE}" ]; then
+              echo "::error::public release is missing its build-provenance bundle"
+              exit 1
+            fi
+            if [ -z "${SBOM_ATTESTATION_BUNDLE}" ] || [ ! -f "${SBOM_ATTESTATION_BUNDLE}" ]; then
+              echo "::error::public release is missing its SBOM-attestation bundle"
+              exit 1
+            fi
+            cp "${PROVENANCE_BUNDLE}" \
+              "dist/jenai-${RELEASE_VERSION}.provenance.sigstore.json"
+            cp "${SBOM_ATTESTATION_BUNDLE}" \
+              "dist/jenai-${RELEASE_VERSION}.sbom.sigstore.json"
+            assets+=(
+              "jenai-${RELEASE_VERSION}.provenance.sigstore.json"
+              "jenai-${RELEASE_VERSION}.sbom.sigstore.json"
+            )
+          else
+            if [ "${ATTESTATIONS_ENABLED}" != "false" ]; then
+              echo "::error::non-public releases must not claim GitHub artifact attestations"
+              exit 1
+            fi
+            echo "No attestation bundles will be published for this non-public release."
+          fi
+
+          unique_count=$(printf '%s\n' "${assets[@]}" | LC_ALL=C sort -u | wc -l)
+          if [ "${unique_count}" -ne "${#assets[@]}" ]; then
+            echo "::error::release asset allow-list contains duplicate names"
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            if [[ ! "${asset}" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "${asset}" = .* ]]; then
+              echo "::error::unsafe release asset name: ${asset}"
+              exit 1
+            fi
+            if [ ! -f "dist/${asset}" ]; then
+              echo "::error::release asset is missing: dist/${asset}"
+              exit 1
+            fi
+          done
+
+          rm -f dist/SHA256SUMS
           (
             cd dist
-            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' \
-              | sort -z \
+            printf '%s\0' "${assets[@]}" \
               | xargs -0 sha256sum --binary > SHA256SUMS
             sha256sum --check SHA256SUMS
           )
 
+          : > "${RELEASE_ASSET_MANIFEST}"
+          for asset in "${assets[@]}"; do
+            printf 'dist/%s\n' "${asset}" >> "${RELEASE_ASSET_MANIFEST}"
+          done
+          printf 'dist/SHA256SUMS\n' >> "${RELEASE_ASSET_MANIFEST}"
+
       - name: Release with artifacts (or attach to an existing release)
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ASSET_MANIFEST: ${{ runner.temp }}/jenai-release-assets.txt
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           RELEASE_EXISTS: ${{ steps.release_state.outputs.exists }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
           test "$(git rev-parse "refs/tags/${TAG}^{commit}")" = "${SOURCE_SHA}"
+          test -s "${RELEASE_ASSET_MANIFEST}"
+          mapfile -t release_assets < "${RELEASE_ASSET_MANIFEST}"
+          expected_names=()
+          declare -A seen_names=()
+          for asset in "${release_assets[@]}"; do
+            if [[ "${asset}" != dist/* ]] || [ ! -f "${asset}" ]; then
+              echo "::error::invalid or missing release asset path: ${asset}"
+              exit 1
+            fi
+            name="${asset#dist/}"
+            if [[ ! "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "${name}" = .* ]]; then
+              echo "::error::unsafe release asset name: ${name}"
+              exit 1
+            fi
+            if [ -n "${seen_names[${name}]+present}" ]; then
+              echo "::error::duplicate release asset name: ${name}"
+              exit 1
+            fi
+            seen_names["${name}"]=1
+            expected_names+=("${name}")
+          done
+          if [ "${#expected_names[@]}" -lt 2 ]; then
+            echo "::error::release asset manifest is unexpectedly small"
+            exit 1
+          fi
+          expected=$(printf '%s\n' "${expected_names[@]}" | LC_ALL=C sort)
+
           if [ "${RELEASE_EXISTS}" = "true" ]; then
             # Re-check immediately before upload: a human may publish the draft
             # while this job is building. Published assets are never overwritten.
@@ -335,18 +446,48 @@ jobs:
               echo "::error::${TAG} became published during this run and is immutable"
               exit 1
             fi
-            # A recovery run reaches this line only after checkout, trigger-SHA,
-            # remote-tag, test, coverage, artifact and attestation verification.
-            gh release upload "${TAG}" dist/* --clobber
-            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
-               && [ "${is_draft}" = "true" ]; then
-              gh release edit "${TAG}" \
-                --notes-file "docs/releases/${TAG}.md" --draft=false
-            fi
+            remote_before=$(gh release view "${TAG}" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+            while IFS= read -r remote_name; do
+              [ -z "${remote_name}" ] && continue
+              if ! printf '%s\n' "${expected_names[@]}" | grep -Fqx -- "${remote_name}"; then
+                echo "::error::draft ${TAG} contains stale asset ${remote_name}; refusing to mix release bundles"
+                exit 1
+              fi
+            done <<< "${remote_before}"
+            # Only exact allow-listed paths are uploaded. Missing expected draft
+            # assets are added; same-name assets are replaced after all gates pass.
+            gh release upload "${TAG}" "${release_assets[@]}" --clobber
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            gh release create "${TAG}" dist/* \
-              --title "${TAG}" --notes-file "docs/releases/${TAG}.md"
+            # Create a draft first so the exact remote asset set can be verified
+            # before the manual dispatch is converted into a published release.
+            gh release create "${TAG}" "${release_assets[@]}" \
+              --title "${TAG}" --notes-file "docs/releases/${TAG}.md" --draft
           else
-            gh release create "${TAG}" dist/* \
+            gh release create "${TAG}" "${release_assets[@]}" \
               --title "${TAG}" --generate-notes --draft
+          fi
+
+          remote_after=$(gh release view "${TAG}" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+          if [ "${remote_after}" != "${expected}" ]; then
+            echo "::error::remote release asset set does not match the verified manifest"
+            echo "Expected:"
+            printf '%s\n' "${expected}"
+            echo "Remote:"
+            printf '%s\n' "${remote_after}"
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            is_draft=$(gh release view "${TAG}" --json isDraft --jq .isDraft)
+            if [ "${is_draft}" != "true" ]; then
+              echo "::error::${TAG} became published before the reviewed notes update"
+              exit 1
+            fi
+            gh release edit "${TAG}" \
+              --notes-file "docs/releases/${TAG}.md" --draft=false
+            is_draft=$(gh release view "${TAG}" --json isDraft --jq .isDraft)
+            if [ "${is_draft}" != "false" ]; then
+              echo "::error::${TAG} did not become a published release"
+              exit 1
+            fi
           fi

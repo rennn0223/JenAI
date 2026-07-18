@@ -31,5 +31,5 @@
 
 公網部署、多租戶、DDS 加密(SROS2)，以及對依賴來源、CI runner、GitHub 帳號或建置
 基礎設施全面失陷的供應鏈防禦。現有 release 控制只涵蓋 locked dependency audit、SBOM、
-同版 constraints、checksum、attestation 與 tag/source 綁定；不能推論能抵禦所有供應鏈攻擊。
+同版 constraints、checksum 與 tag/source 綁定；public repository 另要求 attestations，private repository 則明示不具該層證據。這些控制不能推論能抵禦所有供應鏈攻擊。
 部署前提仍是隔離 LAN + 信任本機。

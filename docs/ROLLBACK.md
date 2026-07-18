@@ -12,7 +12,8 @@
 ## Release wheel：安裝、升級與回滾的共同流程
 
 目前 repository 是 private；只有已取得 `rennn0223/JenAI` 權限、且 GitHub CLI 已登入的
-協作者能執行此流程。未獲權限者沒有公開 release 下載通道。wheel、constraints 與
+協作者能執行此流程。未獲權限者沒有公開 release 下載通道。新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path 不會產生或宣稱 GitHub artifact attestations。
+wheel、constraints 與
 `SHA256SUMS` 必須來自**同一個 release**，且 asset 清單必須實際包含它們；例如既有
 `v1.1.4` 缺少後兩項，不可宣稱已通過這套驗證。流程以 Linux／Ubuntu 為目標；macOS
 仍是 Experimental，須自行安裝 GNU coreutils、改用 `gsha256sum`，且不因此取得相同
@@ -38,9 +39,9 @@ JenAI version
 JenAI doctor
 ```
 
-若 release 說明明確標示已發布 GitHub attestation，而且已安裝支援 `gh attestation`
-的新版 GitHub CLI 並已登入，可在 checksum 通過後選配執行；舊 release 沒有 attestation
-時不能聲稱這一層已驗證：
+只有 repository 在該版發布時為 public、release 說明明確標示已發布 GitHub
+attestation，且 assets 實際包含 `.sigstore.json` bundles 時，才可在 checksum 通過後
+選配執行；private 或舊 release 沒有 attestation 時不能執行或聲稱這一層已驗證：
 
 ```bash
 gh attestation verify "jenai-${VERSION}-py3-none-any.whl" \

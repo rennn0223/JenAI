@@ -11,6 +11,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+PRIVATE_RELEASE_TRUTH = (
+    "新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；"
+    "只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path "
+    "不會產生或宣稱 GitHub artifact attestations。"
+)
+PRIVATE_RELEASE_DOCS = (
+    ROOT / "README.md",
+    ROOT / "docs" / "QUICKSTART.md",
+    ROOT / "docs" / "ROLLBACK.md",
+    ROOT / ".github" / "workflows" / "README.md",
+    ROOT / "docs" / "PRODUCT_READINESS.md",
+    ROOT / "docs" / "releases" / "v2.0.1.md",
+)
+
+
+def test_current_release_docs_do_not_claim_private_github_attestations() -> None:
+    for path in PRIVATE_RELEASE_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert PRIVATE_RELEASE_TRUTH in text, path
+
+
 def test_release_workflow_binds_assets_to_one_verified_tag_commit() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
@@ -20,7 +41,7 @@ def test_release_workflow_binds_assets_to_one_verified_tag_commit() -> None:
     published_gate = workflow.index("Refuse mutation of an existing published release")
     remote_gate = workflow.index("Verify the remote tag still identifies the built commit")
     release = workflow.index("Release with artifacts")
-    clobber = workflow.index('gh release upload "${TAG}" dist/* --clobber')
+    clobber = workflow.index('gh release upload "${TAG}" "${release_assets[@]}" --clobber')
 
     assert "fetch-depth: 0" in workflow
     assert resolve < mismatch_gate < checkout < published_gate < remote_gate < release < clobber
@@ -34,7 +55,7 @@ def test_release_workflow_binds_assets_to_one_verified_tag_commit() -> None:
     assert "cancel-in-progress: false" in workflow
 
 
-def test_release_repeats_safety_gate_and_emits_verifiable_assets() -> None:
+def test_release_repeats_safety_gate_and_emits_visibility_appropriate_assets() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     required = (
@@ -51,6 +72,10 @@ def test_release_repeats_safety_gate_and_emits_verifiable_assets() -> None:
         "sbom.sigstore.json",
         "SHA256SUMS",
         "sha256sum --check SHA256SUMS",
+        "RELEASE_ASSET_MANIFEST",
+        '"${release_assets[@]}"',
+        "contains stale asset",
+        "remote release asset set does not match the verified manifest",
     )
     for contract in required:
         assert contract in workflow
@@ -58,10 +83,18 @@ def test_release_repeats_safety_gate_and_emits_verifiable_assets() -> None:
     assert workflow.count(
         "uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0"
     ) == 2
-    assert workflow.index("Safety-chain coverage gate") < workflow.index("Build wheel and sdist")
-    assert workflow.index("Generate signed build provenance") < workflow.index(
-        "Release with artifacts"
+    public_only = (
+        "if: github.event.repository.visibility == 'public' && "
+        "steps.integrity_mode.outputs.attestations_enabled == 'true'"
     )
+    assert workflow.count(public_only) == 2
+    assert workflow.index("Safety-chain coverage gate") < workflow.index("Build wheel and sdist")
+    assert workflow.index("Declare release integrity mode") < workflow.index(
+        "Generate signed build provenance"
+    )
+    assert workflow.index("Generate signed SBOM attestation") < workflow.index(
+        "Bundle optional public attestations and SHA-256 checksums"
+    ) < workflow.index("Release with artifacts")
 
 
 def test_sdist_explicitly_excludes_local_secrets_and_thesis_material() -> None:
@@ -220,6 +253,164 @@ def _run_release_step(
     )
 
 
+_RELEASE_FILES = (
+    "jenai-2.0.1-py3-none-any.whl",
+    "jenai-2.0.1.tar.gz",
+    "jenai-2.0.1-constraints.txt",
+    "jenai-2.0.1.cdx.json",
+)
+
+
+def _seed_release_dist(repo: Path) -> None:
+    dist = repo / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    # Build helpers or unrelated files must never enter the release allow-list.
+    (dist / ".gitignore").write_text("*\n", encoding="utf-8")
+    (dist / "extra-visible.txt").write_text("not a release asset\n", encoding="utf-8")
+    for name in _RELEASE_FILES:
+        (dist / name).write_text(f"fixture for {name}\n", encoding="utf-8")
+
+
+def _write_release_manifest(repo: Path, manifest: Path) -> tuple[str, ...]:
+    _seed_release_dist(repo)
+    (repo / "dist" / "SHA256SUMS").write_text("fixture checksum\n", encoding="utf-8")
+    paths = tuple(f"dist/{name}" for name in (*_RELEASE_FILES, "SHA256SUMS"))
+    manifest.write_text("\n".join(paths) + "\n", encoding="utf-8")
+    return paths
+
+
+def _checksum_names(dist: Path) -> set[str]:
+    lines = (dist / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    return {line.split(" *", 1)[1] for line in lines}
+
+
+def test_release_integrity_mode_executes_private_skip_and_public_requirement(
+    tmp_path: Path,
+) -> None:
+    script = _workflow_step_script("Declare release integrity mode")
+    repo = tmp_path / "mode"
+    repo.mkdir()
+
+    private = _run_release_step(
+        script,
+        repo,
+        event="workflow_dispatch",
+        ref="refs/heads/main",
+        sha="0" * 40,
+        tag="v2.0.1",
+        extra_env={"REPOSITORY_VISIBILITY": "private"},
+    )
+    assert private.returncode == 0, private.stderr + private.stdout
+    assert "attestations_enabled=false" in (repo / "github-output.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "without provenance claims" in private.stdout
+
+    public = _run_release_step(
+        script,
+        repo,
+        event="workflow_dispatch",
+        ref="refs/heads/main",
+        sha="0" * 40,
+        tag="v2.0.1",
+        extra_env={"REPOSITORY_VISIBILITY": "public"},
+    )
+    assert public.returncode == 0, public.stderr + public.stdout
+    assert "attestations_enabled=true" in (repo / "github-output.txt").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_checksum_bundle_executes_private_and_public_contracts(tmp_path: Path) -> None:
+    script = _workflow_step_script(
+        "Bundle optional public attestations and SHA-256 checksums"
+    )
+    provenance = tmp_path / "provenance.json"
+    sbom_attestation = tmp_path / "sbom-attestation.json"
+    provenance.write_text("provenance fixture\n", encoding="utf-8")
+    sbom_attestation.write_text("sbom attestation fixture\n", encoding="utf-8")
+
+    private_repo = tmp_path / "private"
+    private_manifest = tmp_path / "private-assets.txt"
+    _seed_release_dist(private_repo)
+    private = _run_release_step(
+        script,
+        private_repo,
+        event="workflow_dispatch",
+        ref="refs/heads/main",
+        sha="0" * 40,
+        tag="v2.0.1",
+        extra_env={
+            "ATTESTATIONS_ENABLED": "false",
+            "PROVENANCE_BUNDLE": str(provenance),
+            "RELEASE_ASSET_MANIFEST": str(private_manifest),
+            "REPOSITORY_VISIBILITY": "private",
+            "RELEASE_VERSION": "2.0.1",
+            "SBOM_ATTESTATION_BUNDLE": str(sbom_attestation),
+        },
+    )
+    assert private.returncode == 0, private.stderr + private.stdout
+    assert _checksum_names(private_repo / "dist") == set(_RELEASE_FILES)
+    assert ".gitignore" not in _checksum_names(private_repo / "dist")
+    assert "extra-visible.txt" not in _checksum_names(private_repo / "dist")
+    assert private_manifest.read_text(encoding="utf-8").splitlines() == [
+        *(f"dist/{name}" for name in _RELEASE_FILES),
+        "dist/SHA256SUMS",
+    ]
+    assert not list((private_repo / "dist").glob("*.sigstore.json"))
+
+    public_repo = tmp_path / "public"
+    public_manifest = tmp_path / "public-assets.txt"
+    _seed_release_dist(public_repo)
+    missing = _run_release_step(
+        script,
+        public_repo,
+        event="workflow_dispatch",
+        ref="refs/heads/main",
+        sha="0" * 40,
+        tag="v2.0.1",
+        extra_env={
+            "ATTESTATIONS_ENABLED": "true",
+            "PROVENANCE_BUNDLE": str(provenance),
+            "RELEASE_ASSET_MANIFEST": str(public_manifest),
+            "REPOSITORY_VISIBILITY": "public",
+            "RELEASE_VERSION": "2.0.1",
+            "SBOM_ATTESTATION_BUNDLE": "",
+        },
+    )
+    assert missing.returncode != 0
+    assert "missing its SBOM-attestation bundle" in missing.stdout
+
+    public = _run_release_step(
+        script,
+        public_repo,
+        event="workflow_dispatch",
+        ref="refs/heads/main",
+        sha="0" * 40,
+        tag="v2.0.1",
+        extra_env={
+            "ATTESTATIONS_ENABLED": "true",
+            "PROVENANCE_BUNDLE": str(provenance),
+            "RELEASE_ASSET_MANIFEST": str(public_manifest),
+            "REPOSITORY_VISIBILITY": "public",
+            "RELEASE_VERSION": "2.0.1",
+            "SBOM_ATTESTATION_BUNDLE": str(sbom_attestation),
+        },
+    )
+    assert public.returncode == 0, public.stderr + public.stdout
+    expected = set(_RELEASE_FILES) | {
+        "jenai-2.0.1.provenance.sigstore.json",
+        "jenai-2.0.1.sbom.sigstore.json",
+    }
+    assert _checksum_names(public_repo / "dist") == expected
+    assert public_manifest.read_text(encoding="utf-8").splitlines() == [
+        *(f"dist/{name}" for name in _RELEASE_FILES),
+        "dist/jenai-2.0.1.provenance.sigstore.json",
+        "dist/jenai-2.0.1.sbom.sigstore.json",
+        "dist/SHA256SUMS",
+    ]
+
+
 def test_release_source_state_machine_accepts_only_main_or_matching_tag(tmp_path: Path) -> None:
     script = _workflow_step_script("Resolve and checkout the immutable release source")
 
@@ -292,13 +483,34 @@ def test_tag_push_rejects_commit_not_reachable_from_origin_main(tmp_path: Path) 
 
 
 def _write_fake_gh(path: Path) -> None:
-    path.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\\n' \"$*\" >> \"${GH_LOG}\"\n"
-        "if [ \"${FAKE_GH_EXIT:-0}\" != 0 ]; then exit \"${FAKE_GH_EXIT}\"; fi\n"
-        "printf '%s\\n' \"${FAKE_DRAFT:-false}\"\n",
-        encoding="utf-8",
-    )
+    script = """#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${GH_LOG}"
+if [ "${FAKE_GH_EXIT:-0}" != 0 ]; then exit "${FAKE_GH_EXIT}"; fi
+case "$*" in
+  *'--json isDraft'*)
+    if [ -n "${GH_STATE:-}" ] && [ -f "${GH_STATE}.published" ]; then
+      printf 'false\n'
+    else
+      printf '%s\n' "${FAKE_DRAFT:-false}"
+    fi
+    ;;
+  *'--json assets'*)
+    if [ -n "${GH_STATE:-}" ] && [ -f "${GH_STATE}.uploaded" ]; then
+      printf '%b' "${FAKE_ASSETS_AFTER:-}"
+    else
+      printf '%b' "${FAKE_ASSETS_BEFORE:-}"
+    fi
+    ;;
+  'release upload '*|'release create '*)
+    if [ -n "${GH_STATE:-}" ]; then : > "${GH_STATE}.uploaded"; fi
+    ;;
+  'release edit '*)
+    if [ -n "${GH_STATE:-}" ]; then : > "${GH_STATE}.published"; fi
+    ;;
+esac
+"""
+    path.write_text(script, encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -349,6 +561,8 @@ def test_release_rechecks_draft_before_clobbering_assets(tmp_path: Path) -> None
     fake_bin.mkdir()
     _write_fake_gh(fake_bin / "gh")
     log = tmp_path / "gh.log"
+    manifest = tmp_path / "release-assets.txt"
+    _write_release_manifest(repo, manifest)
 
     result = _run_release_step(
         script,
@@ -361,6 +575,7 @@ def test_release_rechecks_draft_before_clobbering_assets(tmp_path: Path) -> None
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "GH_LOG": str(log),
             "FAKE_DRAFT": "false",
+            "RELEASE_ASSET_MANIFEST": str(manifest),
             "SOURCE_SHA": main_sha,
             "RELEASE_EXISTS": "true",
         },
@@ -370,3 +585,90 @@ def test_release_rechecks_draft_before_clobbering_assets(tmp_path: Path) -> None
     assert "became published during this run and is immutable" in result.stdout
     calls = log.read_text(encoding="utf-8").splitlines()
     assert calls == ["release view v9.9.6 --json isDraft --jq .isDraft"]
+
+
+def test_release_upload_uses_exact_manifest_and_rejects_stale_draft(
+    tmp_path: Path,
+) -> None:
+    script = _workflow_step_script("Release with artifacts (or attach to an existing release)")
+    repo, main_sha, _feature_sha = _release_repo(tmp_path / "repo")
+    _git(repo, "switch", "main")
+    _git(repo, "tag", "-a", "v9.9.7", main_sha, "-m", "release")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_fake_gh(fake_bin / "gh")
+    log = tmp_path / "gh.log"
+    state = tmp_path / "gh-state"
+    manifest = tmp_path / "release-assets.txt"
+    paths = _write_release_manifest(repo, manifest)
+    expected_names = tuple(Path(item).name for item in paths)
+    expected_remote = "\n".join(expected_names) + "\n"
+    common = {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "GH_LOG": str(log),
+        "GH_STATE": str(state),
+        "FAKE_DRAFT": "true",
+        "FAKE_ASSETS_AFTER": expected_remote,
+        "RELEASE_ASSET_MANIFEST": str(manifest),
+        "SOURCE_SHA": main_sha,
+        "RELEASE_EXISTS": "true",
+    }
+
+    result = _run_release_step(
+        script,
+        repo,
+        event="push",
+        ref="refs/tags/v9.9.7",
+        sha=main_sha,
+        tag="v9.9.7",
+        extra_env={**common, "FAKE_ASSETS_BEFORE": f"{expected_names[0]}\n"},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    calls = log.read_text(encoding="utf-8").splitlines()
+    upload = next(call for call in calls if call.startswith("release upload "))
+    for release_path in paths:
+        assert release_path in upload
+    assert ".gitignore" not in upload
+    assert "extra-visible.txt" not in upload
+    assert upload.endswith(" --clobber")
+
+    log.write_text("", encoding="utf-8")
+    Path(f"{state}.uploaded").unlink(missing_ok=True)
+    result = _run_release_step(
+        script,
+        repo,
+        event="push",
+        ref="refs/tags/v9.9.7",
+        sha=main_sha,
+        tag="v9.9.7",
+        extra_env={**common, "FAKE_ASSETS_BEFORE": "stale.sigstore.json\n"},
+    )
+    assert result.returncode != 0
+    assert "contains stale asset stale.sigstore.json" in result.stdout
+    assert not any(
+        call.startswith("release upload ")
+        for call in log.read_text(encoding="utf-8").splitlines()
+    )
+
+    # A new manual release must remain a draft until the exact remote asset set
+    # is checked, then publish with the reviewed notes.
+    _git(repo, "tag", "-a", "v9.9.8", main_sha, "-m", "release")
+    log.write_text("", encoding="utf-8")
+    Path(f"{state}.uploaded").unlink(missing_ok=True)
+    Path(f"{state}.published").unlink(missing_ok=True)
+    result = _run_release_step(
+        script,
+        repo,
+        event="workflow_dispatch",
+        ref="refs/tags/v9.9.8",
+        sha=main_sha,
+        tag="v9.9.8",
+        extra_env={**common, "FAKE_ASSETS_BEFORE": "", "RELEASE_EXISTS": "false"},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    calls = log.read_text(encoding="utf-8").splitlines()
+    create = next(call for call in calls if call.startswith("release create "))
+    assert create.endswith(" --draft")
+    assert all(release_path in create for release_path in paths)
+    assert ".gitignore" not in create and "extra-visible.txt" not in create
+    assert any(call.startswith("release edit ") for call in calls)
