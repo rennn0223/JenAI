@@ -20,7 +20,7 @@ JenAI v1 是一個**受監督、具執行邊界的 ROS2 高階決策與工作流
 | ENG-1 | 工程師 | 無 ROS 的單元／整合測試、lint、三版本 CI、wheel 冒煙全綠 | 511 tests 與完整 lint 本機全綠；Python 3.12–3.14 CI；安全鏈 coverage gate；v1.1.2 wheel | PASS | 每次 PR 持續維持 |
 | ENG-2 | 工程師 | ROS／Isaac 關鍵路徑可自動回歸，不只人工 TUI 實測 | 現有 fake bridge、E2/E3/B4 runbook；尚無 self-hosted Isaac/HIL job | PARTIAL | 自動跑 `/route`、取消、stop、Twin verdict 並保存 artifact |
 | ENG-3 | 工程師 | 核心模組職責可維護 | `tui/app.py`、`tui/robot_commands.py`、`bridge/ros_bridge.py` 仍是大型熱點 | PARTIAL | 依狀態、導航、批准、呈現責任拆模組且行為測試不變 |
-| ENG-4 | 工程師 | 依賴與供應鏈可稽核 | Dependabot、PR dependency review、locked runtime `pip-audit` 與 uv CycloneDX workflow 已加入；本機 audit 無已知漏洞 | PARTIAL | 合併後遠端 Supply Chain workflow 首次全綠並保存 SBOM artifact |
+| ENG-4 | 工程師 | 依賴與供應鏈可稽核 | Dependabot、locked runtime `pip-audit` 與 uv CycloneDX workflow；PR #101 遠端 audit／SBOM 全綠，無已知漏洞 | PASS | 每週掃描；此私人個人 repo 無 GHAS dependency review，若移至合資格方案再啟用 |
 | PM-1 | PM | ICP 與主要任務明確 | 主要 ICP：已有 ROS2/Nav2 的研究室與機器人開發團隊；主要任務：高階任務觸發與 ROS 開發輔助 | PASS | 新功能必須服務主要任務之一 |
 | PM-2 | PM | v1 與 v2 承諾分開 | v1 是受監督工作流代理；M6 常駐決策迴圈列入 v2 | PASS | README、論文、demo 不得把 M6 當現有能力 |
 | PM-3 | PM | 新手可從安裝走到第一個成功任務 | ONBOARDING 與 doctor 已有；三位使用者曾在指導下試用，但未做純冷啟動計時 | PARTIAL | ≥5 位新手只看文件完成任務並保存時間／卡點 |
@@ -34,7 +34,7 @@ JenAI v1 是一個**受監督、具執行邊界的 ROS2 高階決策與工作流
 | SALES-2 | 業務 | 有可引用的 ROI／案例 | 有技術實驗，沒有節省時間、導入成本或客戶案例 | OPEN | 完成效率研究並寫一頁案例研究 |
 | SALES-3 | 業務 | 不過度承諾 | 誠實回報與限制文件已有 | PASS | 不說「通用實體安全」「認證」「未知空間自主探索」 |
 | BUY-1 | 買家 | 能直接安裝、啟動、診斷與移除 | 隔離 `/tmp` 執行 `uv tool install .`，成功產生 `JenAI`／`jenai`；version/help 與無設定 doctor 診斷通過 | PARTIAL | 真正 fresh machine 只照 README 完成 onboard、doctor 與移除，無維護者介入 |
-| BUY-2 | 買家 | 資安與部署邊界清楚 | `SECURITY`、`THREAT_MODEL`、`SUPPORT`、Supply Chain workflow；明示 `/shell`、DDS、公網與功能安全限制 | PARTIAL | 遠端 workflow 首次全綠並保存 SBOM artifact |
+| BUY-2 | 買家 | 資安與部署邊界清楚 | `SECURITY`、`THREAT_MODEL`、`SUPPORT`、遠端 audit／CycloneDX SBOM；明示 `/shell`、DDS、公網與功能安全限制 | PASS | 每次發布保存對應 SBOM；企業部署另做場域 threat review |
 | BUY-3 | 買家 | 有支援載具／ROS／模型矩陣與驗收方式 | `SUPPORT_MATRIX` 分 Validated／Supported／Experimental／Planned；`VEHICLE_POC` 固定驗收 | PASS | 新組合有 artifact 才能升級等級 |
 | BUY-4 | 買家 | 有 SLA、升級、回滾與事故處理 | `SUPPORT` 明示目前 best-effort／無 SLA；`ROLLBACK` 涵蓋 wheel、source、Isaac 與實體回歸；安全通報另見 `SECURITY` | PASS | 若推出付費方案，須另簽回應時段與嚴重度 SLA |
 
