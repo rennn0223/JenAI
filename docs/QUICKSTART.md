@@ -32,6 +32,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 目前 repository 是 private。下列流程只適用已取得 `rennn0223/JenAI` 權限、並已用
 GitHub CLI 登入的協作者；未獲權限者目前沒有公開 release 下載通道，匿名 `curl` 會失敗。
+新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path 不會產生或宣稱 GitHub artifact attestations。
 選定正式版本後，命令會下載該版 wheel、matching constraints 和 checksum，先驗證兩個
 安裝檔再交給 `uv`。只有 asset 清單確實含 wheel、同版 constraints、`SHA256SUMS` 的
 release 才適用；例如既有 `v1.1.4` 缺少後兩項，不代表供應鏈檢查已通過，請等待新版。
@@ -56,9 +57,9 @@ uv tool install \
 uv tool update-shell
 ```
 
-若 release 說明明確標示 attestation 已發布，而且已安裝支援 `gh attestation` 的新版
-GitHub CLI 並已登入，checksum 通過後可選配第二層驗證；這項證據只適用實際附有
-attestation 的新 release：
+只有 repository 在該版發布時為 public、release 說明明確標示 attestation 已發布、
+且 assets 實際包含 `.sigstore.json` bundles 時，checksum 通過後才可選配第二層驗證；
+這項證據不適用 private release（並須使用支援 `gh attestation` 的已登入 GitHub CLI）：
 
 ```bash
 gh attestation verify "jenai-${VERSION}-py3-none-any.whl" \
