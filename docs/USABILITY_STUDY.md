@@ -34,7 +34,8 @@ uv run python scripts/usability_study.py schedule --participants 6 \
 
 ```bash
 uv run python scripts/usability_study.py start \
-  --participant P01 --condition slash --task discover_topic_type
+  --participant P01 --experience novice \
+  --condition slash --task discover_topic_type
 ```
 
 任務結束後，由觀察者填實際結果：
@@ -45,7 +46,9 @@ uv run python scripts/usability_study.py finish --success \
   --out usability-study.jsonl
 ```
 
-失敗使用 `--failed`，不可刪除或重跑覆蓋。若重新測試，新增一筆並在 notes 說明原因。
+失敗使用 `--failed`，不可刪除或重跑覆蓋。若重新測試，新增一筆並在 notes 說明原因；
+notes 不得含姓名、場域或完整 prompt。相同 participant×task×condition 的重複資料仍列入
+條件摘要，但會排除於配對速度比並明確列出排除數。
 
 ## 摘要
 

@@ -16,6 +16,7 @@ _SPEC.loader.exec_module(study)
 def _trial(participant: str, condition: str, elapsed: float, *, success: bool = True) -> dict:
     return {
         "participant": participant,
+        "experience": "novice",
         "condition": condition,
         "task": "discover_topic_type",
         "started_at": "2026-07-18T00:00:00+00:00",
@@ -46,6 +47,7 @@ def test_start_and_finish_trial_uses_pseudonymous_metrics(tmp_path: Path) -> Non
     study.start_trial(
         state,
         participant="P01",
+        experience="novice",
         condition="slash",
         task="inspect_feedback",
         now_epoch=100.0,
@@ -62,6 +64,7 @@ def test_start_and_finish_trial_uses_pseudonymous_metrics(tmp_path: Path) -> Non
     )
 
     assert trial["elapsed_s"] == 12.5
+    assert trial["experience"] == "novice"
     assert trial["errors"] == 1
     assert not state.exists()
     assert json.loads(output.read_text(encoding="utf-8"))["participant"] == "P01"
@@ -72,6 +75,7 @@ def test_start_refuses_to_overwrite_active_trial(tmp_path: Path) -> None:
     study.start_trial(
         state,
         participant="P01",
+        experience="experienced",
         condition="manual",
         task="bounded_motion",
         now_epoch=1.0,
@@ -81,6 +85,7 @@ def test_start_refuses_to_overwrite_active_trial(tmp_path: Path) -> None:
         study.start_trial(
             state,
             participant="P02",
+            experience="novice",
             condition="natural",
             task="bounded_motion",
             now_epoch=2.0,
@@ -95,6 +100,9 @@ def test_summary_keeps_failures_and_reports_paired_ratio() -> None:
         _trial("P02", "manual", 40.0),
         _trial("P02", "slash", 20.0, success=False),
         _trial("P02", "natural", 10.0),
+        _trial("P03", "manual", 20.0),
+        _trial("P03", "natural", 10.0),
+        _trial("P03", "natural", 9.0),
     ]
 
     summary = study.summarize_trials(trials)
@@ -103,10 +111,12 @@ def test_summary_keeps_failures_and_reports_paired_ratio() -> None:
     assert summary["paired"]["manual_vs_slash"] == {
         "pairs": 1,
         "median_speed_ratio": 3.0,
+        "ambiguous_repeated_pairs": 0,
     }
     assert summary["paired"]["manual_vs_natural"] == {
         "pairs": 2,
         "median_speed_ratio": 3.0,
+        "ambiguous_repeated_pairs": 1,
     }
 
 
@@ -125,4 +135,16 @@ def test_load_trials_rejects_non_boolean_success(tmp_path: Path) -> None:
     path.write_text(json.dumps(trial) + "\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="success must be a boolean"):
+        study.load_trials(path)
+
+    trial["success"] = False
+    trial["experience"] = "expert"
+    path.write_text(json.dumps(trial) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="experience must be one of"):
+        study.load_trials(path)
+
+    trial["experience"] = "experienced"
+    trial["errors"] = 1.5
+    path.write_text(json.dumps(trial) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="errors must be an integer"):
         study.load_trials(path)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Record and summarize the JenAI interface-efficiency study.
 
-The recorder stores pseudonymous metrics only. It intentionally does not capture raw prompts,
-terminal output, camera data, or site information.
+The recorder does not collect raw prompts, terminal output, camera data, or site information.
+Free-form notes are optional and must be sanitized by the study operator.
 """
 
 from __future__ import annotations
@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any
 
 CONDITIONS = ("manual", "slash", "natural")
+EXPERIENCE_LEVELS = ("novice", "experienced")
 DEFAULT_TASKS = ("discover_topic_type", "inspect_feedback", "bounded_motion")
 REQUIRED_TRIAL_FIELDS = {
     "participant",
+    "experience",
     "condition",
     "task",
     "started_at",
@@ -40,6 +42,12 @@ def _utc_now() -> str:
 def _validate_condition(value: str) -> str:
     if value not in CONDITIONS:
         raise ValueError(f"condition must be one of: {', '.join(CONDITIONS)}")
+    return value
+
+
+def _validate_experience(value: str) -> str:
+    if value not in EXPERIENCE_LEVELS:
+        raise ValueError(f"experience must be one of: {', '.join(EXPERIENCE_LEVELS)}")
     return value
 
 
@@ -93,6 +101,7 @@ def start_trial(
     state_path: Path,
     *,
     participant: str,
+    experience: str,
     condition: str,
     task: str,
     now_epoch: float | None = None,
@@ -101,6 +110,7 @@ def start_trial(
     """Persist the active timer; refuse to overwrite a forgotten trial by default."""
 
     _validate_condition(condition)
+    _validate_experience(experience)
     if state_path.exists() and not force:
         raise FileExistsError(f"active trial already exists: {state_path}")
     if not participant.strip() or not task.strip():
@@ -108,6 +118,7 @@ def start_trial(
 
     state = {
         "participant": participant.strip(),
+        "experience": experience,
         "condition": condition,
         "task": task.strip(),
         "started_at": _utc_now(),
@@ -146,6 +157,7 @@ def finish_trial(
 
     trial = {
         "participant": state["participant"],
+        "experience": _validate_experience(state["experience"]),
         "condition": _validate_condition(state["condition"]),
         "task": state["task"],
         "started_at": state["started_at"],
@@ -158,6 +170,7 @@ def finish_trial(
         "commands": commands,
         "notes": notes.strip(),
     }
+    validate_trial(trial)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(trial, ensure_ascii=False) + "\n")
@@ -171,12 +184,17 @@ def validate_trial(trial: dict[str, Any], *, line_number: int | None = None) -> 
     if missing:
         raise ValueError(f"{prefix}missing fields: {', '.join(sorted(missing))}")
     _validate_condition(str(trial["condition"]))
+    _validate_experience(str(trial["experience"]))
     if not isinstance(trial["success"], bool):
         raise ValueError(f"{prefix}success must be a boolean")
-    if float(trial["elapsed_s"]) < 0:
+    if isinstance(trial["elapsed_s"], bool) or not isinstance(trial["elapsed_s"], (int, float)):
+        raise ValueError(f"{prefix}elapsed_s must be a number")
+    if trial["elapsed_s"] < 0:
         raise ValueError(f"{prefix}elapsed_s cannot be negative")
     for field in ("errors", "lookups", "interventions", "commands"):
-        if int(trial[field]) < 0:
+        if isinstance(trial[field], bool) or not isinstance(trial[field], int):
+            raise ValueError(f"{prefix}{field} must be an integer")
+        if trial[field] < 0:
             raise ValueError(f"{prefix}{field} cannot be negative")
     return trial
 
@@ -207,9 +225,9 @@ def summarize_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {"conditions": {}, "paired": {}}
     for condition in CONDITIONS:
         group = [trial for trial in trials if trial["condition"] == condition]
+        elapsed = [float(trial["elapsed_s"]) for trial in group]
         if not group:
             continue
-        elapsed = [float(trial["elapsed_s"]) for trial in group]
         successful = [trial for trial in group if bool(trial["success"])]
         summary["conditions"][condition] = {
             "trials": len(group),
@@ -224,14 +242,24 @@ def summarize_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
             "mean_commands": statistics.mean(int(trial["commands"]) for trial in group),
         }
 
-    indexed = {(trial["participant"], trial["task"], trial["condition"]): trial for trial in trials}
+    indexed: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for trial in trials:
+        key = (trial["participant"], trial["task"], trial["condition"])
+        indexed.setdefault(key, []).append(trial)
     participant_tasks = {(trial["participant"], trial["task"]) for trial in trials}
     for condition in ("slash", "natural"):
         ratios: list[float] = []
+        ambiguous_repeated_pairs = 0
         for participant, task in participant_tasks:
-            manual = indexed.get((participant, task, "manual"))
-            candidate = indexed.get((participant, task, condition))
-            if not manual or not candidate or not manual["success"] or not candidate["success"]:
+            manual_group = indexed.get((participant, task, "manual"), [])
+            candidate_group = indexed.get((participant, task, condition), [])
+            if len(manual_group) > 1 or len(candidate_group) > 1:
+                ambiguous_repeated_pairs += 1
+                continue
+            if len(manual_group) != 1 or len(candidate_group) != 1:
+                continue
+            manual, candidate = manual_group[0], candidate_group[0]
+            if not manual["success"] or not candidate["success"]:
                 continue
             candidate_time = float(candidate["elapsed_s"])
             if candidate_time > 0:
@@ -239,6 +267,7 @@ def summarize_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
         summary["paired"][f"manual_vs_{condition}"] = {
             "pairs": len(ratios),
             "median_speed_ratio": statistics.median(ratios) if ratios else None,
+            "ambiguous_repeated_pairs": ambiguous_repeated_pairs,
         }
     return summary
 
@@ -266,7 +295,8 @@ def render_markdown(summary: dict[str, Any]) -> str:
         ratio = row["median_speed_ratio"]
         rendered = "n/a" if ratio is None else f"{ratio:.2f}×"
         lines.append(
-            f"- `{name}`: {row['pairs']} pairs, median manual/candidate time ratio {rendered}"
+            f"- `{name}`: {row['pairs']} pairs, median manual/candidate time ratio {rendered}; "
+            f"{row['ambiguous_repeated_pairs']} repeated participant-task pairs excluded"
         )
     lines.extend(
         [
@@ -289,6 +319,7 @@ def _parser() -> argparse.ArgumentParser:
 
     start = subparsers.add_parser("start", help="start one timed trial")
     start.add_argument("--participant", required=True)
+    start.add_argument("--experience", required=True, choices=EXPERIENCE_LEVELS)
     start.add_argument("--condition", required=True, choices=CONDITIONS)
     start.add_argument("--task", required=True)
     start.add_argument("--state", type=Path, default=Path(".usability-active.json"))
@@ -324,6 +355,7 @@ def main() -> None:
         state = start_trial(
             args.state,
             participant=args.participant,
+            experience=args.experience,
             condition=args.condition,
             task=args.task,
             force=args.force,
