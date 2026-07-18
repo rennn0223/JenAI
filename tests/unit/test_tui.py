@@ -10,6 +10,7 @@ from jenai.schemas import (
     RosSchemaOutput,
     RosTopicsOutput,
     RouteOutput,
+    RunStatus,
     TopicItem,
 )
 from jenai.tools.ros2_core import Ros2PubValidation
@@ -200,8 +201,10 @@ def test_tui_drive_natural_language_shows_card_and_executes(monkeypatch) -> None
     async def fake_drive(topic, message_type, payload, *, duration_s=1.0, **limits):
         executed.update(payload=payload, duration=duration_s)
         return RosPubOutput(
-            topic=topic, message_type=message_type,
-            execution_status="succeeded", result_message="drove then stopped",
+            topic=topic,
+            message_type=message_type,
+            execution_status="succeeded",
+            result_message="drove then stopped",
         )
 
     monkeypatch.setattr("jenai.tui.app.ros_drive", fake_drive)
@@ -234,8 +237,10 @@ def test_tui_ros_drive_shows_card_and_executes_on_approve(monkeypatch) -> None:
     async def fake_drive(topic, message_type, payload, *, duration_s=1.0, **limits):
         executed.update(topic=topic, duration=duration_s)
         return RosPubOutput(
-            topic=topic, message_type=message_type,
-            execution_status="succeeded", result_message="drove then stopped",
+            topic=topic,
+            message_type=message_type,
+            execution_status="succeeded",
+            result_message="drove then stopped",
         )
 
     monkeypatch.setattr("jenai.tui.robot_commands.ros_pub_validate", fake_validate)
@@ -341,17 +346,13 @@ def test_tui_run_approval_remember_auto_approves(monkeypatch) -> None:
                     final_output="done",
                 )
 
-            monkeypatch.setattr(
-                "jenai.tui.app.orchestrator.resume_with_approvals", fake_resume
-            )
+            monkeypatch.setattr("jenai.tui.app.orchestrator.resume_with_approvals", fake_resume)
             ctx, run_rec = _awaiting_run(app, "ros_pub_execute_tool")
             await app._render_run_update(ctx, run_rec, agent=object())
             assert len(list(app.query(ApprovalCard))) == 1  # first time asks
 
             # Option 2 = approve + don't ask again.
-            await app.on_approval_card_decision(
-                ApprovalCard.Decision("c1", True, remember=True)
-            )
+            await app.on_approval_card_decision(ApprovalCard.Decision("c1", True, remember=True))
             assert "ros_pub_execute_tool" in app._auto_approved
             assert captured["decisions"] == {"c1": True}
 
@@ -373,9 +374,7 @@ def test_tui_run_remembered_tool_skips_card(monkeypatch) -> None:
                     session_id=app.session.session_id, user_input="x", status="completed"
                 )
 
-            monkeypatch.setattr(
-                "jenai.tui.app.orchestrator.resume_with_approvals", fake_resume
-            )
+            monkeypatch.setattr("jenai.tui.app.orchestrator.resume_with_approvals", fake_resume)
             ctx, run_rec = _awaiting_run(app, "ros_pub_execute_tool")
             await app._render_run_update(ctx, run_rec, agent=object())
 
@@ -482,8 +481,26 @@ def test_tui_status_line_shows_provider_and_model() -> None:
 
 
 def test_tui_escape_interrupts_active_task(monkeypatch) -> None:
+    recorded: list[dict] = []
+
+    class FakeSession:
+        def __init__(self, session_id, directory=None):
+            pass
+
+        async def add_items(self, items):
+            recorded.extend(items)
+
+        async def get_items(self, limit=None):
+            return [{"role": "user", "content": "/run x"}]
+
+    monkeypatch.setattr("jenai.tui.app.JenAIFileSession", FakeSession)
+
     async def run() -> None:
         app = _app()
+        active_run = app.run_store.create_run(app.session.session_id, "x")
+        app.session.current_run_id = active_run.run_id
+        app.run_store.set_status(active_run, RunStatus.RUNNING)
+
         async with app.run_test() as pilot:
 
             async def blocking(_value: str) -> None:
@@ -499,8 +516,13 @@ def test_tui_escape_interrupts_active_task(monkeypatch) -> None:
             bodies = [getattr(w, "body", "") for w in app.query_one("#events").children]
             assert "Interrupted." in bodies
             assert app._active_task is None
+            assert app.run_store.get(active_run.run_id).status == "blocked"
 
     asyncio.run(run())
+
+    assert len(recorded) == 1
+    assert recorded[0]["role"] == "assistant"
+    assert "interrupted before completion" in recorded[0]["content"]
 
 
 def test_tui_shell_shows_card_and_executes_on_approve(monkeypatch) -> None:
@@ -639,7 +661,9 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
 
     async def fake_route_execute(config, outgoing_action):
         return RouteOutput(
-            input_text="", outgoing_action=outgoing_action, execution_status="unavailable",
+            input_text="",
+            outgoing_action=outgoing_action,
+            execution_status="unavailable",
             route_preview="No navigation backend — the goal was NOT sent.",
         )
 
@@ -1064,8 +1088,10 @@ def test_tui_dock_routes_to_tagged_location(monkeypatch, tmp_path) -> None:
     async def fake_execute_route(action):
         sent["goal"] = action["goal"]["name"]
         return RouteOutput(
-            input_text="", outgoing_action=action,
-            execution_status="succeeded", route_preview="arrived at dock",
+            input_text="",
+            outgoing_action=action,
+            execution_status="succeeded",
+            route_preview="arrived at dock",
         )
 
     async def run() -> None:
@@ -1075,8 +1101,10 @@ def test_tui_dock_routes_to_tagged_location(monkeypatch, tmp_path) -> None:
             "_load_locations",
             lambda: [
                 Location(
-                    name="Charger", tags=["dock"],
-                    frame_id="map", pose=Pose2D(x=9, y=9, yaw=0),
+                    name="Charger",
+                    tags=["dock"],
+                    frame_id="map",
+                    pose=Pose2D(x=9, y=9, yaw=0),
                 )
             ],
         )
@@ -1113,6 +1141,7 @@ def test_tui_busy_submissions_run_in_fifo_order(tmp_path) -> None:
 
         app.handle_user_text = fake_handle  # type: ignore[method-assign]
         async with app.run_test() as pilot:
+
             def event(value: str):
                 return SimpleNamespace(value=value, input=SimpleNamespace(value=""))
 
@@ -1214,6 +1243,7 @@ def test_tui_abort_current_command_then_continues_queue(tmp_path) -> None:
 
         app.handle_user_text = fake_handle  # type: ignore[method-assign]
         async with app.run_test() as pilot:
+
             def event(value: str):
                 return SimpleNamespace(value=value, input=SimpleNamespace(value=""))
 
@@ -1332,8 +1362,10 @@ def test_tui_dock_and_route_approval_memory_are_isolated(monkeypatch, tmp_path) 
             "_load_locations",
             lambda: [
                 Location(
-                    name="Charger", tags=["dock"],
-                    frame_id="map", pose=Pose2D(x=9, y=9, yaw=0),
+                    name="Charger",
+                    tags=["dock"],
+                    frame_id="map",
+                    pose=Pose2D(x=9, y=9, yaw=0),
                 )
             ],
         )
@@ -1458,7 +1490,7 @@ def test_tui_route_from_a_to_b_runs_ordered_two_stop(monkeypatch, tmp_path) -> N
     monkeypatch.setattr("jenai.tui.app.run_mission", fake_run_mission)
 
     # Two known locations so both start and goal resolve.
-    locs = (tmp_path / "locations.toml")
+    locs = tmp_path / "locations.toml"
     locs.write_text(
         '[[locations]]\nname = "應科大樓"\n[locations.pose]\nx=0.0\ny=0.0\nyaw=0.0\n\n'
         '[[locations]]\nname = "機械系館"\n[locations.pose]\nx=88.413\ny=-184.273\nyaw=0.0\n',
@@ -1477,6 +1509,7 @@ def test_tui_route_from_a_to_b_runs_ordered_two_stop(monkeypatch, tmp_path) -> N
             await pilot.pause()
             if app._active_task is not None:
                 await app._active_task
+
     asyncio.run(run())
 
     assert ran["steps"] == [("goto", "應科大樓"), ("goto", "機械系館")]
@@ -1493,8 +1526,10 @@ def test_mascot_frames_animate_but_keep_size() -> None:
     assert str(idle_a) != str(idle_b) or idle_a.spans != idle_b.spans  # tail moved
     assert blink.spans != idle_a.spans  # eye closed
     assert run_a.spans != run_b.spans  # gallop alternates
-    sizes = {(t.plain.count("\n"), max(len(line) for line in t.plain.split("\n")))
-             for t in (idle_a, idle_b, blink, run_a, run_b)}
+    sizes = {
+        (t.plain.count("\n"), max(len(line) for line in t.plain.split("\n")))
+        for t in (idle_a, idle_b, blink, run_a, run_b)
+    }
     assert len(sizes) == 1  # identical bounding box across all poses
 
 

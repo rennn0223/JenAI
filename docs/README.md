@@ -1,6 +1,6 @@
 # docs — 文件索引
 
-**新手**:先讀 [QUICKSTART](QUICKSTART.md)(零基礎 20 分鐘上手)。
+**新手**：先讀 [QUICKSTART](QUICKSTART.md)（零基礎安裝與首次對話；不承諾固定完成時間）。
 **開發者先讀**:[PROJECT_DIRECTION](PROJECT_DIRECTION.md)(方向與架構收斂)→
 [ROADMAP](ROADMAP.md)(演進與維護深度規劃、版本里程碑)→
 [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md)(模組導覽、設計決策)→

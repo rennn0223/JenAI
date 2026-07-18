@@ -110,9 +110,7 @@ SLASH_COMMANDS = [
         "Drive for N seconds then auto-stop (needs approval)",
         "/ros drive <topic> <payload> [seconds]",
     ),
-    SlashCommand(
-        "/drive", "Drive by plain language (needs approval)", "/drive 前進兩秒"
-    ),
+    SlashCommand("/drive", "Drive by plain language (needs approval)", "/drive 前進兩秒"),
     SlashCommand(
         "/mission", "Run a multi-step mission (needs approval)", "/mission kitchen, lobby"
     ),
@@ -129,9 +127,7 @@ SLASH_COMMANDS = [
     SlashCommand("/dock", "Return to the charging dock (needs approval)"),
     SlashCommand("/report", "Show the latest patrol report (+LLM digest)", "/report [list]"),
     SlashCommand("/skills", "List file-defined user skills (skills/*.toml)"),
-    SlashCommand(
-        "/route", "Resolve and send a navigation route (needs approval)", "/route <text>"
-    ),
+    SlashCommand("/route", "Resolve and send a navigation route (needs approval)", "/route <text>"),
     SlashCommand("/loc list", "List known locations"),
     SlashCommand(
         "/loc add",
@@ -361,9 +357,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # /run may begin while the callback is waiting; scanning the mutable
         # store then would mount its approval card twice.
         self._runs_to_restore = [
-            run.run_id
-            for run in self.run_store.list_runs()
-            if run.status == "awaiting_approval"
+            run.run_id for run in self.run_store.list_runs() if run.status == "awaiting_approval"
         ]
         self.history = InputHistory(self.session)
         self._last_history_value: str | None = None
@@ -603,7 +597,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             # so orchestrator's `except Exception` never finalises the run —
             # finish it here or it is orphaned in RUNNING forever. Only report if
             # the UI is still mounted (during quit the widgets are already gone).
-            self._finalize_interrupted_run()
+            await self._finalize_interrupted_run()
             if self.is_running:
                 try:
                     await self._mount_event(TimelineItem("warn", "Interrupted."))
@@ -620,7 +614,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 self._active_task_is_stop = False
                 self._start_next_queued()
 
-    def _finalize_interrupted_run(self) -> None:
+    async def _finalize_interrupted_run(self) -> None:
         """Mark an in-flight run as stopped so an Esc interrupt doesn't leave it
         stuck in a non-terminal state (RUNNING/UNDERSTANDING/PLANNING)."""
         run_id = self.session.current_run_id
@@ -630,6 +624,25 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         in_flight = (RunStatus.RUNNING, RunStatus.UNDERSTANDING, RunStatus.PLANNING)
         if run is not None and run.status in in_flight:
             self.run_store.finish(run, status=RunStatus.BLOCKED)
+            try:
+                session = JenAIFileSession(run.session_id)
+                tail = await session.get_items(limit=1)
+                if not tail or tail[-1].get("role") == "assistant":
+                    return
+                await session.add_items(
+                    [
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "The previous JenAI run was interrupted before completion. "
+                                "Do not assume any unreported action succeeded."
+                            ),
+                        }
+                    ]
+                )
+            except Exception:
+                # Run status is authoritative; memory repair must not hide the interrupt.
+                pass
 
     def on_key(self, event) -> None:
         # Key routing priority: (1) Esc interrupts a running task, (2) the slash
@@ -841,9 +854,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         # Wrap over the full match list (not just the visible window); the
         # palette's scroll window follows this index, so every command is
         # reachable by holding up/down.
-        self._selected_command_index = (
-            self._selected_command_index + delta
-        ) % len(self._command_matches)
+        self._selected_command_index = (self._selected_command_index + delta) % len(
+            self._command_matches
+        )
         self.query_one("#palette", CommandPalette).update_matches(
             self._command_matches,
             self._selected_command_index,
@@ -932,7 +945,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         lines.append("")
         lines.append(
             f"[#9c9689]Add one: {skills_dir(self.config_path)}/<name>.toml with "
-            'name / description / steps(=/mission 語法) — restart to load.[/]'
+            "name / description / steps(=/mission 語法) — restart to load.[/]"
         )
         await self._mount_event(OutputPanel("User skills", "\n".join(lines)))
 
@@ -1197,9 +1210,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             count = len(self._command_queue)
             self._command_queue.clear()
             self._update_statusbar()
-            await self._mount_event(
-                TimelineItem("success", f"Cleared {count} queued command(s).")
-            )
+            await self._mount_event(TimelineItem("success", f"Cleared {count} queued command(s)."))
             return
         if choice:
             await self._mount_event(TimelineItem("warn", "Usage: /queue [clear]"))
@@ -1375,9 +1386,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             # Esc: nav_live already cancelled the Nav2 goal; close out the run.
             self._finish_direct_tool(pending, ok=False, summary="interrupted")
             if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
-                self.run_store.finish(
-                    ctx.run, status=RunStatus.BLOCKED, final_output="interrupted"
-                )
+                self.run_store.finish(ctx.run, status=RunStatus.BLOCKED, final_output="interrupted")
             if self.is_running:
                 try:
                     await self._mount_event(
@@ -1658,10 +1667,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         chip = self._MODE_CHIP.get(getattr(self, "_mode", "approve"), "")
         queued = len(getattr(self, "_command_queue", ()))
         queue_text = f" · queue {queued}" if queued else ""
-        return (
-            f"{chip} [#9c9689]shift+tab · {provider} · {model} · "
-            f"{_short_cwd()}{queue_text}[/]"
-        )
+        return f"{chip} [#9c9689]shift+tab · {provider} · {model} · {_short_cwd()}{queue_text}[/]"
 
     def _update_statusbar(self) -> None:
         try:
@@ -1687,9 +1693,12 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     # Typed fallback for terminals that never deliver Shift+Tab (common over
     # SSH clients and embedded terminals) — same state, same announcement.
     _MODE_ALIASES = {
-        "approve": "approve", "審批": "approve",
-        "plan": "plan", "規劃": "plan",
-        "auto": "auto", "自動": "auto",
+        "approve": "approve",
+        "審批": "approve",
+        "plan": "plan",
+        "規劃": "plan",
+        "auto": "auto",
+        "自動": "auto",
     }
 
     async def _show_mode(self, arg: str = "") -> None:
@@ -1707,8 +1716,11 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self._set_mode(mode)
 
     async def _announce_mode(self) -> None:
-        await self._mount_event(TimelineItem("warn" if self._mode == "auto" else "success",
-                                             self._MODE_LABEL[self._mode]))
+        await self._mount_event(
+            TimelineItem(
+                "warn" if self._mode == "auto" else "success", self._MODE_LABEL[self._mode]
+            )
+        )
         self._scroll_to_bottom()
 
     def _spinner_label_for(self, value: str) -> str:

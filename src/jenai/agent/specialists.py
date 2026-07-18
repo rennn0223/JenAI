@@ -134,20 +134,26 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
     """The top-level agent: keeps a couple of general tools and hands off the
     domain work to specialists via the SDK's handoff mechanism.
 
-    One AsyncOpenAI client is shared across the supervisor and all four
-    specialists, so a `/run` opens a single connection pool rather than five.
+    One AsyncOpenAI client is shared across the supervisor and all five
+    specialists, so a `/run` opens a single connection pool rather than six.
     """
     client = make_agent_client(config)
     return Agent[JenAIRunContext](
         name="JenAI",
         instructions=SUPERVISOR_INSTRUCTIONS,
         model=build_model(config, binding="chat", client=client),
-        # Keep the bounded exploration API directly reachable as well as on
-        # the Navigation specialist. Some OpenAI-compatible local models
-        # correctly select the tool by name but omit the handoff wrapper; if
-        # it is absent here the SDK rejects an otherwise valid patrol request
-        # with ``Tool not found`` before the approval boundary can run.
-        tools=[shell_run_tool, explore_area_tool],
+        # Mirror the complete bounded navigation workflow on the supervisor.
+        # Some OpenAI-compatible local models select a specialist tool by name
+        # but omit the handoff wrapper, especially on a follow-up turn. Keeping
+        # these exact tools reachable prevents an SDK ``Tool not found`` while
+        # preserving route_execute/explore approval and NavigationGateway safety.
+        tools=[
+            shell_run_tool,
+            loc_lookup_tool,
+            route_preview_tool,
+            route_execute_tool,
+            explore_area_tool,
+        ],
         input_guardrails=[unsafe_command_guardrail],
         handoffs=[
             build_ros_developer_agent(config, client),

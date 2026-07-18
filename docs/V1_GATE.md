@@ -1,7 +1,7 @@
 # V1_GATE — v1.0 驗收基準與兩層分工
 
 > 對應版本:**v1.0.0(2026-07-16 簽字達成)**。v1.0 的定義:**一份承諾** —— 介面不再亂動、
-> 安全語意經過驗證、陌生人能靠文件自己跑起來。本文件是 v1.0 的驗收總表,依「誰能完成」
+> 安全語意經過驗證、安裝與操作路徑已有文件。本文件是 v1.0 的歷史驗收總表，依「誰能完成」
 > 分兩層,已全數打勾;留作驗收證據與 P 項(實體選配)的追蹤。前瞻主圖見 **[ROADMAP.md](ROADMAP.md)**。
 >
 > **範圍決策**:v1.0 鎖在「監督式操作平台」邊界(人永遠在圈內);
@@ -27,7 +27,7 @@
 | A7 | Safety case 草稿 | docs/SAFETY_CASE.md:H1–H8 危害表 → R/G/H/P 防護對應 → 驗證證據 → 殘餘風險;⬜ TODO(客戶)欄待 B4/B5/B6 數據 | ✅ v0.13(草稿) |
 | A8 | 巡邏日報(C2) | patrol 結束自動存 log(`reports/patrol-*.json`);`/report` 確定性日報 + LLM 摘要(離線誠實降級)、`/report list` 回看歷次 | ✅ v0.12 |
 | A9 | M6 DecisionLoop 核心 | 有界動作集決策 + 延遲量測(**v2 線,不擋 v1.0**)。決策腦 `decision_core.py` + `JenAI eval`(E1)已於 v0.21 落地;剩常駐迴圈 perceive→decide→rehearse→act,詳見 [ROADMAP 軌道 1](ROADMAP.md) | 🚧 v2(腦已備) |
-| A10 | 注釋/結構清理 pass | 全庫稽核(v0.13):零 TODO/FIXME、零死碼(未引用 defs 僅 Typer 註冊命令)、唯一未 import 模組是 rclpy sidecar(設計如此)—— 無需清理 | ✅ v0.13 |
+| A10 | 注釋/結構清理 pass | v0.13 完成 TODO/FIXME、死碼與未引用模組稽核；這只代表當時清單完成，不代表大型核心模組已無拆分空間。現況與後續門檻以 `PRODUCT_READINESS` ENG-3 為準 | ✅ v0.13 歷史項 |
 
 ## 層二:客戶端下場 — Isaac Sim 驗證與回饋(2026-07 改向:sim 為主要驗證平台)
 
@@ -44,7 +44,7 @@
 | B2 | 建 locations | twin 場景內 `/loc add here <名>` 建點,含 `tags=["dock"]` 充電點 | ✅ 2026-07-14(4 點含 dock;貼牆點以 /loc move 重定位) |
 | B3 | 解鎖 TEST.md 🔶 項 | B1/B2 完成後於 Isaac Sim 逐項實測 `/route` `/mission` `/patrol photo` `/dock` `/perception`,結果回填 TEST.md | ✅ 2026-07-14~15(slash + NL 全通;WebUI/MCP/daemon 亦實測,見 TEST.md) |
 | B4 | 模擬里程 | Isaac 場景累積 ≥20h / ≥50 次任務,0 安全事件;事件記錄表 | ✅ 2026-07-16 完成(2026-07-15 01:25 起算):**20.0h 任務時數(driver log)/ 102 趟 patrol / 408 個 waypoint goals(407 到達)/ 0 安全事件**。唯一非 4/4(07-15 17:27,3/4)= Nav2 action 發現逾時、goal 未送出、誠實回報 unavailable(#92 已修),非安全事件。原始記錄:`/tmp/b4_mileage.log` + `~/.config/jenai/reports/patrol-*.json` + audit;掛機工具 `scripts/b4_driver.sh` |
-| B6 | Guided onboarding 回饋 | 找 3 位新手依文件完成第一次 sim `/route`，記錄卡點；正式冷啟動計時另列產品化研究 | ✅ 2026-07-16 客戶簽核:學弟妹(≥3)在客戶親自教學下完成、零卡點回報。這不是純文件冷啟動，也未使用碼表；不得作效率量化證據 |
+| B6 | Guided onboarding 回饋 | 找 3 位新手完成第一次 sim `/route`；正式冷啟動計時另列產品化研究 | ✅ 2026-07-16 客戶簽核：學弟妹（≥3）在客戶親自教學下完成，未回報阻擋問題；沒有結構化卡點紀錄。這不是純文件冷啟動，也未使用碼表；不得作效率量化證據 |
 | B7 | Demo 排練 | 15 分鐘 scripted demo(Isaac Sim),含斷網切 local provider 的備援劇本 | ✅ 2026-07-16 排練完成(第二輪):`[twin] enabled = true` 實跑,`/route 去 sw_test_zone` 預演 **G3 block 當場確認**,全段跑順。第一輪發現的四項問題(twin 未開、NL 先反問、/model 編號制、Nav2 單次 abort)已修劇本 + 出 `/model` 箭頭選單(PR #95) |
 | B8 | 使用回饋 | 日常把 TEST.md ✅ 項當真用,意見開 issue 或直接講 | ✅ 2026-07-16 客戶回報:日常使用順暢(B4 里程期間即真實日用;E2/E1 全程由本平台跑);意見管道 = 對話即回饋,異常照 SAFETY_CASE 事件程序開 issue |
 

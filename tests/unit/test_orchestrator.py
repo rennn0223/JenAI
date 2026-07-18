@@ -43,9 +43,7 @@ class _FakeState:
 
 
 class _FakeResult:
-    def __init__(
-        self, state: _FakeState, final_output: str = "", last_agent=None
-    ) -> None:
+    def __init__(self, state: _FakeState, final_output: str = "", last_agent=None) -> None:
         self._state = state
         self.final_output = final_output
         self.last_agent = last_agent
@@ -160,9 +158,7 @@ def test_resume_with_approval_completes_run(monkeypatch) -> None:
     asyncio.run(orchestrator.start_run(_agent(), ctx, "publish forward velocity"))
     assert ctx.run.status == "awaiting_approval"
 
-    result = asyncio.run(
-        orchestrator.resume_with_approvals(_agent(), ctx, {"call_1": True})
-    )
+    result = asyncio.run(orchestrator.resume_with_approvals(_agent(), ctx, {"call_1": True}))
 
     assert first_state.approved == ["call_1"]
     assert result.status == "completed"
@@ -235,12 +231,25 @@ def test_resume_asks_again_for_a_genuinely_new_action(monkeypatch) -> None:
 
 
 def test_start_run_handles_max_turns_exceeded(monkeypatch) -> None:
+    recorded: list[dict] = []
+
+    class FakeSession:
+        def __init__(self, session_id):
+            pass
+
+        async def add_items(self, items):
+            recorded.extend(items)
+
+        async def get_items(self, limit=None):
+            return [{"role": "user", "content": "do something"}]
+
     async def fake_run(agent, task_input, *, context=None, **kwargs):
         assert kwargs["max_turns"] == 12
         raise MaxTurnsExceeded("too many turns")
 
     monkeypatch.setattr(Runner, "run", fake_run)
 
+    monkeypatch.setattr(orchestrator, "JenAIFileSession", FakeSession)
     ctx = _ctx(monkeypatch)
     result = asyncio.run(orchestrator.start_run(_agent(), ctx, "do something"))
 
@@ -250,6 +259,9 @@ def test_start_run_handles_max_turns_exceeded(monkeypatch) -> None:
     # not a blanket tool_error.
     assert result.error.error_type == "model_error"
     assert "turn limit" in result.error.message
+
+    assert recorded == [{"role": "assistant", "content": orchestrator._FAILED_TURN_MEMORY}]
+    assert "failed before completion" in recorded[0]["content"]
 
 
 def test_resume_without_pending_state_raises(monkeypatch) -> None:

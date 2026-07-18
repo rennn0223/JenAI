@@ -101,7 +101,9 @@ printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.confi
 
 ### 載具設定（`[vehicle]`）
 
-載具差異（topic、速限）唯一的家——換車/換狗只改這段,不改程式:
+Vehicle Profile 是載具差異的第一個設定邊界。若新平台已提供相同高階 capability schema，
+通常只需調整 topic、訊息封裝與速限；若介面或運動能力不同，仍需薄 adapter，並依
+[`VEHICLE_POC`](docs/VEHICLE_POC.md) 重新驗收，不能由設定檔推定物理泛化：
 
 ```toml
 [vehicle]
@@ -130,7 +132,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 | 文件 | 說明 |
 |---|---|
-| [docs/QUICKSTART.md](docs/QUICKSTART.md) | **零基礎上手手冊**：不熟終端機也能 20 分鐘從空機到第一句對話（小白先讀這份） |
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | **零基礎上手手冊**：從安裝、設定到第一句對話；尚未以正式冷啟動研究保證完成時間 |
 | [docs/PRODUCT_BRIEF.md](docs/PRODUCT_BRIEF.md) | **產品一頁摘要**：給 PM、主管、業務與買家的定位、證據、demo 與採購驗收 |
 | [docs/EVIDENCE_LEDGER.md](docs/EVIDENCE_LEDGER.md) | **單一證據表**：論文、README 與簡報共用的正式數字與限制 |
 | [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) | **支援矩陣**：OS、ROS2、模擬、載具、模型與介面的驗證等級 |

@@ -18,7 +18,7 @@ JenAI v1 是一個**受監督、具執行邊界的 ROS2 高階決策與工作流
 | ID | 角色 | 驗收條件 | 目前證據 | 狀態 | 關閉條件 |
 |---|---|---|---|---|---|
 | ENG-1 | 工程師 | 無 ROS 的單元／整合測試、lint、三版本 CI、wheel 冒煙全綠 | 511 tests 與完整 lint 本機全綠；Python 3.12–3.14 CI；安全鏈 coverage gate；v1.1.2 wheel | PASS | 每次 PR 持續維持 |
-| ENG-2 | 工程師 | ROS／Isaac 關鍵路徑可自動回歸，不只人工 TUI 實測 | 現有 fake bridge、E2/E3/B4 runbook；尚無 self-hosted Isaac/HIL job | PARTIAL | 自動跑 `/route`、取消、stop、Twin verdict 並保存 artifact |
+| ENG-2 | 工程師 | ROS／Isaac 關鍵路徑可自動回歸，不只人工 TUI 實測 | 現有 fake bridge、E2/E3/B4 runbook；TUI-R2 找出並修正 follow-up 工具失配與中斷 session；尚無 self-hosted Isaac/HIL job | PARTIAL | 自動跑 `/route`、取消、stop、Twin verdict 並保存 artifact |
 | ENG-3 | 工程師 | 核心模組職責可維護 | `tui/app.py`、`tui/robot_commands.py`、`bridge/ros_bridge.py` 仍是大型熱點 | PARTIAL | 依狀態、導航、批准、呈現責任拆模組且行為測試不變 |
 | ENG-4 | 工程師 | 依賴與供應鏈可稽核 | Dependabot、locked runtime `pip-audit` 與 uv CycloneDX workflow；PR #101 遠端 audit／SBOM 全綠，無已知漏洞 | PASS | 每週掃描；此私人個人 repo 無 GHAS dependency review，若移至合資格方案再啟用 |
 | PM-1 | PM | ICP 與主要任務明確 | 主要 ICP：已有 ROS2/Nav2 的研究室與機器人開發團隊；主要任務：高階任務觸發與 ROS 開發輔助 | PASS | 新功能必須服務主要任務之一 |
@@ -27,10 +27,10 @@ JenAI v1 是一個**受監督、具執行邊界的 ROS2 高階決策與工作流
 | BIZ-1 | 經營者 | 授權與發布可供外部採用 | Apache-2.0、GitHub release、wheel/sdist | PASS | 維持 release provenance |
 | BIZ-2 | 經營者 | 有商業模式、成本與責任邊界 | `ADOPTION_MODEL`：Apache 核心＋整合／訓練／維護服務、TCO 輸入表、責任分界；現在明示無付費 SLA | PASS | 報價前以真實 pilot 工時填成本，不先造 ROI |
 | BIZ-3 | 經營者 | 不依賴單一維護者 | 文件與 CI 完整，但主要提交與場域知識仍集中於一人 | PARTIAL | 第二位維護者完成一次 release 與 Isaac 故障演練 |
-| RES-1 | 教授 | 研究問題、方法、證據與限制一致 | `EVIDENCE_LEDGER` 統一 E1–E4/B4/soak/TUI 數字、artifact 雜湊、可支持與不可延伸主張；living docs 已對齊 simulation-first | PASS | 新結果只能追加並保留失敗，不覆蓋舊基準 |
+| RES-1 | 教授 | 研究問題、方法、證據與限制一致 | `EVIDENCE_LEDGER` 統一 E1–E4/B4/soak/TUI 數字與限制；TUI-R2 保留 0 次成功、tool error、192 秒 generation 與同域副作用 | PASS | 新結果只能追加並保留失敗，不覆蓋舊基準 |
 | RES-2 | 教授 | 「降低記憶負擔／提升效率」有對照資料 | 目前只有使用者主觀回饋，沒有手動 ROS2 vs Slash vs NL 的正式計時 | OPEN | 執行隨機化三條件使用者研究，報成功率、時間、錯誤與查詢次數 |
 | RES-3 | 教授 | 跨載具主張符合證據 | Vehicle Profile 與高階 API 支持介面可移植；物理泛化未驗證 | PARTIAL | 至少一個非 Ackermann 平台完成固定 PoC 任務集 |
-| SALES-1 | 業務 | 三分鐘內可穩定展示核心價值 | `PRODUCT_BRIEF` 已凍結 doctor→NL safe goal→feedback→block/refer hero demo | PARTIAL | 同 commit／模型／場景連跑 10 次，≥9 次完整成功 |
+| SALES-1 | 業務 | 三分鐘內可穩定展示核心價值 | `PRODUCT_BRIEF` 已凍結 hero demo；TUI-R2 修正軟體阻擋，但同域車停在禁區，本輪成功導航 0 次且未啟動 10-run | PARTIAL | Reset 到合法起點後，同 commit／模型／場景連跑 10 次，≥9 次完整成功 |
 | SALES-2 | 業務 | 有可引用的 ROI／案例 | 有技術實驗，沒有節省時間、導入成本或客戶案例 | OPEN | 完成效率研究並寫一頁案例研究 |
 | SALES-3 | 業務 | 不過度承諾 | 誠實回報與限制文件已有 | PASS | 不說「通用實體安全」「認證」「未知空間自主探索」 |
 | BUY-1 | 買家 | 能直接安裝、啟動、診斷與移除 | 隔離 `/tmp` 執行 `uv tool install .`，成功產生 `JenAI`／`jenai`；version/help 與無設定 doctor 診斷通過 | PARTIAL | 真正 fresh machine 只照 README 完成 onboard、doctor 與移除，無維護者介入 |
