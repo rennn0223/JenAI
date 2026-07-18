@@ -22,7 +22,6 @@ from jenai.tui.panels import (
     MUTED,
     OutputPanel,
     TimelineItem,
-    WelcomePanel,
     format_doctor_item,
 )
 
@@ -61,23 +60,29 @@ class InfoCommandsMixin:
 
     async def _show_status(self, _: str = "") -> None:
         profile = self._active_profile()
-        status = "not checked"
-        if self.doctor_result is not None:
-            status = self.doctor_result.overall
+        if self.doctor_result is None:
+            doctor_status = "not checked"
+        elif self._doctor_is_full:
+            doctor_status = self._format_status(self.doctor_result.overall)
+        else:
+            doctor_status = (
+                f"{self._format_status(self.doctor_result.overall)} "
+                f"[{MUTED}](startup checks only; run /doctor)[/]"
+            )
 
         lines = [
             f"Version: [bold #f2ede1]{__version__}[/]",
             f"Config: [#9c9689]{self.config_path}[/]",
             f"Provider: {self._format_profile(profile)}",
             f"Chat model: [bold #f2ede1]{self._chat_model_display()}[/]",
-            f"Doctor: {self._format_status(status)}",
+            f"Doctor: {doctor_status}",
             f"Route adapter: [bold #f2ede1]{self.config.route_adapter}[/]",
         ]
         await self._mount_event(OutputPanel("Status", "\n".join(lines)))
 
     async def _show_doctor(self, _: str = "") -> None:
         self.doctor_result = await asyncio.to_thread(run_doctor, self.config_path)
-        self.query_one(WelcomePanel).update_doctor_result(self.doctor_result)
+        self._doctor_is_full = True
         summary = [
             f"Overall: {self._format_status(self.doctor_result.overall)}",
             "",
@@ -151,9 +156,7 @@ class InfoCommandsMixin:
             return
         from jenai.tui.widgets import ModelPicker
 
-        await self._mount_event(
-            ModelPicker(self._available_models, self._chat_model_display())
-        )
+        await self._mount_event(ModelPicker(self._available_models, self._chat_model_display()))
 
     async def _apply_model_choice(self, model: str, targets: tuple[str, ...]) -> None:
         """Write the chosen model into the given bindings and persist. Shared by
@@ -301,9 +304,20 @@ class InfoCommandsMixin:
         )
 
     async def _show_permissions(self, _: str = "") -> None:
-        lines = [f"[bold #f2ede1]{cmd}[/] requires approval" for cmd in APPROVAL_REQUIRED_COMMANDS]
-        lines.append("")
-        lines.append("Tool risk registry:")
+        lines = [
+            f"[bold #f2ede1]{cmd}[/] requires approval"
+            for cmd in APPROVAL_REQUIRED_COMMANDS
+        ]
+        lines.extend(
+            [
+                "",
+                "Auto mode applies only to bounded, non-host P0/P1 actions.",
+                "HOST_COMMAND and P2 always require a fresh decision and cannot be remembered.",
+                "P2 prompts default to No; /stop never requires approval.",
+                "",
+                "Tool risk registry:",
+            ]
+        )
         for name, info in sorted(TOOL_RISK_REGISTRY.items()):
             approval = "needs approval" if info.needs_approval else "no approval"
             lines.append(f"  {name}: risk={info.risk_level} scope={info.effect_scope} ({approval})")

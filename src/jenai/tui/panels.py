@@ -11,11 +11,11 @@ from typing import NamedTuple
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Container
+from textual.containers import Container, Horizontal, Vertical
 from textual.markup import escape
 from textual.widgets import Static
 
-from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
+from jenai.schemas import DoctorCheckItem, DoctorStatus
 
 
 class SlashCommand(NamedTuple):
@@ -28,7 +28,6 @@ class SlashCommand(NamedTuple):
         return self.template or self.name
 
 
-
 ACCENT = "#d97757"
 ACCENT_DARK = "#c15f3c"
 MUTED = "#9c9689"
@@ -36,9 +35,8 @@ GREEN = "#7d9b6a"
 ERROR = "#cb6250"
 
 
-
 class WelcomePanel(Container):
-    """Orange hero card shown at the top of the transcript."""
+    """Responsive Claude Code-style welcome panel."""
 
     def __init__(
         self,
@@ -48,9 +46,6 @@ class WelcomePanel(Container):
         provider_kind: str,
         model_name: str,
         config_path: Path,
-        doctor_result: DoctorResult | None,
-        locations_count: int | None = None,
-        skills_count: int | None = None,
     ) -> None:
         super().__init__(id="welcome")
         self.version = version
@@ -58,36 +53,48 @@ class WelcomePanel(Container):
         self.provider_kind = provider_kind
         self.model_name = model_name
         self.config_path = config_path
-        self.doctor_result = doctor_result
-        self.locations_count = locations_count
-        self.skills_count = skills_count
+        self._recent_activity: list[str] = []
 
     def compose(self) -> ComposeResult:
-        # Single, centred column so it never crushes on a narrow (mobile) terminal.
-        # The mascot is decorative and is hidden below a width threshold (see the
-        # app's on_resize -> `narrow` class) rather than being squished.
         self.border_title = f"JenAI v{self.version}"
-        yield Static(pixel_mark(), id="pixel-mark")
-        yield Static("Robot workflow console", classes="heading")
-        yield Static("Plan, inspect, and drive robot tasks from one terminal.", classes="meta")
-        yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
-        yield Static(self._workspace_meta(), id="welcome-workspace-meta", classes="meta")
-        yield Static(self._doctor_summary(), id="welcome-doctor-status", classes="meta")
+        with Horizontal(id="welcome-content"):
+            with Vertical(id="welcome-left"):
+                yield Static("Welcome back!", id="welcome-greeting", classes="heading")
+                yield Static(pixel_mark(), id="pixel-mark")
+                yield Static("Robot decision agent", id="welcome-product", classes="heading")
+                yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
+            with Vertical(id="welcome-right"):
+                yield Static("Quick start", classes="welcome-section-title")
+                yield Static(
+                    "[bold #d9d3c7]/help[/]         Learn commands and shortcuts\n"
+                    "[bold #d9d3c7]/doctor[/]       Check ROS 2 and provider readiness\n"
+                    "[bold #d9d3c7]/run[/]          Plan and execute a robot task\n"
+                    "[bold #d9d3c7]/permissions[/]  Review the decision boundary",
+                    id="welcome-quick-start",
+                )
+                yield Static("Recent activity", classes="welcome-section-title recent-title")
+                yield Static("No activity in this session yet", id="welcome-recent", classes="meta")
 
-    def update_doctor_result(self, doctor_result: DoctorResult | None) -> None:
-        self.doctor_result = doctor_result
-        self.query_one("#welcome-doctor-status", Static).update(self._doctor_summary())
+    def record_activity(self, value: str) -> None:
+        """Show the two most recent session inputs without echoing shell text."""
+        label = value.strip()
+        if not label:
+            return
+        if label.startswith("!"):
+            label = "! shell command"
+        elif len(label) > 60:
+            label = label[:57] + "…"
+        label = escape(label)
+        if not self._recent_activity or self._recent_activity[0] != label:
+            self._recent_activity.insert(0, label)
+            del self._recent_activity[2:]
+        self.query_one("#welcome-recent", Static).update(
+            "\n".join(f"• {item}" for item in self._recent_activity)
+        )
 
-    def _workspace_meta(self) -> str:
-        """One line of live workspace facts — what this robot already knows."""
-        parts: list[str] = []
-        if self.locations_count is not None:
-            parts.append(f"{self.locations_count} locations")
-        if self.skills_count:
-            parts.append(f"{self.skills_count} skills")
-        if not parts:
-            return ""
-        return "[#9c9689]" + " · ".join(parts) + "[/]"
+    def clear_activity(self) -> None:
+        self._recent_activity.clear()
+        self.query_one("#welcome-recent", Static).update("No activity in this session yet")
 
     def update_model(
         self,
@@ -105,27 +112,14 @@ class WelcomePanel(Container):
 
     def _provider_meta(self) -> str:
         return (
-            f"{self.model_name} · {self.provider_kind}\n"
-            f"{self.provider_name} · {self.config_path.parent}"
+            f"{self.model_name} · {self.provider_kind} · {self.provider_name}\n"
+            f"{self.config_path.parent}"
         )
-
-    def _doctor_summary(self) -> Text:
-        if self.doctor_result is None:
-            return Text("Not checked", style=MUTED)
-
-        text = Text()
-        status = DoctorStatus(self.doctor_result.overall)
-        text.append(status.value, style=f"bold {status_color(status)}")
-
-        fails = sum(item.status == DoctorStatus.FAIL for item in self.doctor_result.items)
-        warns = sum(item.status == DoctorStatus.WARN for item in self.doctor_result.items)
-        text.append(f" · {fails} fail · {warns} warn", style=MUTED)
-        return text
 
 
 # Claude Code-style markers: a filled bullet for each transcript entry and an
 # elbow connector for the indented result/detail lines beneath it.
-BULLET = "⏺"
+BULLET = "●"
 ELBOW = "⎿"
 
 _MARKER_COLOR = {
@@ -136,6 +130,7 @@ _MARKER_COLOR = {
     "muted": MUTED,
     "assistant": ACCENT,
 }
+
 
 def _bullet_markup(variant: str, body: str) -> str:
     color = _MARKER_COLOR.get(variant, ACCENT)
@@ -165,16 +160,16 @@ def _normalized_detail(lines: list[str]) -> list[str]:
 
 
 class PromptPill(Static):
-    """Echo of the user's submitted line, shown as a muted `>` prompt."""
+    """Echo of the user's submitted line, shown as a Claude-style prompt."""
 
     def __init__(self, text: str) -> None:
         # User text goes into Textual markup: unescaped, a pasted "[/]" would
         # raise MarkupError inside the compositor and crash the whole app.
-        super().__init__(f"[{MUTED}]>[/] [#d9d3c7]{escape(text)}[/]", classes="prompt-line")
+        super().__init__(f"[bold #f2ede1]❯[/] [#f2ede1]{escape(text)}[/]", classes="prompt-line")
 
 
 class TimelineItem(Static):
-    """A single Claude Code-style bullet line (⏺ marker + body markup)."""
+    """A single Claude Code-style bullet line (● marker + body markup)."""
 
     def __init__(self, variant: str, body: str) -> None:
         self.variant = variant
@@ -244,16 +239,25 @@ class CommandPalette(Static):
             return
 
         total = len(matches)
+        # Keep the composer and status line on-screen in short terminals.  The
+        # normal 12-row window is unchanged at 26+ rows; smaller viewports show
+        # a scrollable slice that still follows the selected command.
+        window = min(self.WINDOW, max(1, self.screen.size.height - 13))
         # Centre the window on the selection, then clamp so it never runs past
         # either end of the list (keeps the selected row visible while scrolling).
-        if total <= self.WINDOW:
+        if total <= window:
             start = 0
         else:
-            start = min(max(selected_index - self.WINDOW // 2, 0), total - self.WINDOW)
-        end = min(start + self.WINDOW, total)
+            start = min(max(selected_index - window // 2, 0), total - window)
+        end = min(start + window, total)
 
-        text = Text()
+        # One visual row per command keeps the selected item and composer
+        # reachable in compact terminals; long descriptions end in an ellipsis.
+        text = Text(no_wrap=True, overflow="ellipsis")
         text.append(f"Commands  ({selected_index + 1}/{total})\n", style=f"bold {ACCENT}")
+        # Keep every command label visually separate from its description,
+        # including long entries such as ``/perception start``.
+        name_width = max(18, max(len(command.name) for command in matches) + 2)
         if start > 0:
             text.append(f"  ↑ {start} more\n", style=MUTED)
         for index in range(start, end):
@@ -262,7 +266,7 @@ class CommandPalette(Static):
             arrow_style = GREEN if selected else MUTED
             line_style = "bold #f2ede1" if selected else "#d9d3c7"
             text.append("❯ " if selected else "  ", style=arrow_style)
-            text.append(command.name.ljust(16), style=line_style)
+            text.append(command.name.ljust(name_width), style=line_style)
             text.append(command.description, style=MUTED)
             text.append("\n")
         if end < total:
@@ -286,7 +290,6 @@ def _short_cwd() -> str:
         return "~/" + str(cwd.relative_to(Path.home()))
     except ValueError:
         return str(cwd)
-
 
 
 # Extra torso columns beyond the original sketch — THE one number to bump

@@ -214,29 +214,31 @@
 
 # 第四層:介面(四個門)
 
-### `tui/app.py`(約 1650 行,最大檔)
+### `tui/app.py`(約 1220 行)
 - **SDK**:textual(App/Widget/CSS/set_interval)。
-- **結構**:`JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App)` ——
-  指令 handler 按領域拆進 mixin,app 本體管:輸入分發(chat/`!`shell/slash)、
-  slash palette、串流渲染、批准卡流程、active task(Esc 可取消)、吉祥物動畫。
+- **結構**:`JenAITuiApp(ApprovalFlowMixin, DirectExecutionMixin, InfoCommandsMixin,
+  RobotCommandsMixin, App)` —— 指令 handler 按領域拆進 mixin；app 本體只管輸入分發
+  (chat/`!`shell/slash)、slash palette、串流、active task 與共用 UI 生命週期。
 - **為什麼**:
   - **權限模式(v0.22)**:`PERMISSION_MODES`(approve/plan/auto),shift+tab 循環;
     自然語言依模式路由到 /plan 或 /run;auto 模式在兩個批准入口短路並寫時間軸。
     (原 `_stream_chat_reply` 純聊天串流已被模式系統取代移除。)
+  - `approval_flow.py` 只管理批准決策與 interruption 恢復，`direct_execution.py`
+    只執行已批准 direct action 並同步 audit/run 狀態；兩者都由完整 TUI 測試覆蓋。
   - 批准後的執行包成 `self._active_task`(asyncio.Task):**Esc=cancel()**,
     而 navigate_live 把 cancel 翻成真的 Nav2 取消 —— 整條鏈打通 UI 到輪子。
   - `_TEMPLATE_VALUES` 防呆:palette 補的 `<name>` 模板原文送出會被擋
     (曾把字面 `<name|number>` 存進 config)。
   - 吉祥物 `set_interval(0.6, …)`:任務跑→狗跑,是狀態指示不是裝飾。
-- **panels.py**:純視覺(WelcomePanel/TimelineItem/OutputPanel/palette);
+- **panels.py**:純視覺(雙欄 WelcomePanel/TimelineItem/OutputPanel/palette);
   `pixel_mark(frame, running)` 半格像素渲染(▀▄█ + 前景背景色=一格兩像素);
   各姿勢釘同 bounding box 防抖。
-- **catalog.py**:Slash palette、standalone greeting 與現行 CSS；不負責執行。
+- **catalog.py**:Slash palette、standalone greeting 與 responsive CSS；不負責執行。
 - **robot_commands.py / location_commands.py / info_commands.py**:依 ROS 動作、位置資料、
   資訊查詢拆分 slash handler;
   `_request_direct_approval` 是**非 agent 動作的唯一批准管線**(v0.8 把 7 份
   複製收成 1 份);`auto_key` 讓 /dock 與 /route 的「記住批准」不互相洩漏。
-- **widgets/**:ApprovalCard(1/2/3 數字鍵、Esc 拒絕)、Plan/Tool/Error blocks。
+- **widgets/**:ApprovalCard(依風險顯示 2/3 個數字選項、P2 預選 No、Esc 拒絕)、Plan/Tool/Error blocks。
 - **help_content.py**:/help 的分組資料。
 
 ### `webui/`(server 492 / render 617 / commands 305)

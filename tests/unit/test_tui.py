@@ -15,7 +15,7 @@ from jenai.schemas import (
 )
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
-from jenai.tui.panels import OutputPanel, PromptPill, TimelineItem, pixel_mark
+from jenai.tui.panels import OutputPanel, PromptPill, TimelineItem, WelcomePanel, pixel_mark
 from jenai.tui.widgets import ApprovalCard
 
 
@@ -26,6 +26,110 @@ def test_tui_uses_colored_dachshund_mascot() -> None:
     assert any("#d98c69" in style for style in styles)
     assert any("#5fb1c0" in style for style in styles)
     assert 4 <= mascot.plain.count("\n") <= 7
+
+
+def test_tui_uses_claude_transcript_markers_and_flat_approval_copy() -> None:
+    from jenai.schemas import ApprovalRequest, EffectScope, RiskLevel
+
+    assert str(PromptPill("move forward").render()).startswith("❯ move forward")
+    assert str(TimelineItem("assistant", "Checking Nav2").render()).startswith("● Checking Nav2")
+
+    card = ApprovalCard(
+        ApprovalRequest(
+            run_id="run-1",
+            tool_call_id="call-1",
+            tool_name="navigate",
+            title="Navigation command",
+            summary="Send the selected Nav2 goal.",
+            raw_action="navigate_to_pose(x=1.0, y=2.0)",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="requested",
+        )
+    )
+    rendered = str(card.render())
+    assert "Do you want to proceed?" in rendered
+    assert "May move the connected robot or simulator." in rendered
+    assert "1. Yes" in rendered
+    assert "2. Yes, and remember this tool for this session" in rendered
+    assert "3. No" in rendered
+    assert "Esc to cancel" in rendered
+
+
+def test_tui_p2_host_approval_is_one_shot_and_defaults_to_no() -> None:
+    from jenai.schemas import ApprovalRequest, EffectScope, RiskLevel
+
+    card = ApprovalCard(
+        ApprovalRequest(
+            run_id="run-p2",
+            tool_call_id="call-p2",
+            tool_name="shell_run_tool",
+            title="Run shell command",
+            summary="Delete a file.",
+            raw_action="rm file",
+            risk_level=RiskLevel.P2,
+            effect_scope=EffectScope.HOST_COMMAND,
+            justification="requested",
+        )
+    )
+
+    rendered = str(card.render())
+    assert "remember" not in rendered
+    assert "1. Yes" in rendered
+    assert "❯ 2. No" in rendered
+    assert "3." not in rendered
+    assert card._selected == 1
+
+
+def test_tui_welcome_reflows_at_real_wide_narrow_and_compact_viewports(
+    tmp_path: Path,
+) -> None:
+    async def check(size: tuple[int, int], *, narrow: bool, compact: bool) -> None:
+        app = _app(tmp_path / f"{size[0]}x{size[1]}")
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            welcome = app.query_one(WelcomePanel)
+            assert welcome.has_class("narrow") is narrow
+            assert welcome.has_class("compact") is compact
+            assert app.query_one("#welcome-right").display is (not narrow)
+            assert app.query_one("#pixel-mark").display is (not compact)
+            assert not list(app.query("#welcome-workspace-meta"))
+            assert not list(app.query("#welcome-doctor-status"))
+
+            for selector in ("#composer-frame", "#composer", "#statusbar"):
+                region = app.query_one(selector).region
+                assert region.x >= 0 and region.y >= 0
+                assert region.x + region.width <= app.size.width
+                assert region.y + region.height <= app.size.height
+
+    asyncio.run(check((120, 30), narrow=False, compact=False))
+    asyncio.run(check((80, 30), narrow=True, compact=False))
+    asyncio.run(check((50, 30), narrow=True, compact=True))
+
+
+def test_tui_palette_keeps_composer_visible_in_short_compact_viewport(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        app = _app(tmp_path / "50x20")
+        async with app.run_test(size=(50, 20)) as pilot:
+            await pilot.press("/")
+            await pilot.pause()
+
+            palette = app.query_one("#palette")
+            composer = app.query_one("#composer-frame")
+            statusbar = app.query_one("#statusbar")
+            assert palette.display
+            assert palette.region.y + palette.region.height <= composer.region.y
+            assert composer.region.y + composer.region.height <= app.size.height
+            assert statusbar.region.y + statusbar.region.height <= app.size.height
+
+            for key in "perception":
+                await pilot.press(key)
+            rendered = str(palette.render())
+            assert "/perception start  " in rendered
+
+    asyncio.run(run())
 
 
 def test_output_panel_uses_uniform_line_spacing() -> None:
@@ -105,6 +209,45 @@ def test_tui_handles_local_commands() -> None:
 
             events = app.query_one("#events")
             assert len(list(events.children)) == 1
+
+    asyncio.run(run())
+
+
+def test_tui_recent_activity_tracks_inputs_redacts_shell_and_clears() -> None:
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            recent = app.query_one("#welcome-recent")
+            assert "No activity" in str(recent.render())
+
+            await app.handle_user_text("/status")
+            await app.handle_user_text("! echo secret-value")
+            rendered = str(recent.render())
+            assert "! shell command" in rendered
+            assert "/status" in rendered
+            assert "secret-value" not in rendered
+
+            await app.handle_user_text("/clear")
+            assert "No activity" in str(recent.render())
+
+    asyncio.run(run())
+
+
+def test_tui_status_distinguishes_startup_from_full_doctor() -> None:
+    from types import SimpleNamespace
+
+    async def run() -> None:
+        app = _app()
+        app.doctor_result = SimpleNamespace(overall="pass")
+        async with app.run_test():
+            await app.handle_user_text("/status")
+            panels = list(app.query(OutputPanel))
+            assert "startup checks only; run /doctor" in panels[-1].body
+
+            app._doctor_is_full = True
+            await app.handle_user_text("/status")
+            panels = list(app.query(OutputPanel))
+            assert "startup checks only" not in panels[-1].body
 
     asyncio.run(run())
 
@@ -207,7 +350,7 @@ def test_tui_drive_natural_language_shows_card_and_executes(monkeypatch) -> None
             result_message="drove then stopped",
         )
 
-    monkeypatch.setattr("jenai.tui.app.ros_drive", fake_drive)
+    monkeypatch.setattr("jenai.tui.direct_execution.ros_drive", fake_drive)
 
     async def run() -> None:
         app = _app()
@@ -244,7 +387,7 @@ def test_tui_ros_drive_shows_card_and_executes_on_approve(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("jenai.tui.robot_commands.ros_pub_validate", fake_validate)
-    monkeypatch.setattr("jenai.tui.app.ros_drive", fake_drive)
+    monkeypatch.setattr("jenai.tui.direct_execution.ros_drive", fake_drive)
 
     async def run() -> None:
         app = _app()
@@ -300,10 +443,19 @@ def test_tui_vision_command(monkeypatch) -> None:
     asyncio.run(run())
 
 
-def _awaiting_run(app, tool_name: str, call_id: str = "c1"):
+def _awaiting_run(
+    app,
+    tool_name: str,
+    call_id: str = "c1",
+    *,
+    risk_level=None,
+    effect_scope=None,
+):
     from jenai.agent.context import JenAIRunContext
     from jenai.schemas import ApprovalRequest, EffectScope, RiskLevel
 
+    risk_level = risk_level or RiskLevel.P1
+    effect_scope = effect_scope or EffectScope.SIM_CONTROL
     run_rec = app.run_store.create_run(app.session.session_id, "drive forward")
     run_rec.status = "awaiting_approval"
     run_rec.interruptions.append(
@@ -314,8 +466,8 @@ def _awaiting_run(app, tool_name: str, call_id: str = "c1"):
             title="Publish to /cmd_vel",
             summary="Send a Twist.",
             raw_action="ros2 topic pub ...",
-            risk_level=RiskLevel.P1,
-            effect_scope=EffectScope.SIM_CONTROL,
+            risk_level=risk_level,
+            effect_scope=effect_scope,
             justification="requested",
         )
     )
@@ -385,6 +537,30 @@ def test_tui_run_remembered_tool_skips_card(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_tui_auto_mode_still_prompts_for_agent_host_p2() -> None:
+    from jenai.schemas import EffectScope, RiskLevel
+
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            app._mode = "auto"
+            app._auto_approved.add("shell_run_tool")
+            ctx, run_rec = _awaiting_run(
+                app,
+                "shell_run_tool",
+                risk_level=RiskLevel.P2,
+                effect_scope=EffectScope.HOST_COMMAND,
+            )
+            await app._render_run_update(ctx, run_rec, agent=object())
+
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert cards[0]._selected == 1
+            assert app._pending_approvals[run_rec.run_id]["decisions"] == {}
+
+    asyncio.run(run())
+
+
 def test_tui_mission_shows_card_and_runs(monkeypatch) -> None:
     from jenai.tools.mission_core import MissionReport, StepResult
 
@@ -397,7 +573,7 @@ def test_tui_mission_shows_card_and_runs(monkeypatch) -> None:
             await on_step(result)
         return MissionReport([result])
 
-    monkeypatch.setattr("jenai.tui.app.run_mission", fake_run_mission)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_mission", fake_run_mission)
 
     async def run() -> None:
         app = _app()
@@ -424,7 +600,7 @@ def test_tui_bang_prefix_enters_shell_mode(monkeypatch) -> None:
     async def fake_run_shell(command, *, cwd=None, timeout=30.0):
         return ShellOutput(command=command, exit_code=0)
 
-    monkeypatch.setattr("jenai.tui.app.run_shell", fake_run_shell)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_shell", fake_run_shell)
 
     async def run() -> None:
         app = _app()
@@ -437,7 +613,7 @@ def test_tui_bang_prefix_enters_shell_mode(monkeypatch) -> None:
     asyncio.run(run())
 
 
-def test_tui_shell_remember_auto_approves_subsequent(monkeypatch) -> None:
+def test_tui_shell_never_remembers_or_skips_a_later_command(monkeypatch) -> None:
     from jenai.schemas import ShellOutput
 
     executed: list[str] = []
@@ -446,24 +622,31 @@ def test_tui_shell_remember_auto_approves_subsequent(monkeypatch) -> None:
         executed.append(command)
         return ShellOutput(command=command, exit_code=0, stdout_summary="ok")
 
-    monkeypatch.setattr("jenai.tui.app.run_shell", fake_run_shell)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_shell", fake_run_shell)
 
     async def run() -> None:
         app = _app()
         async with app.run_test() as pilot:
             await app.handle_user_text("/shell echo one")
-            assert len(list(app.query(ApprovalCard))) == 1
-            # Option 2 = "Yes, and don't ask again this session"
-            await pilot.press("2")
+            first = list(app.query(ApprovalCard))
+            assert len(first) == 1
+            assert "remember" not in str(first[0].render())
+
+            # Even a forged remember bit cannot make the broad shell category sticky.
+            call_id = first[0].approval.tool_call_id
+            await app.on_approval_card_decision(
+                ApprovalCard.Decision(call_id, True, remember=True)
+            )
             await pilot.pause()
-            assert "shell" in app._auto_approved
+            if app._active_task is not None:
+                await app._active_task
+            assert "shell" not in app._auto_approved
             assert executed == ["echo one"]
 
-            # A second /shell must run without showing a card.
             await app.handle_user_text("/shell echo two")
             await pilot.pause()
-            assert list(app.query(ApprovalCard)) == []
-            assert executed == ["echo one", "echo two"]
+            assert len(list(app.query(ApprovalCard))) == 1
+            assert executed == ["echo one"]
 
     asyncio.run(run())
 
@@ -534,7 +717,7 @@ def test_tui_shell_shows_card_and_executes_on_approve(monkeypatch) -> None:
         executed.append(command)
         return ShellOutput(command=command, exit_code=0, stdout_summary="ok")
 
-    monkeypatch.setattr("jenai.tui.app.run_shell", fake_run_shell)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_shell", fake_run_shell)
 
     async def run() -> None:
         app = _app()
@@ -560,7 +743,7 @@ def test_tui_shell_rejects_on_escape(monkeypatch) -> None:
         executed.append(command)
         return ShellOutput(command=command, exit_code=0)
 
-    monkeypatch.setattr("jenai.tui.app.run_shell", fake_run_shell)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_shell", fake_run_shell)
 
     async def run() -> None:
         app = _app()
@@ -589,7 +772,7 @@ def test_tui_ros_pub_shows_card_and_resolves_on_approve(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("jenai.tui.robot_commands.ros_pub_validate", fake_validate)
-    monkeypatch.setattr("jenai.tui.app.ros_pub_execute", fake_execute)
+    monkeypatch.setattr("jenai.tui.direct_execution.ros_pub_execute", fake_execute)
 
     async def run() -> None:
         app = _app()
@@ -619,7 +802,7 @@ def test_tui_ros_pub_rejects_on_escape(monkeypatch) -> None:
         return RosPubOutput(topic=topic, message_type=message_type)
 
     monkeypatch.setattr("jenai.tui.robot_commands.ros_pub_validate", fake_validate)
-    monkeypatch.setattr("jenai.tui.app.ros_pub_execute", fake_execute)
+    monkeypatch.setattr("jenai.tui.direct_execution.ros_pub_execute", fake_execute)
 
     async def run() -> None:
         app = _app()
@@ -724,7 +907,9 @@ def test_tui_permissions_and_provider_commands() -> None:
             await app.handle_user_text("/permissions")
             await app.handle_user_text("/provider")
             panels = [w for w in app.query_one("#events").children if hasattr(w, "title")]
-            assert any(p.title == "Permissions" for p in panels)
+            permissions = next(p for p in panels if p.title == "Permissions")
+            assert "HOST_COMMAND and P2 always require a fresh decision" in permissions.body
+            assert "P2 prompts default to No" in permissions.body
             assert any(p.title == "Provider" for p in panels)
 
     asyncio.run(run())
@@ -944,40 +1129,115 @@ def test_tui_stop_command_halts_robot(monkeypatch, tmp_path) -> None:
     assert fake.halts == ["/cmd_vel"]
 
 
-def test_tui_stop_preempts_running_task(monkeypatch, tmp_path) -> None:
-    """/stop must never queue behind the task it is stopping: the busy gate
-    lets it through, cancelling the in-flight task first."""
+def test_tui_stop_preempts_and_reaps_running_task_before_halt(monkeypatch, tmp_path) -> None:
+    """A one-shot velocity publisher is gone and zeroed before bridge halt."""
+    import os
+    import time
     from types import SimpleNamespace
 
-    async def fake_get_bridge():
-        return FakeHaltBridge()
+    import pytest
 
-    async def run() -> None:
+    from jenai.adapters import ros2_adapter
+    from jenai.tools.ros2_core import ros_pub_execute
+
+    events = tmp_path / "one-shot-events.log"
+    pid_file = tmp_path / "one-shot.pid"
+    fake_ros2 = tmp_path / "ros2"
+    fake_ros2.write_text(
+        """#!/usr/bin/env python3
+import os
+import signal
+import time
+from pathlib import Path
+
+events = Path(os.environ["FAKE_ROS_EVENTS"])
+pid_file = Path(os.environ["FAKE_ROS_PID"])
+running = True
+
+def stop(signum, frame):
+    global running
+    running = False
+
+signal.signal(signal.SIGTERM, stop)
+pid_file.write_text(str(os.getpid()))
+with events.open("a") as stream:
+    stream.write("publisher-started\\n")
+deadline = time.monotonic() + 0.4
+while running and time.monotonic() < deadline:
+    time.sleep(0.01)
+with events.open("a") as stream:
+    stream.write("publisher-reaped\\n" if not running else "late-nonzero\\n")
+""",
+        encoding="utf-8",
+    )
+    fake_ros2.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_ROS_EVENTS", str(events))
+    monkeypatch.setenv("FAKE_ROS_PID", str(pid_file))
+
+    async def final_zero(*args, **kwargs):
+        with events.open("a") as stream:
+            stream.write("zero\n")
+
+    monkeypatch.setattr(ros2_adapter, "_best_effort_stop", final_zero)
+
+    halt_count = 0
+
+    class OrderedBridge:
+        async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
+            nonlocal halt_count
+            halt_count += 1
+            with events.open("a") as stream:
+                stream.write(f"halt-{'initial' if halt_count == 1 else 'final'}\n")
+            return False
+
+    async def fake_get_bridge():
+        return OrderedBridge()
+
+    async def run() -> int:
         app = _app(tmp_path)
         monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
         async with app.run_test() as pilot:
-            hang_started = asyncio.Event()
-
-            async def hang() -> None:
-                hang_started.set()
-                await asyncio.sleep(30)
-
-            hang_task = asyncio.create_task(hang())
-            app._active_task = hang_task
-            await hang_started.wait()
+            publisher_task = asyncio.create_task(
+                ros_pub_execute(
+                    "/cmd_vel",
+                    "geometry_msgs/msg/Twist",
+                    {"linear": {"x": 0.2}},
+                )
+            )
+            app._active_task = publisher_task
+            for _ in range(100):
+                if pid_file.exists() and events.exists():
+                    break
+                await asyncio.sleep(0.01)
+            assert pid_file.exists() and events.exists()
+            pid = int(pid_file.read_text())
 
             event = SimpleNamespace(value="/stop", input=SimpleNamespace(value=""))
             await app.on_input_submitted(event)
             stop_task = app._active_task
-            assert stop_task is not hang_task  # /stop replaced the hung task
+            assert stop_task is not publisher_task
             await stop_task
             await pilot.pause()
 
-            assert hang_task.cancelled()
-            bodies = [i.body for i in app.query(TimelineItem)]
-            assert any("halted" in b.lower() for b in bodies)
+            assert publisher_task.cancelled()
+            assert events.read_text().splitlines() == [
+                "publisher-started",
+                "halt-initial",
+                "publisher-reaped",
+                "zero",
+                "halt-final",
+            ]
+            bodies = [item.body for item in app.query(TimelineItem)]
+            assert any("halted" in body.lower() for body in bodies)
+            return pid
 
-    asyncio.run(run())
+    pid = asyncio.run(run())
+    lines_after_cancel = events.read_text().splitlines()
+    time.sleep(0.5)
+    assert events.read_text().splitlines() == lines_after_cancel
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 def test_tui_patrol_shows_card_and_runs(monkeypatch) -> None:
@@ -993,7 +1253,7 @@ def test_tui_patrol_shows_card_and_runs(monkeypatch) -> None:
             await on_step(result)
         return PatrolReport(spec, [result])
 
-    monkeypatch.setattr("jenai.tui.app.run_patrol", fake_run_patrol)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_patrol", fake_run_patrol)
 
     async def run() -> None:
         app = _app()
@@ -1036,7 +1296,7 @@ def test_tui_explore_shows_bounded_card_and_runs(monkeypatch) -> None:
             await on_step(result)
         return ExploreReport(spec, ["A", "B"], [result], "max_goals")
 
-    monkeypatch.setattr("jenai.tui.app.run_explore", fake_run_explore)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_explore", fake_run_explore)
 
     async def run() -> None:
         app = _app()
@@ -1487,7 +1747,7 @@ def test_tui_route_from_a_to_b_runs_ordered_two_stop(monkeypatch, tmp_path) -> N
         ran["steps"] = [(s.kind, s.target) for s in steps]
         return MissionReport([StepResult("goto", s.target, "succeeded", "ok") for s in steps])
 
-    monkeypatch.setattr("jenai.tui.app.run_mission", fake_run_mission)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_mission", fake_run_mission)
 
     # Two known locations so both start and goal resolve.
     locs = tmp_path / "locations.toml"
@@ -1675,7 +1935,7 @@ def test_auto_mode_skips_approval_card_but_logs(monkeypatch) -> None:
         ran["steps"] = len(steps)
         return MissionReport([StepResult("goto", "kitchen", "succeeded", "ok")])
 
-    monkeypatch.setattr("jenai.tui.app.run_mission", fake_run_mission)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_mission", fake_run_mission)
 
     async def run() -> None:
         app = _app()

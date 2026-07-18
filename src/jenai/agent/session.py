@@ -13,6 +13,12 @@ from typing import BinaryIO
 
 from agents.memory import SessionABC
 
+from jenai.secure_files import (
+    PRIVATE_FILE_MODE,
+    atomic_write_text,
+    ensure_private_directory,
+)
+
 
 def _sessions_dir() -> Path:
     return Path.home() / ".config" / "jenai" / "sessions"
@@ -90,9 +96,20 @@ class JenAIFileSession(SessionABC):
     def _transaction(self) -> Iterator[None]:
         """Serialize one read-modify-write transaction across instances/processes."""
         with self._lock:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_private_directory(self._path.parent)
             lock_path = self._path.with_suffix(self._path.suffix + ".lock")
-            with lock_path.open("a+b") as handle:
+            flags = os.O_RDWR | os.O_CREAT
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(lock_path, flags, PRIVATE_FILE_MODE)
+            try:
+                os.fchmod(fd, PRIVATE_FILE_MODE)
+            except BaseException:
+                os.close(fd)
+                raise
+            with os.fdopen(fd, "a+b") as handle:
                 _lock_file(handle)
                 try:
                     yield
@@ -106,14 +123,15 @@ class JenAIFileSession(SessionABC):
             return []
 
     def _save(self, items: list[dict]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         capped = items[-_MAX_ITEMS:]
         # Write to a temp file then atomically replace, so an interrupted write
         # (esc/kill mid-run) can never leave a truncated file that would load as
         # empty and silently wipe the whole session.
-        tmp = self._path.with_name(f"{self._path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(capped, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, self._path)
+        atomic_write_text(
+            self._path,
+            json.dumps(capped, ensure_ascii=False),
+            harden_parent=True,
+        )
 
     def _append(self, items: list[dict]) -> None:
         with self._transaction():

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agents import set_trace_processors
 from agents.tracing import TracingProcessor
+
+from jenai.secure_files import private_append_file, write_all
 
 
 def _traces_path() -> Path:
@@ -31,11 +33,11 @@ class FileTracingProcessor(TracingProcessor):
         self._lock = threading.Lock()
 
     def _write(self, record: dict) -> None:
-        record["ts"] = datetime.now().isoformat(timespec="seconds")
+        record["ts"] = datetime.now(UTC).isoformat(timespec="seconds")
+        payload = (json.dumps(record, ensure_ascii=False, default=str) + "\n").encode()
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._lock, self._path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            with self._lock, private_append_file(self._path) as fd:
+                write_all(fd, payload)
         except OSError:
             pass  # tracing must never break a run
 

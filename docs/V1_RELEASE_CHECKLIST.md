@@ -14,14 +14,19 @@
       偏移大就修 `[map_datum]`(整批平移特性)
 - [x] **B3 解鎖 TEST.md 全部 🔶 項**(✅ 2026-07-14~15,含 WebUI/MCP/daemon):`/route`(nav2 模式)、`/mission`、
       `/patrol photo`、`/dock`、`/perception`、Camera 頁 —— 結果回填 TEST.md
-- [x] **B4 里程**(✅ 2026-07-16:20.0h / 102 趟 / 0 事件):≥20h / ≥50 次任務、0 安全事件(事件表記在 SAFETY_CASE)
-- [x] **B5 Isaac 場景 + Twin Gate 端到端**(✅ 2026-07-15,E2 N=100:硬陷阱 SIR 100%、FPR 0%):`[twin]` 啟用實跑,
-      攔截率/誤攔率記下(消融數據 = 論文 E2)
+- [x] **B4 固定模擬導航任務紀錄**（2026-07-16 歷史簽字；後續稽核可重建 102 份 reports：
+      101／102 為 4／4、407／408 waypoint succeeded）：約 20 h 僅為 driver task-time 摘要，
+      reports 無 duration／run ID／incident 欄或獨立觀察者，故不得表述為已驗證 20 h 暴露或
+      0 安全事件；2026-07-17 H9 另列，完整限制見 EVIDENCE_LEDGER／SAFETY_CASE
+- [x] **B5 Isaac 場景 + Twin Gate 端到端**（舊 C=full-twin 100 筆 observed；後續 E2-PAIR
+      主要描述 subset 80 組：A／B derived、C observed，20 組 `zone_crossing` 全列探索性）：
+      `[twin]` 啟用實跑；完整分母與限制見 EVIDENCE_LEDGER，不得表述為前瞻性三條件 live run
+      或以 Q／McNemar p 值作確認性推論
 - [x] **B6 Guided onboarding**（✅ 2026-07-16 客戶簽核：學弟妹 ≥3 在指導下完成、未回報阻擋問題；非純冷啟動、未碼表計時、無結構化卡點紀錄）
 - [x] **B7 Demo 排練**(✅ 2026-07-16 第二輪跑順:twin 實啟、G3 block 當場確認):15 分鐘劇本 + 斷網切 local 備援,跑順一次
 - [x] **A6 尾巴:24h soak 正式跑**(✅ 2026-07-16 PASS,RSS +1.2%/限 20%):`python3 scripts/soak.py --rules rules.example.toml`,
       `report.md` 為 PASS
-- [x] **SAFETY_CASE 完稿**(✅ 2026-07-16,B4/B5 數據已填,實車項標選配):把 B4/B5 數據填進 ⬜ TODO 欄
+- [x] **SAFETY_CASE 歷史草稿更新**(2026-07-16 填入 B4/B5；2026-07-18 證據稽核重開 B4 incident 狀態):目前 B4 只支持可重建任務結果，零事件與實車安全仍為 OPEN
 
 ## B|tag 當天的程序(跟平常 release 一樣,只是版本是 1.0.0)
 
@@ -48,7 +53,7 @@ gh release edit v1.0.0 --notes-file docs/releases/v1.0.0.md --draft=false
 ## C|tag 之後立刻做
 
 - `docs/VERSIONING.md` 的承諾正式生效:public surface 變更從此走 semver 紀律
-- 論文第四章開跑:E1(`JenAI eval` 已就緒)→ E2(Twin 消融)→ E3(虛實一致性)
+- 論文第四章開跑:E1(`JenAI eval` 已就緒)→ E2(前瞻性政策比較；既有 A／B 為 derived)→ E3(虛實一致性)
 - v2 主線 = M6 自主迴圈(決策核心 `decision_core.py` 已就緒,缺的是把
   perceive→decide→rehearse→act 接成常駐迴圈 —— 見 ROADMAP 軌道 1)
 

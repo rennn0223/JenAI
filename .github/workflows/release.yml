@@ -1,14 +1,14 @@
 # Fires on a version tag push, or via manual workflow_dispatch (which creates
-# the tag itself — for sessions/environments that can push branches but not
-# tags). Gates the tag on the full suite, builds the wheel/sdist, and attaches
-# the artifacts.
-# Notes policy: on manual dispatch the release is PUBLISHED directly from
-# docs/releases/<tag>.md (the dispatch click IS the human gate; missing notes
-# file fails the run — no accidental auto-notes publish). On tag push the
-# behavior is unchanged: a DRAFT with auto-generated notes, published by hand
-# via `gh release edit vX.Y.Z --notes-file docs/releases/vX.Y.Z.md --draft=false`.
-# If a release for the tag already exists (draft or published), the workflow
-# only attaches the artifacts and never touches the notes.
+# the tag itself when it is new). Existing tags are rebuilt only when the
+# workflow itself was dispatched from that tag, so GitHub's signed provenance
+# and the checked-out source commit cannot disagree.
+#
+# Notes policy: manual dispatch publishes from docs/releases/<tag>.md (the
+# dispatch click is the human gate; a missing notes file fails the run). A tag
+# push creates a draft with generated notes, which is published by hand with:
+# gh release edit vX.Y.Z --notes-file docs/releases/vX.Y.Z.md --draft=false
+# Published releases are immutable. Only an unpublished draft for the same
+# verified tag may have its assets replaced during recovery.
 name: Release
 
 on:
@@ -22,29 +22,124 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
-# One run per tag: a delete-and-re-push cancels the stale run instead of
-# letting it clobber the corrected artifacts or double-draft.
+# Serialize every route for the same tag. A queued run re-verifies the remote
+# tag immediately before upload; it never publishes from a moved tag.
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      # Tag under release: the dispatch input, or the pushed tag ref.
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and checkout the immutable release source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag must have the form vX.Y.Z (received: ${TAG})"
+            exit 1
+          fi
+
+          git fetch --force origin "refs/heads/main:refs/remotes/origin/main"
+          git fetch --force --tags origin
+          trigger_sha=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          origin_main_sha=$(git rev-parse "refs/remotes/origin/main^{commit}")
+          if git rev-parse --verify --quiet "refs/tags/${TAG}^{commit}" >/dev/null; then
+            tag_exists=true
+            source_sha=$(git rev-parse "refs/tags/${TAG}^{commit}")
+
+            # GitHub's provenance certificate records GITHUB_SHA. The remote
+            # tag and triggering commit must agree for both push and recovery
+            # dispatch routes, otherwise the signed source claim would be false.
+            if [ "${trigger_sha}" != "${source_sha}" ]; then
+              if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+                echo "::error::${TAG} already exists at ${source_sha}. Re-run this workflow from that tag: gh workflow run release.yml --ref ${TAG} -f tag=${TAG}"
+              else
+                echo "::error::remote ${TAG} moved from triggering commit ${trigger_sha} to ${source_sha}"
+              fi
+              exit 1
+            fi
+            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
+               && [ "${GITHUB_REF}" != "refs/tags/${TAG}" ]; then
+              echo "::error::existing ${TAG} must be recovered from its tag ref: gh workflow run release.yml --ref ${TAG} -f tag=${TAG}"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "${source_sha}" "${origin_main_sha}"; then
+              echo "::error::${TAG} points to ${source_sha}, which is not reachable from origin/main"
+              exit 1
+            fi
+          else
+            if [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+              echo "::error::pushed tag ${TAG} was not found after fetching origin"
+              exit 1
+            fi
+            if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+              echo "::error::a new release tag may be created only from refs/heads/main"
+              exit 1
+            fi
+            tag_exists=false
+            source_sha="${trigger_sha}"
+            if [ "${source_sha}" != "${origin_main_sha}" ]; then
+              echo "::error::new release source ${source_sha} is not the fetched origin/main commit ${origin_main_sha}"
+              exit 1
+            fi
+          fi
+
+          git checkout --detach "${source_sha}"
+          test "$(git rev-parse HEAD)" = "${source_sha}"
+          source_epoch=$(git show -s --format=%ct "${source_sha}")
+          version="${TAG#v}"
+          {
+            echo "tag_exists=${tag_exists}"
+            echo "sha=${source_sha}"
+            echo "epoch=${source_epoch}"
+            echo "version=${version}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Release source: ${TAG} -> ${source_sha}"
+
+      - name: Refuse mutation of an existing published release
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if is_draft=$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "${is_draft}" != "true" ]; then
+              echo "::error::${TAG} is already published and immutable; bump the version instead"
+              exit 1
+            fi
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "draft=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+            echo "draft=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
+          python-version: "3.12"
 
       - name: Install dependencies
         run: uv sync --frozen
+
+      - name: Require reviewed notes for a manual release
+        if: github.event_name == 'workflow_dispatch'
+        run: test -f "docs/releases/${TAG}.md"
 
       - name: Tag must match pyproject version
         run: |
@@ -54,51 +149,201 @@ jobs:
             exit 1
           fi
 
-      - name: Gate the tag (lint + full suite)
+      - name: Gate the tag (lint + full suite with coverage)
         run: |
           uv run ruff check src tests
-          uv run pytest -q
+          uv run pytest -q --cov=jenai --cov-report=term
 
-      - name: Create and push the tag (manual dispatch only)
-        # A tag pushed with GITHUB_TOKEN does not trigger the push:tags event
-        # (Actions' recursion guard), so this same run carries on to release it.
-        if: github.event_name == 'workflow_dispatch'
+      - name: Safety-chain coverage gate (same threshold as PR CI)
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "tag ${TAG} already exists on origin — releasing it as-is"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "${TAG}" -m "JenAI ${TAG}"
-            git push origin "refs/tags/${TAG}"
-          fi
+          uv run coverage report --fail-under=90 \
+            --include="*/jenai/bridge/client.py,*/jenai/bridge/_*.py,*/jenai/daemon/*,*/jenai/twin/*,*/jenai/tools/safety.py"
+
+      - name: Audit locked runtime dependencies
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements.txt \
+            --output-file "${RUNNER_TEMP}/jenai-requirements.txt" >/dev/null
+          uvx --from pip-audit==2.10.1 pip-audit \
+            --requirement "${RUNNER_TEMP}/jenai-requirements.txt" --strict
 
       - name: Build wheel and sdist
-        run: uv build
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+        run: |
+          rm -rf dist
+          uv build
 
-      - name: Smoke-test the wheel (install, deps, entry point)
-        # Same gate as ci.yml's build job — these are the artifacts being
-        # released, so they get at least the same validation as PR artifacts.
-        run: uvx --from ./dist/jenai-*-py3-none-any.whl jenai --help
+      - name: Export locked runtime constraints and CycloneDX SBOM
+        run: |
+          version="${{ steps.source.outputs.version }}"
+          uv export --frozen --no-dev --no-emit-project --no-hashes \
+            --format requirements.txt \
+            --output-file "dist/jenai-${version}-constraints.txt" >/dev/null
+          uv export --frozen --no-dev --format cyclonedx1.5 \
+            --output-file "dist/jenai-${version}.cdx.json" >/dev/null
+
+      - name: Verify release artifact contents
+        env:
+          EXPECTED_VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          mapfile -t sdists < <(find dist -maxdepth 1 -name "jenai-*.tar.gz" -print)
+          test "${#sdists[@]}" -eq 1
+          SDIST="${sdists[0]}" uv run python - <<'PY'
+          import json
+          import os
+          import tarfile
+          from pathlib import PurePosixPath
+
+          sdist = os.environ["SDIST"]
+          forbidden = []
+          with tarfile.open(sdist, "r:gz") as archive:
+              for member in archive.getmembers():
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      forbidden.append(member.name)
+                      continue
+                  relative = PurePosixPath(*path.parts[1:]) if len(path.parts) > 1 else path
+                  lower = relative.as_posix().lower()
+                  basename = relative.name.lower()
+                  if (
+                      lower == ".claude/settings.local.json"
+                      or lower in {".env", "docs/papers.md"}
+                      or basename.startswith(".env.")
+                      or relative.suffix.lower() in {".docx", ".pdf", ".pptx"}
+                      or any(
+                          part in {".agents", ".codex", "artifacts", "log", "memory"}
+                          for part in relative.parts
+                      )
+                      or lower.startswith("docs/thesis_")
+                      or lower.startswith("docs/thesis-assets/")
+                      or (
+                          lower.startswith("docs/thesis-v")
+                          and "-media/" in lower
+                      )
+                      or lower.startswith("scripts/build_thesis_")
+                      or lower == "scripts/export_thesis_markdown.py"
+                  ):
+                      forbidden.append(member.name)
+          if forbidden:
+              raise SystemExit("sensitive files in sdist:\n" + "\n".join(forbidden))
+
+          version = os.environ["EXPECTED_VERSION"]
+          with open(f"dist/jenai-{version}.cdx.json", encoding="utf-8") as handle:
+              sbom = json.load(handle)
+          if sbom.get("bomFormat") != "CycloneDX":
+              raise SystemExit("release SBOM is not CycloneDX JSON")
+
+          constraints = f"dist/jenai-{version}-constraints.txt"
+          if os.path.getsize(constraints) == 0:
+              raise SystemExit("release constraints file is empty")
+          PY
+
+      - name: Smoke-test wheel lifecycle in a fresh tool environment
+        run: |
+          mapfile -t wheels < <(find dist -name "jenai-*-py3-none-any.whl" -print)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          constraints="dist/jenai-${{ steps.source.outputs.version }}-constraints.txt"
+          export UV_TOOL_DIR="${RUNNER_TEMP}/jenai-smoke-tools"
+          export UV_TOOL_BIN_DIR="${RUNNER_TEMP}/jenai-smoke-bin"
+          export XDG_CONFIG_HOME="${RUNNER_TEMP}/jenai-smoke-config"
+          trap 'uv tool uninstall jenai >/dev/null 2>&1 || true' EXIT
+          uv tool install --force --constraints "${constraints}" "${wheel}"
+          "${UV_TOOL_BIN_DIR}/JenAI" version
+          "${UV_TOOL_BIN_DIR}/jenai" --help >/dev/null
+          "${UV_TOOL_BIN_DIR}/jenai" doctor --json > "${RUNNER_TEMP}/jenai-doctor.json"
+          uv run python -c 'import json, os; d=json.load(open(os.environ["RUNNER_TEMP"]+"/jenai-doctor.json")); assert d["overall"] == "fail"; assert any(i["check_name"] == "config_file" for i in d["items"])'
+          uv tool uninstall jenai
+          test ! -e "${UV_TOOL_BIN_DIR}/JenAI"
+          test ! -e "${UV_TOOL_BIN_DIR}/jenai"
+
+      - name: Create and push a new tag (manual dispatch only)
+        # The artifacts and all gates pass before a new immutable source ref is
+        # created. A tag pushed with GITHUB_TOKEN does not recursively trigger
+        # the push:tags workflow, so this run continues to publication.
+        if: github.event_name == 'workflow_dispatch' && steps.source.outputs.tag_exists == 'false'
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" "${SOURCE_SHA}" -m "JenAI ${TAG}"
+          git push origin "refs/tags/${TAG}"
+
+      - name: Verify the remote tag still identifies the built commit
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          remote_sha=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          if [ "${remote_sha}" != "${SOURCE_SHA}" ]; then
+            echo "::error::remote ${TAG} moved from built commit ${SOURCE_SHA} to ${remote_sha}"
+            exit 1
+          fi
+
+      - name: Generate signed build provenance
+        id: provenance
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/*-constraints.txt
+            dist/*.cdx.json
+
+      - name: Generate signed SBOM attestation
+        id: sbom_attestation
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+          sbom-path: dist/jenai-${{ steps.source.outputs.version }}.cdx.json
+
+      - name: Bundle attestations and SHA-256 checksums
+        run: |
+          version="${{ steps.source.outputs.version }}"
+          cp "${{ steps.provenance.outputs.bundle-path }}" \
+            "dist/jenai-${version}.provenance.sigstore.json"
+          cp "${{ steps.sbom_attestation.outputs.bundle-path }}" \
+            "dist/jenai-${version}.sbom.sigstore.json"
+          (
+            cd dist
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' \
+              | sort -z \
+              | xargs -0 sha256sum --binary > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
 
       - name: Release with artifacts (or attach to an existing release)
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          RELEASE_EXISTS: ${{ steps.release_state.outputs.exists }}
         run: |
-          if is_draft=$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>/dev/null); then
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
+          test "$(git rev-parse "refs/tags/${TAG}^{commit}")" = "${SOURCE_SHA}"
+          if [ "${RELEASE_EXISTS}" = "true" ]; then
+            # Re-check immediately before upload: a human may publish the draft
+            # while this job is building. Published assets are never overwritten.
+            is_draft=$(gh release view "${TAG}" --json isDraft --jq .isDraft)
+            if [ "${is_draft}" != "true" ]; then
+              echo "::error::${TAG} became published during this run and is immutable"
+              exit 1
+            fi
+            # A recovery run reaches this line only after checkout, trigger-SHA,
+            # remote-tag, test, coverage, artifact and attestation verification.
             gh release upload "${TAG}" dist/* --clobber
-            # Manual dispatch is the human gate: it may also FINISH a
-            # tag-push draft — swap in the reviewed notes file and publish.
-            # No --title here: a hand-edited draft title must survive the
-            # publish. A tag-push run never touches an existing release.
             if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
-               && [ -f "docs/releases/${TAG}.md" ] \
                && [ "${is_draft}" = "true" ]; then
               gh release edit "${TAG}" \
                 --notes-file "docs/releases/${TAG}.md" --draft=false
             fi
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            # Dispatch is the human gate; the reviewed notes file is mandatory.
             gh release create "${TAG}" dist/* \
               --title "${TAG}" --notes-file "docs/releases/${TAG}.md"
           else

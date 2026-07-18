@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import time
 
 import rclpy
@@ -39,6 +40,15 @@ def main() -> None:
     parser.add_argument("match_timeout_s", type=float)
     args = parser.parse_args()
 
+    stop_requested = False
+
+    def request_stop(_signum, _frame) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, request_stop)
+
     if args.rate_hz <= 0 or args.duration_s <= 0 or args.match_timeout_s <= 0:
         raise SystemExit("rate, duration, and match timeout must be positive")
 
@@ -54,6 +64,8 @@ def main() -> None:
 
         match_deadline = time.monotonic() + args.match_timeout_s
         while publisher.get_subscription_count() < 1:
+            if stop_requested:
+                return
             if time.monotonic() >= match_deadline:
                 raise TimeoutError(
                     f"no matching subscription on {args.topic} within "
@@ -68,7 +80,7 @@ def main() -> None:
         count = 0
         while True:
             now = time.monotonic()
-            if now >= deadline:
+            if stop_requested or now >= deadline:
                 break
             publisher.publish(motion)
             count += 1
@@ -96,6 +108,7 @@ def main() -> None:
             rclpy.spin_once(node, timeout_sec=0.02)
         node.destroy_node()
         rclpy.shutdown()
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from agents import Runner
 
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.runtime import build_plan_agent, build_review_agent
+from jenai.agent.tracing import install_local_tracing
 from jenai.schemas import PlanOutput, PlanStep, PlanStepStatus, RunRecord, RunStatus
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 
@@ -29,6 +30,9 @@ def _steps_with_approval_flags(plan_output: PlanOutput) -> list[PlanStep]:
 
 
 async def run_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
+    # Replace the SDK's hosted exporter before the first Runner call.  Planning
+    # may be the first Agent SDK operation in a process, before /run installs it.
+    install_local_tracing()
     run, run_store = ctx.run, ctx.run_store
 
     run_store.set_status(run, RunStatus.UNDERSTANDING)
@@ -46,6 +50,7 @@ async def run_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
 
 async def review_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
     """Re-plan the current task, asking the model to critique/revise the existing plan."""
+    install_local_tracing()
     run, run_store = ctx.run, ctx.run_store
 
     run_store.set_status(run, RunStatus.PLANNING)

@@ -7,6 +7,7 @@ import multiprocessing
 import threading
 from types import SimpleNamespace
 
+import jenai.agent.tracing as tracing_mod
 from jenai.agent.session import JenAIFileSession
 from jenai.agent.specialists import (
     build_motion_agent,
@@ -228,3 +229,19 @@ def test_file_tracing_processor_writes(tmp_path) -> None:
 def test_install_local_tracing_is_idempotent() -> None:
     install_local_tracing()
     install_local_tracing()  # must not raise or double-register
+
+
+def test_install_local_tracing_replaces_the_hosted_exporter(monkeypatch) -> None:
+    installed: list[list[object]] = []
+    monkeypatch.setattr(tracing_mod, "_installed", False)
+    monkeypatch.setattr(
+        tracing_mod,
+        "set_trace_processors",
+        lambda processors: installed.append(processors),
+    )
+
+    tracing_mod.install_local_tracing()
+
+    assert len(installed) == 1
+    assert len(installed[0]) == 1
+    assert isinstance(installed[0][0], FileTracingProcessor)

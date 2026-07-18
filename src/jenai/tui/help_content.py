@@ -94,7 +94,10 @@ _KEYBOARD_SHORTCUTS = [
     KeyboardShortcut(
         key="Esc", action="Interrupt the current task and continue the queue / reject approval"
     ),
-    KeyboardShortcut(key="1 / 2 / 3", action="Pick an approval option (Yes / Yes+remember / No)"),
+    KeyboardShortcut(
+        key="1 / 2 / 3",
+        action="Pick a shown approval option; host/P2 prompts are one-shot",
+    ),
     KeyboardShortcut(key="Tab", action="Complete the selected command"),
     KeyboardShortcut(key="↑ / ↓", action="History, command palette, or approval options"),
     KeyboardShortcut(

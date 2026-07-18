@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -30,15 +31,31 @@ def _trial(participant: str, condition: str, elapsed: float, *, success: bool = 
 
 
 def test_generate_schedule_balances_condition_order() -> None:
-    rows = study.generate_schedule(3, ("a", "b", "c"))
+    rows = study.generate_schedule(6, ("a", "b", "c"), seed=7)
+    orders: list[tuple[str, ...]] = []
+    for participant in (f"P{index:02d}" for index in range(1, 7)):
+        periods = sorted(
+            (row for row in rows if row["participant"] == participant and row["task_order"] == "1"),
+            key=lambda row: row["period"],
+        )
+        orders.append(tuple(row["condition"] for row in periods))
 
-    first_conditions = [
-        next(row["condition"] for row in rows if row["participant"] == participant)
-        for participant in ("P01", "P02", "P03")
-    ]
+    first_counts = Counter(order[0] for order in orders)
+    transitions = Counter(
+        pair for order in orders for pair in ((order[0], order[1]), (order[1], order[2]))
+    )
 
-    assert first_conditions == ["manual", "slash", "natural"]
-    assert len(rows) == 27
+    assert set(orders) == set(study.WILLIAMS_ORDERS)
+    assert first_counts == {condition: 2 for condition in study.CONDITIONS}
+    assert all(count == 2 for count in transitions.values())
+    assert all(row["allocation_seed"] == "7" for row in rows)
+    assert len(rows) == 54
+
+
+def test_generate_schedule_requires_complete_williams_blocks() -> None:
+    for participants in (1, 5, 7, 11):
+        with pytest.raises(ValueError, match="positive multiple of 6"):
+            study.generate_schedule(participants)
 
 
 def test_start_and_finish_trial_uses_pseudonymous_metrics(tmp_path: Path) -> None:
@@ -92,6 +109,47 @@ def test_start_refuses_to_overwrite_active_trial(tmp_path: Path) -> None:
         )
 
 
+def test_force_start_archives_abandoned_trial_with_reason(tmp_path: Path) -> None:
+    state = tmp_path / "active.json"
+    study.start_trial(
+        state,
+        participant="P01",
+        experience="experienced",
+        condition="manual",
+        task="bounded_motion",
+        now_epoch=1.0,
+    )
+
+    with pytest.raises(ValueError, match="force_reason is required"):
+        study.start_trial(
+            state,
+            participant="P02",
+            experience="novice",
+            condition="natural",
+            task="bounded_motion",
+            force=True,
+            now_epoch=2.0,
+        )
+
+    study.start_trial(
+        state,
+        participant="P02",
+        experience="novice",
+        condition="natural",
+        task="bounded_motion",
+        force=True,
+        force_reason="operator stopped the previous trial",
+        now_epoch=2.0,
+    )
+
+    archives = list(tmp_path.glob("active.abandoned-*.json"))
+    assert len(archives) == 1
+    abandoned = json.loads(archives[0].read_text(encoding="utf-8"))
+    assert abandoned["participant"] == "P01"
+    assert abandoned["abandon_reason"] == "operator stopped the previous trial"
+    assert state.is_file()
+
+
 def test_summary_keeps_failures_and_reports_paired_ratio() -> None:
     trials = [
         _trial("P01", "manual", 30.0),
@@ -108,16 +166,28 @@ def test_summary_keeps_failures_and_reports_paired_ratio() -> None:
     summary = study.summarize_trials(trials)
 
     assert summary["conditions"]["slash"]["success_rate"] == 0.5
+    assert summary["conditions"]["slash"]["median_time_s"] == 15.0
+    assert summary["conditions"]["slash"]["median_success_time_s"] == 10.0
+    assert summary["conditions"]["slash"]["p95_success_time_s"] == 10.0
+    assert summary["conditions"]["slash"]["failure_reasons"] == {"unclassified_legacy": 1}
     assert summary["paired"]["manual_vs_slash"] == {
         "pairs": 1,
         "median_speed_ratio": 3.0,
         "ambiguous_repeated_pairs": 0,
+        "missing_pairs": 1,
+        "failed_pairs": 1,
+        "zero_duration_pairs": 0,
     }
     assert summary["paired"]["manual_vs_natural"] == {
         "pairs": 2,
         "median_speed_ratio": 3.0,
         "ambiguous_repeated_pairs": 1,
+        "missing_pairs": 0,
+        "failed_pairs": 0,
+        "zero_duration_pairs": 0,
     }
+    rendered = study.render_markdown(summary)
+    assert "`slash`: unclassified_legacy=1" in rendered
 
 
 def test_load_trials_rejects_missing_fields(tmp_path: Path) -> None:
@@ -148,3 +218,42 @@ def test_load_trials_rejects_non_boolean_success(tmp_path: Path) -> None:
     path.write_text(json.dumps(trial) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="errors must be an integer"):
         study.load_trials(path)
+
+
+def test_failed_trial_requires_structured_failure_reason(tmp_path: Path) -> None:
+    state = tmp_path / "active.json"
+    output = tmp_path / "study.jsonl"
+    study.start_trial(
+        state,
+        participant="P01",
+        experience="novice",
+        condition="natural",
+        task="bounded_motion",
+        now_epoch=1.0,
+    )
+
+    with pytest.raises(ValueError, match="failed trials require failure_reason"):
+        study.finish_trial(state, output, success=False, now_epoch=2.0)
+
+    trial = study.finish_trial(
+        state,
+        output,
+        success=False,
+        failure_reason="timeout",
+        now_epoch=3.0,
+    )
+
+    assert trial["failure_reason"] == "timeout"
+    assert trial["success"] is False
+
+
+def test_start_rejects_identifying_participant_name(tmp_path: Path) -> None:
+    state = tmp_path / "active.json"
+    with pytest.raises(ValueError, match="pseudonym"):
+        study.start_trial(
+            state,
+            participant="Lin Shu-Jen",
+            experience="novice",
+            condition="slash",
+            task="inspect_feedback",
+        )

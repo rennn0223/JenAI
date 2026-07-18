@@ -426,7 +426,17 @@ async def ros_pub_execute(
 ) -> RosPubOutput:
     payload = _safety_clamp(payload, max_linear, max_angular, message_type=message_type)
     payload_yaml = _payload_to_yaml(payload)
-    result = await asyncio.to_thread(ros2_adapter.topic_pub, topic, message_type, payload_yaml)
+    message_name = message_type.rsplit("/", 1)[-1]
+    velocity_types = {"Twist", "TwistStamped", "AckermannDrive", "AckermannDriveStamped"}
+    cancel_stop_yaml = (
+        _payload_to_yaml(_zero_like(payload)) if message_name in velocity_types else None
+    )
+    result = await ros2_adapter.topic_pub_async(
+        topic,
+        message_type,
+        payload_yaml,
+        cancel_stop_yaml=cancel_stop_yaml,
+    )
     return RosPubOutput(
         topic=topic,
         message_type=message_type,
@@ -455,8 +465,7 @@ async def ros_drive(
     payload = _safety_clamp(payload, max_linear, max_angular, message_type=message_type)
     payload_yaml = _payload_to_yaml(payload)
     stop_yaml = _payload_to_yaml(_zero_like(payload))
-    result = await asyncio.to_thread(
-        ros2_adapter.topic_pub_for,
+    result = await ros2_adapter.topic_pub_for(
         topic,
         message_type,
         payload_yaml,

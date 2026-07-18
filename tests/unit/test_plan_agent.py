@@ -129,3 +129,38 @@ def test_review_plan_replaces_plan_steps(monkeypatch) -> None:
     assert result.plan_steps[0].title == "Better step"
     assert result.status == "completed"
     assert result.final_output == "revised"
+
+
+
+def test_plan_and_review_install_local_tracing_before_runner(monkeypatch) -> None:
+    events: list[str] = []
+
+    def install() -> None:
+        events.append("local-tracing")
+
+    async def fake_run(agent, task_input, *, context=None, **kwargs):
+        assert events == ["local-tracing"]
+        events.append("runner")
+        return _FakeResult(
+            PlanOutput(
+                task_summary="Safe plan",
+                plan_steps=[
+                    PlanStep(
+                        title="Check readiness",
+                        description="Verify the robot is ready",
+                        reason="Keep the tracing-order test schema-valid",
+                    )
+                ],
+                expected_output="done",
+            )
+        )
+
+    monkeypatch.setattr("jenai.agent.plan_agent.install_local_tracing", install)
+    monkeypatch.setattr(Runner, "run", fake_run)
+
+    asyncio.run(run_plan(_ctx(monkeypatch), "plan"))
+    assert events == ["local-tracing", "runner"]
+
+    events.clear()
+    asyncio.run(review_plan(_ctx(monkeypatch), "review"))
+    assert events == ["local-tracing", "runner"]

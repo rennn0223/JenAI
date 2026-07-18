@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import difflib
 import math
+import os
 import tomllib
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from jenai.schemas import Location, Pose2D
+from jenai.secure_files import PRIVATE_FILE_MODE, atomic_write_text
 
 _EARTH_RADIUS_M = 6378137.0  # WGS-84 equatorial
 
@@ -104,18 +106,21 @@ def load_locations_tolerant(path: Path | None) -> tuple[list[Location], str | No
 
 
 def save_locations(locations: list[Location], path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_to_toml(locations), encoding="utf-8")
-    return path
+    """Persist all locations privately; a failed replacement keeps the old file."""
+    return atomic_write_text(path, _to_toml(locations))
 
 
 def ensure_locations_file(path: Path) -> Path:
     """Create an empty (starter-commented) locations file if one doesn't exist."""
     if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise LocationsFileError(f"Locations path must be a regular file: {path}")
+        try:
+            os.chmod(path, PRIVATE_FILE_MODE)
+        except OSError as exc:
+            raise LocationsFileError(f"Could not secure locations file: {path}") from exc
         return path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_STARTER_CONTENT, encoding="utf-8")
-    return path
+    return atomic_write_text(path, _STARTER_CONTENT)
 
 
 def append_location(location: Location, path: Path) -> list[Location]:

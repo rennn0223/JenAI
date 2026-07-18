@@ -53,7 +53,7 @@ def test_tui_runs_user_skill_as_mission_with_approval(monkeypatch, tmp_path: Pat
         ran["steps"] = [(s.kind, s.target) for s in steps]
         return MissionReport([StepResult("goto", "大廳", "succeeded", "ok")])
 
-    monkeypatch.setattr("jenai.tui.app.run_mission", fake_run_mission)
+    monkeypatch.setattr("jenai.tui.direct_execution.run_mission", fake_run_mission)
 
     config = build_minimal_config(
         provider_name="t", provider="openai", default_model="m", api_key_env=""

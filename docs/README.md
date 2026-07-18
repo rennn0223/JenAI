@@ -18,6 +18,7 @@
 | [V1_RELEASE_CHECKLIST](V1_RELEASE_CHECKLIST.md) | v1.0 上版程序(實測清單 + tag 當天指令) |
 | [CODE_TOUR](CODE_TOUR.md) | 全程式碼逐檔導讀:功能/SDK/為什麼這樣寫 + 6 小時閱讀路徑 |
 | [COMMANDS](COMMANDS.md) | CLI 與 slash 指令規格、批准清單、快捷鍵 |
+| [DATA_LIFECYCLE](DATA_LIFECYCLE.md) | 本機資料盤點、權限 harden、allow-list 匯出、保留期 prune、明確 purge 與解除安裝邊界 |
 | [TEST](TEST.md) | 全部可測項目 + 期望輸出 + 環境須知(驗收手冊) |
 | [ISAAC_HIL_ACCEPTANCE](ISAAC_HIL_ACCEPTANCE.md) | 人工批准的 self-hosted Isaac route／cancel／stop／Twin artifact 驗收 |
 | [EXPERIMENTS](EXPERIMENTS.md) | 實驗 runbook:E1–E4/B4/soak 的指令、輸出位置、數據回填對照 |
@@ -27,9 +28,11 @@
 | [ONBOARDING](ONBOARDING.md) | 裸 ROS2 → 第一次導航的手把手(建圖/AMCL/Nav2) |
 | [TWIN_SETUP](TWIN_SETUP.md) | Isaac Sim 孿生場景建置、domain 隔離、G1–G5 |
 | [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) | Isaac 佔位圖生成 + Nav2 試跑完整流程(官方文件整理,接 JenAI /route) |
-| [SAFETY_CASE](SAFETY_CASE.md) | H1–H8 危害分析 → 防護層對應(HARA-lite) |
+| [SAFETY_CASE](SAFETY_CASE.md) | H1–H9 危害分析 → 防護層對應(HARA-lite) |
 | [THREAT_MODEL](THREAT_MODEL.md) | 信任邊界(WebUI token、MCP、/shell)一頁 |
 | [SUPPORT_MATRIX](SUPPORT_MATRIX.md) | OS、Python、ROS2、模擬、載具、模型與介面的實際支援等級 |
+| [SECURITY](../SECURITY.md) | 私下漏洞通報、部署信任邊界與安全修補政策 |
+| [SUPPORT](../SUPPORT.md) | 支援範圍、問題回報資料、best-effort 與 SLA 邊界 |
 | [ROLLBACK](ROLLBACK.md) | uv tool／原始碼安裝的升級回滾與回歸驗收流程 |
 | [VERSIONING](VERSIONING.md) | semver 契約:public surface、棄用/遷移政策 |
 | [releases/](releases/) | 各版手寫 release notes(隨 PR review 版本化;發佈時作為 notes 來源) |

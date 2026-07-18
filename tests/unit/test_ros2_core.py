@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -238,7 +242,9 @@ def test_zero_like_zeros_a_twist() -> None:
 def test_ros_drive_publishes_for_duration_then_stops(monkeypatch) -> None:
     captured = {}
 
-    def fake_pub_for(topic, message_type, payload_yaml, *, rate_hz, duration_s, stop_yaml):
+    async def fake_pub_for(
+        topic, message_type, payload_yaml, *, rate_hz, duration_s, stop_yaml
+    ):
         captured.update(
             topic=topic, duration_s=duration_s, rate_hz=rate_hz, stop_yaml=stop_yaml
         )
@@ -264,7 +270,9 @@ def test_ros_drive_publishes_for_duration_then_stops(monkeypatch) -> None:
 def test_ros_drive_clamps_duration(monkeypatch) -> None:
     captured = {}
 
-    def fake_pub_for(topic, message_type, payload_yaml, *, rate_hz, duration_s, stop_yaml):
+    async def fake_pub_for(
+        topic, message_type, payload_yaml, *, rate_hz, duration_s, stop_yaml
+    ):
         captured["duration_s"] = duration_s
         return ros2_adapter.PubResult(ok=True, message="ok")
 
@@ -402,11 +410,10 @@ def test_verified_drive_missing_post_feedback_is_unverified(monkeypatch) -> None
 
 
 def test_ros_pub_execute_reports_success(monkeypatch) -> None:
-    monkeypatch.setattr(
-        ros2_adapter,
-        "topic_pub",
-        lambda *a, **kw: ros2_adapter.PubResult(ok=True, message="published"),
-    )
+    async def fake_pub(*args, **kwargs):
+        return ros2_adapter.PubResult(ok=True, message="published")
+
+    monkeypatch.setattr(ros2_adapter, "topic_pub_async", fake_pub)
 
     output = asyncio.run(
         ros2_core.ros_pub_execute("/cmd_vel", "geometry_msgs/msg/Twist", {"linear": {"x": 0.5}})
@@ -451,11 +458,12 @@ def test_safety_clamp_bounds_ackermann_drive_variants() -> None:
 def test_ros_pub_execute_applies_ackermann_vehicle_limits(monkeypatch) -> None:
     captured = {}
 
-    def fake_pub(topic, message_type, payload_yaml):
+    async def fake_pub(topic, message_type, payload_yaml, **kwargs):
         captured["payload"] = json.loads(payload_yaml)
+        captured["cancel_stop"] = json.loads(kwargs["cancel_stop_yaml"])
         return ros2_adapter.PubResult(ok=True, message="published")
 
-    monkeypatch.setattr(ros2_adapter, "topic_pub", fake_pub)
+    monkeypatch.setattr(ros2_adapter, "topic_pub_async", fake_pub)
     asyncio.run(
         ros2_core.ros_pub_execute(
             "/ackermann_cmd",
@@ -469,6 +477,9 @@ def test_ros_pub_execute_applies_ackermann_vehicle_limits(monkeypatch) -> None:
     assert captured["payload"] == {
         "drive": {"speed": 0.5, "steering_angle": 0.4}
     }
+    assert captured["cancel_stop"] == {
+        "drive": {"speed": 0.0, "steering_angle": 0.0}
+    }
 
 
 def test_safety_clamp_does_not_treat_bool_as_speed() -> None:
@@ -480,7 +491,7 @@ def test_safety_clamp_does_not_treat_bool_as_speed() -> None:
 def test_topic_pub_for_reports_publisher_failure(monkeypatch) -> None:
     captured = {}
 
-    def fake_run(args, **kwargs):
+    async def fake_run(args, **kwargs):
         captured["args"] = args
         captured["timeout"] = kwargs["timeout"]
         return ros2_adapter.subprocess.CompletedProcess(
@@ -488,10 +499,10 @@ def test_topic_pub_for_reports_publisher_failure(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
-    monkeypatch.setattr(ros2_adapter.subprocess, "run", fake_run)
+    monkeypatch.setattr(ros2_adapter, "run_process_async", fake_run)
 
-    result = ros2_adapter.topic_pub_for(
-        "/cmd_vel", "bad/type", "{}", duration_s=0.5
+    result = asyncio.run(
+        ros2_adapter.topic_pub_for("/cmd_vel", "bad/type", "{}", duration_s=0.5)
     )
 
     assert result.ok is False
@@ -505,26 +516,104 @@ def test_topic_pub_for_reports_publisher_failure(monkeypatch) -> None:
     assert captured["timeout"] == 8.5
 
 
-def test_topic_pub_for_zero_duration_sends_stop_only(monkeypatch) -> None:
-    published = []
+@pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-specific")
+def test_ros_drive_cancellation_reaps_publisher_before_final_zero(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "fake_publisher.py"
+    events = tmp_path / "events.log"
+    pid_file = tmp_path / "publisher.pid"
+    script.write_text(
+        """import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+events, pid_file = map(Path, sys.argv[1:3])
+running = True
+
+def stop(signum, frame):
+    global running
+    running = False
+
+signal.signal(signal.SIGTERM, stop)
+pid_file.write_text(str(os.getpid()))
+while running:
+    with events.open("a") as stream:
+        stream.write("motion\\n")
+    time.sleep(0.02)
+with events.open("a") as stream:
+    stream.write("publisher-stopped\\n")
+""",
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
     monkeypatch.setattr(
         ros2_adapter,
-        "topic_pub",
-        lambda topic, message_type, payload: published.append(payload),
-    )
-    monkeypatch.setattr(
-        ros2_adapter.subprocess,
-        "Popen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("motion publisher must not start for zero duration")
-        ),
+        "_bounded_publisher_args",
+        lambda *args, **kwargs: [sys.executable, str(script), str(events), str(pid_file)],
     )
 
-    result = ros2_adapter.topic_pub_for(
-        "/cmd_vel", "geometry_msgs/msg/Twist", "{linear: {x: 1.0}}", duration_s=0.0,
-        stop_yaml="{linear: {x: 0.0}}",
+    async def final_zero(*args, **kwargs):
+        with events.open("a") as stream:
+            stream.write("zero\n")
+
+    monkeypatch.setattr(ros2_adapter, "_best_effort_stop", final_zero)
+
+    async def scenario() -> int:
+        task = asyncio.create_task(
+            ros2_core.ros_drive(
+                "/cmd_vel",
+                "geometry_msgs/msg/Twist",
+                {"linear": {"x": 0.2}},
+                duration_s=30.0,
+            )
+        )
+        for _ in range(100):
+            if pid_file.exists() and events.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert pid_file.exists() and events.exists()
+        pid = int(pid_file.read_text().strip())
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return pid
+
+    pid = asyncio.run(scenario())
+    lines_after_cancel = events.read_text().splitlines()
+    time.sleep(0.15)
+
+    assert lines_after_cancel[-2:] == ["publisher-stopped", "zero"]
+    assert events.read_text().splitlines() == lines_after_cancel
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+def test_topic_pub_for_zero_duration_sends_stop_only(monkeypatch) -> None:
+    published = []
+
+    monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
+    async def fake_stop_pub(topic, message_type, payload, **kwargs):
+        published.append(payload)
+        return ros2_adapter.PubResult(ok=True, message="published")
+
+    monkeypatch.setattr(ros2_adapter, "topic_pub_async", fake_stop_pub)
+    async def unexpected_motion(*args, **kwargs):
+        raise AssertionError("motion publisher must not start for zero duration")
+
+    monkeypatch.setattr(ros2_adapter, "run_process_async", unexpected_motion)
+
+    result = asyncio.run(
+        ros2_adapter.topic_pub_for(
+            "/cmd_vel",
+            "geometry_msgs/msg/Twist",
+            "{linear: {x: 1.0}}",
+            duration_s=0.0,
+            stop_yaml="{linear: {x: 0.0}}",
+        )
     )
     assert result.ok is True
     assert published == ["{linear: {x: 0.0}}"]

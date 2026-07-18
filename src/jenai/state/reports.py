@@ -15,6 +15,7 @@ from pathlib import Path
 
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ProviderChatError, ask_provider
+from jenai.secure_files import atomic_write_text
 from jenai.tools.skills import PatrolReport
 
 _SUMMARY_PROMPT = (
@@ -53,10 +54,12 @@ def save_patrol_log(
         ],
     }
     directory = reports_dir(config_path)
-    directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"patrol-{stamp}.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    return atomic_write_text(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        harden_parent=True,
+    )
 
 
 def list_patrol_logs(config_path: Path) -> list[Path]:

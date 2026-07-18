@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
+from pathlib import Path
+
+import pytest
 
 from jenai.config.store import build_minimal_config
 from jenai.schemas import Location, Pose2D
@@ -115,3 +120,80 @@ def test_route_preview_bare_location_name_is_the_goal() -> None:
     output = asyncio.run(route_core.route_preview(_config(), _locations(), "Mechanical Hall"))
     assert output.resolved_goal.name == "Mechanical Hall"
     assert "start" not in output.outgoing_action
+
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-specific")
+def test_route_cli_fallback_cancellation_kills_and_reaps_send_goal(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The fallback must not send/finish a Nav2 goal after Esc reports cancel."""
+
+    events = tmp_path / "route-events.log"
+    pid_file = tmp_path / "route.pid"
+    fake_ros2 = tmp_path / "ros2"
+    fake_ros2.write_text(
+        """#!/usr/bin/env python3
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+if sys.argv[1:3] == ["action", "list"]:
+    print("/navigate_to_pose")
+    raise SystemExit(0)
+
+events = Path(os.environ["FAKE_ROUTE_EVENTS"])
+pid_file = Path(os.environ["FAKE_ROUTE_PID"])
+running = True
+
+def stop(signum, frame):
+    global running
+    running = False
+
+signal.signal(signal.SIGTERM, stop)
+pid_file.write_text(str(os.getpid()))
+with events.open("a") as stream:
+    stream.write("goal-started\\n")
+deadline = time.monotonic() + 0.4
+while running and time.monotonic() < deadline:
+    time.sleep(0.01)
+with events.open("a") as stream:
+    stream.write("goal-reaped\\n" if not running else "late-goal-complete\\n")
+""",
+        encoding="utf-8",
+    )
+    fake_ros2.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_ROUTE_EVENTS", str(events))
+    monkeypatch.setenv("FAKE_ROUTE_PID", str(pid_file))
+    config = _config().model_copy(update={"route_adapter": "nav2"})
+    action = {
+        "goal": {
+            "name": "A",
+            "frame_id": "map",
+            "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0},
+        }
+    }
+
+    async def scenario() -> int:
+        task = asyncio.create_task(route_core.route_execute(config, action))
+        for _ in range(100):
+            if pid_file.exists() and events.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert pid_file.exists() and events.exists()
+        pid = int(pid_file.read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return pid
+
+    pid = asyncio.run(scenario())
+    lines_after_cancel = events.read_text().splitlines()
+    assert lines_after_cancel == ["goal-started", "goal-reaped"]
+    time.sleep(0.5)
+    assert events.read_text().splitlines() == lines_after_cancel
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)

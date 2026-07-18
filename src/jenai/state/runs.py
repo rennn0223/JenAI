@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,7 @@ from jenai.schemas import (
     ToolCallRecord,
 )
 from jenai.schemas.models import utc_now
+from jenai.secure_files import atomic_write_text
 from jenai.state.audit import AuditStore
 
 TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED}
@@ -209,11 +209,11 @@ class RunStore:
             "sdk_state": sdk_state,
         }
         path = self._pending_path(run_id)
-        temp = path.with_suffix(".tmp")
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False)
-        os.replace(temp, path)
+        atomic_write_text(
+            path,
+            json.dumps(payload, ensure_ascii=False),
+            harden_parent=True,
+        )
 
     def pop_pending_state(self, run_id: str) -> Any | None:
         return self._pending_state.pop(run_id, None)

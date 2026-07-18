@@ -6,7 +6,10 @@ offered.
 
 ## Before requesting help
 
-1. Install the latest release and run `JenAI version`.
+1. If you are an authorized collaborator, use authenticated GitHub CLI access to install an
+   immutable release wheel with its matching constraints and verified `SHA256SUMS` (see
+   `docs/QUICKSTART.md`), then run `JenAI version`. This private repository does not currently
+   provide an anonymous public download channel.
 2. Run `JenAI doctor` in the same shell used to start JenAI.
 3. For ROS2 problems, record `ROS_DISTRO`, `ROS_DOMAIN_ID`, RMW implementation, Nav2 availability,
    and whether the issue occurs in Isaac Sim or on physical hardware.
@@ -22,7 +25,11 @@ camera images, site coordinates, or unredacted model prompts.
 
 ## Support scope
 
-- Latest release on the validated combinations in `docs/SUPPORT_MATRIX.md`.
+- Release wheels installed with their same-release constraints on the validated combinations in
+  `docs/SUPPORT_MATRIX.md`.
+- A source install pinned to an exact reviewed tag or full commit SHA is supported, but has not
+  received the same isolated install lifecycle validation as the release wheel. Moving branches
+  and unpinned source snapshots are not reproducible support targets.
 - Installation, configuration, TUI/WebUI behavior, registered ROS2 capabilities, and Isaac Sim
   reproduction.
 - Physical-vehicle reports are welcome, but hardware-specific tuning and safety acceptance remain
@@ -32,4 +39,5 @@ Public-internet hosting, multi-tenant operation, certified functional safety, ve
 controllers, and custom SLAM/Nav2 tuning are outside the v1 support commitment.
 
 Security-sensitive issues must follow `SECURITY.md`, not a public bug report. Upgrade and rollback
-steps are in `docs/ROLLBACK.md`.
+steps are in `docs/ROLLBACK.md`; local export, retention, purge, and uninstall data boundaries are
+in `docs/DATA_LIFECYCLE.md`.

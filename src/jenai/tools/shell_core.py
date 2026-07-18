@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import signal
 import subprocess
@@ -10,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jenai.schemas import EffectScope, RiskLevel, ShellOutput
+from jenai.subprocesses import run_process_async
 
 # Tokens that indicate a write / delete / install / privilege action. Their
 # presence bumps the command to P2 so the approval card warns more loudly.
@@ -157,8 +157,7 @@ async def run_shell(command: str, *, cwd: str | None = None, timeout: float = 30
     workdir = _resolve_cwd(cwd)
     risk = assess_command(command)
     try:
-        completed = await asyncio.to_thread(
-            run_process,
+        completed = await run_process_async(
             command,
             shell=True,
             cwd=workdir,

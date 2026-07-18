@@ -1,11 +1,25 @@
 [project]
 name = "jenai"
-version = "1.1.4"
+version = "2.0.0"
 description = "Terminal-first AI agent interface for ROS2 robot workflows."
 readme = "README.md"
+authors = [{ name = "林書任 / LIN, SHU-JEN" }]
+maintainers = [{ name = "林書任 / LIN, SHU-JEN" }]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
+keywords = ["AI agent", "Nav2", "robotics", "ROS 2", "unmanned ground vehicle"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "openai>=1.50.0",
     "openai-agents>=0.2.0",
@@ -16,6 +30,11 @@ dependencies = [
     "mcp>=1.28.1",
     "tomli-w>=1.2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/rennn0223/JenAI"
+Repository = "https://github.com/rennn0223/JenAI"
+Issues = "https://github.com/rennn0223/JenAI/issues"
 
 [dependency-groups]
 dev = [
@@ -35,6 +54,30 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jenai"]
+
+[tool.hatch.build.targets.sdist]
+# Defense in depth: Hatch normally follows Git's tracked-file set, but a local
+# build must never package workstation state, credentials, or thesis material.
+exclude = [
+    "/.agents/",
+    "/.claude/settings.local.json",
+    "/.codex/",
+    "/.env",
+    "/.env.*",
+    "/artifacts/",
+    "/audit.sqlite3*",
+    "/log/",
+    "/memory/",
+    "/docs/PAPERS.md",
+    "/docs/THESIS_*.md",
+    "/docs/thesis-assets/",
+    "/docs/thesis-v*-media/",
+    "/scripts/build_thesis_*.py",
+    "/scripts/export_thesis_markdown.py",
+    "/*.docx",
+    "/*.pdf",
+    "/*.pptx",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

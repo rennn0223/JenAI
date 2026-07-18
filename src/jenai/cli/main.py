@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -20,11 +19,13 @@ from jenai.adapters.locations import (
     find_location,
     load_locations_tolerant,
 )
+from jenai.cli.data import data_app
 from jenai.config import ConfigError, default_config_path, load_config, load_env_file
 from jenai.config.models import AppConfig
 from jenai.config.setup import run_setup_wizard
 from jenai.doctor import run_doctor
 from jenai.schemas import DoctorResult, DoctorStatus, Location
+from jenai.secure_files import atomic_write_bytes
 from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.route_core import route_preview
 from jenai.tui import run_tui, status_color
@@ -36,6 +37,7 @@ app = typer.Typer(
 )
 loc_app = typer.Typer(help="Manage locations.")
 app.add_typer(loc_app, name="loc")
+app.add_typer(data_app, name="data")
 console = Console()
 # ALL diagnostics/warnings/status lines go here, never to `console`: stdout is
 # the MCP protocol channel under `jenai mcp`, and one stray decorated print
@@ -47,6 +49,21 @@ ConfigOption = Annotated[
     Path | None,
     typer.Option("--config", help="Path to JenAI config file."),
 ]
+
+
+def _run_setup_and_reload(config_path: Path) -> AppConfig:
+    """Run first-time setup, then validate and return the written config."""
+    written = run_setup_wizard(config_path)
+    console.print(f"Config written to {written}")
+    try:
+        loaded = load_config(written)
+    except ConfigError as exc:
+        err_console.print(f"[red]Setup wrote an invalid config: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    if not loaded.is_complete():
+        err_console.print("[red]Setup finished but the config is still incomplete.[/red]")
+        raise typer.Exit(1)
+    return loaded
 
 
 @app.callback(invoke_without_command=True)
@@ -72,15 +89,11 @@ def main(
         loaded = load_config(config_path)
     except ConfigError:
         console.print("[bold]No complete JenAI config found.[/bold]")
-        written = run_setup_wizard(config_path)
-        console.print(f"Config written to {written}")
-        raise typer.Exit(0) from None
+        loaded = _run_setup_and_reload(config_path)
 
     if not loaded.is_complete():
         console.print("[yellow]JenAI config is incomplete. Starting setup wizard.[/yellow]")
-        written = run_setup_wizard(config_path)
-        console.print(f"Config written to {written}")
-        raise typer.Exit(0)
+        loaded = _run_setup_and_reload(config_path)
 
     # Startup gate: skip the nav-stack probes (seconds of ros2 CLI) — those
     # belong to the explicit `jenai doctor`, not to every launch.
@@ -141,7 +154,7 @@ def onboard(
             raise typer.Exit(0)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         backup = config_path.with_name(f"{config_path.name}.bak-{stamp}")
-        shutil.copy2(config_path, backup)
+        atomic_write_bytes(backup, config_path.read_bytes())
         console.print(f"[green]Existing config backed up to {backup}[/green]")
 
     console.print("[dim]Keeping .env, locations, skills, reports, and run history.[/dim]")
@@ -323,8 +336,7 @@ def scaffold(
             ok, log = build_package(ws_root, plan.package_name)
     if ok:
         console.print(
-            f"[green]Build succeeded.[/green] "
-            f"Try: ros2 run {plan.package_name} {plan.node_name}"
+            f"[green]Build succeeded.[/green] Try: ros2 run {plan.package_name} {plan.node_name}"
         )
     else:
         console.print("[red]Build still failing — package left in place for manual fixing:[/red]")
@@ -502,16 +514,19 @@ def eval_command(
                 else None
             ),
         }
-        typer.echo(json.dumps(
-            {
-                "metadata": metadata,
-                "summary": report.summary,
-                "families": report.families,
-                "consensus_results": report.consensus_results,
-                "results": report.results,
-            },
-            ensure_ascii=False, indent=2,
-        ))
+        typer.echo(
+            json.dumps(
+                {
+                    "metadata": metadata,
+                    "summary": report.summary,
+                    "families": report.families,
+                    "consensus_results": report.consensus_results,
+                    "results": report.results,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
     table = Table(title=f"Decision eval · {len(scenarios)} scenarios × {repeats} (majority)")
     table.add_column("Family")
@@ -521,13 +536,19 @@ def eval_command(
     table.add_column("refer", justify="right")
     for family, f in sorted(report.families.items()):
         table.add_row(
-            family, str(f["n"]), f"{f['correct'] / f['n']:.0%}",
-            f"{f['unsafe'] / f['n']:.0%}", f"{f['refer'] / f['n']:.0%}",
+            family,
+            str(f["n"]),
+            f"{f['correct'] / f['n']:.0%}",
+            f"{f['unsafe'] / f['n']:.0%}",
+            f"{f['refer'] / f['n']:.0%}",
         )
     s_ = report.summary
     table.add_row(
-        "[bold]ALL[/bold]", str(s_["n"]), f"[bold]{s_['accuracy']:.0%}[/bold]",
-        f"[bold]{s_['unsafe_rate']:.0%}[/bold]", f"{s_['refer_rate']:.0%}",
+        "[bold]ALL[/bold]",
+        str(s_["n"]),
+        f"[bold]{s_['accuracy']:.0%}[/bold]",
+        f"[bold]{s_['unsafe_rate']:.0%}[/bold]",
+        f"{s_['refer_rate']:.0%}",
     )
     console.print(table)
     for row in report.results:
@@ -552,11 +573,12 @@ def help_command() -> None:
         ("JenAI help", "本頁"),
         ("JenAI onboard", "備份現有 config 並重跑 setup wizard(.env/locations 保留)"),
         ("JenAI doctor", "環境健檢:ROS2/nav/provider/locations(--json 機器可讀)"),
+        ("JenAI data status / harden / export / prune / purge", "本機敏感資料生命週期管理"),
         ("JenAI web", "手機可用的 WebUI(狀態/地圖/批准/STOP);印出帶 token 的網址"),
         ("JenAI mcp", "把機器人工具開給 Claude 等 MCP client(預設唯讀,--allow-actions 才能動)"),
         ("JenAI daemon", "常駐規則引擎:電量低回充、急停規則(--rules rules.toml)"),
-        ("JenAI route \"<話>\"", "一句話導航(需 Nav2;互動確認後送出)"),
-        ("JenAI scaffold \"<描述>\"", "自然語言生成 ROS2 套件(boilerplate 定死 + LLM 寫 node)"),
+        ('JenAI route "<話>"', "一句話導航(需 Nav2;互動確認後送出)"),
+        ('JenAI scaffold "<描述>"', "自然語言生成 ROS2 套件(boilerplate 定死 + LLM 寫 node)"),
         ("JenAI loc list / show <名>", "查導航地點"),
         ("JenAI config / providers / models", "看設定、供應商、模型綁定"),
         ("JenAI version", "版本"),
