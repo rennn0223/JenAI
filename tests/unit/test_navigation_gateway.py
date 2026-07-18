@@ -102,3 +102,37 @@ def test_gateway_persists_structured_gate_verdict(monkeypatch, tmp_path) -> None
     assert event.status == "refer"
     assert event.summary == "endpoint unavailable"
     assert event.details["criteria"] == [{"id": "G4", "status": "fail"}]
+
+
+def test_gateway_exposes_structured_gate_verdict_without_audit_store(monkeypatch) -> None:
+    report = GateReport(verdict="block", reason="forbidden zone")
+    observed: list[GateReport] = []
+
+    async def fake_dispatch(_config, _provider, _action, **kwargs):
+        kwargs["on_gate_report"](report)
+        return RouteOutput(input_text="", execution_status="blocked")
+
+    monkeypatch.setattr(gateway_module, "navigate_with_fallback", fake_dispatch)
+    gateway = gateway_module.NavigationGateway(AppConfig())
+
+    asyncio.run(gateway.execute(ACTION, on_gate_report=observed.append))
+
+    assert observed == [report]
+
+
+def test_gate_observer_failure_does_not_change_navigation_result(monkeypatch) -> None:
+    report = GateReport(verdict="pass", reason="clear")
+
+    async def fake_dispatch(_config, _provider, _action, **kwargs):
+        kwargs["on_gate_report"](report)
+        return RouteOutput(input_text="", execution_status="succeeded")
+
+    def broken_observer(_report: GateReport) -> None:
+        raise RuntimeError("evidence sink unavailable")
+
+    monkeypatch.setattr(gateway_module, "navigate_with_fallback", fake_dispatch)
+    gateway = gateway_module.NavigationGateway(AppConfig())
+
+    output = asyncio.run(gateway.execute(ACTION, on_gate_report=broken_observer))
+
+    assert output.execution_status == "succeeded"

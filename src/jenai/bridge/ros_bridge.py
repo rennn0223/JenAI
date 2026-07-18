@@ -29,6 +29,7 @@ import rclpy
 # Sibling imports: this file runs as a script under system Python, outside the
 # JenAI venv/package, so pure helpers must be importable from its own directory.
 from _navigation_state import nav_result_status, navigation_active
+from _protocol import dispatch_request
 from _watchdog import WatchdogState
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
@@ -281,6 +282,7 @@ class BridgeNode(Node):
         # _drive_active and emits nav_result — otherwise navigate_live hangs to
         # its timeout and every later drive rejects with "already running".
         try:
+
             def _odom_cb(msg) -> None:
                 p = msg.pose.pose
                 latest["x"] = p.position.x
@@ -365,15 +367,11 @@ class BridgeNode(Node):
                     # a near on-path obstacle approached at a slant (live:
                     # cube at 33° bearing, 1.35 m) and false-triggers on far
                     # off-path returns near the scan edge.
-                    nearest = corridor_nearest(
-                        filtered, depth["angles"], heading_err=heading_err
-                    )
+                    nearest = corridor_nearest(filtered, depth["angles"], heading_err=heading_err)
                     # Seeking: anything inside slow_distance ahead → plan.
                     # On a detour leg: only an emergency (inside stop_distance)
                     # forces a REplan — the legs are meant to run blind.
-                    threshold = (
-                        avoid["stop_distance"] if waypoints else avoid["slow_distance"]
-                    )
+                    threshold = avoid["stop_distance"] if waypoints else avoid["slow_distance"]
                     if nearest <= threshold:
                         _zero_pulse()  # stop first: plan from a settled scan
                         replans += 1
@@ -686,14 +684,11 @@ class BridgeNode(Node):
             except Exception:
                 pass
 
-        sub = self.create_subscription(
-            Image, depth_topic, _cb, QoSPresetProfiles.SENSOR_DATA.value
-        )
+        sub = self.create_subscription(Image, depth_topic, _cb, QoSPresetProfiles.SENSOR_DATA.value)
         try:
             if not event.wait(timeout):
                 raise RuntimeError(
-                    f"Got {len(got)}/{frames} depth frames on {depth_topic} "
-                    f"within {timeout:.0f}s."
+                    f"Got {len(got)}/{frames} depth frames on {depth_topic} within {timeout:.0f}s."
                 )
         finally:
             self.destroy_subscription(sub)
@@ -815,61 +810,6 @@ def _watchdog_loop(node: BridgeNode, state: WatchdogState, stop: threading.Event
             state.mark_halted()
 
 
-def _handle(node: BridgeNode, op: str, req: dict, watchdog: WatchdogState) -> dict:
-    if op == "ping":
-        return {"pong": True}
-    if op == "pose":
-        return node.get_pose(float(req.get("timeout", 2.0)))
-    if op == "nav_send":
-        return node.nav_send(
-            req["x"], req["y"], req.get("yaw", 0.0), req.get("frame_id", "map"), req.get("tag", "")
-        )
-    if op == "drive_to_pose":
-        return node.drive_to_pose(
-            req["x"],
-            req["y"],
-            req.get("yaw", 0.0),
-            tag=req.get("tag", ""),
-            cmd_vel_topic=req.get("cmd_vel_topic", "/cmd_vel"),
-            stamped=bool(req.get("stamped", False)),
-            max_linear=float(req.get("max_linear", 1.0)),
-            max_angular=float(req.get("max_angular", 2.0)),
-            tolerance=float(req.get("tolerance", 0.3)),
-            timeout=float(req.get("timeout", 600.0)),
-            avoidance=req.get("avoidance"),
-        )
-    if op == "nav_cancel":
-        return node.nav_cancel()
-    if op == "halt":
-        return node.halt(
-            req.get("cmd_vel_topic", "/cmd_vel"),
-            bool(req.get("stamped", False)),
-        )
-    if op == "watchdog":
-        result = watchdog.configure(req)
-        # Pre-create the zero-velocity publisher NOW so DDS discovery is done
-        # long before an emergency halt needs it.
-        with node._halt_lock:
-            node.ensure_halt_publisher(watchdog.cmd_vel_topic, watchdog.stamped)
-        return result
-    if op == "capture_frame":
-        return node.capture_frame(req["topic"], float(req.get("timeout", 5.0)))
-    if op == "avoid_snapshot":
-        return node.avoid_snapshot(
-            req.get("depth_topic", "/depth"),
-            req["path"],
-            int(req.get("frames", 5)),
-            float(req.get("timeout", 10.0)),
-        )
-    if op == "watch":
-        return node.watch(
-            req["watch_id"], req["topic"], req["msg_type"], float(req.get("throttle", 1.0))
-        )
-    if op == "unwatch":
-        return node.unwatch(req["watch_id"])
-    raise RuntimeError(f"unknown op '{op}'")
-
-
 def main() -> None:
     rclpy.init()
     node = BridgeNode()
@@ -894,7 +834,7 @@ def main() -> None:
 
     def _serve(req_id, op, req) -> None:
         try:
-            _emit({"id": req_id, "ok": True, "result": _handle(node, op, req, watchdog)})
+            _emit({"id": req_id, "ok": True, "result": dispatch_request(node, op, req, watchdog)})
         except Exception as exc:  # keep serving; report the failure to the client
             _emit({"id": req_id, "ok": False, "error": str(exc)})
 

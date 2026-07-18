@@ -12,6 +12,7 @@ build/
 .tmp/
 venv/
 .env
+artifacts/
 *.log
 .coverage
 coverage.xml

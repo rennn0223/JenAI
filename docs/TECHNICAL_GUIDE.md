@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v1.1.3(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v1.1.4(2026-07)。專案方向見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -161,17 +161,20 @@ jenai daemon                                        # Ctrl-C 停止
 
 ### 4.2 模組導覽(每個檔案做什麼)
 
-> 行數為 v0.30.0 快照,僅供量級參考——以 `wc -l` 實測為準。
+> 行數為 v1.1.4 快照,僅供量級參考——以 `wc -l` 實測為準。
 
 | 模組 | 行數 | 職責 |
 |---|---|---|
 | `cli/main.py` | 627 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、**`eval`**、**`onboard`**(重跑設定精靈,自動備份)、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
-| `tui/app.py` | 1715 | App 殼:輸入分發、**權限三模式(Shift+Tab)與裸自然語言路由**、spinner、Esc 中斷、`/stop` 搶佔、審批卡流程、mission/patrol 執行 |
-| `tui/robot_commands.py` | 923 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/loc` `/vision` + bridge 生命週期(含 watchdog 佈署) |
+| `tui/app.py` | 1562 | App 殼:輸入分發、**權限三模式(Shift+Tab)與裸自然語言路由**、spinner、Esc 中斷、`/stop` 搶佔、審批卡流程、mission/patrol 執行 |
+| `tui/catalog.py` | 238 | Slash palette、standalone greeting 判斷與現行 CSS；宣告與互動 engine 分離，未改視覺 token |
+| `tui/robot_commands.py` | 812 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/vision` + bridge 生命週期(含 watchdog 佈署) |
+| `tui/location_commands.py` | 303 | Mixin:`/loc` persistence、AMCL/odom pose 與 GPS→map 儲存；不執行導航 |
 | `tui/info_commands.py` | 292 | Mixin:`/help` `/status` `/doctor` `/model` `/provider` 等資訊類 |
 | `tui/panels.py` | 433 | 純視覺:WelcomePanel、TimelineItem(variant 決定行距)、OutputPanel、CommandPalette |
 | `tui/widgets/` | ~200 | ApprovalCard(1/2/3 鍵選擇)、Plan/Tool/Error blocks |
-| `bridge/ros_bridge.py` | 922 | **系統 Python** 下的 rclpy 常駐節點:JSON-over-stdio;pose、nav_send/feedback/cancel、**halt(急停)**、**watchdog(斷線自主停車)**、capture_frame、watch |
+| `bridge/ros_bridge.py` | 875 | **系統 Python** 下的 rclpy 常駐節點:pose、nav_send/feedback/cancel、**halt(急停)**、**watchdog(斷線自主停車)**、capture_frame、watch |
+| `bridge/_protocol.py` | 80 | stdlib-only JSON op dispatcher；request defaults/type conversion 可不靠 rclpy 單測 |
 | `bridge/client.py` | 366 | venv 側非同步 client:spawn、request futures、事件路由、halt/configure_safety |
 | `tools/*_core.py` | — | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
 | `tools/nav_live.py` | 194 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback`(nav2-vs-CLI 調度的唯一出處,TUI/MCP 共用)** |
@@ -227,7 +230,7 @@ env -u PYTHONPATH uv run pytest     # 必須 unset PYTHONPATH(ROS 遮蔽問題)
 env -u PYTHONPATH uv run ruff check src tests
 ```
 
-- **目前基準**:2026-07-18 本機完整回歸為 511/511 通過；不含於 GitHub release artifact，是否提交測試變更由維護者決定。
+- **目前基準**:2026-07-18 本機完整回歸為 532/532 通過；不含於 GitHub release artifact，是否提交測試變更由維護者決定。
 - **真實 TUI 驗收**:[TUI_LIVE_ACCEPTANCE_2026-07-17.md](TUI_LIVE_ACCEPTANCE_2026-07-17.md) 記錄 Isaac Sim/Nav2 的 ROS introspection、有限時致動、stop、vision/perception、patrol、Slash/NL explore 與四角 inspect。該紀錄是描述性系統驗收，不代替實體安全或使用者效率實驗。
 - **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test` 以 Python 3.12／3.13／3.14 matrix 跑 ruff + pytest(coverage 寫入 job summary,**安全鏈覆蓋 fail-under=90 倒退閘**)、`build`(`uv build` + `uvx` 全新環境裝 wheel 跑 `jenai --help`,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護
 - **Release**(`.github/workflows/release.yml`):兩個入口,同一套閘(驗 tag 與 pyproject 版本一致、lint+測試、`uv build` + wheel 冒煙)——①推 `vX.Y.Z` tag:建**草稿** release(自動 notes),人工 `gh release edit vX.Y.Z --notes-file docs/releases/vX.Y.Z.md --draft=false` 發佈;②**手動 workflow_dispatch**(輸入 tag):由 workflow 建 tag 並直接以 `docs/releases/<tag>.md` **發佈**(dispatch 本身即人工授權;無 notes 檔即失敗)。手寫 notes 自 v0.23 版本化在 `docs/releases/`,隨 PR review。tag 已有 release 時只補上傳附件
@@ -238,7 +241,7 @@ env -u PYTHONPATH uv run ruff check src tests
 
 **加一個 slash 指令**:`tui/app.py` 的 `SLASH_COMMANDS` 加 `SlashCommand("/foo", "說明", "/foo <arg>")` → `_resolve_command_handler` 的 handlers dict 加映射 → 在對應 mixin(info/robot)寫 `async def _show_foo(self, arg)` → `help_content.py` 補條目 → 測試用 `app.handle_user_text("/foo x")`。
 
-**加一個 bridge 能力**:`ros_bridge.py` 的 `BridgeNode` 加方法 + `_handle()` 加 op 分支(記住:只能用系統 Python 有的套件)→ `client.py` 加 typed helper → `fake_bridge.py` 補假回應 → 測試。
+**加一個 bridge 能力**:`ros_bridge.py` 的 `BridgeNode` 加方法 + `_protocol.dispatch_request()` 加 op 分支(記住:只能用系統 Python 有的套件)→ `client.py` 加 typed helper → `fake_bridge.py` 補假回應 → protocol/client 測試。
 
 **加一個 daemon 條件/動作**:條件在 `engine.py` 的 `condition_met`;動作在 `Rule._check` 白名單 + `RuleEngine.handle_event` 的 gating + `runner.py` 執行。**預設必須是不動作**。
 

@@ -33,7 +33,7 @@
 
 # 第一層:橋接與載具(離鐵最近)
 
-### `bridge/ros_bridge.py`(922 行)——【全 repo 最重要的檔案】
+### `bridge/ros_bridge.py`(875 行)——【全 repo 最重要的檔案】
 - **做什麼**:常駐 rclpy 節點。ops:`pose`、`nav_send`(Nav2 action)、
   `drive_to_pose`(無 Nav2 的 odom→cmd_vel 直驅+stop-and-go detour)、
   `nav_cancel`、`halt`(急停)、`watchdog`、`capture_frame`、`watch`。
@@ -69,12 +69,12 @@
   - `stop()`:kill 後 `await proc.wait()` 收屍(否則殭屍+GC 噪音);
     kill 與自然死亡的 race 用 `ProcessLookupError` 包護。
 
-### `bridge/_avoidance.py` + `_safety_order.py`
+### `bridge/_avoidance.py` + `_safety_order.py` + `_protocol.py`
 - **做什麼**:純 stop-and-go detour、目標走廊、depth freshness、StuckDetector
   與急停順序。
 - **為什麼**:stdlib-only 的**兄弟模組**(`_avoidance` / `_safety_order` /
-  `_watchdog` / `_navigation_state`)—— bridge 當 sibling import、venv 測試當
-  package import。把 bridge 裡的純決策抽出後,安全分支不依賴 ROS 也能單測。
+  `_watchdog` / `_navigation_state` / `_protocol`)—— bridge 當 sibling import、
+  venv 測試當 package import。純安全決策與 JSON op mapping 都不依賴 ROS 即可單測。
 
 ### `adapters/ros2_adapter.py`(331 行)
 - **做什麼**:`ros2` CLI 的 subprocess 包裝(topics/echo/pub/action/interface)。
@@ -231,7 +231,9 @@
 - **panels.py**:純視覺(WelcomePanel/TimelineItem/OutputPanel/palette);
   `pixel_mark(frame, running)` 半格像素渲染(▀▄█ + 前景背景色=一格兩像素);
   各姿勢釘同 bounding box 防抖。
-- **robot_commands.py / info_commands.py**:全部 slash handler;
+- **catalog.py**:Slash palette、standalone greeting 與現行 CSS；不負責執行。
+- **robot_commands.py / location_commands.py / info_commands.py**:依 ROS 動作、位置資料、
+  資訊查詢拆分 slash handler;
   `_request_direct_approval` 是**非 agent 動作的唯一批准管線**(v0.8 把 7 份
   複製收成 1 份);`auto_key` 讓 /dock 與 /route 的「記住批准」不互相洩漏。
 - **widgets/**:ApprovalCard(1/2/3 數字鍵、Esc 拒絕)、Plan/Tool/Error blocks。

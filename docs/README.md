@@ -19,6 +19,7 @@
 | [CODE_TOUR](CODE_TOUR.md) | 全程式碼逐檔導讀:功能/SDK/為什麼這樣寫 + 6 小時閱讀路徑 |
 | [COMMANDS](COMMANDS.md) | CLI 與 slash 指令規格、批准清單、快捷鍵 |
 | [TEST](TEST.md) | 全部可測項目 + 期望輸出 + 環境須知(驗收手冊) |
+| [ISAAC_HIL_ACCEPTANCE](ISAAC_HIL_ACCEPTANCE.md) | 人工批准的 self-hosted Isaac route／cancel／stop／Twin artifact 驗收 |
 | [EXPERIMENTS](EXPERIMENTS.md) | 實驗 runbook:E1–E4/B4/soak 的指令、輸出位置、數據回填對照 |
 | [USABILITY_STUDY](USABILITY_STUDY.md) | 手動 ROS2／Slash／自然語言的平衡受試、計時、失敗保留與效率報告流程 |
 | [VEHICLE_POC](VEHICLE_POC.md) | 第二種載具 adapter／實體 PoC 的固定任務、指標、證據與通過門檻 |

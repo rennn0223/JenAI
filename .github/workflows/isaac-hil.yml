@@ -1,0 +1,98 @@
+name: Isaac HIL Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      goals:
+        description: "Comma-separated saved locations to navigate in order"
+        required: true
+        default: "map_left_up,map_right_up"
+        type: string
+      cancel_goal:
+        description: "Saved location used for cancel + hard-stop verification"
+        required: true
+        default: "map_left_down"
+        type: string
+      confirmation:
+        description: "Type I-CONFIRM-ISAAC-SIM-MAY-MOVE exactly"
+        required: true
+        type: string
+      require_twin:
+        description: "Fail unless an isolated Twin returns a structured verdict"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jenai-isaac-hil
+  cancel-in-progress: false
+
+jobs:
+  live-acceptance:
+    name: Isaac Sim / Nav2 live acceptance
+    runs-on: [self-hosted, jenai-isaac]
+    environment: isaac-hil
+    timeout-minutes: 45
+    env:
+      HIL_GOALS: ${{ inputs.goals }}
+      HIL_CANCEL_GOAL: ${{ inputs.cancel_goal }}
+      HIL_CONFIRMATION: ${{ inputs.confirmation }}
+      HIL_REQUIRE_TWIN: ${{ inputs.require_twin }}
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Sync locked environment
+        run: uv sync --frozen
+
+      - name: Run operator-authorized live acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /opt/ros/jazzy/setup.bash
+          mkdir -p artifacts
+          args=(
+            --execute
+            --confirm "$HIL_CONFIRMATION"
+            --cancel-goal "$HIL_CANCEL_GOAL"
+            --output artifacts/isaac-hil.json
+          )
+          IFS=',' read -ra goals <<< "$HIL_GOALS"
+          for goal in "${goals[@]}"; do
+            goal="${goal#"${goal%%[![:space:]]*}"}"
+            goal="${goal%"${goal##*[![:space:]]}"}"
+            if [[ -n "$goal" ]]; then
+              args+=(--goal "$goal")
+            fi
+          done
+          if [[ "$HIL_REQUIRE_TWIN" == "true" ]]; then
+            args+=(--require-twin)
+          fi
+          uv run python scripts/isaac_hil_acceptance.py "${args[@]}"
+
+      - name: Summarize acceptance
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f artifacts/isaac-hil.json ]]; then
+            uv run python -c 'import json; from pathlib import Path; d=json.loads(Path("artifacts/isaac-hil.json").read_text()); print("## Isaac HIL:", d["overall"])' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Isaac HIL: no artifact (setup/confirmation failed before runner start)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload immutable HIL evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: isaac-hil-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/isaac-hil.json
+          if-no-files-found: warn
+          retention-days: 30

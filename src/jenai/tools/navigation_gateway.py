@@ -56,10 +56,20 @@ class NavigationGateway:
         *,
         on_progress: Callable[[NavProgress], None] | None = None,
         on_gate: Callable[[str], None] | None = None,
+        on_gate_report: Callable[[GateReport], None] | None = None,
         run_id: str | None = None,
         session_id: str | None = None,
     ) -> RouteOutput:
         def _audit_gate(report: GateReport) -> None:
+            # Acceptance/HIL callers need the exact three-valued verdict in
+            # their immutable artifact; UI callers can continue using only the
+            # human-readable progress callback. Observation never changes the
+            # gate decision.
+            if on_gate_report is not None:
+                try:
+                    on_gate_report(report)
+                except Exception:
+                    pass  # evidence observers cannot alter navigation policy
             if self._audit_store is None:
                 return
             try:
@@ -107,6 +117,7 @@ async def execute_navigation(
     *,
     on_progress: Callable[[NavProgress], None] | None = None,
     on_gate: Callable[[str], None] | None = None,
+    on_gate_report: Callable[[GateReport], None] | None = None,
     audit_store: AuditStore | None = None,
     run_id: str | None = None,
     session_id: str | None = None,
@@ -118,6 +129,7 @@ async def execute_navigation(
             outgoing_action,
             on_progress=on_progress,
             on_gate=on_gate,
+            on_gate_report=on_gate_report,
             run_id=run_id,
             session_id=session_id,
         )
