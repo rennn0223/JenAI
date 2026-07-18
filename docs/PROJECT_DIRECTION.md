@@ -24,8 +24,11 @@
 
 **工程師**:誠實拆開講。做得到的:自然語言 → 地點解析 → Nav2 導航(即時剩餘距離、
 Esc 真取消)、相機抓幀 → VLM 描述「看到什麼」、位置回報、規則觸發(電量低自動回充)。
-這條鏈在阿克曼實車上端到端驗證過。你的狗**只要跑 ROS2 + Nav2,這整條鏈直接通**——
-bridge 只講 topics 和 NavigateToPose action,根本不在乎載具是輪子還是腿。
+這條鏈目前以 Ackermann Isaac Sim/Nav2 作正式驗證；先前同指令驅動虛擬與小型實體
+Ackermann 車的成果只作介面整合背景，不列為本版正式實車結果。四足若提供 ROS2、
+Nav2 與相同高階 API，軟體介面可沿用，但仍須做 adapter 與物理行為 PoC，不能寫成
+「接上就一定成功」。bridge 只依賴 topics 與 NavigateToPose action，支持的是介面層
+可移植設計，不是跨運動學物理泛化已證明。
 做不到的:步態、姿態(站/趴/越障)、狗特有技能,一行都沒寫。
 
 **客戶**:所以是「會導航的狗」,不是「會用腿的狗」。
@@ -159,9 +162,9 @@ ROS topics 就能算,不用碰 Isaac 內部 API,增量成本可控。
 |---|---|---|---|---|
 | M1 | **E-stop / watchdog** | 客戶 | ✅ **v0.7** | `/stop`、WebUI STOP 鈕、MCP stop、daemon halt;bridge watchdog 斷線自主停車 |
 | M2 | **Vehicle profile 抽象** | 工程師 | ✅ **v0.7** | config `[vehicle]`:cmd_vel topic、硬限速、相機 topic → 換載具改設定不改程式 |
-| M3 | **Isaac Sim twin 場景 + Twin Gate pipeline** | PM | 🚧 **pipeline ✅** | 論文核心 = 產品差異化。Gate pipeline 已完成:G1–G5 判準、pass/block/refer、孿生獨立 ROS_DOMAIN_ID、`[twin]` 設定、doctor `twin` 檢查,掛在導航唯一出口(所有入口 + daemon 全過閘)。剩 Isaac Sim 場景建置(工作站作業,見 [TWIN_SETUP.md](TWIN_SETUP.md) = 客戶 B5) |
+| M3 | **Isaac Sim twin 場景 + Twin Gate pipeline** | PM | ✅ **sim v1.0** | G1–G5、pass/block/refer、獨立 ROS_DOMAIN_ID、doctor `twin` 與導航單一出口均完成；Isaac 場景、E2 消融與 B4 模擬里程已有證據。實體場景同步與 Sim-to-Real 仍是未來工作 |
 | M4 | **任務級技能:patrol / return_to_dock** | 客戶 | ✅ **v0.8** | `/patrol A, B x3 photo`(循環+每點 VLM 觀察)、`/dock`;follow_route 由 `/mission` 涵蓋 |
-| M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | ✅ **軟體 v0.13** | doctor `nav` 區段 + ONBOARDING.md 手把手;剩新手計時實測(客戶 B6) |
+| M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | ⚠️ **文件完成** | doctor `nav` + ONBOARDING.md 已完成，≥3 位使用者曾在指導下順跑；純冷啟動、無人協助與正式碼表計時尚未執行 |
 | M6 | **自主決策迴圈(論文主軸)** | PM(論文) | 🚧 **零件齊,迴圈未串** | 感知/有界動作/odom 直驅/避障/Gate/規則引擎都在,尚未串成 DecisionLoop 閉環。v2.0 主線,詳見 [ROADMAP 軌道 1](ROADMAP.md) |
 
 > **v0.9–v0.25 新增(不在原 M 表,但已 shipped)**:odom 直驅(`route_adapter=odom`,無 Nav2 開闊地導航)、局部避障(depth stop-and-go detour + stale-frame fail-closed)、GPS 地點(`/loc add gps` + `[map_datum]`)、`/route 從A到B` 依序、多頁 WebUI(Camera/API)、`/report` 巡邏日報(=C2)、`JenAI help`、V1_GATE 層一工程(semver/威脅模型/safety case/soak/架構鐵律/覆蓋倒退閘)。完整前瞻見 **[ROADMAP.md](ROADMAP.md)**。
@@ -198,15 +201,15 @@ ROS topics 就能算,不用碰 Isaac 內部 API,增量成本可控。
 
 | 等級 | 能力 | 條件 |
 |---|---|---|
-| **今天就能用** | 自然語言查 topics/pose、相機看畫面、聊天問答、規則告警 | 狗有 ROS2,bridge 直接通(載具無關) |
-| **設定好就能用** | `/route` `/mission` 導航、`/loc add here` 建點、電量低自動回充、WebUI 手機批准 | 狗上跑 Nav2 + 建好圖(M5 onboarding 就是在補這段) |
-| **做完必做才有** | 一鍵急停、巡邏任務、twin 預演閘門、車狗一檔切換 | M1–M5 |
+| **介面層可用** | 自然語言查 topics/pose、相機看畫面、聊天問答、規則告警 | 載具有 ROS2 且 topic/schema 相容；仍須現場接口確認 |
+| **完成 PoC 後可用** | `/route` `/mission` 導航、`/loc add here` 建點、回充、WebUI 手機批准 | 載具已有 Nav2 + 地圖，並通過固定 adapter/物理任務驗收 |
+| **Isaac Sim 已驗證** | 一鍵急停、巡邏任務、Twin 預演閘門、Ackermann vehicle profile | M1–M4 的正式證據目前以模擬平台為主 |
 | **誠實的極限** | 步態級控制、動態環境即時決策、無人全自主 | 前者等載具層(T1),後兩者是設計上就不進 LLM 的層 |
 
-**一句話收斂**:JenAI 已經是「載具無關的任務層大腦 + 三層安全鏈」;
-讓它真的能操作一隻狗,缺的不是更聰明的 AI,而是 M1(急停)、M2(載具檔)、
-M5(onboarding)三塊工程,以及論文本來就要做的 M3(Twin Gate)。
-路線圖上這四塊沒有一塊是賭博,全部是已驗證架構的直線延伸。
+**一句話收斂**:JenAI 已完成「載具介面無關的受監督任務層 Agent + 三層安全鏈」之
+Ackermann 模擬驗證；M1–M4 已落地，M5 尚缺純冷啟動量測。要操作四足，缺的不是讓
+LLM 直接控制步態，而是平台 adapter、固定 PoC 任務與物理安全驗收。若要宣稱常駐自主
+大腦，則必須完成 M6；在此之前對外定位維持受監督高階決策與工作流代理。
 
 ---
 
@@ -238,9 +241,9 @@ M5(onboarding)三塊工程,以及論文本來就要做的 M3(Twin Gate)。
 
 整套架構(監督/決策/閘門/技能/反射/橋接)的 v1.0 驗收證據**以 Isaac Sim
 孿生場景為主**:接口確認、地點建置、任務實測、里程與消融數據全部在 twin
-上完成。實體驗證降為**選配**——有機會再做,或連同載具交接給下一屆(架構
-載具無關、twin 與實車走同一條 bridge/Nav2 介面,實體驗證不改一行程式,
-只補數據)。sim-to-real 落差在論文中誠實標註為 limitation / future work。
+上完成。實體驗證降為**選配**——有機會再做,或連同載具交接給下一屆。Vehicle
+Profile 與高階能力契約降低移植成本，但新平台仍可能需要薄 adapter、Nav2／控制器調校
+與完整實體驗收。sim-to-real 落差在論文中誠實標註為 limitation / future work。
 
 操作機事實更正:JenAI 與 Ollama 跑在 **DGX Spark**(非 Jetson);
 本地預設模型 **qwen3.6:35b**。V1_GATE 層二各項已依此重定義。

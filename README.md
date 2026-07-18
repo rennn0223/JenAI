@@ -50,19 +50,25 @@ uv run JenAI web
 
 ### 在新機器上安裝（fresh clone）
 
-repo 本身可攜：依賴鎖在 `uv.lock`（含 aarch64／x86_64／macOS wheel），原始碼沒有寫死任何機器路徑。有三個檔案**不在 repo 裡**（使用者設定／機密），換機器後要重建：
+repo 本身可攜：開發／CI 解析結果鎖在 `uv.lock`（含 aarch64／x86_64／macOS），
+`uv tool install .` 則依 `pyproject.toml` 解析當下相容版本；release wheel 另有乾淨環境煙霧
+測試。原始碼沒有寫死任何機器路徑。有三個檔案**不在 repo 裡**（使用者設定／機密），
+換機器後要重建：
 
 | 檔案（`~/.config/jenai/`） | 怎麼來 |
 |---|---|
-| `config.toml`（provider／model） | 首次 `uv run JenAI` 自動跑 setup wizard 建立 |
-| `.env`（API 金鑰） | 手動一行（見下方「API 金鑰」）；JenAI 啟動時自動載入，`uv run JenAI` 也吃得到 |
+| `config.toml`（provider／model） | 首次 `JenAI` 自動跑 setup wizard 建立 |
+| `.env`（API 金鑰） | 手動一行（見下方「API 金鑰」）；JenAI 啟動時自動載入 |
 | `locations.toml`（地點） | 依 [`locations.example.toml`](locations.example.toml) 填 |
 
 ```bash
 git clone <repo-url> ~/JenAI && cd ~/JenAI
-uv sync                 # 依 uv.lock 裝依賴（需要時 uv 會自動裝 Python 3.12+）
-uv run JenAI            # 首次 → setup wizard → 進 TUI
+uv tool install .       # 建立隔離工具環境並安裝 JenAI / jenai 命令
+uv tool update-shell    # 確保工具執行目錄在 PATH；完成後重開 shell
+JenAI                   # 首次 → setup wizard → 進 TUI
 ```
+
+開發者要讓原始碼修改立即生效，改用 `uv sync` + `uv run JenAI`；一般使用者不需要。
 
 - **ROS2 是選配**：沒裝 ROS 的機器，`/ros*`、`/drive`、`/route` 會誠實回報 unavailable（不會崩），聊天／`/plan` 照常；控真車才需要 ROS2 Jazzy + Nav2。
 - 需要網路 + 金鑰（或本機 Ollama）才能實際呼叫模型；純離線無法。
@@ -125,6 +131,9 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 | 文件 | 說明 |
 |---|---|
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | **零基礎上手手冊**：不熟終端機也能 20 分鐘從空機到第一句對話（小白先讀這份） |
+| [docs/PRODUCT_BRIEF.md](docs/PRODUCT_BRIEF.md) | **產品一頁摘要**：給 PM、主管、業務與買家的定位、證據、demo 與採購驗收 |
+| [docs/EVIDENCE_LEDGER.md](docs/EVIDENCE_LEDGER.md) | **單一證據表**：論文、README 與簡報共用的正式數字與限制 |
+| [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) | **支援矩陣**：OS、ROS2、模擬、載具、模型與介面的驗證等級 |
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（開發新人先讀這份） |
 | [docs/CODE_TOUR.md](docs/CODE_TOUR.md) | **全程式碼逐檔導讀**：每個檔案在做什麼、為什麼這樣設計 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | **前瞻主圖**：現況快照、演進五軌、工程健康度、風險登記 |
@@ -144,7 +153,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ## 技術棧
 
-- **語言**：Python 3.12+（依賴由 [uv](https://docs.astral.sh/uv/) 管理，`uv.lock` 鎖定多平台 wheel）
+- **語言**：Python 3.12+（依賴由 [uv](https://docs.astral.sh/uv/) 管理；`uv.lock` 固定開發／CI 解析，tool 安裝遵循套件版本範圍）
 - **TUI**：Textual；**WebUI**：stdlib `http.server`（零額外依賴）；**CLI**：Typer
 - **LLM Provider**：`openai` SDK 打任何 OpenAI 相容端點（NVIDIA NIM 雲端／Ollama 地端）
 - **Agent Framework**：openai-agents SDK（多-agent handoffs、本地 tracing）
@@ -163,7 +172,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測；ROS Developer 依 live graph 完成 topic/schema 發現，並以單一 `ros_drive_verified` 能力原子化基準里程計、一次性受批准動作、自動停止與後驗回授，不持有任意 shell。
 >
-> ✅ **工程**：505 項自動化測試（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：511 項自動化測試（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >
 > ✅ **執行邊界與數位分身驗證**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：Agent 被限制在觀察、決策、能力、權限與執行驗證五類邊界內；導航可選擇先在數位分身預演，依 G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗輸出 pass／block／refer。數位分身是執行驗證的一種機制，不是 Agent 的全部。
 >

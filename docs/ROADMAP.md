@@ -21,13 +21,14 @@
 - **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
 - **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
 - **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
-- **工程基建**:503 項測試、Python 3.12／3.13／3.14 CI matrix(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
+- **工程基建**:511 項測試、Python 3.12／3.13／3.14 CI matrix(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
 
 ### 未完成的主線
 - **M6 自主決策迴圈**(A9):零件都在(感知、有界動作、odom 直驅、避障、執行邊界、規則引擎),但把它們串成常駐的「感知→情境快照→LLM 決策→預演→執行→回饋」事件迴圈**還沒建**。這是 v2 主線；論文目前完成並量測的是高階決策、註冊能力、一次性閉環工具使用與執行驗證，不宣稱常駐自治已完成。
 - **真全域路徑規劃**:目前 odom 直驅 + 反應式避障是開闊地方案;複雜地圖仍需 Nav2 costmap(客戶 B1)。
-- **驗證數據(Isaac Sim)**:模擬里程、Twin 消融、onboarding 計時(客戶 B4/B5/B6)。
-  2026-07 改向:v1.0 驗收證據以 Isaac Sim 為主,實體驗證選配/交接下一屆(見 V1_GATE P 項)。
+- **待補驗證**:模擬里程與 Twin 消融已完成；guided onboarding 有 ≥3 人，但尚缺純文件
+  冷啟動計時與手動 ROS2／Slash／自然語言的正式效率比較。實體驗證選配／交接下一屆
+  (見 V1_GATE P 項)。
 
 ### 一句話定位
 > **JenAI = 具執行邊界的 AI Decision Agent,坐在載具原生導航堆疊之上**(2026-07 定調,
@@ -124,7 +125,7 @@
 | D5 | **release 節奏過碎**(一天十幾 patch) | changelog 噪音、版本語意稀釋 | 收斂:feature 累積成有意義的 minor;patch 只留真 bug/安全修;semver 契約(VERSIONING)已立 |
 
 ### 3.2 測試策略演進
-- **現況**:503 項自動化測試(無 ROS 全綠)+ Python 3.12／3.13／3.14 CI matrix + 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
+- **現況**:511 項自動化測試(無 ROS 全綠)+ Python 3.12／3.13／3.14 CI matrix + 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
 - **下一步**:
   - D1 的 sibling 抽取 → 提升 bridge 邏輯覆蓋。
   - **HIL 冒煙**(選配):self-hosted runner 連 Isaac,跑一條 `/route` + 避障的端到端(現在只能人工 E2E)。
@@ -181,7 +182,7 @@
 ## 6. 兩層執行對照(承 V1_GATE)
 
 - **層一(agent 可獨力,現在就能推)**:軌道 1 核心、軌道 2 接線、軌道 3 工具、軌道 5 多數、全部 D1–D5 償還。
-- **層二(客戶下場,全數於 Isaac Sim)**:場景建置 + 消融(B5)、接口確認(B1)、模擬里程(B4)、onboarding 計時(B6)、場景家族標註(軌道 1 的 E1);實體驗證選配(V1_GATE P1–P3)。
+- **層二(客戶下場,全數於 Isaac Sim)**:場景建置 + 消融(B5)、接口確認(B1)、模擬里程(B4)、guided onboarding 回饋(B6)、場景家族標註(軌道 1 的 E1);實體驗證選配(V1_GATE P1–P3)。
 
 **優先建議**:先 **軌道 3(導航成熟)+ D1(可維護性)** 把 v1.0 的路鋪直,再全力 **軌道 1(M6)** 衝 v2.0 論文主軸。
 
