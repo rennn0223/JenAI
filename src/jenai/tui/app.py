@@ -35,20 +35,14 @@ from jenai.schemas import (
     RunStatus,
     ToolCallCategory,
     ToolCallRecord,
-    ToolCallStatus,
 )
 from jenai.state import AuditStore, InputHistory, RunStore, create_session
-from jenai.state.reports import save_patrol_log
-from jenai.tools.mission_core import run_mission
-from jenai.tools.ros2_core import (
-    ros_drive,
-    ros_pub_execute,
-)
-from jenai.tools.shell_core import assess_command, preview_command, run_shell
-from jenai.tools.skills import run_explore, run_patrol
+from jenai.tools.shell_core import assess_command, preview_command
 from jenai.tools.user_skills import load_user_skills
-from jenai.tools.vision_core import capture_and_analyze
+from jenai.tui.approval_flow import ApprovalFlowMixin
+from jenai.tui.approval_policy import may_auto_approve
 from jenai.tui.catalog import SLASH_COMMANDS, TUI_CSS, is_casual_greeting
+from jenai.tui.direct_execution import DirectExecutionMixin
 from jenai.tui.info_commands import InfoCommandsMixin
 from jenai.tui.panels import (
     CommandPalette,
@@ -74,7 +68,13 @@ def run_tui(
     JenAITuiApp(config=config, config_path=config_path, doctor_result=doctor_result).run()
 
 
-class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
+class JenAITuiApp(
+    ApprovalFlowMixin,
+    DirectExecutionMixin,
+    InfoCommandsMixin,
+    RobotCommandsMixin,
+    App[None],
+):
     CSS = TUI_CSS
 
     # priority=True: dispatch checks the focused widget first, so without it
@@ -91,15 +91,15 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     # plain-language line goes, and whether approval cards pause execution.
     #   approve — NL → /run agent; actions raise approval cards (default)
     #   plan    — NL → /plan; nothing can execute (plan agent has no tools)
-    #   auto    — NL → /run agent; approval cards are auto-approved. The
-    #             safety FLOOR is untouched: hard speed clamps, Twin Gate,
-    #             watchdog and /stop never depended on approvals.
+    #   auto    — NL → /run agent; bounded non-host P0/P1 actions may
+    #             auto-approve. HOST_COMMAND and P2 always ask once per action.
+    #             Hard clamps, Twin Gate, watchdog and /stop remain mandatory.
     PERMISSION_MODES = ("approve", "plan", "auto")
     COMMAND_QUEUE_LIMIT = 20
     _MODE_LABEL = {
         "approve": "[#5fb1c0]approve[/] · 自然語言交給 agent,動作先過批准卡",
         "plan": "[#f0c84e]plan[/] · 只規劃與教學,不執行任何動作",
-        "auto": "[#d99a86]auto[/] · 批准卡自動通過(急停/限速/閘門仍有效)",
+        "auto": "[#d99a86]auto[/] · P0/P1 可自動批准;host/P2 仍逐次詢問",
     }
 
     def __init__(
@@ -113,6 +113,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self.config = config
         self.config_path = config_path
         self.doctor_result = doctor_result
+        # Startup checks intentionally skip slow Nav2/Twin probes. The flag
+        # becomes true only after the user explicitly runs /doctor.
+        self._doctor_is_full = False
         self._command_matches: list[SlashCommand] = []
         self._selected_command_index = 0
         # File-defined skills (skills/*.toml): loaded once at startup; /skills
@@ -154,7 +157,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         self._spinner_frame = 0
         self._spinner_started = 0.0
         self._spinner_label = "Working"
-        # Tool kinds the user chose to auto-approve for the rest of the session
+        # Eligible bounded tool kinds remembered for the rest of this session.
         # via the approval card's "Yes, and don't ask again" option.
         self._auto_approved: set[str] = set()
         # Provider model ids fetched by /model, so "/model 2" can pick by number.
@@ -173,24 +176,24 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                         provider_kind=profile.provider if profile else "unknown",
                         model_name=self._chat_model_display(),
                         config_path=self.config_path,
-                        doctor_result=self.doctor_result,
-                        locations_count=self._count_locations(),
-                        skills_count=len(self._user_skills),
                     )
                     yield Vertical(id="events")
                 with Container(id="composer-wrap"):
                     yield CommandPalette(id="palette")
                     yield Static("", id="spinner")
-                    yield Input(
-                        placeholder="Ask JenAI, / for commands, ! for shell",
-                        id="composer",
-                    )
-                    yield Static(self._status_line(), id="statusbar")
+                    with Container(id="composer-frame"):
+                        yield Input(
+                            placeholder="Ask JenAI, / for commands, ! for shell",
+                            id="composer",
+                        )
+                    with Horizontal(id="statusbar"):
+                        yield Static(self._status_left(), id="status-left")
+                        yield Static(self._status_right(), id="status-right")
 
     def on_mount(self) -> None:
         self.query_one("#palette", CommandPalette).display = False
         self.query_one("#composer", Input).focus()
-        self._apply_responsive(self.size.width)
+        self._apply_responsive(self.size.width, self.size.height)
         # Mascot heartbeat: idle wag/blink; gallops while a task runs. Cheap
         # (one small Text rebuild every 600 ms) and skipped when hidden.
         self._mascot_frame = 0
@@ -217,20 +220,6 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             )
             await self._render_run_update(ctx, run, agent=build_run_agent(self.config))
 
-    def _count_locations(self) -> int:
-        """Location count for the welcome card WITHOUT the tolerant loader —
-        that one creates a starter file, and composing a panel must never
-        write to disk."""
-        from jenai.adapters.locations import LocationsFileError, load_locations
-
-        path = self._locations_path()
-        if path is None or not path.exists():
-            return 0
-        try:
-            return len(load_locations(path))
-        except LocationsFileError:
-            return 0
-
     def _animate_mascot(self) -> None:
         try:
             mark = self.query_one("#pixel-mark", Static)
@@ -243,14 +232,24 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         mark.update(pixel_mark(self._mascot_frame, running=running))
 
     def on_resize(self, event) -> None:
-        self._apply_responsive(event.size.width)
+        self._apply_responsive(event.size.width, event.size.height)
 
-    def _apply_responsive(self, width: int) -> None:
-        # On a narrow (mobile) terminal, collapse decorative chrome so nothing
-        # gets crushed. The mascot needs ~30 columns to render cleanly
-        # (24 + panels.EXTRA_LENGTH + margins).
+    def _apply_responsive(self, width: int, height: int) -> None:
+        # Match Claude Code's adaptive shell: the utility column disappears
+        # before it can crush the transcript, while the mascot stays visible
+        # until the terminal is genuinely compact.
         try:
-            self.query_one("#welcome").set_class(width < 56, "narrow")
+            welcome = self.query_one("#welcome")
+            welcome.set_class(width < 92, "narrow")
+            welcome.set_class(width < 56, "compact")
+            palette = self.query_one("#palette", CommandPalette)
+            # The normal 16-row menu is unchanged on common terminals.  On
+            # short screens cap it so the composer and status line stay visible.
+            palette.styles.max_height = max(3, min(16, height - 8))
+            if palette.display and self._command_matches:
+                # ``CommandPalette`` derives its visible window from the live
+                # screen height, so redraw an open palette after a resize.
+                palette.update_matches(self._command_matches, self._selected_command_index)
         except NoMatches:
             pass
 
@@ -293,13 +292,15 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             # active command and invalidates everything that was queued behind it.
             cleared = len(self._command_queue)
             self._command_queue.clear()
-            if active:
-                self._active_task.cancel()
+            predecessor = self._active_task if active else None
+            # The stop task sends an immediate bridge halt before cancelling the
+            # predecessor, then waits for reap and sends a final halt. Replacing
+            # the active slot here also makes Esc unable to cancel that sequence.
             if cleared:
                 await self._mount_event(
                     TimelineItem("warn", f"Emergency stop cleared {cleared} queued command(s).")
                 )
-            self._start_user_submission(value, is_stop=True)
+            self._start_user_submission(value, is_stop=True, predecessor=predecessor)
             return
 
         if is_abort and active:
@@ -321,8 +322,16 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
         self._start_user_submission(value)
 
-    def _start_user_submission(self, value: str, *, is_stop: bool = False) -> None:
-        self._active_task = asyncio.create_task(self._run_user_text(value))
+    def _start_user_submission(
+        self,
+        value: str,
+        *,
+        is_stop: bool = False,
+        predecessor: asyncio.Task | None = None,
+    ) -> None:
+        self._active_task = asyncio.create_task(
+            self._run_user_text(value, predecessor=predecessor)
+        )
         self._active_task_is_stop = is_stop
         self._update_statusbar()
 
@@ -360,10 +369,36 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         value = self._command_queue.popleft()
         self._start_user_submission(value)
 
-    async def _run_user_text(self, value: str) -> None:
+    async def _run_user_text(
+        self,
+        value: str,
+        *,
+        predecessor: asyncio.Task | None = None,
+    ) -> None:
         """Run one submission with a working spinner; cancellable via Esc."""
         self._start_spinner(self._spinner_label_for(value))
         try:
+            if predecessor is not None:
+                # Stop in two phases: brake immediately while the old action is
+                # still known, then cancel/kill/reap it, then handle /stop once
+                # more for a final zero after no stale publisher can reactivate.
+                if value == "/stop":
+                    try:
+                        await self._halt_before_cancel()
+                    except Exception as exc:
+                        # Unexpected UI/bridge faults must not prevent reap or
+                        # the final stop attempt; surface them without aborting.
+                        await self._mount_event(
+                            TimelineItem("warn", f"Immediate stop pulse failed: {exc}")
+                        )
+                    finally:
+                        predecessor.cancel()
+                try:
+                    await predecessor
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
             await self.handle_user_text(value)
         except asyncio.CancelledError:
             # Esc interrupt (or app shutdown). CancelledError is a BaseException,
@@ -463,7 +498,9 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
     async def handle_user_text(self, value: str) -> None:
         self.history.record(value)
+        welcome = self.query_one(WelcomePanel)
         if value == "/clear":
+            welcome.clear_activity()
             await self._clear_events()
             # Also reset the persisted conversation memory, so /clear truly starts
             # fresh rather than the agent silently remembering the old thread.
@@ -471,6 +508,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             await self._mount_event(TimelineItem("success", "Session output and memory cleared."))
             return
 
+        welcome.record_activity(value)
         await self._mount_event(PromptPill(value))
         if value.startswith("!"):
             # Bash mode: everything after ! runs as a (still approval-gated)
@@ -807,7 +845,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
     def _refresh_model_display(self) -> None:
         profile = self._active_profile()
         try:
-            self.query_one("#statusbar", Static).update(self._status_line())
+            self._update_statusbar()
             self.query_one(WelcomePanel).update_model(
                 self._chat_model_display(),
                 provider_name=profile.name if profile else "provider missing",
@@ -861,10 +899,13 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
                 self._pending_approvals[run.run_id] = entry
                 mounted_card = False
                 for approval in pending_approvals:
-                    # Auto mode approves everything; "don't ask again" tools
-                    # skip their card in any mode.
-                    if self._mode == "auto" or (
+                    remembered = bool(
                         approval.tool_name and approval.tool_name in self._auto_approved
+                    )
+                    if may_auto_approve(
+                        approval,
+                        auto_mode=self._mode == "auto",
+                        remembered=remembered,
                     ):
                         entry["decisions"][approval.tool_call_id] = True
                         if self._mode == "auto":
@@ -1016,23 +1057,6 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             effect_scope=risk.effect_scope,
         )
         self.run_store.add_tool_call(ctx.run, tool_call)
-        if "shell" in self._auto_approved:
-            self.run_store.audit_event(
-                ctx.run,
-                "approval_resolved",
-                entity_id=tool_call.tool_call_id,
-                status="approved",
-                details={"tool_name": tool_call.tool_name, "automatic": True},
-            )
-            await self._execute_direct(
-                {
-                    "kind": "shell",
-                    "ctx": ctx,
-                    "command": command,
-                    "tool_call_id": tool_call.tool_call_id,
-                }
-            )
-            return
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -1051,6 +1075,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             "ctx": ctx,
             "command": command,
             "tool_call_id": tool_call.tool_call_id,
+            "approval": approval,
         }
         await self._mount_event(ApprovalCard(approval))
         self._scroll_to_bottom()
@@ -1063,352 +1088,6 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
             # matching `/model <name>`; specialised bindings stay untouched.
             await self._apply_model_choice(message.model_id, ("chat", "default"))
         self.query_one("#composer", Input).focus()
-
-    async def on_approval_card_decision(self, message: ApprovalCard.Decision) -> None:
-        # Two approval sources share one card + message: deterministic slash
-        # commands (/ros pub, /route, /shell) tracked in _pending_direct_approvals,
-        # and agent-driven /run interruptions tracked in _pending_approvals.
-        if message.tool_call_id in self._pending_direct_approvals:
-            # Option 2 ("don't ask again") remembers this command so future
-            # cards of the same command are auto-approved for the session.
-            # auto_key (not kind): /dock reuses the route execution kind, but
-            # approval memory must never leak between distinct commands.
-            if message.approved and message.remember:
-                pending = self._pending_direct_approvals[message.tool_call_id]
-                kind = pending.get("auto_key", pending["kind"])
-                self._auto_approved.add(kind)
-                await self._mount_event(
-                    TimelineItem("muted", f"Auto-approving '{kind}' for the rest of this session.")
-                )
-            await self._resolve_direct_approval(message.tool_call_id, message.approved)
-            return
-
-        run_id = self._find_run_id_for_call(message.tool_call_id)
-        if run_id is not None:
-            # Agent-flow "don't ask again": remember by tool_name so later
-            # interruptions for the same tool auto-approve (see _render_run_update).
-            if message.approved and message.remember:
-                approval = self._approval_by_call_id(message.tool_call_id)
-                if approval is not None and approval.tool_name:
-                    self._auto_approved.add(approval.tool_name)
-                    await self._mount_event(
-                        TimelineItem(
-                            "muted",
-                            f"Auto-approving '{approval.tool_name}' for the rest of this session.",
-                        )
-                    )
-            await self._resolve_agent_approval(run_id, message.tool_call_id, message.approved)
-
-    def _approval_by_call_id(self, tool_call_id: str) -> ApprovalRequest | None:
-        for card in self.query(ApprovalCard):
-            if card.approval.tool_call_id == tool_call_id:
-                return card.approval
-        return None
-
-    def _find_run_id_for_call(self, tool_call_id: str) -> str | None:
-        for run_id, pending in self._pending_approvals.items():
-            if tool_call_id in pending["expected"]:
-                return run_id
-        return None
-
-    async def _remove_approval_card(self, tool_call_id: str) -> None:
-        for card in self.query(ApprovalCard):
-            if card.approval.tool_call_id == tool_call_id:
-                await card.remove()
-                break
-        remaining = list(self.query(ApprovalCard))
-        if remaining:
-            remaining[0].focus()
-        else:
-            self.query_one("#composer", Input).focus()
-
-    async def _resolve_direct_approval(self, tool_call_id: str, approved: bool) -> None:
-        pending = self._pending_direct_approvals.pop(tool_call_id)
-        ctx: JenAIRunContext = pending["ctx"]
-        await self._remove_approval_card(tool_call_id)
-
-        status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
-        self.run_store.resolve_interruption(ctx.run, tool_call_id, status)
-
-        if not approved:
-            self._finish_direct_tool(
-                pending,
-                ok=False,
-                summary="rejected by operator",
-                status=ToolCallStatus.REJECTED,
-            )
-            self.run_store.finish(ctx.run, status=RunStatus.BLOCKED)
-            await self._mount_event(TimelineItem("warn", "Rejected. No action was taken."))
-            self._scroll_to_bottom()
-            self._start_next_queued()
-            return
-
-        # Run the approved action as the active task so long executions (live
-        # Nav2 goals, missions) show the working spinner and stop on Esc.
-        if self._active_task is not None and not self._active_task.done():
-            await self._execute_direct(pending)  # already inside a task
-            return
-        self._active_task = asyncio.create_task(self._run_direct_task(pending))
-
-    async def _run_direct_task(self, pending: dict) -> None:
-        self._start_spinner("Executing")
-        ctx: JenAIRunContext = pending["ctx"]
-        try:
-            await self._execute_direct(pending)
-        except asyncio.CancelledError:
-            # Esc: nav_live already cancelled the Nav2 goal; close out the run.
-            self._finish_direct_tool(pending, ok=False, summary="interrupted")
-            if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
-                self.run_store.finish(ctx.run, status=RunStatus.BLOCKED, final_output="interrupted")
-            if self.is_running:
-                try:
-                    await self._mount_event(
-                        TimelineItem("warn", "Interrupted — the action was cancelled.")
-                    )
-                    self._scroll_to_bottom()
-                except NoMatches:
-                    pass
-        finally:
-            if self._active_task is asyncio.current_task():
-                self._stop_spinner()
-                self._active_task = None
-                self._active_task_is_stop = False
-                self._start_next_queued()
-
-    async def _mount_step_line(self, status: str, body: str) -> None:
-        """One rendering for every skill/mission step — success green, rest warn."""
-        await self._mount_event(TimelineItem("success" if status == "succeeded" else "warn", body))
-        self._scroll_to_bottom()
-
-    async def _execute_direct(self, pending: dict) -> None:
-        """Run an approved direct command, finalising the run even on failure.
-
-        Reached from the ApprovalCard decision handler, which runs outside the
-        command-dispatch try/except — so a raising tool (e.g. a ROS error) would
-        otherwise escape unhandled and leave the run stuck RUNNING. Mirror the
-        WebUI/agent contract: finish FAILED and surface the error.
-        """
-        ctx: JenAIRunContext = pending["ctx"]
-        try:
-            await self._run_direct(pending)
-        except Exception as exc:
-            self._finish_direct_tool(pending, ok=False, summary=str(exc))
-            if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
-                self.run_store.finish(ctx.run, status=RunStatus.FAILED, final_output=str(exc))
-            await self._mount_event(TimelineItem("error", f"Action failed: {exc}"))
-            self._scroll_to_bottom()
-
-    def _finish_direct_tool(
-        self,
-        pending: dict,
-        *,
-        ok: bool,
-        summary: str,
-        status: ToolCallStatus | None = None,
-    ) -> None:
-        """Keep direct-command ToolCallRecord and durable audit status in sync."""
-        tool_call_id = pending.get("tool_call_id")
-        if not tool_call_id:
-            return
-        ctx: JenAIRunContext = pending["ctx"]
-        self.run_store.update_tool_call(
-            ctx.run,
-            tool_call_id,
-            status=status or (ToolCallStatus.SUCCEEDED if ok else ToolCallStatus.FAILED),
-            output_summary=summary,
-        )
-
-    async def _run_direct(self, pending: dict) -> None:
-        ctx: JenAIRunContext = pending["ctx"]
-        self.run_store.set_status(ctx.run, RunStatus.RUNNING)
-        if pending["kind"] in ("ros_pub", "drive"):
-            vehicle = self.config.vehicle
-            if pending["kind"] == "drive":
-                output = await ros_drive(
-                    pending["topic"],
-                    pending["message_type"],
-                    pending["payload"],
-                    duration_s=pending["duration"],
-                    max_linear=vehicle.max_linear,
-                    max_angular=vehicle.max_angular,
-                )
-            else:
-                output = await ros_pub_execute(
-                    pending["topic"],
-                    pending["message_type"],
-                    pending["payload"],
-                    max_linear=vehicle.max_linear,
-                    max_angular=vehicle.max_angular,
-                )
-            self._finish_direct_tool(
-                pending,
-                ok=output.execution_status == "succeeded",
-                summary=output.result_message,
-            )
-            self.run_store.finish(
-                ctx.run,
-                status=RunStatus.COMPLETED
-                if output.execution_status == "succeeded"
-                else RunStatus.FAILED,
-                final_output=output.result_message,
-            )
-            await self._mount_event(
-                TimelineItem(
-                    "success" if output.execution_status == "succeeded" else "error",
-                    output.result_message,
-                )
-            )
-        elif pending["kind"] == "route":
-            output = await self._execute_route_action(pending["outgoing_action"])
-            sent = output.execution_status == "succeeded"
-            self._finish_direct_tool(pending, ok=sent, summary=output.route_preview)
-            self.run_store.finish(
-                ctx.run,
-                status=RunStatus.COMPLETED if sent else RunStatus.BLOCKED,
-                final_output=output.route_preview,
-            )
-            # Honest rendering: warn (not success) when no backend actually sent it.
-            await self._mount_event(
-                TimelineItem("success" if sent else "warn", output.route_preview)
-            )
-        elif pending["kind"] == "mission":
-
-            async def _on_step(result):
-                await self._mount_step_line(
-                    result.status,
-                    f"{result.kind} {result.target}: {result.status} — {result.detail}",
-                )
-
-            report = await run_mission(
-                self.config,
-                pending["locations"],
-                pending["steps"],
-                on_step=_on_step,
-                navigate=self._execute_route_action,
-            )
-            ok = all(r.status == "succeeded" for r in report.results)
-            self._finish_direct_tool(pending, ok=ok, summary=report.summary)
-            self.run_store.finish(
-                ctx.run,
-                status=RunStatus.COMPLETED if ok else RunStatus.BLOCKED,
-                final_output=report.summary,
-            )
-            await self._mount_event(OutputPanel("Mission report", report.summary))
-        elif pending["kind"] == "patrol":
-            spec = pending["spec"]
-
-            async def _on_patrol_step(result):
-                loop_tag = f" (loop {result.loop})" if spec.loops > 1 else ""
-                body = f"{result.point}{loop_tag}: {result.status} — {result.detail}"
-                if result.observation:
-                    body += f"\n[#9c9689]👁 {result.observation}[/]"
-                await self._mount_step_line(result.status, body)
-
-            async def _observe() -> str | None:
-                bridge = await self._get_bridge()
-                output = await capture_and_analyze(
-                    self.config, bridge, self.config.vehicle.camera_topic
-                )
-                return output.summary
-
-            report = await run_patrol(
-                self.config,
-                pending["locations"],
-                spec,
-                navigate=self._execute_route_action,
-                on_step=_on_patrol_step,
-                observe=_observe if spec.photo else None,
-            )
-            ok = all(r.status == "succeeded" for r in report.results)
-            self._finish_direct_tool(pending, ok=ok, summary=report.summary)
-            self.run_store.finish(
-                ctx.run,
-                status=RunStatus.COMPLETED if ok else RunStatus.BLOCKED,
-                final_output=report.summary,
-            )
-            await self._mount_event(OutputPanel("Patrol report", report.summary))
-            try:
-                log_path = save_patrol_log(report, self.config_path)
-                await self._mount_event(
-                    TimelineItem("success", f"Log saved — view with /report · {log_path.name}")
-                )
-            except OSError as exc:  # a full disk must not eat the patrol result
-                await self._mount_event(TimelineItem("warn", f"Patrol log not saved: {exc}"))
-        elif pending["kind"] == "explore":
-            spec = pending["spec"]
-
-            async def _on_explore_step(result):
-                body = (
-                    f"Goal {result.attempt}/{spec.max_goals} · {result.point}: "
-                    f"{result.status} — {result.detail}"
-                )
-                if result.observation:
-                    body += f"\n[#9c9689]👁 {result.observation}[/]"
-                await self._mount_step_line(result.status, body)
-
-            async def _observe_explore() -> str | None:
-                bridge = await self._get_bridge()
-                output = await capture_and_analyze(
-                    self.config, bridge, self.config.vehicle.camera_topic
-                )
-                return output.summary
-
-            report = await run_explore(
-                self.config,
-                pending["locations"],
-                spec,
-                navigate=self._execute_route_action,
-                on_step=_on_explore_step,
-                observe=_observe_explore if spec.photo else None,
-            )
-            ok = report.completed_normally and report.success_count > 0
-            self._finish_direct_tool(pending, ok=ok, summary=report.summary)
-            self.run_store.finish(
-                ctx.run,
-                status=RunStatus.COMPLETED if ok else RunStatus.BLOCKED,
-                final_output=report.summary,
-            )
-            await self._mount_event(OutputPanel("Exploration report", report.summary))
-        elif pending["kind"] == "shell":
-            shell_output = await run_shell(pending["command"])
-            ok = shell_output.exit_code == 0
-            self._finish_direct_tool(
-                pending,
-                ok=ok,
-                summary=f"exit {shell_output.exit_code}",
-            )
-            self.run_store.finish(
-                ctx.run,
-                status=RunStatus.COMPLETED if ok else RunStatus.FAILED,
-                final_output=f"exit {shell_output.exit_code}",
-            )
-            body = shell_output.stdout_summary or "(no stdout)"
-            if shell_output.stderr_summary:
-                body += f"\n[bold #d99a86]stderr:[/]\n{shell_output.stderr_summary}"
-            await self._mount_event(
-                OutputPanel(f"$ {shell_output.command} (exit {shell_output.exit_code})", body)
-            )
-        self._scroll_to_bottom()
-
-    async def _resolve_agent_approval(self, run_id: str, tool_call_id: str, approved: bool) -> None:
-        pending = self._pending_approvals[run_id]
-        pending["decisions"][tool_call_id] = approved
-        await self._remove_approval_card(tool_call_id)
-
-        if set(pending["decisions"]) < pending["expected"]:
-            return
-
-        await self._finalize_agent_approvals(run_id)
-
-    async def _finalize_agent_approvals(self, run_id: str) -> None:
-        """Resume a paused agent run once every interruption has a decision."""
-        pending = self._pending_approvals.pop(run_id)
-        self._scroll_to_bottom()
-        run = await orchestrator.resume_with_approvals(
-            pending["agent"], pending["ctx"], pending["decisions"]
-        )
-        await self._render_run_update(pending["ctx"], run, agent=pending["agent"])
-        self._start_next_queued()
 
     async def _quit_from_command(self, _: str = "") -> None:
         self.exit()
@@ -1433,18 +1112,25 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
         "auto": "[#d99a86]auto[/]",
     }
 
-    def _status_line(self) -> str:
-        profile = self._active_profile()
-        provider = profile.provider if profile else "no-provider"
-        model = self._chat_model_display()
+    def _status_left(self) -> str:
         chip = self._MODE_CHIP.get(getattr(self, "_mode", "approve"), "")
         queued = len(getattr(self, "_command_queue", ()))
         queue_text = f" · queue {queued}" if queued else ""
-        return f"{chip} [#9c9689]shift+tab · {provider} · {model} · {_short_cwd()}{queue_text}[/]"
+        return f"{chip} [#9c9689]shift+tab · ? help{queue_text}[/]"
+
+    def _status_right(self) -> str:
+        profile = self._active_profile()
+        provider = profile.provider if profile else "no-provider"
+        return f"[#9c9689]{provider} · {self._chat_model_display()} · {_short_cwd()}[/]"
+
+    def _status_line(self) -> str:
+        """Plain combined form retained for logs and compatibility."""
+        return f"{self._status_left()}  {self._status_right()}"
 
     def _update_statusbar(self) -> None:
         try:
-            self.query_one("#statusbar", Static).update(self._status_line())
+            self.query_one("#status-left", Static).update(self._status_left())
+            self.query_one("#status-right", Static).update(self._status_right())
         except NoMatches:
             pass
 
@@ -1455,10 +1141,7 @@ class JenAITuiApp(InfoCommandsMixin, RobotCommandsMixin, App[None]):
 
     def _set_mode(self, mode: str) -> None:
         self._mode = mode
-        try:
-            self.query_one("#statusbar", Static).update(self._status_line())
-        except NoMatches:
-            pass
+        self._update_statusbar()
         # Timeline note so the transcript records WHEN the gate posture changed
         # (an auto-approved action is only auditable if the switch is visible).
         self.call_later(self._announce_mode)

@@ -22,7 +22,7 @@ class RouteSendResult:
 class RouteAdapter(Protocol):
     """Anything that can take a resolved navigation action and (try to) send it."""
 
-    def resolve(self, outgoing_action: dict) -> RouteSendResult: ...
+    async def resolve(self, outgoing_action: dict) -> RouteSendResult: ...
 
 
 class NullRouteAdapter:
@@ -32,7 +32,7 @@ class NullRouteAdapter:
     real adapter (e.g. Nav2 / a `/goal_pose` publisher) to actually navigate.
     """
 
-    def resolve(self, outgoing_action: dict) -> RouteSendResult:
+    async def resolve(self, outgoing_action: dict) -> RouteSendResult:
         logger.info("NullRouteAdapter: no navigation backend; goal not sent: %s", outgoing_action)
         return RouteSendResult(
             execution_status="unavailable",
@@ -53,7 +53,7 @@ class Nav2RouteAdapter:
     ACTION = "/navigate_to_pose"
     ACTION_TYPE = "nav2_msgs/action/NavigateToPose"
 
-    def resolve(self, outgoing_action: dict) -> RouteSendResult:
+    async def resolve(self, outgoing_action: dict) -> RouteSendResult:
         goal = outgoing_action.get("goal") or {}
         pose = goal.get("pose") or {}
         x, y = float(pose.get("x", 0.0)), float(pose.get("y", 0.0))
@@ -63,7 +63,7 @@ class Nav2RouteAdapter:
         if not ros2_adapter.is_available():
             return RouteSendResult("unavailable", "ros2 not on PATH — goal NOT sent.")
         try:
-            if not ros2_adapter.action_available(self.ACTION):
+            if not await ros2_adapter.action_available_async(self.ACTION):
                 return RouteSendResult(
                     "unavailable",
                     "Nav2 (/navigate_to_pose) is not running — the goal was NOT sent.",
@@ -80,7 +80,9 @@ class Nav2RouteAdapter:
                     }
                 }
             )
-            ok, detail = ros2_adapter.action_send_goal(self.ACTION, self.ACTION_TYPE, goal_yaml)
+            ok, detail = await ros2_adapter.action_send_goal_async(
+                self.ACTION, self.ACTION_TYPE, goal_yaml
+            )
             return RouteSendResult("succeeded" if ok else "failed", detail)
         except ros2_adapter.Ros2AdapterError as exc:
             return RouteSendResult("failed", str(exc))

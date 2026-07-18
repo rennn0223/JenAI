@@ -37,7 +37,7 @@ def test_safety_clamp_leaves_safe_and_non_twist() -> None:
 def test_ros_drive_clamps_before_publishing(monkeypatch) -> None:
     captured = {}
 
-    def fake_pub_for(topic, message_type, payload_yaml, **kw):
+    async def fake_pub_for(topic, message_type, payload_yaml, **kw):
         captured["payload_yaml"] = payload_yaml
         return ros2_adapter.PubResult(ok=True, message="ok")
 
@@ -104,9 +104,14 @@ def test_ros_state_graceful_when_idle(monkeypatch) -> None:
 
 
 def test_nav2_reports_unavailable_when_action_missing(monkeypatch) -> None:
+    async def unavailable(name, **kwargs):
+        return False
+
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
-    monkeypatch.setattr(ros2_adapter, "action_available", lambda name, **kw: False)
-    result = Nav2RouteAdapter().resolve({"goal": {"pose": {"x": 1, "y": 2, "yaw": 0}}})
+    monkeypatch.setattr(ros2_adapter, "action_available_async", unavailable)
+    result = asyncio.run(
+        Nav2RouteAdapter().resolve({"goal": {"pose": {"x": 1, "y": 2, "yaw": 0}}})
+    )
     assert result.execution_status == "unavailable"
     assert "NOT sent" in result.detail
 
@@ -114,16 +119,21 @@ def test_nav2_reports_unavailable_when_action_missing(monkeypatch) -> None:
 def test_nav2_sends_goal_when_available(monkeypatch) -> None:
     sent = {}
 
-    def fake_send(name, action_type, goal_yaml, **kw):
+    async def available(name, **kwargs):
+        return True
+
+    async def fake_send(name, action_type, goal_yaml, **kwargs):
         sent["name"] = name
         sent["yaml"] = goal_yaml
         return True, "Goal finished with status: SUCCEEDED"
 
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
-    monkeypatch.setattr(ros2_adapter, "action_available", lambda name, **kw: True)
-    monkeypatch.setattr(ros2_adapter, "action_send_goal", fake_send)
-    result = Nav2RouteAdapter().resolve(
-        {"goal": {"frame_id": "map", "pose": {"x": 1.5, "y": 2.0, "yaw": 0.0}}}
+    monkeypatch.setattr(ros2_adapter, "action_available_async", available)
+    monkeypatch.setattr(ros2_adapter, "action_send_goal_async", fake_send)
+    result = asyncio.run(
+        Nav2RouteAdapter().resolve(
+            {"goal": {"frame_id": "map", "pose": {"x": 1.5, "y": 2.0, "yaw": 0.0}}}
+        )
     )
     assert result.execution_status == "succeeded"
     assert sent["name"] == "/navigate_to_pose"

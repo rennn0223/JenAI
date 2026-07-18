@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from jenai.subprocesses import run_process_async
 
 
 class Ros2AdapterError(Exception):
@@ -55,6 +58,22 @@ def _run(
             timeout=timeout,
             env=env,
         )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Ros2CommandError(f"ros2 {' '.join(args)} could not run: {exc}") from exc
+
+
+async def _run_async(
+    args: list[str], *, timeout: float, domain_id: int | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Cancellable ros2 CLI execution with process-group termination and reap."""
+
+    if not is_available():
+        raise Ros2NotAvailableError(
+            "ros2 command was not found on PATH. Install ROS2 Jazzy and source its setup script."
+        )
+    env = {**os.environ, "ROS_DOMAIN_ID": str(domain_id)} if domain_id is not None else None
+    try:
+        return await run_process_async(["ros2", *args], timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Ros2CommandError(f"ros2 {' '.join(args)} could not run: {exc}") from exc
 
@@ -220,6 +239,21 @@ def action_available(name: str, *, timeout: float = 6.0) -> bool:
     return name in {line.strip() for line in completed.stdout.splitlines() if line.strip()}
 
 
+async def action_available_async(name: str, *, timeout: float = 6.0) -> bool:
+    """Cancellable async form used by the navigation fallback."""
+
+    completed = await _run_async(["action", "list"], timeout=timeout)
+    if completed.returncode != 0:
+        raise Ros2CommandError(
+            f"ros2 action list exited with code {completed.returncode}: "
+            f"{completed.stderr.strip()}",
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            returncode=completed.returncode,
+        )
+    return name in {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+
+
 def action_send_goal(
     name: str, action_type: str, goal_yaml: str, *, timeout: float = 120.0
 ) -> tuple[bool, str]:
@@ -234,10 +268,37 @@ def action_send_goal(
     return succeeded, output or (completed.stderr or "").strip() or "no output"
 
 
+async def action_send_goal_async(
+    name: str, action_type: str, goal_yaml: str, *, timeout: float = 120.0
+) -> tuple[bool, str]:
+    """Send a goal via a CLI process that cannot outlive task cancellation."""
+
+    completed = await _run_async(
+        ["action", "send_goal", name, action_type, goal_yaml], timeout=timeout
+    )
+    output = (completed.stdout or "").strip()
+    succeeded = completed.returncode == 0 and "SUCCEEDED" in output.upper()
+    return succeeded, output or (completed.stderr or "").strip() or "no output"
+
+
 @dataclass
 class PubResult:
     ok: bool
     message: str
+
+
+def _topic_pub_args(
+    topic: str,
+    message_type: str,
+    payload_yaml: str,
+    *,
+    once: bool,
+) -> list[str]:
+    args = ["topic", "pub"]
+    if once:
+        args.append("--once")
+    args.extend([topic, message_type, payload_yaml])
+    return args
 
 
 def topic_pub(
@@ -248,11 +309,9 @@ def topic_pub(
     once: bool = True,
     timeout: float = 10.0,
 ) -> PubResult:
-    args = ["topic", "pub"]
-    if once:
-        args.append("--once")
-    args.extend([topic, message_type, payload_yaml])
+    """Synchronous compatibility wrapper for non-cancellable callers."""
 
+    args = _topic_pub_args(topic, message_type, payload_yaml, once=once)
     completed = _run(args, timeout=timeout)
     if completed.returncode != 0:
         raise Ros2CommandError(
@@ -265,36 +324,57 @@ def topic_pub(
     return PubResult(ok=True, message=completed.stdout.strip() or "published")
 
 
-def topic_pub_for(
+async def topic_pub_async(
     topic: str,
     message_type: str,
     payload_yaml: str,
     *,
-    rate_hz: float = 10.0,
-    duration_s: float = 1.0,
-    stop_yaml: str | None = None,
+    once: bool = True,
+    timeout: float = 10.0,
+    cancel_stop_yaml: str | None = None,
 ) -> PubResult:
-    """Publish a message at rate_hz for duration_s, then send a stop.
+    """Publish once without allowing cancellation to orphan the ROS process.
 
-    Robot velocity controllers usually watchdog-stop when commands stop arriving,
-    so a single publish only nudges the robot. A ROS-system-Python helper owns one
-    publisher for both the timed motion and stop pulses. Two separate ROS CLI
-    processes are deliberately avoided: startup of the stop process can leave the
-    previous non-zero command active for another second on short motions.
+    ``run_process_async`` kills and reaps the whole normal process group before
+    cancellation propagates. For a velocity message the caller also supplies an
+    all-zero payload; that conservative pulse is sent only after the non-zero
+    publisher is gone, so an emergency halt cannot be followed by a late publish.
     """
+
     if not is_available():
         raise Ros2NotAvailableError(
             "ros2 command was not found on PATH. Install ROS2 Jazzy and source its setup script."
         )
-    if duration_s <= 0.0:
-        if stop_yaml is not None:
-            topic_pub(topic, message_type, stop_yaml)
-        return PubResult(ok=True, message=f"zero-duration drive on {topic}; sent stop only")
+    args = _topic_pub_args(topic, message_type, payload_yaml, once=once)
+    try:
+        completed = await _run_async(args, timeout=timeout)
+    except asyncio.CancelledError:
+        if cancel_stop_yaml is not None:
+            await _best_effort_stop(topic, message_type, cancel_stop_yaml)
+        raise
 
-    stop_yaml = stop_yaml or "{}"
+    if completed.returncode != 0:
+        raise Ros2CommandError(
+            f"ros2 topic pub {topic} exited with code {completed.returncode}: "
+            f"{completed.stderr.strip()}",
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            returncode=completed.returncode,
+        )
+    return PubResult(ok=True, message=completed.stdout.strip() or "published")
+
+
+def _bounded_publisher_args(
+    topic: str,
+    message_type: str,
+    payload_yaml: str,
+    stop_yaml: str,
+    rate_hz: float,
+    duration_s: float,
+) -> list[str]:
     helper = Path(__file__).resolve().parents[1] / "bridge" / "ros_bounded_publisher.py"
     ros_python = os.environ.get("JENAI_ROS_PYTHON", "/usr/bin/python3")
-    args = [
+    return [
         ros_python,
         str(helper),
         topic,
@@ -305,21 +385,58 @@ def topic_pub_for(
         str(duration_s),
         "5",
     ]
+
+
+async def _best_effort_stop(topic: str, message_type: str, stop_yaml: str) -> None:
+    """Try one cancellable zero publish after the motion process has been reaped."""
+
     try:
-        completed = subprocess.run(
+        await topic_pub_async(topic, message_type, stop_yaml)
+    except Ros2AdapterError:
+        pass
+
+
+async def topic_pub_for(
+    topic: str,
+    message_type: str,
+    payload_yaml: str,
+    *,
+    rate_hz: float = 10.0,
+    duration_s: float = 1.0,
+    stop_yaml: str | None = None,
+) -> PubResult:
+    """Publish for a bounded duration and stop on success, failure, or cancel."""
+
+    if not is_available():
+        raise Ros2NotAvailableError(
+            "ros2 command was not found on PATH. Install ROS2 Jazzy and source its setup script."
+        )
+    if duration_s <= 0.0:
+        if stop_yaml is not None:
+            await topic_pub_async(topic, message_type, stop_yaml)
+        return PubResult(ok=True, message=f"zero-duration drive on {topic}; sent stop only")
+
+    stop_yaml = stop_yaml or "{}"
+    args = _bounded_publisher_args(
+        topic,
+        message_type,
+        payload_yaml,
+        stop_yaml,
+        rate_hz,
+        duration_s,
+    )
+    try:
+        completed = await run_process_async(
             args,
-            check=False,
-            capture_output=True,
-            text=True,
             timeout=8.0 + max(0.0, duration_s),
         )
+    except asyncio.CancelledError:
+        # run_process_async has killed and reaped the non-zero publisher before
+        # this final zero command is attempted.
+        await _best_effort_stop(topic, message_type, stop_yaml)
+        raise
     except (OSError, subprocess.TimeoutExpired) as exc:
-        # The helper normally stops in finally. If the parent had to terminate
-        # it, send one last best-effort stop through the CLI.
-        try:
-            topic_pub(topic, message_type, stop_yaml)
-        except Ros2AdapterError:
-            pass
+        await _best_effort_stop(topic, message_type, stop_yaml)
         return PubResult(
             ok=False,
             message=f"drive failed: bounded publisher could not complete on {topic}: {exc}",

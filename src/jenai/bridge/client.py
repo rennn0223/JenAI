@@ -118,9 +118,9 @@ class RosBridgeClient:
     async def stop(self) -> None:
         """Shut the bridge down cleanly, failing any in-flight requests."""
         proc, self._proc = self._proc, None
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            self._reader_task = None
+        reader_task, self._reader_task = self._reader_task, None
+        if reader_task is not None:
+            reader_task.cancel()
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(BridgeError("bridge stopped"))
@@ -138,11 +138,22 @@ class RosBridgeClient:
                 # until GC (zombie + "Exception ignored in __del__" noise).
                 with contextlib.suppress(TimeoutError, OSError):
                     await asyncio.wait_for(proc.wait(), 2.0)
+        if reader_task is not None:
+            # Cancellation is not cleanup until the task has observed it.
+            # Keep ownership until its stdout read has unwound so the event
+            # loop never closes around a pending task/subprocess transport.
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader_task
 
     async def _read_loop(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
+        # Capture the process stream for this task's lifetime. stop() clears
+        # self._proc before cancelling us so a concurrent teardown cannot turn
+        # the next read into an AttributeError while cancellation unwinds.
+        proc = self._proc
+        assert proc is not None and proc.stdout is not None
+        stdout = proc.stdout
         while True:
-            line = await self._proc.stdout.readline()
+            line = await stdout.readline()
             if not line:  # bridge died
                 for future in self._pending.values():
                     if not future.done():

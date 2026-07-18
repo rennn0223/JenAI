@@ -1,6 +1,6 @@
 # JenAI UX 規格
 
-> 📜 **設計期文件**(v0.1 規劃階段)。實際實作已演進,現況以 [TECHNICAL_GUIDE.md](TECHNICAL_GUIDE.md)、[COMMANDS.md](COMMANDS.md) 與程式碼為準;方向與 roadmap 見 [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md)。
+> **現行規格（2026-07-18）**：對應已實作並通過寬／窄終端測試的 TUI；外觀變更須先以獨立樣本取得使用者確認。
 
 
 ## 設計原則
@@ -14,44 +14,53 @@
 
 ## TUI 規格
 
-### 主畫面佈局（v0.1.0，Claude Code 風格）
+### 主畫面佈局（Claude Code 風格）
 
-無頂端 header bar；最上方是橘色 hero 歡迎卡，其下是 `⏺` 項目符號時間軸，
-底部固定一條輸入框 + 狀態列，執行中會插入 spinner。
+無頂端 header bar。寬終端的歡迎區採 40/60 雙欄：左欄顯示問候、會動的臘腸狗、
+產品名稱與 provider/model/path，右欄顯示 Quick start 與本 session 最近兩筆輸入。寬度小於 92
+columns 時折成單欄並隱藏右欄；小於 56 columns 時再隱藏吉祥物與產品副標。
 
-```
-╭─ JenAI v0.1.0 ───────────────────────────────────────╮  ← 橘色 hero 卡
-│  Robot workflow console        Ready for ROS2 work    │
-│      (像素狗)                  Plan / inspect / route  │
-│  qwen3.6:35b · ollama          Doctor: pass           │
-╰───────────────────────────────────────────────────────╯
+```text
+╭─ JenAI v1.x ─────────────────────────────────────────────────────╮
+│  Welcome back!                  Quick start                       │
+│       (動態像素臘腸狗)          /help       Learn JenAI commands │
+│  Robot decision agent           /doctor     Check ROS2 setup      │
+│  qwen3.6:35b · ollama           /run        Execute a task        │
+│  ~/JenAI                         ────────────────────────────────  │
+│                                 Recent activity                  │
+╰──────────────────────────────────────────────────────────────────╯
 
-> /route 從應科大樓到機械系館                              ← 使用者輸入（> 前綴）
-⏺ 解析起終點並產生路徑…
-⏺ route_execute_tool (從應科大樓到機械系館)
+❯ /route 從應科大樓到機械系館
+● 解析起終點並產生路徑…
+● route_execute_tool (從應科大樓到機械系館)
   ⎿ Route from 應科大樓 to 機械系館.
 
-⚠ Send navigation route                                    ← approval（左側橘 accent 條）
-  Send a navigation goal to the route adapter.
-  {"start": ..., "goal": ...}
-  Risk: p1 · Scope: sim_control
+──────────────────────────────────────────────────────────────────
+⚠ Send navigation route
+/route 從應科大樓到機械系館
+Send a navigation goal to the route adapter.
+May move the connected robot or simulator.
 
+Do you want to proceed?
 ❯ 1. Yes
-  2. Yes, and don't ask again this session
-  3. No, and tell JenAI what to do differently (Esc)
-──────────────────────────────────────────────────────────
- ✻ Running… (8s · esc to interrupt)                        ← spinner（執行中才出現）
- > ▏Ask JenAI, / for commands, ! for shell                 ← input composer
- ⏵⏵ ollama · qwen3.6:35b · ~/JenAI                         ← 底部狀態列
+  2. Yes, and remember this tool for this session
+  3. No
+──────────────────────────────────────────────────────────────────
+✻ Running… (8s · esc to interrupt)
+──────────────────────────────────────────────────────────────────
+❯ Ask JenAI, / for commands, ! for shell
+──────────────────────────────────────────────────────────────────
+approve · ollama                              qwen3.6:35b · ~/JenAI
 ```
 
 ### 視覺設計
 
-- 配色：深色背景，橘色 accent；橘色 hero 卡保留，其餘輸出走精簡項目符號
-- 轉錄格式：每則輸出為 `⏺` 項目符號，結果/細節以 `⎿` 縮排（取代原本的卡片框線）
-- 捲軸：細版、低調灰（非橘色）
-- slash palette 背景：接近黑（`#0d0f12`）
-- 狀態圖示：`⏺`（項目）`⎿`（結果）`⚠`（批准）`✻`（執行中）
+- 配色：深色背景、低彩文字、橘色結構線；保留品牌色但避免每段都做卡片
+- 轉錄格式：使用者為 `❯`，事件為 `●`，結果／細節以 `⎿` 縮排
+- 批准區：全寬、僅上下分隔線，不用圓角卡片或左側 accent 條
+- composer：上下水平線包住無邊框輸入；狀態列左右分組
+- slash palette：無外框卡片，只留上分隔線，選取列使用 `❯`
+- 狀態圖示：`●`（項目）`⎿`（結果）`⚠`（批准）`✻`（執行中）
 
 ---
 
@@ -62,23 +71,20 @@
 - 刪掉 `/` 後立即關閉
 
 ### 顯示格式（每列）
-```
-/ros schema    解析 topic message 欄位    例: /ros schema /cmd_vel    [ROS2]
+```text
+❯ /ros schema     Summarize a ROS2 topic's message schema
 ```
 
-- 命令名
-- 一句說明
-- 執行範例
-- 分類 badge（ROS2 / Vision / Planning / System）
+palette 顯示命令名與一句說明；補全只填入命令名，參數格式另以灰色唯讀 hint 顯示，不把 placeholder 塞進 composer。
 
 ### 鍵盤行為
 
 | 按鍵 | 行為 |
 |---|---|
-| `↑/↓` | 上下移動選項 |
-| `Tab` | 補全目前高亮命令為模板 |
-| `Enter` | 套用模板到輸入框（不直接執行） |
-| `Esc` | 關閉 palette，保留輸入內容 |
+| Tab | 補全目前高亮的完整命令名，尾端保留空格並顯示參數 hint |
+| Enter | 輸入仍是部分命令時先補全；已是完整命令／含參數時才提交 |
+| Esc | 關閉 palette 並把焦點留在 composer |
+| ↑/↓ | palette 開啟時移動選項；關閉時瀏覽 session history |
 
 ### 捲動顯示全部
 - palette 一次顯示一個視窗（12 列），會隨選取捲動，頂部顯示 `(目前/總數)`
@@ -88,58 +94,53 @@
 
 ## Tab 補全
 
-補全分三層：
+現行 palette 把多字命令視為完整命令名，例如 /ros topics、/loc add。輸入前綴後用
+Tab 或 Enter 只補成命令名與尾端空格；需要的參數格式顯示於 palette hint，使用者直接
+輸入真值，不必先刪除自動插入的 <placeholder>。
 
-1. **命令名補全**：`/ro` → `/ros`
-2. **子命令補全**：`/ros t` → `/ros topics` 或 `/ros topic-info`
-3. **參數模板補全**：選定後自動補成 `/ros topic-info <topic>`
+現行範圍：
 
-### v0.1.0 範圍
-- 命令名與子命令補全：必做
-- 參數模板補全：必做
-- topic / location 動態補全：建議納入，可延後
-
----
+1. 命令名與多字子命令前綴篩選。
+2. 全部符合項可用 ↑/↓ 瀏覽，Tab／Enter 補全選中項。
+3. 參數格式 hint；不插入模板。
+4. topic／location 動態值補全尚未實作，仍由 /ros topics 與 /loc list 查詢。
 
 ## 歷史輸入
 
 | 行為 | 說明 |
 |---|---|
-| `↑` | 上一筆歷史輸入 |
-| `↓` | 下一筆歷史輸入 |
-| 前綴過濾 | 若已輸入前綴，`↑/↓` 優先搜尋同前綴歷史 |
-| 多行模式 | 游標在第一行按 `↑` 才切歷史，否則保持行內移動 |
-| Session 範圍 | v0.1.0 先做 session 內歷史，跨 session 可延後 |
+| ↑ | palette 關閉且 composer 聚焦時取得上一筆 session 輸入 |
+| ↓ | 取得下一筆；超過最新一筆後回到空白 |
+| 即時輸入 | 重新設定 history cursor；目前沒有前綴過濾 |
+| 輸入型態 | Textual 單行 Input，沒有多行游標模式 |
+| Session 範圍 | 本次 TUI session；對話記憶另由 session 檔管理 |
+
 
 ---
 
 ## Approval Card 規格
 
-Approval card 出現時取得鍵盤焦點，採 Claude Code 風格的**編號選項**：
+Approval card 出現時取得鍵盤焦點，採 Claude Code 風格的**編號選項**。有界、非 host 的 P0/P1 可顯示：
 
 ```
 ❯ 1. Yes
-  2. Yes, and don't ask again this session
-  3. No, and tell JenAI what to do differently (Esc)
+  2. Yes, and remember this tool for this session
+  3. No
 ```
 
-- `↑/↓` 移動選項、`Enter` 選定，或直接按 `1` / `2` / `3`
-- `Esc` = 選項 3（拒絕）
-- 選 2「不再詢問」會把同類指令（`/shell`、`/ros pub`、`/route`）加入本 session 自動核准，之後跳過卡片直接執行
+`HOST_COMMAND` 或 P2 僅顯示一次性的 `Yes`／`No`；P2 預選 `No`。`↑/↓` 移動、`Enter` 選定，
+或直接按畫面上存在的數字鍵；`Esc` 永遠拒絕。auto mode 與 session remember 都不可跳過
+HOST_COMMAND／P2，因此自然語言 agent 與直接 `/shell` 走相同邊界。
 
 必顯示欄位：
 - title（操作名稱）
+- raw_action（原始指令／payload）
 - summary（自然語言說明）
-- raw_action（原始指令/payload）
-- risk_level + effect_scope
-- justification（agent 說明理由）
-- 編號選項列
+- 由 risk_level + effect_scope 轉成的一句白話影響說明
+- 問句、依風險產生的兩或三個編號選項與鍵盤提示
+## 底部狀態列與執行指示器
 
----
-
-## 底部狀態列與執行指示器（v0.1.0）
-
-- **狀態列**：輸入框下方固定一行 `⏵⏵ provider · model · cwd`
+- **狀態列**：左側顯示 permission mode 與 provider，右側顯示 model 與 cwd
 - **Spinner**：執行任務時輸入框上方顯示 `✻ <Planning/Running/Thinking…> (Ns · esc to interrupt)`
 - **Esc 中斷**：執行中按 `Esc` 取消目前任務並回到輸入
 - **! Bash 模式**：以 `!` 開頭的輸入直接當 `/shell` 執行（仍需批准）
@@ -150,22 +151,22 @@ Approval card 出現時取得鍵盤焦點，採 Claude Code 風格的**編號選
 目前以 slash palette 的命令說明取代）：
 
 ```
-> /ros schema
+❯ /ros schema
   hint: /ros schema <topic>  例: /ros schema /cmd_vel
 ```
 
 ---
 
-## Block 類型（v0.1.0 實作）
+## Block 類型（現行實作）
 
-TUI 對話區中的所有輸出，統一以 `⏺` 項目符號時間軸呈現：
+TUI 對話區中的所有輸出，統一以 `●` 項目符號時間軸呈現：
 
 | Block 類型 | 說明 |
 |---|---|
-| `TimelineItem` | 單行 `⏺` 事件（提示、成功、警告、錯誤、助理回覆） |
-| `OutputPanel` | `⏺` 標題 + `⎿` 縮排內容（ROS/vision/loc/摘要等一般輸出共用） |
-| `PlanBlock` | 顯示 plan steps（`⏺` + 各步驟 `⎿`） |
-| `ToolBlock` | 顯示 tool call：`⏺ tool(args)` + `⎿ result` |
+| `TimelineItem` | 單行 `●` 事件（提示、成功、警告、錯誤、助理回覆） |
+| `OutputPanel` | `●` 標題 + `⎿` 縮排內容（ROS/vision/loc/摘要等一般輸出共用） |
+| `PlanBlock` | 顯示 plan steps（`●` + 各步驟 `⎿`） |
+| `ToolBlock` | 顯示 tool call：`● tool(args)` + `⎿ result` |
 | `ApprovalCard` | 等待批准的操作，編號選項 |
 | `ErrorBlock` | 錯誤訊息 + 修復建議 |
 
@@ -200,7 +201,7 @@ Examples:
   /vision image /tmp/photo.jpg
 
 Keyboard:
-  Enter 送出/選定   ! shell   Esc 中斷/拒絕   1/2/3 approval   Tab 補全   ↑↓ 歷史/選單
+  Enter 送出/選定   ! shell   Esc 中斷/拒絕   數字鍵 approval   Tab 補全   ↑↓ 歷史/選單
 ```
 
 ---

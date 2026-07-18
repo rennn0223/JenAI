@@ -57,15 +57,14 @@ def test_onboard_backs_up_config_and_preserves_user_data(tmp_path: Path, monkeyp
 
     monkeypatch.setattr("jenai.cli.main.run_setup_wizard", fake_wizard)
 
-    result = runner.invoke(
-        app, ["onboard", "--config", str(config_path), "--yes"]
-    )
+    result = runner.invoke(app, ["onboard", "--config", str(config_path), "--yes"])
 
     assert result.exit_code == 0
     assert config_path.read_text(encoding="utf-8") == "new config\n"
     backups = list(tmp_path.glob("config.toml.bak-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "old config\n"
+    assert backups[0].stat().st_mode & 0o777 == 0o600
     assert env_path.read_text(encoding="utf-8") == "NVIDIA_API_KEY=secret\n"
     assert locations_path.read_text(encoding="utf-8") == "[[locations]]\nname='Dock'\n"
 
@@ -78,9 +77,7 @@ def test_onboard_cancel_changes_nothing(tmp_path: Path, monkeypatch) -> None:
         raise AssertionError("wizard must not run after cancellation")
 
     monkeypatch.setattr("jenai.cli.main.run_setup_wizard", unexpected_wizard)
-    result = runner.invoke(
-        app, ["onboard", "--config", str(config_path)], input="n\n"
-    )
+    result = runner.invoke(app, ["onboard", "--config", str(config_path)], input="n\n")
 
     assert result.exit_code == 0
     assert config_path.read_text(encoding="utf-8") == "keep me\n"
@@ -106,6 +103,39 @@ def test_onboard_without_config_starts_wizard_without_confirmation(
     assert called == [config_path]
     assert config_path.read_text(encoding="utf-8") == "created\n"
     assert list(tmp_path.glob("config.toml.bak-*")) == []
+
+
+def test_first_main_wizard_continues_into_tui(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    configured = build_minimal_config(
+        provider_name="test",
+        provider="openai",
+        default_model="gpt-test",
+        api_key_env="",
+    )
+    calls: dict[str, object] = {}
+
+    def fake_wizard(path: Path) -> Path:
+        calls["wizard"] = path
+        save_config(configured, path)
+        return path
+
+    def fake_run_tui(config, *, config_path, doctor_result):
+        calls["provider"] = config.active_provider
+        calls["tui_path"] = config_path
+        calls["doctor"] = doctor_result
+
+    monkeypatch.setattr("jenai.cli.main.run_setup_wizard", fake_wizard)
+    monkeypatch.setattr("jenai.cli.main.run_tui", fake_run_tui)
+
+    result = runner.invoke(app, ["--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert calls["wizard"] == config_path
+    assert calls["provider"] == "test"
+    assert calls["tui_path"] == config_path
+    assert calls["doctor"].items
+    assert "Config written to" in result.stdout
 
 
 def test_main_command_starts_tui(tmp_path: Path, monkeypatch) -> None:

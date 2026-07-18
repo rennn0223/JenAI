@@ -45,6 +45,7 @@ from jenai.tools.skills import (
     parse_patrol,
 )
 from jenai.tools.vision_core import VisionError, analyze_image, capture_and_analyze
+from jenai.tui.approval_policy import may_auto_approve
 from jenai.tui.location_commands import LocationCommandsMixin
 from jenai.tui.panels import MUTED, OutputPanel, TimelineItem, _is_number
 from jenai.tui.widgets import ApprovalCard
@@ -57,20 +58,19 @@ class RobotCommandsMixin(LocationCommandsMixin):
         to the execution kind), otherwise raise the card and park the action."""
         self.run_store.add_tool_call(ctx.run, tool_call)
         pending.setdefault("tool_call_id", tool_call.tool_call_id)
-        if getattr(self, "_mode", "approve") == "auto":
+        pending.setdefault("approval", approval)
+        remembered = pending.get("auto_key", pending["kind"]) in self._auto_approved
+        if may_auto_approve(
+            approval,
+            auto_mode=getattr(self, "_mode", "approve") == "auto",
+            remembered=remembered,
+        ):
             # Auto mode: execute without a card, but SAY so — an unlogged
             # auto-approval would make the transcript lie about consent.
-            await self._mount_event(TimelineItem("warn", f"自動模式:已批准 {approval.title}"))
-            self.run_store.audit_event(
-                ctx.run,
-                "approval_resolved",
-                entity_id=approval.tool_call_id,
-                status="approved",
-                details={"tool_name": approval.tool_name, "automatic": True},
+            source = (
+                "自動模式" if getattr(self, "_mode", "approve") == "auto" else "本次記住"
             )
-            await self._execute_direct(pending)
-            return
-        if pending.get("auto_key", pending["kind"]) in self._auto_approved:
+            await self._mount_event(TimelineItem("warn", f"{source}:已批准 {approval.title}"))
             self.run_store.audit_event(
                 ctx.run,
                 "approval_resolved",
@@ -768,15 +768,38 @@ class RobotCommandsMixin(LocationCommandsMixin):
                 TimelineItem("muted", "Perception idle. Usage: /perception start [topic] [hz]")
             )
 
-    async def _show_stop(self, _: str = "") -> None:
-        """EMERGENCY STOP — no approval gate: stopping is always safe."""
+    async def _halt_once(self) -> str:
+        """One bridge-level cancel + zero pulse, shared by both stop phases."""
+
+        bridge = await self._get_bridge()
+        return await halt_robot(self.config, bridge)
+
+    async def _halt_before_cancel(self) -> None:
+        """Brake first; the stop task then kills/reaps the stale action."""
+
         self._spinner_label = "STOPPING"
         try:
-            bridge = await self._get_bridge()
-            message = await halt_robot(self.config, bridge)
+            message = await self._halt_once()
+        except BridgeError as exc:
+            # Still let the caller cancel/reap the predecessor and retry the
+            # final halt. A failed first pulse must not strand a publisher.
+            await self._mount_event(
+                TimelineItem("warn", f"Immediate stop pulse unavailable: {exc}")
+            )
+            return
+        await self._mount_event(
+            TimelineItem("warn", f"Immediate stop pulse sent before task cancellation. {message}")
+        )
+
+    async def _show_stop(self, _: str = "") -> None:
+        """Final EMERGENCY STOP pulse — no approval gate; stopping is always safe."""
+
+        self._spinner_label = "STOPPING"
+        try:
+            message = await self._halt_once()
         except BridgeError as exc:
             await self._mount_event(
-                TimelineItem("warn", f"Stop unavailable (no ROS bridge): {exc}")
+                TimelineItem("warn", f"Final stop unavailable (no ROS bridge): {exc}")
             )
             return
         await self._mount_event(TimelineItem("success", message))

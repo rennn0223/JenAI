@@ -8,6 +8,8 @@
 - 執行模式只接受 `--execute` 加完整確認字串
   `I-CONFIRM-ISAAC-SIM-MAY-MOVE`；少任一項就不送 goal。
 - 一般 CI 只用 fake 測 runner，本 workflow 只支援人工 `workflow_dispatch`。
+- preflight 以 production bridge 唯讀取得 AMCL/map 位姿；座標非有限值、禁區設定存在但不是 map frame，或起點落入禁區時一律 fail。
+- live execution 在第一個 goal 前重新讀取位姿並套用相同判定，避免 preflight 後車況改變。
 - live route 一律經 `NavigationGateway`、watchdog、Nav2 與 hard stop。
 - runner 結束時不論成功或失敗都再次呼叫 halt。
 - 目前 target 固定為 `isaac-sim`，不可把 artifact 解讀成實體安全認證。
@@ -61,13 +63,13 @@ workflow 永遠上傳 `isaac-hil-<run>-<attempt>` artifact；無檔時也會在 
 
 `overall` 只有四種：
 
-- `preflight_pass`：唯讀必要檢查通過，沒有送 goal。
+- `preflight_pass`：ROS/Nav2 必要檢查與合法起點位姿皆通過，沒有送 goal。
 - `pass`：route、cancel/stop，以及要求的 Twin checks 全通過。
 - `pass_with_skips`：live checks 通過，但 Twin 等選配證據明確跳過。
 - `fail`：任一必要項失敗。
 
 每個 check 保存狀態、原因與證據，包括 progress samples、GateReport、執行耗時、
-停止後位姿漂移、設定 SHA-256 與 ROS domain。artifact 不保存 API key、prompt 或
+停止後位姿漂移、設定 SHA-256、Git revision/dirty 狀態與 ROS domain。artifact 不保存 API key、prompt 或
 raw ROS payload，也不保存 self-hosted 主機名或設定絕對路徑。預設拒絕覆寫既有
 檔案；重跑請換檔名，避免抹除失敗證據。
 

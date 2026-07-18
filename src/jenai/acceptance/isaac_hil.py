@@ -16,6 +16,7 @@ import json
 import math
 import os
 import platform
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -79,6 +80,36 @@ def _config_fingerprint(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _source_state() -> tuple[str | None, bool | None]:
+    """Return the tested Git revision and whether tracked files differ from it."""
+    repository = Path(__file__).resolve().parents[3]
+    revision = os.environ.get("GITHUB_SHA") or os.environ.get("JENAI_SOURCE_REVISION")
+    try:
+        if revision is None:
+            completed = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+            )
+            if completed.returncode == 0:
+                revision = completed.stdout.strip() or None
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=repository,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+        dirty = status.returncode == 0 and bool(status.stdout.strip())
+        return revision, dirty if status.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return revision, None
+
+
 def _check(check_id: str, status: str, *, detail: str = "", **evidence: Any) -> dict:
     return {
         "id": check_id,
@@ -86,6 +117,73 @@ def _check(check_id: str, status: str, *, detail: str = "", **evidence: Any) -> 
         "detail": detail,
         "evidence": evidence,
     }
+
+
+def _evaluate_start_pose(pose: Any, config: AppConfig, *, check_id: str = "start_pose") -> dict:
+    """Fail closed when the localized start cannot satisfy map-frame zones."""
+    coordinates = (pose.x, pose.y, pose.yaw)
+    evidence = {
+        "pose": {
+            "x": pose.x,
+            "y": pose.y,
+            "yaw": pose.yaw,
+            "frame_id": pose.frame_id,
+            "source": pose.source,
+        },
+        "configured_forbidden_zones": [zone.name for zone in config.twin.forbidden_zones],
+    }
+    if not all(math.isfinite(value) for value in coordinates):
+        return _check(
+            check_id,
+            "fail",
+            detail="The localized start pose contains a non-finite value.",
+            **evidence,
+        )
+    if config.twin.forbidden_zones and pose.frame_id != "map":
+        return _check(
+            check_id,
+            "fail",
+            detail=("Forbidden zones use the map frame, but the start pose is not map-localized."),
+            **evidence,
+        )
+    hit = next(
+        (zone for zone in config.twin.forbidden_zones if zone.contains(pose.x, pose.y)),
+        None,
+    )
+    if hit is not None:
+        return _check(
+            check_id,
+            "fail",
+            detail=f"Start pose is inside forbidden zone {hit.name!r}; reset before execution.",
+            forbidden_zone=hit.model_dump(mode="json"),
+            **evidence,
+        )
+    return _check(
+        check_id,
+        "pass",
+        detail=(
+            f"Finite localized start is outside {len(config.twin.forbidden_zones)} "
+            "configured forbidden zone(s)."
+        ),
+        **evidence,
+    )
+
+
+async def _inspect_start_pose(config: AppConfig) -> dict:
+    """Read one pose through the production bridge without sending commands."""
+    bridge = RosBridgeClient()
+    try:
+        await bridge.start()
+        pose = await bridge.get_pose(timeout=3.0)
+        return _evaluate_start_pose(pose, config)
+    except Exception as exc:
+        return _check(
+            "start_pose",
+            "fail",
+            detail=f"Could not inspect a localized start pose: {type(exc).__name__}: {exc}",
+        )
+    finally:
+        await bridge.stop()
 
 
 def _overall(checks: list[dict], *, executed: bool) -> str:
@@ -191,6 +289,11 @@ async def _run_live(
                 },
             )
         )
+
+        start_pose_check = _evaluate_start_pose(pose, config, check_id="start_pose_recheck")
+        checks.append(start_pose_check)
+        if start_pose_check["status"] != "pass":
+            return checks
 
         if config.twin.enabled:
             isolated = str(config.twin.domain_id) != ambient_domain
@@ -388,6 +491,7 @@ async def run_isaac_hil(options: IsaacHilOptions) -> dict:
     options.validate()
     config_path = options.config_path or default_config_path()
     started_at = _utc_now()
+    source_revision, source_dirty = _source_state()
     checks: list[dict] = []
     artifact: dict[str, Any] = {
         "schema_version": 1,
@@ -400,7 +504,8 @@ async def run_isaac_hil(options: IsaacHilOptions) -> dict:
             "machine": platform.machine(),
             "python": platform.python_version(),
             "jenai_version": __version__,
-            "source_revision": os.environ.get("GITHUB_SHA"),
+            "source_revision": source_revision,
+            "source_dirty": source_dirty,
             "ros_domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
         },
         "requested_goals": list(options.goals),
@@ -444,7 +549,12 @@ async def run_isaac_hil(options: IsaacHilOptions) -> dict:
                 **doctor_evidence,
             )
         )
-        if options.execute and doctor_ok:
+        start_pose_ok = False
+        if doctor_ok:
+            start_pose_check = await _inspect_start_pose(config)
+            checks.append(start_pose_check)
+            start_pose_ok = start_pose_check["status"] == "pass"
+        if options.execute and doctor_ok and start_pose_ok:
             checks.extend(await _run_live(config, locations, options))
         elif options.execute:
             checks.append(

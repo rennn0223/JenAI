@@ -56,6 +56,33 @@ def test_run_shell_timeout_terminates_descendants(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-specific")
+def test_run_shell_cancellation_terminates_process_and_descendants(tmp_path: Path) -> None:
+    marker = tmp_path / "cancel-descendant-survived"
+    pid_file = tmp_path / "shell.pid"
+    command = f"echo $$ > {pid_file}; (sleep 0.4; touch {marker}) & wait"
+
+    async def scenario() -> int:
+        task = asyncio.create_task(shell_core.run_shell(command, timeout=5.0))
+        for _ in range(100):
+            if pid_file.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert pid_file.exists()
+        pid = int(pid_file.read_text().strip())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return pid
+
+    pid = asyncio.run(scenario())
+    time.sleep(0.5)
+
+    assert not marker.exists()
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 @pytest.mark.skipif(
     os.name != "posix" or shutil.which("setsid") is None,
     reason="needs POSIX sessions and setsid",

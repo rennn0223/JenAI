@@ -34,6 +34,19 @@ JenAI v1 is designed for a trusted workstation on an isolated laboratory or site
 - Use a physical emergency stop for any physical deployment. JenAI's software stop is not a
   replacement for certified hardware protection.
 
+## Provider data egress
+
+Provider choice is also a data-boundary choice. When a cloud OpenAI-compatible provider is active,
+JenAI sends the text needed for that request to the configured endpoint. Depending on the command,
+that can include user prompts, task and location names, ROS schema excerpts, and tool results.
+Vision requests send the selected image or captured camera frame itself. Local trace files are not
+automatically uploaded, but that does **not** make cloud inference local.
+
+Before using a cloud provider, review its retention and training terms, obtain any required consent,
+and avoid sensitive site names, coordinates, images, or prompts. Select a local endpoint such as
+Ollama when those inputs must remain on the workstation. Switching provider changes future calls; it
+does not revoke data already sent to a previous provider.
+
 The detailed trust boundaries and deliberate exclusions are documented in
 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). Safety hazards and residual risks are documented in
 [`docs/SAFETY_CASE.md`](docs/SAFETY_CASE.md).

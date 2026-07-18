@@ -11,11 +11,13 @@ from jenai.acceptance.isaac_hil import (
     EXECUTION_CONFIRMATION,
     IsaacHilOptions,
     _doctor_checks,
+    _evaluate_start_pose,
     _execution_config,
     _run_cancel_and_stop,
+    _source_state,
     run_isaac_hil,
 )
-from jenai.config.models import AppConfig, TwinProfile
+from jenai.config.models import AppConfig, ForbiddenZone, TwinProfile
 from jenai.schemas import Location, Pose2D
 
 
@@ -28,6 +30,25 @@ def _options(tmp_path: Path, **overrides) -> IsaacHilOptions:
     }
     values.update(overrides)
     return IsaacHilOptions(**values)
+
+
+def test_source_state_records_revision_and_dirty_tree(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(args)
+        stdout = "abc123\n" if args[1] == "rev-parse" else " M tracked.py\n"
+        return SimpleNamespace(returncode=0, stdout=stdout)
+
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.delenv("JENAI_SOURCE_REVISION", raising=False)
+    monkeypatch.setattr(isaac_hil.subprocess, "run", fake_run)
+
+    revision, dirty = _source_state()
+
+    assert revision == "abc123"
+    assert dirty is True
+    assert [call[1] for call in calls] == ["rev-parse", "status"]
 
 
 def test_live_execution_requires_exact_confirmation(tmp_path: Path) -> None:
@@ -67,6 +88,58 @@ def test_isolated_twin_remains_enabled_for_structured_verdict() -> None:
     execution = _execution_config(config, "isaac-sim", "0")
 
     assert execution.twin.enabled is True
+
+
+def _pose(x: float, y: float, *, frame_id: str = "map"):
+    return SimpleNamespace(x=x, y=y, yaw=0.0, frame_id=frame_id, source="/amcl_pose")
+
+
+def test_start_pose_fails_inside_configured_forbidden_zone() -> None:
+    config = AppConfig(
+        twin=TwinProfile(
+            forbidden_zones=[
+                ForbiddenZone(name="wall", x_min=-9.0, y_min=-13.0, x_max=-4.5, y_max=-9.0)
+            ]
+        )
+    )
+
+    result = _evaluate_start_pose(_pose(-7.16, -9.48), config)
+
+    assert result["status"] == "fail"
+    assert result["evidence"]["forbidden_zone"]["name"] == "wall"
+
+
+def test_start_pose_passes_outside_zones_with_finite_map_pose() -> None:
+    config = AppConfig(
+        twin=TwinProfile(
+            forbidden_zones=[ForbiddenZone(name="wall", x_min=-9, y_min=-13, x_max=-4.5, y_max=-9)]
+        )
+    )
+
+    result = _evaluate_start_pose(_pose(0.0, 0.0), config)
+
+    assert result["status"] == "pass"
+    assert result["evidence"]["configured_forbidden_zones"] == ["wall"]
+
+
+def test_start_pose_cannot_compare_map_zones_to_odom_pose() -> None:
+    config = AppConfig(
+        twin=TwinProfile(
+            forbidden_zones=[ForbiddenZone(name="wall", x_min=-9, y_min=-13, x_max=-4.5, y_max=-9)]
+        )
+    )
+
+    result = _evaluate_start_pose(_pose(0.0, 0.0, frame_id="odom"), config)
+
+    assert result["status"] == "fail"
+    assert "not map-localized" in result["detail"]
+
+
+def test_start_pose_rejects_non_finite_coordinates() -> None:
+    result = _evaluate_start_pose(_pose(float("nan"), 0.0), AppConfig())
+
+    assert result["status"] == "fail"
+    assert "non-finite" in result["detail"]
 
 
 def test_doctor_fails_closed_when_required_item_is_missing(monkeypatch) -> None:
@@ -126,6 +199,39 @@ def test_cancel_and_stop_records_drift_and_propagates_cancellation(tmp_path: Pat
     assert result["evidence"]["task_cancelled"] is True
     assert result["evidence"]["drift_m"] == 0.0
     assert result["evidence"]["progress_samples"]
+
+
+def test_preflight_overall_fails_when_start_pose_gate_fails(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("test", encoding="utf-8")
+    config = AppConfig(locations_path="locations.toml")
+    location = Location(name="corner", pose=Pose2D(x=4.0, y=5.0, yaw=0.0))
+
+    monkeypatch.setattr(isaac_hil, "load_config", lambda _path: config)
+    monkeypatch.setattr(isaac_hil, "load_locations", lambda _path: [location])
+    monkeypatch.setattr(
+        isaac_hil,
+        "_doctor_checks",
+        lambda _path: ([], True, {"required_checks": [], "attempts": []}),
+    )
+
+    async def blocked_start(_config):
+        return {
+            "id": "start_pose",
+            "status": "fail",
+            "detail": "inside forbidden zone",
+            "evidence": {},
+        }
+
+    monkeypatch.setattr(isaac_hil, "_inspect_start_pose", blocked_start)
+
+    artifact = asyncio.run(run_isaac_hil(_options(tmp_path, config_path=config_path)))
+
+    assert artifact["overall"] == "fail"
+    assert [check["id"] for check in artifact["checks"]] == [
+        "preflight",
+        "start_pose",
+    ]
 
 
 def test_setup_failure_is_preserved_in_artifact(tmp_path: Path) -> None:

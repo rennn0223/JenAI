@@ -139,6 +139,10 @@ def test_run_store_restores_and_claims_serialized_sdk_state(tmp_path, monkeypatc
     run = store.create_run("session-1", "move after approval")
     store.set_status(run, RunStatus.AWAITING_APPROVAL)
     store.stash_pending_state(run.run_id, SerializableState(), ["call-1"])
+    persisted = list(tmp_path.glob("*.json"))
+    assert len(persisted) == 1
+    assert persisted[0].stat().st_mode & 0o777 == 0o600
+    assert tmp_path.stat().st_mode & 0o777 == 0o700
 
     restored = RunStore(pending_dir=tmp_path)
     restored_run = restored.get(run.run_id)

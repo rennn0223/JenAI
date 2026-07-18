@@ -21,7 +21,7 @@ JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人
 - **TUI + WebUI 雙介面**：terminal 優先；WebUI 有對話 console、即時地圖、手機批准
 - **daemon 常駐模式**：`jenai daemon` 規則觸發（如電量低回充），預設只通報、明確授權才動作
 - **MCP server**：`jenai mcp` 把機器人工具開放給 Claude Code／Desktop 等 MCP client（預設唯讀，`--allow-actions` 才開放導航）
-- **權限三模式**：TUI Shift+Tab 循環切換「審批／規劃／自動」——裸自然語言依模式路由（規劃模式只產計畫不執行、自動模式批准卡自動批准並明示），急停與硬限速在任何模式都不放鬆
+- **權限三模式**：TUI Shift+Tab 循環切換「審批／規劃／自動」——裸自然語言依模式路由（規劃模式只產計畫不執行；自動模式只自動批准有界、非 host 的 P0/P1 動作並明示，HOST_COMMAND/P2 仍逐次詢問），急停與硬限速在任何模式都不放鬆
 - **Development copilot**：`JenAI scaffold "<描述>"` 自然語言生成 ROS2 套件（boilerplate 確定性生成 + LLM 寫 node 主體 + 送出前審閱；`--build` 生成即 colcon 驗證）；`skills/*.toml` 檔案定義技能擴充 slash 指令
 - **決策核心與評測**：`decision_core` 有界動作集單選決策（越界一律降級 refer）+ `JenAI eval` E1 場景評測（accuracy／unsafe rate／refer rate）
 - **巡邏日報**：`/report` 確定性日報 + LLM 摘要（離線誠實降級），`/report list` 回看歷次
@@ -48,12 +48,58 @@ uv run JenAI doctor
 uv run JenAI web
 ```
 
-### 在新機器上安裝（fresh clone）
+### 在新機器上安裝（建議：不可變 Release wheel）
 
-repo 本身可攜：開發／CI 解析結果鎖在 `uv.lock`（含 aarch64／x86_64／macOS），
-`uv tool install .` 則依 `pyproject.toml` 解析當下相容版本；release wheel 另有乾淨環境煙霧
-測試。原始碼沒有寫死任何機器路徑。有三個檔案**不在 repo 裡**（使用者設定／機密），
-換機器後要重建：
+目前 `rennn0223/JenAI` 是 **private repository**。只有已獲授權、且已用 GitHub CLI
+登入的協作者能從 Releases 安裝；未獲 repository 權限的使用者目前沒有公開下載通道，
+不能把匿名 `curl` 當成可交付的安裝方式。若未來改為公開發行，才另提供公開下載流程。
+
+已授權協作者請選定正式版本，同時下載該版本的 wheel、constraints 與 `SHA256SUMS`。
+三者必須是**同一個 release**；constraints 固定該版通過發布閘的依賴解析，checksum 則
+防止下載內容被替換。只有 asset 清單實際包含這三項的 release 才適用此流程；例如既有
+`v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證，請等待新版。
+
+下列已驗證的 copy-paste 流程以 Linux／Ubuntu 為目標，使用系統提供的 GNU
+`sha256sum`。macOS 在 [SUPPORT_MATRIX](docs/SUPPORT_MATRIX.md) 仍是 Experimental；可自行
+安裝 GNU coreutils 並把命令換成 `gsha256sum`，但不因此取得與 Linux 相同的驗證等級。
+在提示中輸入 release tag 去掉 `v` 後的版本號，例如 `vX.Y.Z` 就輸入 `X.Y.Z`：
+
+```bash
+read -r -p "JenAI release version (without v): " VERSION
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid version"; exit 2; }
+command -v gh >/dev/null || { echo "GitHub CLI (gh) is required"; exit 2; }
+gh auth status
+INSTALL_DIR="$HOME/Downloads/jenai-$VERSION"
+mkdir -p "$INSTALL_DIR"
+gh release download "v${VERSION}" --repo rennn0223/JenAI --dir "$INSTALL_DIR" --pattern "jenai-${VERSION}-py3-none-any.whl" --pattern "jenai-${VERSION}-constraints.txt" --pattern "SHA256SUMS"
+cd "$INSTALL_DIR"
+grep -Fq " *jenai-${VERSION}-py3-none-any.whl" SHA256SUMS
+grep -Fq " *jenai-${VERSION}-constraints.txt" SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+uv tool install \
+  --constraints "jenai-${VERSION}-constraints.txt" \
+  "./jenai-${VERSION}-py3-none-any.whl"
+uv tool update-shell
+```
+
+若該 release 的說明**明確標示已發布 GitHub attestation**，且電腦已安裝支援
+`gh attestation` 的新版 GitHub CLI 並已登入，可在 checksum 通過後額外執行：
+
+```bash
+gh attestation verify "jenai-${VERSION}-py3-none-any.whl" \
+  --repo rennn0223/JenAI
+gh attestation verify "jenai-${VERSION}-constraints.txt" \
+  --repo rennn0223/JenAI
+```
+
+這是選配的第二層驗證；不能因為舊 release 沒有 attestation 就宣稱驗證通過。
+
+重開 shell 後，`JenAI version` 與 `jenai --help` 都應可執行。wheel 會建立大小寫兩個
+entry point，不需要另寫 shell wrapper 或 symlink。若曾把 repo 的 `scripts/jenai` 連到
+`~/.local/bin/jenai`，要先依[下節](#repo-開發啟動腳本非一般安裝方式)移除舊連結，不能與
+wheel 的小寫 entry point 共存。
+
+有三個檔案**不在 repo 裡**（使用者設定／機密），換機器後要重建：
 
 | 檔案（`~/.config/jenai/`） | 怎麼來 |
 |---|---|
@@ -61,31 +107,70 @@ repo 本身可攜：開發／CI 解析結果鎖在 `uv.lock`（含 aarch64／x86
 | `.env`（API 金鑰） | 手動一行（見下方「API 金鑰」）；JenAI 啟動時自動載入 |
 | `locations.toml`（地點） | 依 [`locations.example.toml`](locations.example.toml) 填 |
 
+需要從原始碼安裝時，只使用已審閱的**精確 tag 或完整 commit SHA**，並記錄解析出的
+commit。此路徑在支援矩陣列為 Supported，尚未等同 release wheel 的隔離環境驗證：
+
 ```bash
-git clone <repo-url> ~/JenAI && cd ~/JenAI
-uv tool install .       # 建立隔離工具環境並安裝 JenAI / jenai 命令
-uv tool update-shell    # 確保工具執行目錄在 PATH；完成後重開 shell
-JenAI                   # 首次 → setup wizard → 進 TUI
+read -r -p "Reviewed tag (vX.Y.Z) or full commit SHA: " REF
+if [[ ! "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ \
+   && ! "$REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "REF must be vX.Y.Z or a full 40-character commit SHA"
+  exit 2
+fi
+git clone https://github.com/rennn0223/JenAI.git ~/JenAI
+cd ~/JenAI
+SOURCE_SHA="$(git rev-parse --verify "${REF}^{commit}")"
+git switch --detach "$SOURCE_SHA"
+test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+printf "Source commit: %s\n" "$SOURCE_SHA"
+uv tool install .
+uv tool update-shell
 ```
 
-開發者要讓原始碼修改立即生效，改用 `uv sync` + `uv run JenAI`；一般使用者不需要。
+開發者要讓原始碼修改立即生效，則保留 repo 工作流：`uv sync` + `uv run JenAI`；
+CI／重播已鎖定環境時使用 `uv sync --frozen`。一般使用者不需要 clone repo。
 
 - **ROS2 是選配**：沒裝 ROS 的機器，`/ros*`、`/drive`、`/route` 會誠實回報 unavailable（不會崩），聊天／`/plan` 照常；控真車才需要 ROS2 Jazzy + Nav2。
-- 需要網路 + 金鑰（或本機 Ollama）才能實際呼叫模型；純離線無法。
+- 需要網路 + 金鑰（或本機 Ollama）才能實際呼叫模型；雲端 provider 會收到該請求的 prompt/任務上下文，vision 會送出完整選定圖片或相機幀。敏感場域請用本機 endpoint，詳見 [SECURITY.md](SECURITY.md)。
 
-### 一鍵啟動（含 ROS2）
+### Repo 開發啟動腳本（非一般安裝方式）
 
-啟動腳本 [`scripts/jenai`](scripts/jenai) 會在「還沒有可用的 ROS 環境」時 source ROS2
-（已經 source 好的環境——包括其他發行版——會被尊重，不會疊加）、確保 uv，再用
-`uv run` 啟動。安裝方式是連結到 PATH 上：
+啟動腳本 [`scripts/jenai`](scripts/jenai) 是 source checkout 專用的開發便利工具，會在
+「還沒有可用的 ROS 環境」時 source ROS2（已經 source 好的環境——包括其他發行版——
+會被尊重，不會疊加）、確保 uv，再用 `uv run` 啟動。它不是 wheel 的一部分。只在
+**未安裝 wheel tool** 時才可選擇連到 PATH：
 
 ```bash
-ln -sf "$PWD/scripts/jenai" ~/.local/bin/jenai   # 一次性安裝
+mkdir -p ~/.local/bin
+ln -s "$PWD/scripts/jenai" ~/.local/bin/jenai
 jenai            # source ROS2 → 進 TUI
 jenai doctor     # 環境檢查
 jenai web        # WebUI 儀表板
-# 覆寫路徑：JENAI_DIR=/path/to/JenAI  ROS_SETUP=/opt/ros/humble/setup.bash jenai
+# 覆寫路徑：JENAI_DIR=/path/to/JenAI ROS_SETUP=/opt/ros/humble/setup.bash jenai
 ```
+
+這個連結與 `uv tool install` 所管理的 `~/.local/bin/jenai` 同名。切換成 wheel 前先執行
+`ls -l ~/.local/bin/jenai`，確認它確實指向 repo 的 `scripts/jenai` 後再移除該 symlink；
+不要用 `ln -sf` 蓋掉 wheel entry point。wheel 使用者若要 ROS2，
+先在同一個 shell 執行 `source /opt/ros/<distro>/setup.bash`，再直接執行 `JenAI`。
+
+### 更新、回滾與解除安裝
+
+更新與回滾都使用目標版本的 wheel、matching constraints 與 `SHA256SUMS` 重新驗證，再以
+`uv tool install --force --constraints ... <wheel>` 替換 tool；不要混用不同 release 的
+檔案，也不要從移動中的 `main` 回滾。完整可執行流程見 [ROLLBACK](docs/ROLLBACK.md)。
+
+解除安裝前可先安全匯出本機資料；package 移除**不會刪除** `~/.config/jenai`：
+
+```bash
+JenAI data status
+JenAI data export "jenai-data-$(date +%F).tar.gz"
+JenAI data purge --dry-run
+uv tool uninstall jenai
+```
+
+匯出內容、預設 purge 保留項目與明確完整清除選項見
+[DATA_LIFECYCLE](docs/DATA_LIFECYCLE.md)。
 
 **API 金鑰用 `.env`（建議）**：把 provider 金鑰放在 `~/.config/jenai/.env`
 （`chmod 600`，跟 `config.toml` 同目錄），**JenAI 啟動時自動載入**——不論用
@@ -136,6 +221,8 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 | [docs/PRODUCT_BRIEF.md](docs/PRODUCT_BRIEF.md) | **產品一頁摘要**：給 PM、主管、業務與買家的定位、證據、demo 與採購驗收 |
 | [docs/EVIDENCE_LEDGER.md](docs/EVIDENCE_LEDGER.md) | **單一證據表**：論文、README 與簡報共用的正式數字與限制 |
 | [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) | **支援矩陣**：OS、ROS2、模擬、載具、模型與介面的驗證等級 |
+| [SECURITY.md](SECURITY.md) | **安全政策**：私下通報、部署邊界、敏感資料與安全修補流程 |
+| [SUPPORT.md](SUPPORT.md) | **支援政策**：支援範圍、提問資料、best-effort 與無 SLA 邊界 |
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（開發新人先讀這份） |
 | [docs/CODE_TOUR.md](docs/CODE_TOUR.md) | **全程式碼逐檔導讀**：每個檔案在做什麼、為什麼這樣設計 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | **前瞻主圖**：現況快照、演進五軌、工程健康度、風險登記 |
@@ -164,7 +251,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v1.1.4，2026-07）
+## 狀態（v2.0.0，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
@@ -174,11 +261,16 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測；ROS Developer 依 live graph 完成 topic/schema 發現，並以單一 `ros_drive_verified` 能力原子化基準里程計、一次性受批准動作、自動停止與後驗回授，不持有任意 shell。
 >
-> ✅ **工程**：532 項自動化測試（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：完整自動化測試套件（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >
 > ✅ **執行邊界與數位分身驗證**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：Agent 被限制在觀察、決策、能力、權限與執行驗證五類邊界內；導航可選擇先在數位分身預演，依 G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗輸出 pass／block／refer。數位分身是執行驗證的一種機制，不是 Agent 的全部。
 >
-> 🚧 **研究驗證狀態**（見 [EXPERIMENTS.md](docs/EXPERIMENTS.md)）：E1 決策品質、E2 配對執行驗證消融、E3 隔離 ROS domain 的自然語言發現—執行—驗證、E4 本地延遲、B4 約 20 小時模擬巡航與 A6 soak 已有正式資料。正式跨載具物理泛化、實體 Sim-to-Real 與使用者效率比較仍列為後續工作。
+> 🚧 **研究證據狀態**（見 [EVIDENCE_LEDGER](docs/EVIDENCE_LEDGER.md)）：
+>
+> - E2 是固定目標集的配對描述性再分析；A／B 為決定性政策推導，C 為舊 live observed。
+> - E3 僅驗證 ROS_DOMAIN_ID=42 的隔離 mock fixture。
+> - B4 是事後固定並可重建的 102 份 report subset，不支持精確 20 小時暴露量或零安全事件。
+> - E1、E4 與 A6 另依 ledger 所列邊界解讀；跨載具物理泛化、實體 Sim-to-Real 與使用者效率比較仍是後續工作。
 
 ---
 

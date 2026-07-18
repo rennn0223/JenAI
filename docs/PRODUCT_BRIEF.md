@@ -21,20 +21,25 @@ v1 的合適客戶。
 
 ## 已證明與未證明
 
-- 已證明：Isaac Sim/Nav2 高階任務、Twin Gate 固定場景、20 小時模擬巡航、24 小時
-  daemon soak、隔離 domain 的自然語言發現—執行—回授鏈。數字以 `EVIDENCE_LEDGER` 為準。
+- 已有證據：Isaac Sim/Nav2 高階任務、固定場景 Twin Gate、模擬巡航、daemon soak，
+  以及隔離 mock ROS graph 的自然語言發現—執行—回授鏈。不同實驗的 execution revision
+  不完全相同；正式數字、derived/observed 性質與缺失 metadata 以 [EVIDENCE_LEDGER](EVIDENCE_LEDGER.md) 為準。
 - 未證明：正式實車安全、跨運動學物理泛化、未知地圖 frontier exploration、功能安全
-  認證、多人／公網 SaaS，以及可量化的效率提升。
+  認證、多人／公網 SaaS，以及可量化的效率提升或 ROI。
 
-## 三分鐘 hero demo（凍結內容）
+## 三分鐘 hero demo（Slash-first）
 
-1. `JenAI doctor`：顯示 provider、ROS、Nav2、Twin 與設定狀態。
-2. 自然語言「帶我到 `<safe-location>`」：展示 live graph／能力選擇與批准卡。
-3. Nav2 執行：顯示進度，抵達後以 result／位置回授結案。
-4. 以不可達或禁區目標展示 `block`／`refer`，強調不把失敗包裝成成功。
+LLM 單次決策在目前 DGX Spark + qwen3.6:35b 的 E4 中位數約 68.8 秒，因此三分鐘版不把
+自然語言延遲藏進腳本；自然語言完整鏈放在 15 分鐘技術版。
 
-對外展示前，固定同一 commit、模型、場景與地點連跑 10 次，至少 9 次完整成功；失敗
-照樣記錄。這是銷售 demo gate，不等於安全認證。
+1. 演前完成 `JenAI doctor` 並保存結果；上台 TUI 以 `/status`／`/ros topics` 快速證明 live graph。
+2. `/route <safe-location>` → 人工批准 → Nav2 進度；途中 `/stop`，展示先取消/reap 舊 publisher 再送 zero。
+3. `/route <forbidden-test-location>` → 批准 → Twin Gate 回傳 `block`／`refer`，載具不接收 goal。
+4. 以 audit/result 收尾，明確區分「指令送出、抵達、被擋、後端不可用」。
+
+詳細三分鐘與 15 分鐘腳本見 [DEMO_SCRIPT](DEMO_SCRIPT.md)。對外展示前，固定同一 commit、
+模型、場景與地點連跑 10 次，至少 9 次完整成功並保存時間/失敗；未產生 artifact 前只稱
+排練。這是銷售 demo gate，不等於安全認證。
 
 ## 採購驗收
 

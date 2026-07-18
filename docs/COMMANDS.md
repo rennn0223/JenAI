@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v1.1.4(2026-07)。
+> 對應版本:v2.0.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -19,6 +19,11 @@ JenAI 的命令分為兩層：
 | `JenAI daemon` | 常駐規則引擎：監看 topics 觸發規則（`--rules` 指定檔案，預設 `~/.config/jenai/rules.toml`） |
 | `JenAI doctor` | 檢查 ROS2、provider、model、locations、環境（`--json` 機器可讀） |
 | `JenAI onboard` | 備份目前 `config.toml` 後重跑 setup wizard;`.env`、locations、skills、reports、run history 全部保留。已有 config 時需確認,`--yes/-y` 可略過確認 |
+| `JenAI data status` | **唯讀**盤點 sessions、pending runs、locations、reports、traces、audit、config 與 backups 的位置、檔數、大小、mode 與不安全／拒絕項；`--json` 提供機器可讀輸出，`--config PATH` 可指定設定檔 |
+| `JenAI data harden` | 顯示 legacy operational data 的精確權限修復計畫（目錄 0700、檔案 0600），拒絕 symlink／hardlink 等不安全路徑；預設再詢問一次才執行，`--dry-run` 絕不改動，`--yes/-y` 只批准畫面所列計畫 |
+| `JenAI data export <archive.tar.gz>` | 以 allow-list 匯出 operational data，排除 config、credentials 與 config backups，文字秘密遮罩後以 0600 原子寫入；既有目的檔預設拒絕覆寫，只有 `--force` 才原子替換，`--config PATH` 可指定設定檔 |
+| `JenAI data prune` | 依 `--older-than-days N`（預設 30，最少 1）列出並刪除過期 session／pending／report 檔及 trace／audit rows；預設顯示計畫後再詢問，`--dry-run` 不刪除，`--yes/-y` 只批准該計畫 |
+| `JenAI data purge` | 顯示精確永久刪除計畫；預設只清 operational state，保留 locations、config、`.env` credentials 與 config backups。納入保護類別須分別加 `--include-locations`、`--include-config`、`--include-credentials`、`--include-config-backups`；預設再詢問，`--dry-run` 不刪除，`--yes/-y` 只批准畫面所列計畫 |
 | `JenAI config` | 顯示目前設定（JSON） |
 | `JenAI providers` | 顯示 provider 清單 |
 | `JenAI models` | 顯示 model 綁定 |
@@ -27,6 +32,10 @@ JenAI 的命令分為兩層：
 | `JenAI eval <scenarios.toml>` | **決策腦 E1 評測**(v0.21):跑場景庫(種子庫 `scenarios.example.toml`、正式庫 `scenarios.e1.toml`),輸出 per-family accuracy / refer rate / unsafe rate;標註支援 `action:target` 綁定目標且 gold 優先於 unsafe(v0.37);`--repeats/-k` 每場景重複數、`--json` 機器可讀 |
 | `JenAI loc list` / `loc show <名>` | 非互動式 location 查詢 |
 | `JenAI version` | 顯示版本資訊 |
+
+`data harden／prune／purge` 不會因非互動環境而默認同意；要自動化必須明確使用 `--yes`，
+而 `--yes` 也不會擴張當次畫面列出的範圍。完整資料分類、匯出排除項與解除安裝流程見
+[DATA_LIFECYCLE](DATA_LIFECYCLE.md)。
 
 ### 關於 `JenAI` 主入口行為
 
@@ -145,10 +154,10 @@ JenAI 啟動流程：
 | 按鍵 | 功能 |
 |---|---|
 | `Enter` | 送出輸入;忙碌時自動加入 FIFO 佇列 / 選定 approval 目前選項 |
-| `Shift+Tab` | **切換權限模式**:⏵ 審批(NL→agent 執行,動作過批准卡)→ ⏸ 規劃(只規劃教學,零執行)→ ⏩ 自動(批准卡自動通過;急停/限速/閘門仍有效)。目前模式顯示在底部狀態列。**終端不支援 Shift+Tab 時用 `/mode`**(不帶參數循環;`/mode approve|plan|auto` 直接指定,中文別名 審批/規劃/自動 也通) |
+| `Shift+Tab` | **切換權限模式**:⏵ 審批(NL→agent 執行,動作過批准卡)→ ⏸ 規劃(只規劃教學,零執行)→ ⏩ 自動(有界、非 host 的 P0/P1 可自動批准;HOST_COMMAND/P2 仍逐次詢問;急停/限速/閘門仍有效)。目前模式顯示在底部狀態列。**終端不支援 Shift+Tab 時用 `/mode`**(不帶參數循環;`/mode approve|plan|auto` 直接指定,中文別名 審批/規劃/自動 也通) |
 | `!` | 以 `!` 開頭 → 該行當 shell 命令執行 |
 | `Esc` | 中斷目前任務並繼續下一個排隊項目（**Nav2 goal 真的會取消**）/ 拒絕 approval / 關閉 palette |
-| `1` `2` `3` | 直接選 approval 選項（Yes / Yes 並記住 / No） |
+| `1` `2` `3` | 直接選畫面上存在的 approval 選項；HOST_COMMAND/P2 為一次性 Yes/No，P2 預選 No |
 | `Tab` | 補全命令名稱或模板 |
 | `↑` `↓` | 歷史輸入、slash palette 選項、或 approval 選項 |
 
@@ -165,11 +174,12 @@ JenAI 啟動流程：
 
 **例外:`/stop` 永遠不需批准** —— 停下來永遠是安全的。
 
-Approval card 為 Claude Code 風格的**編號選項**，可用 `↑/↓`+`Enter` 或直接按數字鍵：
+Approval card 為 Claude Code 風格的**編號選項**，可用 `↑/↓`+`Enter` 或直接按畫面上的數字鍵：
 
-1. **Yes** — 批准這一次
-2. **Yes, and don't ask again this session** — 批准並在本 session 自動核准同類指令
-3. **No**（或 `Esc`）— 拒絕，並可告訴 JenAI 改用別的做法
+- 有界、非 host 的 P0/P1：`Yes`／`Yes, and remember...`／`No`。
+- `HOST_COMMAND` 或 P2：只有一次性的 `Yes`／`No`，不能記住；P2 預選 `No`。
+- `auto` 模式與既有 remembered tool 都不能繞過 `HOST_COMMAND`／P2。
+- `Esc` 永遠等同拒絕；`/stop` 是唯一免批准的致動相關例外。
 
 ---
 

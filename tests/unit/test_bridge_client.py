@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -31,6 +34,64 @@ def test_bridge_ping_and_clean_stop(fake_bridge) -> None:
     asyncio.run(run())
 
 
+def test_bridge_stop_awaits_reader_and_reaps_transport(fake_bridge) -> None:
+    """stop() owns the cancelled reader until both it and its process are done."""
+    async def run() -> None:
+        cleanup_started = asyncio.Event()
+        cleanup_release = asyncio.Event()
+        cleanup_finished = asyncio.Event()
+
+        class SlowReaderCleanupClient(RosBridgeClient):
+            async def _read_loop(self) -> None:
+                try:
+                    await super()._read_loop()
+                except asyncio.CancelledError:
+                    cleanup_started.set()
+                    await cleanup_release.wait()
+                    cleanup_finished.set()
+                    raise
+
+        client = SlowReaderCleanupClient()
+        await client.start()
+        proc = client._proc
+        reader_task = client._reader_task
+        assert proc is not None and reader_task is not None
+        transport = proc._transport
+
+        stop_task = asyncio.create_task(client.stop())
+        await asyncio.wait_for(cleanup_started.wait(), 1.0)
+        await asyncio.wait_for(proc.wait(), 2.0)
+        try:
+            # Even after the child is reaped, stop must not return until the
+            # reader's cancellation cleanup has completed.
+            done, _ = await asyncio.wait({stop_task}, timeout=0.2)
+            assert not done
+        finally:
+            cleanup_release.set()
+            await stop_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader_task
+
+        assert cleanup_finished.is_set()
+        assert reader_task.done() and reader_task.cancelled()
+        assert proc.returncode is not None
+        assert transport.is_closing()
+        assert client._proc is None and client._reader_task is None
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        asyncio.run(run())
+        gc.collect()
+
+    resource_messages = [
+        str(item.message)
+        for item in caught
+        if issubclass(item.category, ResourceWarning)
+    ]
+    assert not any(
+        "subprocess" in message or "transport" in message
+        for message in resource_messages
+    )
 def test_bridge_pose_roundtrip(fake_bridge) -> None:
     async def run() -> None:
         client = RosBridgeClient()

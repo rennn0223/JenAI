@@ -15,10 +15,10 @@ jobs:
   audit-and-sbom:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
 
@@ -26,13 +26,19 @@ jobs:
         run: uv export --frozen --no-dev --no-emit-project --format requirements.txt --output-file /tmp/jenai-requirements.txt
 
       - name: Audit known Python vulnerabilities
-        run: uvx pip-audit --requirement /tmp/jenai-requirements.txt --strict
+        run: uvx --from pip-audit==2.10.1 pip-audit --requirement /tmp/jenai-requirements.txt --strict
 
       - name: Generate CycloneDX SBOM from uv.lock
         run: uv export --frozen --no-dev --format cyclonedx1.5 --output-file jenai.cdx.json
 
+      - name: Validate CycloneDX SBOM
+        run: |
+          python -c 'import json; d=json.load(open("jenai.cdx.json")); assert d["bomFormat"] == "CycloneDX"'
+
       - name: Upload SBOM
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: jenai-sbom
+          name: jenai-sbom-${{ github.sha }}
           path: jenai.cdx.json
+          if-no-files-found: error
+          retention-days: 90

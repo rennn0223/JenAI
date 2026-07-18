@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 
 from jenai.adapters.locations import LocationNotFoundError, find_location
@@ -121,9 +120,9 @@ async def route_preview(config: AppConfig, locations: list[Location], text: str)
 
 async def route_execute(config: AppConfig, outgoing_action: dict) -> RouteOutput:
     adapter = get_route_adapter(config.route_adapter)
-    # resolve() may block (e.g. the Nav2 adapter waits on `ros2 action send_goal`),
-    # so run it off the event loop to keep the TUI responsive.
-    result = await asyncio.to_thread(adapter.resolve, outgoing_action)
+    # Every adapter is async. In particular the Nav2 CLI fallback owns a native
+    # subprocess group, so Esc and /stop kill and reap send_goal before unwinding.
+    result = await adapter.resolve(outgoing_action)
     return RouteOutput(
         input_text="",
         outgoing_action=outgoing_action,

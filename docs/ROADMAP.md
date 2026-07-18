@@ -1,32 +1,34 @@
 # ROADMAP — 演進與維護深度規劃
 
-> 對應版本:**v1.1.4**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
+> 對應版本:**v2.0.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
 > 六條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
 > 方向收斂邏輯見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md);v1.0 驗收與兩層分工見
 > [V1_GATE](V1_GATE.md);每次改動的驗收標準見根目錄 `CLAUDE.md`。
 
 ---
 
-## 1. 現況真實快照(v1.1.4)
+## 1. 現況真實快照(v2.0.0)
 
 過去的 M1–M6 表低估了實際進度。誠實盤點「真的 shipped 了什麼」:
 
 ### 已完成且驗證
-- **三層安全鏈**:watchdog 斷線自主停車 → 四介面一鍵急停(免批准、可搶佔)→ 執行期硬限速 → HITL 批准卡 → daemon 明式授權。跨程序 cancel-all 已修復(v0.17.1)。
+- **互補式安全邊界**:watchdog 斷線自主停車 → 四介面一鍵急停(免批准、可搶佔)→ 執行期硬限速 → HITL 批准卡 → daemon 明式授權。各控制處理不同危害與時間尺度，未證明統計獨立或任兩層即可保證安全；跨程序 cancel-all 已修復(v0.17.1)。
 - **rclpy bridge**:pose、Nav2 導航(feedback/cancel)、**odom 直驅**(無 Nav2 的閉環點對點)、**局部避障**(depth stop-and-go detour,逾時即停)、相機抓幀、topic 監看、halt/watchdog。
 - **導航語意**:`/route 從A到B` 依序兩段、`/mission`、`/patrol …photo`、`/dock`;`route_adapter` = stub/nav2/**odom**。
 - **地點**:`/loc add here`(pose)、**`/loc add gps`**(經緯度 + `[map_datum]` 換算)。
-- **Twin Gate pipeline**:G1–G5、pass/block/refer、自主路徑 refer→block、獨立 ROS_DOMAIN_ID(剩 Isaac 場景 = 客戶 B5)。
+- **Twin Gate pipeline**:G1–G5、pass/block/refer、自主路徑 refer→block，並支援可設定的獨立 ROS_DOMAIN_ID；歷史單一 Isaac Sim/domain 0 驗收未證明通訊隔離，隔離部署仍須跑 TWIN_SETUP §2 probe。
 - **感知**:PerceptionLoop(相機→VLM→SceneAnalysis),daemon `@perception` 規則共用同一 gating。
 - **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
 - **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
 - **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
-- **工程基建**:532 項測試、Python 3.12／3.13／3.14 CI matrix(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
+- **工程基建**:完整自動化測試套件、Python 3.12／3.13／3.14 CI matrix(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
 
 ### 未完成的主線
-- **M6 自主決策迴圈**(A9):零件都在(感知、有界動作、odom 直驅、避障、執行邊界、規則引擎),但把它們串成常駐的「感知→情境快照→LLM 決策→預演→執行→回饋」事件迴圈**還沒建**。這是 v2 主線；論文目前完成並量測的是高階決策、註冊能力、一次性閉環工具使用與執行驗證，不宣稱常駐自治已完成。
+- **M6 自主決策迴圈**(A9):零件都在(感知、有界動作、odom 直驅、避障、執行邊界、規則引擎),但把它們串成常駐的「感知→情境快照→LLM 決策→預演→執行→回饋」事件迴圈**還沒建**。此能力已移至 post-v2（候選 v3）研究方向；v2.0 完成的是高階決策、註冊能力、一次性閉環工具使用、執行驗證與更嚴格的安全／資料／發布生命週期，不宣稱常駐自治已完成。
 - **真全域路徑規劃**:目前 odom 直驅 + 反應式避障是開闊地方案;複雜地圖仍需 Nav2 costmap(客戶 B1)。
-- **待補驗證**:模擬里程與 Twin 消融已完成；guided onboarding 有 ≥3 人，但尚缺純文件
+- **待補驗證**:B4 已固定可重建的 102 份模擬導航 reports（407／408 waypoint succeeded），
+  但歷史約 20 h driver 摘要不能證明精確暴露量或零事件；E2 只有 C observed，A／B 是
+  對同目標的 derived 政策輸出，不是前瞻性三條件消融。guided onboarding 有 ≥3 人，但尚缺純文件
   冷啟動計時與手動 ROS2／Slash／自然語言的正式效率比較。實體驗證選配／交接下一屆
   (見 V1_GATE P 項)。
 
@@ -34,7 +36,10 @@
 > **JenAI = 具執行邊界的 AI Decision Agent,坐在載具原生導航堆疊之上**(2026-07 定調,
 > 見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md) 方向定調章):不寫一行運動控制,
 > 高階決策、能力觸發、結果驗證與稽核才是本體;scaffold(development copilot)為第二身分。
-> v1.0 已於 2026-07-16 定稿(V1_GATE 兩層全 ✅,E1/E2/B4/soak 證據齊);v2.0 的靈魂是 **M6 自主迴圈**。
+> v1.0 已於 2026-07-16 歷史簽字；後續稽核已把 E2／B4 限定為描述性重分析與
+> 可重建固定任務 subset（見 EVIDENCE_LEDGER），不可延伸為前瞻消融、精確 20 h 暴露或零事件。
+> v2.0 的主題是**收緊執行邊界並建立可維護、可稽核的產品化基線**；
+> **M6 常駐自主迴圈尚未實作**，移至 post-v2（候選 v3）。
 
 ---
 
@@ -42,7 +47,7 @@
 
 每條軌道標:**價值**、**關鍵步驟**、**依賴**、**論文對應**、**層別**(A=agent 可獨力 / B=需客戶下場)。
 
-### 軌道 1 — M6 自主決策迴圈(v2 主軸,論文核心)
+### 軌道 1 — M6 自主決策迴圈(post-v2／候選 v3 研究方向)
 > **v0.21 進度**:決策腦已落地 —— `tools/decision_core.py`(情境快照 → 有界動作單選,越界/幻覺目的地一律降級 refer_to_human)+ `JenAI eval`(E1 評測:per-family accuracy / unsafe rate / refer rate,scenarios.example.toml 種子庫)。**剩下的是把 perceive→decide→rehearse→act 接成常駐迴圈**。
 - **價值**:專案從「聽指令的操作平台」進化成「會自己決定下一步的決策大腦」——論文第三章的實體。
 - **關鍵步驟**:
@@ -125,12 +130,12 @@
 | D5 | **release 節奏過碎**(一天十幾 patch) | changelog 噪音、版本語意稀釋 | 收斂:feature 累積成有意義的 minor;patch 只留真 bug/安全修;semver 契約(VERSIONING)已立 |
 
 ### 3.2 測試策略演進
-- **現況**:532 項自動化測試(無 ROS 全綠)+ Python 3.12／3.13／3.14 CI matrix + 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
+- **現況**:完整自動化測試套件(無 ROS 全綠)+ Python 3.12／3.13／3.14 CI matrix + 覆蓋倒退閘(安全鏈 fail-under=90)+ 架構鐵律測試 + wheel 冒煙。
 - **下一步**:
   - D1 的 sibling 抽取 → 提升 bridge 邏輯覆蓋。
   - **HIL 冒煙**(選配):self-hosted runner 連 Isaac,跑一條 `/route` + 避障的端到端(現在只能人工 E2E)。
   - 屬性測試(hypothesis)給 detour/corridor、GPS 換算、drive 中文數字解析等純函數。
-  - 24h soak 正式跑一次並把結果進 SAFETY_CASE(A6 待排)。
+  - 保留既有 daemon 24h soak artifact；workload 或版本有實質變更時重跑並只對該 workload 下結論。
 
 ### 3.3 依賴與相容
 - `uv.lock` 鎖定;Python ≥3.12。定期 `uv lock --upgrade` + 全綠才進。
@@ -158,9 +163,10 @@
 | ~~v0.22~~ ✅ | 權限三模式 | Shift+Tab 審批/規劃/自動 + 自然語言路由例外網 |
 | ~~v0.23~~ ✅ | 終章收整 | 全庫注釋/文件對齊、HANDOFF 終章;程式凍結,轉入數據期 |
 | **v0.24+** | 原規劃回補(數據期擋修) | 軌道 3 導航工具 + D1 sibling 抽取 + 軌道 2 depth→Nav2 costmap(僅在實測需要時做) |
-| **v1.0** | **監督式操作平台定稿** | V1_GATE 層一全 ✅ + 層二 B1–B7 客戶數據齊(Isaac Sim);安全鏈 ~100%、24h soak、模擬 20h/50 任務;semver/safety case/Twin 消融定稿;實體驗證選配不擋版 |
-| **v2.0** | **自主決策大腦** | 軌道 1:M6 DecisionLoop 完整迴圈 + 邊緣延遲優化;論文 E1–E4 數據 |
-| **v2.x** | 多機 / 平台 | 軌道 4/5:多載具、語音、costmap 疊圖、檔案定義技能 |
+| **v1.0** | **監督式操作平台定稿** | V1_GATE 歷史簽字；安全相關 coverage、daemon 24h soak、B4 固定 102-report subset 與 E2 固定目標描述性比較已有 artifact；B4 不證明精確 20 h／零事件，E2 A／B 非 live；實體驗證選配不擋版 |
+| **v2.0** | **執行邊界與產品化基線** | P2／HOST 每次明確批准、可取消 subprocess 與兩階段停止、資料生命週期 CLI、responsive TUI、HIL 起點 guard、可稽核供應鏈產物；M6 未實作 |
+| **post-v2（候選 v3）** | **常駐自主決策研究** | 軌道 1:M6 DecisionLoop 完整迴圈與邊緣延遲研究；只有完整實作與實驗後才能升級主張 |
+| **後續** | 多機 / 平台 | 軌道 4/5:多載具、語音、costmap 疊圖、檔案定義技能 |
 
 > 節奏原則:feature 累積成 minor,patch 只留 bug/安全;每個 minor 對照 V1_GATE / 本 ROADMAP 打勾。
 
@@ -182,9 +188,10 @@
 ## 6. 兩層執行對照(承 V1_GATE)
 
 - **層一(agent 可獨力,現在就能推)**:軌道 1 核心、軌道 2 接線、軌道 3 工具、軌道 5 多數、全部 D1–D5 償還。
-- **層二(客戶下場,全數於 Isaac Sim)**:場景建置 + 消融(B5)、接口確認(B1)、模擬里程(B4)、guided onboarding 回饋(B6)、場景家族標註(軌道 1 的 E1);實體驗證選配(V1_GATE P1–P3)。
+- **層二(客戶下場,全數於 Isaac Sim)**:場景建置 + 固定目標政策比較(B5)、接口確認(B1)、固定模擬導航任務紀錄(B4)、guided onboarding 回饋(B6)、場景家族標註(軌道 1 的 E1);實體驗證選配(V1_GATE P1–P3)。
 
-**優先建議**:先 **軌道 3(導航成熟)+ D1(可維護性)** 把 v1.0 的路鋪直,再全力 **軌道 1(M6)** 衝 v2.0 論文主軸。
+**優先建議**:先關閉 v2.0 的外部證據閘（合法起點 HIL／10-run、使用者研究、第二維護者演練），
+再決定是否將 **軌道 1(M6)** 納入 post-v2（候選 v3）研究；完成前維持受監督工作流代理定位。
 
 ---
 
