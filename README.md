@@ -164,7 +164,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v1.1.3，2026-07）
+## 狀態（v1.1.4，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
@@ -174,7 +174,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測；ROS Developer 依 live graph 完成 topic/schema 發現，並以單一 `ros_drive_verified` 能力原子化基準里程計、一次性受批准動作、自動停止與後驗回授，不持有任意 shell。
 >
-> ✅ **工程**：511 項自動化測試（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
+> ✅ **工程**：532 項自動化測試（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >
 > ✅ **執行邊界與數位分身驗證**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：Agent 被限制在觀察、決策、能力、權限與執行驗證五類邊界內；導航可選擇先在數位分身預演，依 G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗輸出 pass／block／refer。數位分身是執行驗證的一種機制，不是 Agent 的全部。
 >
