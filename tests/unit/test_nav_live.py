@@ -204,11 +204,11 @@ def test_navigate_with_fallback_rejects_malformed_goal_fail_closed() -> None:
 
     bad_actions = [
         {"outgoing_action": {"goal": "map_right_down"}},  # model quoted the wrapper
-        {"goal": "map_right_down"},                        # goal is a string
-        {"goal": {"name": "x"}},                           # no pose
+        {"goal": "map_right_down"},  # goal is a string
+        {"goal": {"name": "x"}},  # no pose
         {"goal": {"pose": {"x": float("nan"), "y": 0.0}}},  # non-finite
-        {"goal": {"pose": {"x": True, "y": 0.0}}},         # bool is not a coordinate
-        {},                                                 # empty
+        {"goal": {"pose": {"x": True, "y": 0.0}}},  # bool is not a coordinate
+        {},  # empty
     ]
     for action in bad_actions:
         out = asyncio.run(navigate_with_fallback(config, get_bridge, action))
@@ -225,3 +225,76 @@ def test_unwrap_outgoing_action_tolerates_quoted_preview() -> None:
     assert _unwrap_outgoing_action(inner) == inner  # already unwrapped: untouched
     both = {"goal": inner["goal"], "outgoing_action": {"other": 1}}
     assert _unwrap_outgoing_action(both) == both  # a real goal wins over the wrapper
+
+
+def test_parse_outgoing_action_accepts_object_and_bounded_json_strings() -> None:
+    import json
+
+    import jenai.agent.specialists  # noqa: F401  (module init order: agent → tools)
+    from jenai.tools.route_agent_tools import _parse_outgoing_action
+
+    action = {"goal": {"pose": {"x": 1.0, "y": 2.0, "yaw": 0.0}}}
+    assert _parse_outgoing_action(action) == action
+    assert _parse_outgoing_action(json.dumps(action)) == action
+    assert _parse_outgoing_action(json.dumps(json.dumps(action))) == action
+    assert _parse_outgoing_action(json.dumps({"outgoing_action": action})) == action
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not json",
+        "[]",
+        "null",
+        "true",
+        "1",
+        '"plain string"',
+        '""{\\"goal\\": {}}""',
+        [],
+        None,
+        False,
+        1,
+    ],
+)
+def test_parse_outgoing_action_rejects_non_object_or_excess_nesting(value: object) -> None:
+    import jenai.agent.specialists  # noqa: F401  (module init order: agent → tools)
+    from jenai.tools.route_agent_tools import _parse_outgoing_action
+
+    with pytest.raises(ValueError):
+        _parse_outgoing_action(value)
+
+
+def test_navigate_live_surfaces_localization_jump_reason() -> None:
+    class JumpBridge:
+        def __init__(self) -> None:
+            self.handlers: dict[str, list] = {}
+
+        def on_event(self, event: str, handler) -> None:
+            self.handlers.setdefault(event, []).append(handler)
+
+        def off_event(self, event: str, handler) -> None:
+            self.handlers[event].remove(handler)
+
+        async def nav_send(self, **_kwargs) -> None:
+            for handler in self.handlers["nav_result"]:
+                handler(
+                    {
+                        "event": "nav_result",
+                        "status": "localization_jump",
+                        "reason": (
+                            "Localization safety stop: /amcl_pose jumped 24.00 m "
+                            "in 0.10 s. Navigation canceled and zero velocity sent."
+                        ),
+                    }
+                )
+
+        async def ping(self) -> bool:
+            return True
+
+    async def run() -> None:
+        output = await navigate_live(JumpBridge(), ACTION)
+        assert output.execution_status == "failed"
+        assert "/amcl_pose jumped 24.00 m" in output.route_preview
+        assert "zero velocity sent" in output.route_preview
+
+    asyncio.run(run())

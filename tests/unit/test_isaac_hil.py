@@ -13,6 +13,7 @@ from jenai.acceptance.isaac_hil import (
     _doctor_checks,
     _evaluate_start_pose,
     _execution_config,
+    _inspect_scan_quality,
     _run_cancel_and_stop,
     _source_state,
     run_isaac_hil,
@@ -166,6 +167,7 @@ def test_doctor_fails_closed_when_required_item_is_missing(monkeypatch) -> None:
     assert set(evidence["missing_required"]) == {
         "map",
         "localization",
+        "laser",
         "nav2",
         "cmd_vel",
     }
@@ -223,6 +225,15 @@ def test_preflight_overall_fails_when_start_pose_gate_fails(monkeypatch, tmp_pat
             "evidence": {},
         }
 
+    async def passing_scan():
+        return {
+            "id": "scan_quality",
+            "status": "pass",
+            "detail": "ok",
+            "evidence": {},
+        }
+
+    monkeypatch.setattr(isaac_hil, "_inspect_scan_quality", passing_scan)
     monkeypatch.setattr(isaac_hil, "_inspect_start_pose", blocked_start)
 
     artifact = asyncio.run(run_isaac_hil(_options(tmp_path, config_path=config_path)))
@@ -230,6 +241,7 @@ def test_preflight_overall_fails_when_start_pose_gate_fails(monkeypatch, tmp_pat
     assert artifact["overall"] == "fail"
     assert [check["id"] for check in artifact["checks"]] == [
         "preflight",
+        "scan_quality",
         "start_pose",
     ]
 
@@ -281,3 +293,147 @@ def test_doctor_retries_transient_graph_discovery_and_preserves_attempts(
     assert len(evidence["attempts"]) == 2
     assert evidence["attempts"][0]["non_passing_required"][0]["check_name"] == "map"
     assert evidence["non_passing_required"] == []
+
+
+class _FakeScanBridge:
+    def __init__(self, messages=(), watch_error: Exception | None = None) -> None:
+        self.messages = messages
+        self.watch_error = watch_error
+
+    async def start(self) -> None:
+        return None
+
+    async def watch(self, _topic, _msg_type, handler, *, throttle):
+        assert throttle == 0.0
+        if self.watch_error is not None:
+            raise self.watch_error
+        for message in self.messages:
+            handler(message)
+        return 7
+
+    async def unwatch(self, watch_id: int) -> None:
+        assert watch_id == 7
+
+    async def stop(self) -> None:
+        return None
+
+
+def test_scan_quality_accepts_full_scans_and_records_only_summary(
+    monkeypatch,
+) -> None:
+    messages = [{"ranges": [1.0] * 7 + [float("inf")] * 3} for _ in range(10)]
+    monkeypatch.setattr(isaac_hil, "RosBridgeClient", lambda: _FakeScanBridge(messages))
+
+    result = asyncio.run(_inspect_scan_quality(timeout_s=0.01))
+
+    assert result["status"] == "pass"
+    evidence = result["evidence"]
+    assert evidence["samples_received"] == 10
+    assert evidence["finite_bin_coverage"] == 0.7
+    assert evidence["range_bins"]["total"] == 100
+    assert "ranges" not in evidence
+
+
+def test_scan_quality_rejects_partial_wedges_and_all_inf_scans(monkeypatch) -> None:
+    blank = {"ranges": [float("inf")] * 10}
+    wedge = {"ranges": [1.0, 1.0] + [float("inf")] * 8}
+    monkeypatch.setattr(
+        isaac_hil,
+        "RosBridgeClient",
+        lambda: _FakeScanBridge([blank] * 3 + [wedge] * 7),
+    )
+
+    result = asyncio.run(_inspect_scan_quality(timeout_s=0.01))
+
+    assert result["status"] == "fail"
+    assert result["evidence"]["all_inf_sample_ratio"] == 0.3
+    assert result["evidence"]["finite_bin_coverage"] == 0.14
+
+
+def test_scan_quality_rejects_nan_and_negative_infinity(monkeypatch) -> None:
+    invalid = {"ranges": [1.0, float("nan"), float("-inf"), float("inf")]}
+    good = {"ranges": [1.0, 2.0, 3.0, float("inf")]}
+    monkeypatch.setattr(
+        isaac_hil,
+        "RosBridgeClient",
+        lambda: _FakeScanBridge([invalid] + [good] * 9),
+    )
+
+    result = asyncio.run(_inspect_scan_quality(timeout_s=0.01))
+
+    assert result["status"] == "fail"
+    assert result["evidence"]["nan_bins"] == 1
+    assert result["evidence"]["negative_inf_bins"] == 1
+
+
+def test_scan_quality_fails_closed_on_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(isaac_hil, "RosBridgeClient", lambda: _FakeScanBridge())
+
+    result = asyncio.run(_inspect_scan_quality(sample_count=2, timeout_s=0.001))
+
+    assert result["status"] == "fail"
+    assert result["evidence"]["topic_available"] is True
+    assert result["evidence"]["samples_received"] == 0
+    assert "Timed out" in result["evidence"]["error"]
+
+
+def test_scan_quality_fails_closed_when_topic_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        isaac_hil,
+        "RosBridgeClient",
+        lambda: _FakeScanBridge(watch_error=RuntimeError("no /scan")),
+    )
+
+    result = asyncio.run(_inspect_scan_quality(sample_count=2, timeout_s=0.001))
+
+    assert result["status"] == "fail"
+    assert result["evidence"]["topic_available"] is False
+    assert "no /scan" in result["evidence"]["error"]
+
+
+def test_scan_failure_withholds_live_goals(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("test", encoding="utf-8")
+    config = AppConfig(locations_path="locations.toml")
+    location = Location(name="corner", pose=Pose2D(x=4.0, y=5.0, yaw=0.0))
+
+    monkeypatch.setattr(isaac_hil, "load_config", lambda _path: config)
+    monkeypatch.setattr(isaac_hil, "load_locations", lambda _path: [location])
+    monkeypatch.setattr(
+        isaac_hil,
+        "_doctor_checks",
+        lambda _path: ([], True, {"required_checks": [], "attempts": []}),
+    )
+
+    async def failed_scan():
+        return {
+            "id": "scan_quality",
+            "status": "fail",
+            "detail": "partial scan",
+            "evidence": {"samples_received": 10},
+        }
+
+    async def must_not_run(*_args, **_kwargs):
+        raise AssertionError("navigation or pose inspection ran after a failed scan gate")
+
+    monkeypatch.setattr(isaac_hil, "_inspect_scan_quality", failed_scan)
+    monkeypatch.setattr(isaac_hil, "_inspect_start_pose", must_not_run)
+    monkeypatch.setattr(isaac_hil, "_run_live", must_not_run)
+
+    artifact = asyncio.run(
+        run_isaac_hil(
+            _options(
+                tmp_path,
+                config_path=config_path,
+                execute=True,
+                confirmation=EXECUTION_CONFIRMATION,
+            )
+        )
+    )
+
+    assert artifact["overall"] == "fail"
+    assert [check["id"] for check in artifact["checks"]] == [
+        "preflight",
+        "scan_quality",
+        "live_execution",
+    ]

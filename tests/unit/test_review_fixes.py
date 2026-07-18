@@ -36,6 +36,13 @@ def test_route_approval_reads_outgoing_action_json() -> None:
     assert "outgoing_action_json" not in fields.raw_action
 
 
+def test_route_approval_reads_once_double_encoded_action() -> None:
+    action = '{"goal": {"name": "dock"}}'
+    fields = format_route_approval({"outgoing_action_json": json.dumps(action)})
+
+    assert json.loads(fields.raw_action) == {"goal": {"name": "dock"}}
+
+
 def test_explore_approval_shows_all_hard_bounds() -> None:
     fields = format_explore_approval(
         {

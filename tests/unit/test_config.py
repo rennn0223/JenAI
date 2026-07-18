@@ -44,7 +44,6 @@ def test_incomplete_config_is_not_complete(tmp_path: Path) -> None:
     assert loaded.is_complete() is False
 
 
-
 def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     config = build_minimal_config(
         provider_name="t", provider="openai", default_model="m", api_key_env=""
@@ -53,15 +52,21 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     assert config.vehicle.type == "ackermann"
     assert config.vehicle.cmd_vel_topic == "/cmd_vel"
     assert config.vehicle.cmd_vel_stamped is False
+    assert config.vehicle.pose_jump_threshold_m == 5.0
+    assert config.vehicle.pose_jump_window_s == 2.0
 
     config.vehicle.cmd_vel_topic = "/leatherback/cmd_vel"
     config.vehicle.max_linear = 1.2
+    config.vehicle.pose_jump_threshold_m = 6.5
+    config.vehicle.pose_jump_window_s = 1.5
     path = tmp_path / "config.toml"
     save_config(config, path)
     loaded = load_config(path)
 
     assert loaded.vehicle.cmd_vel_topic == "/leatherback/cmd_vel"
     assert loaded.vehicle.max_linear == 1.2
+    assert loaded.vehicle.pose_jump_threshold_m == 6.5
+    assert loaded.vehicle.pose_jump_window_s == 1.5
     assert loaded.vehicle.type == "ackermann"
 
 
@@ -91,6 +96,8 @@ def test_config_round_trip_preserves_every_nested_safety_section(tmp_path: Path)
     ("section", "body"),
     [
         ("vehicle", "max_linear = -1.0"),
+        ("vehicle", "pose_jump_threshold_m = 0.0"),
+        ("vehicle", "pose_jump_window_s = -1.0"),
         ("vehicle", "max_angular = 0.0"),
         ("avoidance", "stop_distance = 2.0\nslow_distance = 1.0"),
         ("avoidance", "band_lo = 0.8\nband_hi = 0.2"),
@@ -98,9 +105,7 @@ def test_config_round_trip_preserves_every_nested_safety_section(tmp_path: Path)
         ("twin", "nav_timeout_s = 0.0"),
     ],
 )
-def test_config_rejects_unsafe_numeric_settings(
-    tmp_path: Path, section: str, body: str
-) -> None:
+def test_config_rejects_unsafe_numeric_settings(tmp_path: Path, section: str, body: str) -> None:
     path = tmp_path / "config.toml"
     path.write_text(f"[{section}]\n{body}\n", encoding="utf-8")
 

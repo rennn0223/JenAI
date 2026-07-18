@@ -29,4 +29,6 @@ async def arm_watchdog(config: AppConfig, bridge: RosBridgeClient, timeout_s: fl
         watchdog_s=timeout_s,
         cmd_vel_topic=vehicle.cmd_vel_topic,
         stamped=vehicle.cmd_vel_stamped,
+        pose_jump_threshold_m=vehicle.pose_jump_threshold_m,
+        pose_jump_window_s=vehicle.pose_jump_window_s,
     )

@@ -28,7 +28,11 @@ import rclpy
 
 # Sibling imports: this file runs as a script under system Python, outside the
 # JenAI venv/package, so pure helpers must be importable from its own directory.
-from _navigation_state import nav_result_status, navigation_active
+from _navigation_state import (
+    PoseJumpGuard,
+    nav_result_status,
+    navigation_active,
+)
 from _protocol import dispatch_request
 from _watchdog import WatchdogState
 from rclpy.action import ActionClient
@@ -80,6 +84,85 @@ class BridgeNode(Node):
         # closed loop on /odom → /cmd_vel. Only one runs at a time.
         self._drive_cancel = threading.Event()
         self._drive_active = False
+        # Fail-closed map-localization guard, armed only for this bridge's
+        # active Nav2 goal. A fault tag suppresses Nav2's later canceled event
+        # so clients receive the specific safety reason exactly once.
+        self._pose_jump_guard = PoseJumpGuard()
+        self._pose_jump_subscription = None
+        self._pose_jump_tag = ""
+        self._localization_fault_tag: str | None = None
+        self._pose_jump_cmd_vel_topic = "/cmd_vel"
+        self._pose_jump_stamped = False
+
+    def configure_pose_jump_guard(
+        self,
+        threshold_m: float,
+        window_s: float,
+        cmd_vel_topic: str,
+        stamped: bool,
+    ) -> dict:
+        """Configure the fail-closed AMCL discontinuity guard."""
+        self._pose_jump_guard.configure(threshold_m=threshold_m, window_s=window_s)
+        self._pose_jump_cmd_vel_topic = cmd_vel_topic
+        self._pose_jump_stamped = stamped
+        self._ensure_pose_jump_subscription()
+        return {
+            "pose_jump_threshold_m": float(threshold_m),
+            "pose_jump_window_s": float(window_s),
+        }
+
+    def _ensure_pose_jump_subscription(self) -> None:
+        if self._pose_jump_subscription is not None:
+            return
+        from geometry_msgs.msg import PoseWithCovarianceStamped
+        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+        qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._pose_jump_subscription = self.create_subscription(
+            PoseWithCovarianceStamped,
+            "/amcl_pose",
+            self._observe_amcl_pose,
+            qos,
+        )
+
+    def _observe_amcl_pose(self, msg) -> None:
+        """Fail closed when map localization moves implausibly between samples."""
+        pose = msg.pose.pose.position
+        jump = self._pose_jump_guard.observe(pose.x, pose.y)
+        if jump is None:
+            return
+
+        tag = self._pose_jump_tag
+        self._localization_fault_tag = tag
+        if math.isfinite(jump.distance_m):
+            reason = (
+                "Localization safety stop: /amcl_pose jumped "
+                f"{jump.distance_m:.2f} m in {jump.elapsed_s:.2f} s "
+                f"(limit {jump.threshold_m:.2f} m)."
+            )
+        else:
+            reason = "Localization safety stop: /amcl_pose contained a non-finite position."
+
+        def _halt_after_jump() -> None:
+            try:
+                self.halt(self._pose_jump_cmd_vel_topic, self._pose_jump_stamped)
+                detail = f"{reason} Navigation canceled and zero velocity sent."
+            except Exception as exc:
+                detail = f"{reason} Emergency halt failed: {exc}"
+            _emit(
+                {
+                    "event": "nav_result",
+                    "tag": tag,
+                    "status": "localization_jump",
+                    "reason": detail,
+                }
+            )
+
+        threading.Thread(target=_halt_after_jump, daemon=True).start()
 
     # -- pose ---------------------------------------------------------------
 
@@ -141,6 +224,7 @@ class BridgeNode(Node):
         """
         from nav2_msgs.action import NavigateToPose
 
+        self._ensure_pose_jump_subscription()
         if self._nav_client is None:
             self._nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
         # A freshly spawned bridge needs DDS discovery to find the action
@@ -172,14 +256,23 @@ class BridgeNode(Node):
                 }
             )
 
+        self._pose_jump_tag = tag
+        self._localization_fault_tag = None
+        self._pose_jump_guard.arm()
         self._nav_pending = True
         self._cancel_on_accept = False
-        send_future = self._nav_client.send_goal_async(goal, feedback_callback=_feedback)
+        try:
+            send_future = self._nav_client.send_goal_async(goal, feedback_callback=_feedback)
+        except Exception:
+            self._nav_pending = False
+            self._pose_jump_guard.disarm()
+            raise
 
         def _on_accepted(fut) -> None:
             handle = fut.result()
             if not handle.accepted:
                 self._nav_pending = False
+                self._pose_jump_guard.disarm()
                 _emit({"event": "nav_result", "tag": tag, "status": "rejected"})
                 return
             self._nav_goal_handle = handle
@@ -193,6 +286,10 @@ class BridgeNode(Node):
 
             def _on_result(rfut) -> None:
                 self._nav_goal_handle = None
+                self._pose_jump_guard.disarm()
+                if self._localization_fault_tag == tag:
+                    # The fail-closed halt thread owns the specific terminal event.
+                    return
                 status = nav_result_status(rfut.result().status)
                 _emit({"event": "nav_result", "tag": tag, "status": status})
 
@@ -545,6 +642,7 @@ class BridgeNode(Node):
         pulses. The server-side cancel-all covers every owner.
         """
         canceled = False
+        self._pose_jump_guard.disarm()
         if self._drive_active:
             # The odom driver stops within one control tick; no server round-trip.
             self._drive_cancel.set()

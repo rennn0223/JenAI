@@ -17,20 +17,22 @@ class ApprovalCardFields:
     justification: str
 
 
-def _decode_json_arg(arguments: dict, key: str) -> object:
+def _decode_json_arg(arguments: dict, key: str, *, max_layers: int = 1) -> object:
     """Return the decoded value for a `*_json` tool argument.
 
     Tool parameters carry structured payloads as JSON strings (e.g.
     ``payload_json``); decode them so the approval card shows the real content
     rather than an opaque string. Falls back to the raw value on bad JSON.
     """
-    raw = arguments.get(key)
-    if isinstance(raw, str):
+    value = arguments.get(key)
+    for _ in range(max_layers):
+        if not isinstance(value, str):
+            break
         try:
-            return json.loads(raw)
+            value = json.loads(value)
         except json.JSONDecodeError:
-            return raw
-    return raw if raw is not None else {}
+            break
+    return value if value is not None else {}
 
 
 def format_ros_pub_approval(arguments: dict) -> ApprovalCardFields:
@@ -62,7 +64,10 @@ def format_ros_drive_approval(arguments: dict) -> ApprovalCardFields:
 
 
 def format_route_approval(arguments: dict) -> ApprovalCardFields:
-    action = _decode_json_arg(arguments, "outgoing_action_json")
+    # A few model/SDK combinations quote the already JSON-encoded action once.
+    # Match route_execute_tool's bounded normalization so the approval card
+    # shows the object that will actually be considered for navigation.
+    action = _decode_json_arg(arguments, "outgoing_action_json", max_layers=2)
     return ApprovalCardFields(
         title="Send navigation route",
         summary="Send a navigation goal to the route adapter.",

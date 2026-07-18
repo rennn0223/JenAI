@@ -67,7 +67,7 @@ async def navigate_live(
     pose = goal.get("pose") or {}
 
     loop = asyncio.get_running_loop()
-    result_future: asyncio.Future[str] = loop.create_future()
+    result_future: asyncio.Future[dict] = loop.create_future()
     # Events are matched by tag: after an Esc-cancel, the goal's terminal
     # "canceled" result can arrive while the NEXT navigation is already
     # listening — without the tag it would consume that stale result as its own.
@@ -88,7 +88,7 @@ async def navigate_live(
 
     def _on_result(event: dict) -> None:
         if _mine(event) and not result_future.done():
-            result_future.set_result(str(event.get("status", "failed")))
+            result_future.set_result(event)
 
     async def _heartbeat() -> None:
         # Feed the bridge-side watchdog while we wait: if this client hangs or
@@ -125,15 +125,19 @@ async def navigate_live(
                 frame_id=goal.get("frame_id", "map"),
                 tag=tag,
             )
-        status = await asyncio.wait_for(result_future, timeout)
-        detail = {
-            "succeeded": "Arrived at the goal.",
-            "canceled": "Navigation canceled.",
-            "aborted": "Nav2 aborted the goal (obstacle/planning failure?).",
-            "rejected": "Nav2 rejected the goal.",
-            "timed_out": "Navigation timed out before reaching the goal.",
-            "sensor_unavailable": "Fresh depth data was unavailable; the robot stopped.",
-        }.get(status, f"Navigation ended with status '{status}'.")
+        terminal = await asyncio.wait_for(result_future, timeout)
+        status = str(terminal.get("status", "failed"))
+        if status == "localization_jump" and terminal.get("reason"):
+            detail = str(terminal["reason"])
+        else:
+            detail = {
+                "succeeded": "Arrived at the goal.",
+                "canceled": "Navigation canceled.",
+                "aborted": "Nav2 aborted the goal (obstacle/planning failure?).",
+                "rejected": "Nav2 rejected the goal.",
+                "timed_out": "Navigation timed out before reaching the goal.",
+                "sensor_unavailable": "Fresh depth data was unavailable; the robot stopped.",
+            }.get(status, f"Navigation ended with status '{status}'.")
         execution = "succeeded" if status == "succeeded" else "failed"
     except BridgeError as exc:
         execution, detail = "unavailable", f"{exc} — the goal was NOT sent."
@@ -216,9 +220,7 @@ async def navigate_with_fallback(
                 # Callers still treat every non-success status as "do not
                 # continue", while the operator can now distinguish a hard
                 # safety block from an inconclusive result that needs review.
-                execution_status=(
-                    "blocked" if report.verdict == "block" else "referred"
-                ),
+                execution_status=("blocked" if report.verdict == "block" else "referred"),
                 route_preview=f"{report.summary} — the real robot was NOT moved.",
             )
 

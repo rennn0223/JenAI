@@ -89,6 +89,29 @@ def _unwrap_outgoing_action(parsed: dict) -> dict:
     return parsed
 
 
+def _parse_outgoing_action(value: object) -> dict:
+    """Normalize the route action without weakening the navigation gate.
+
+    The tool schema asks models for a JSON string, but some Agents SDK/model
+    combinations quote that string once more. Decode the normal representation
+    plus at most one such wrapper, then require a JSON object. Lists, scalars,
+    malformed JSON, and deeper string nesting all fail closed here; goal/pose
+    soundness remains enforced by the single navigation exit.
+    """
+    parsed = value
+    for _ in range(2):
+        if not isinstance(parsed, str):
+            break
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"not valid JSON: {exc}") from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError("must decode to a JSON object")
+    return _unwrap_outgoing_action(parsed)
+
+
 @function_tool(needs_approval=True)
 async def route_execute_tool(
     ctx: RunContextWrapper[JenAIRunContext],
@@ -99,15 +122,15 @@ async def route_execute_tool(
     the outgoing_action dict from route_preview_tool's response, JSON-encoded."""
     call = _record_call(ctx, "route_execute_tool", "execute route")
     try:
-        outgoing_action = _unwrap_outgoing_action(json.loads(outgoing_action_json))
-    except json.JSONDecodeError as exc:
+        outgoing_action = _parse_outgoing_action(outgoing_action_json)
+    except ValueError as exc:
         _finish_call(ctx, call, ok=False, summary="invalid JSON action")
         return {
             "input_text": "",
             "outgoing_action": {},
             "approval_status": "approved",
             "execution_status": "failed",
-            "route_preview": f"outgoing_action_json is not valid JSON: {exc}",
+            "route_preview": f"outgoing_action_json is not a valid route action: {exc}",
         }
     run_ctx = ctx.context
     output = await execute_navigation(

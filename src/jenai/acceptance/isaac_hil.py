@@ -34,7 +34,20 @@ from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.safety import arm_watchdog, halt_robot
 
 EXECUTION_CONFIRMATION = "I-CONFIRM-ISAAC-SIM-MAY-MOVE"
-REQUIRED_NAV_CHECKS = {"ros2_cli", "map", "localization", "nav2", "cmd_vel"}
+REQUIRED_NAV_CHECKS = {"ros2_cli", "map", "localization", "laser", "nav2", "cmd_vel"}
+
+# A LaserScan may legitimately contain positive infinity for directions with no
+# return. The gate therefore allows two transient blank scans in a ten-scan
+# sample and only requires one quarter of all bins to contain finite returns.
+# Those deliberately conservative limits still reject a rotating RTX LiDAR
+# wedge converted frame-by-frame (observed: 30% blank scans and 18.5% finite
+# coverage), which is not a usable full scan for AMCL.
+SCAN_TOPIC = "/scan"
+SCAN_MESSAGE_TYPE = "sensor_msgs/msg/LaserScan"
+SCAN_SAMPLE_COUNT = 10
+SCAN_SAMPLE_TIMEOUT_S = 8.0
+SCAN_MAX_ALL_INF_SAMPLE_RATIO = 0.20
+SCAN_MIN_FINITE_BIN_COVERAGE = 0.25
 
 
 @dataclass(frozen=True)
@@ -184,6 +197,185 @@ async def _inspect_start_pose(config: AppConfig) -> dict:
         )
     finally:
         await bridge.stop()
+
+
+def _summarize_scan_message(message: Any) -> dict[str, int]:
+    """Reduce one LaserScan to counters; never retain its raw ranges."""
+    ranges = message.get("ranges") if isinstance(message, dict) else None
+    if not isinstance(ranges, (list, tuple)):
+        return {
+            "bins": 0,
+            "finite_bins": 0,
+            "positive_inf_bins": 0,
+            "nan_bins": 0,
+            "negative_inf_bins": 0,
+            "malformed_bins": 1,
+        }
+
+    summary = {
+        "bins": len(ranges),
+        "finite_bins": 0,
+        "positive_inf_bins": 0,
+        "nan_bins": 0,
+        "negative_inf_bins": 0,
+        "malformed_bins": 0,
+    }
+    for raw_value in ranges:
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            summary["malformed_bins"] += 1
+            continue
+        if math.isnan(value):
+            summary["nan_bins"] += 1
+        elif math.isinf(value):
+            key = "positive_inf_bins" if value > 0 else "negative_inf_bins"
+            summary[key] += 1
+        else:
+            summary["finite_bins"] += 1
+    return summary
+
+
+def _evaluate_scan_quality(
+    samples: list[dict[str, int]],
+    *,
+    sample_target: int = SCAN_SAMPLE_COUNT,
+    elapsed_s: float,
+    topic_available: bool,
+    error: str | None = None,
+    max_all_inf_sample_ratio: float = SCAN_MAX_ALL_INF_SAMPLE_RATIO,
+    min_finite_bin_coverage: float = SCAN_MIN_FINITE_BIN_COVERAGE,
+) -> dict:
+    """Build an artifact-safe verdict from per-message counters."""
+    sample_count = len(samples)
+    bins = [sample["bins"] for sample in samples]
+    total_bins = sum(bins)
+    finite_bins = sum(sample["finite_bins"] for sample in samples)
+    positive_inf_bins = sum(sample["positive_inf_bins"] for sample in samples)
+    nan_bins = sum(sample["nan_bins"] for sample in samples)
+    negative_inf_bins = sum(sample["negative_inf_bins"] for sample in samples)
+    malformed_bins = sum(sample["malformed_bins"] for sample in samples)
+    empty_samples = sum(count == 0 for count in bins)
+    all_inf_samples = sum(
+        sample["bins"] > 0 and sample["positive_inf_bins"] == sample["bins"] for sample in samples
+    )
+    all_inf_sample_ratio = all_inf_samples / sample_count if sample_count else 1.0
+    finite_bin_coverage = finite_bins / total_bins if total_bins else 0.0
+
+    failures: list[str] = []
+    if not topic_available:
+        failures.append("The scan topic could not be subscribed to.")
+    if sample_count < sample_target:
+        failures.append(f"Received {sample_count}/{sample_target} required scan samples.")
+    if empty_samples:
+        failures.append(f"{empty_samples} scan sample(s) had no range bins.")
+    if nan_bins or negative_inf_bins or malformed_bins:
+        failures.append(
+            "Scan ranges contained invalid values "
+            f"(NaN={nan_bins}, -inf={negative_inf_bins}, malformed={malformed_bins})."
+        )
+    if all_inf_sample_ratio > max_all_inf_sample_ratio:
+        failures.append(
+            f"All-infinite scan ratio {all_inf_sample_ratio:.1%} exceeds "
+            f"{max_all_inf_sample_ratio:.1%}."
+        )
+    if finite_bin_coverage < min_finite_bin_coverage:
+        failures.append(
+            f"Finite-bin coverage {finite_bin_coverage:.1%} is below {min_finite_bin_coverage:.1%}."
+        )
+
+    return _check(
+        "scan_quality",
+        "fail" if failures else "pass",
+        detail=(
+            " ".join(failures)
+            if failures
+            else (
+                f"Received {sample_count} usable full-scan samples with "
+                f"{finite_bin_coverage:.1%} finite-bin coverage."
+            )
+        ),
+        topic=SCAN_TOPIC,
+        message_type=SCAN_MESSAGE_TYPE,
+        topic_available=topic_available,
+        error=error,
+        elapsed_s=round(elapsed_s, 3),
+        sample_target=sample_target,
+        samples_received=sample_count,
+        range_bins={
+            "minimum_per_sample": min(bins, default=0),
+            "maximum_per_sample": max(bins, default=0),
+            "total": total_bins,
+        },
+        finite_bins=finite_bins,
+        positive_inf_bins=positive_inf_bins,
+        nan_bins=nan_bins,
+        negative_inf_bins=negative_inf_bins,
+        malformed_bins=malformed_bins,
+        empty_samples=empty_samples,
+        all_inf_samples=all_inf_samples,
+        all_inf_sample_ratio=round(all_inf_sample_ratio, 6),
+        finite_bin_coverage=round(finite_bin_coverage, 6),
+        thresholds={
+            "max_all_inf_sample_ratio": max_all_inf_sample_ratio,
+            "min_finite_bin_coverage": min_finite_bin_coverage,
+        },
+    )
+
+
+async def _inspect_scan_quality(
+    *,
+    sample_count: int = SCAN_SAMPLE_COUNT,
+    timeout_s: float = SCAN_SAMPLE_TIMEOUT_S,
+    max_all_inf_sample_ratio: float = SCAN_MAX_ALL_INF_SAMPLE_RATIO,
+    min_finite_bin_coverage: float = SCAN_MIN_FINITE_BIN_COVERAGE,
+) -> dict:
+    """Sample the live LaserScan before any navigation goal can be sent."""
+    bridge = RosBridgeClient()
+    samples: list[dict[str, int]] = []
+    complete = asyncio.Event()
+    watch_id: int | None = None
+    topic_available = False
+    error: str | None = None
+    started = time.perf_counter()
+
+    def on_scan(message: dict) -> None:
+        if len(samples) >= sample_count:
+            return
+        samples.append(_summarize_scan_message(message))
+        if len(samples) >= sample_count:
+            complete.set()
+
+    try:
+        await bridge.start()
+        watch_id = await bridge.watch(
+            SCAN_TOPIC,
+            SCAN_MESSAGE_TYPE,
+            on_scan,
+            throttle=0.0,
+        )
+        topic_available = True
+        try:
+            await asyncio.wait_for(complete.wait(), timeout_s)
+        except TimeoutError:
+            error = f"Timed out after {timeout_s:.1f}s waiting for scan samples."
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    finally:
+        if watch_id is not None:
+            with contextlib.suppress(BridgeError):
+                await bridge.unwatch(watch_id)
+        await bridge.stop()
+
+    return _evaluate_scan_quality(
+        samples,
+        sample_target=sample_count,
+        elapsed_s=time.perf_counter() - started,
+        topic_available=topic_available,
+        error=error,
+        max_all_inf_sample_ratio=max_all_inf_sample_ratio,
+        min_finite_bin_coverage=min_finite_bin_coverage,
+    )
 
 
 def _overall(checks: list[dict], *, executed: bool) -> str:
@@ -549,12 +741,17 @@ async def run_isaac_hil(options: IsaacHilOptions) -> dict:
                 **doctor_evidence,
             )
         )
+        scan_quality_ok = False
         start_pose_ok = False
         if doctor_ok:
-            start_pose_check = await _inspect_start_pose(config)
-            checks.append(start_pose_check)
-            start_pose_ok = start_pose_check["status"] == "pass"
-        if options.execute and doctor_ok and start_pose_ok:
+            scan_quality_check = await _inspect_scan_quality()
+            checks.append(scan_quality_check)
+            scan_quality_ok = scan_quality_check["status"] == "pass"
+            if scan_quality_ok:
+                start_pose_check = await _inspect_start_pose(config)
+                checks.append(start_pose_check)
+                start_pose_ok = start_pose_check["status"] == "pass"
+        if options.execute and doctor_ok and scan_quality_ok and start_pose_ok:
             checks.extend(await _run_live(config, locations, options))
         elif options.execute:
             checks.append(
