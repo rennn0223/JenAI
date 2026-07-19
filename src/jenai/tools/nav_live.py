@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import uuid4
@@ -190,6 +191,21 @@ async def _cancel_quietly(bridge: RosBridgeClient) -> bool:
         return False
 
 
+def _twin_shares_target_domain(config: AppConfig) -> bool:
+    """Whether a Twin rehearsal would command the target ROS graph itself.
+
+    ROS_DOMAIN_ID defaults to zero when it is unset. Compare numerically so
+    equivalent spellings such as ``0`` and ``00`` cannot bypass the guard.
+    An invalid ambient value is left to ROS to reject, but is still compared
+    textually so this helper never turns configuration parsing into movement.
+    """
+    ambient = os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0"
+    try:
+        return config.twin.domain_id == int(ambient)
+    except ValueError:
+        return str(config.twin.domain_id) == ambient
+
+
 async def navigate_with_fallback(
     config: AppConfig,
     get_bridge: Callable[[], Awaitable[RosBridgeClient]],
@@ -204,9 +220,11 @@ async def navigate_with_fallback(
 
     This dispatch decides when a goal reaches real hardware — it lives here
     once so every surface (TUI, MCP, future callers) applies the same policy.
-    That includes the Twin Gate: with `[twin] enabled = true` the goal is
-    rehearsed in the digital twin first, and only a `pass` verdict reaches
-    the robot. Gate progress streams to `on_gate` when given.
+    That includes the Twin Gate: with `[twin] enabled = true` on an isolated
+    ROS domain, the goal is rehearsed in the digital twin first, and only a
+    `pass` verdict reaches the robot. When the Twin and target share a domain,
+    rehearsal is explicitly skipped so the same target is never commanded
+    twice. Gate progress streams to `on_gate` when given.
     """
     # Imported here: route_core pulls in the provider stack, which nav_live's
     # other callers (daemon, bridge tests) shouldn't need at import time.
@@ -225,7 +243,8 @@ async def navigate_with_fallback(
             ),
         )
 
-    if config.twin.enabled:
+    twin_shares_target = config.twin.enabled and _twin_shares_target_domain(config)
+    if config.twin.enabled and not twin_shares_target:
         from jenai.twin import rehearse_goal
 
         report = await rehearse_goal(config.twin, outgoing_action, on_status=on_gate)
@@ -244,6 +263,11 @@ async def navigate_with_fallback(
                 execution_status=("blocked" if report.verdict == "block" else "referred"),
                 route_preview=f"{report.summary} — the real robot was NOT moved.",
             )
+    elif twin_shares_target and on_gate is not None:
+        on_gate(
+            "Twin rehearsal skipped because Twin and target share "
+            f"ROS_DOMAIN_ID={config.twin.domain_id}; sending one target goal."
+        )
 
     if config.route_adapter in ("nav2", "odom") and RosBridgeClient.available():
         try:
