@@ -20,6 +20,19 @@ class NavProgress:
     elapsed: float
 
 
+class NavigationCancelled(asyncio.CancelledError):
+    """Task cancellation with the bridge's Nav2 acknowledgement attached.
+
+    This remains an asyncio.CancelledError so existing TUI and daemon callers
+    keep their normal cancellation behavior. Acceptance callers can additionally
+    distinguish "the Python task stopped" from "Nav2 confirmed cancellation".
+    """
+
+    def __init__(self, *, nav_cancel_acknowledged: bool) -> None:
+        super().__init__("Navigation task canceled.")
+        self.nav_cancel_acknowledged = nav_cancel_acknowledged
+
+
 def _goal_pose_error(outgoing_action: dict) -> str | None:
     """Why this action must not reach any adapter, or None when it is sound.
 
@@ -127,7 +140,7 @@ async def navigate_live(
             )
         terminal = await asyncio.wait_for(result_future, timeout)
         status = str(terminal.get("status", "failed"))
-        if status == "localization_jump" and terminal.get("reason"):
+        if status.startswith("localization_jump") and terminal.get("reason"):
             detail = str(terminal["reason"])
         else:
             detail = {
@@ -142,12 +155,19 @@ async def navigate_live(
     except BridgeError as exc:
         execution, detail = "unavailable", f"{exc} — the goal was NOT sent."
     except TimeoutError:
-        await _cancel_quietly(bridge)
-        execution, detail = "failed", f"Navigation timed out after {timeout:.0f}s (canceled)."
+        cancel_acknowledged = await _cancel_quietly(bridge)
+        cancel_detail = (
+            "Nav2 cancellation acknowledged."
+            if cancel_acknowledged
+            else "Nav2 cancellation was not acknowledged."
+        )
+        execution = "failed"
+        detail = f"Navigation timed out after {timeout:.0f}s. {cancel_detail}"
     except asyncio.CancelledError:
-        # Esc in the TUI: stop the robot, then let the caller unwind normally.
-        await _cancel_quietly(bridge)
-        raise
+        # Esc in the TUI: ask Nav2 to stop, then unwind as a normal cancelled
+        # task while preserving whether the action server confirmed the cancel.
+        cancel_acknowledged = await _cancel_quietly(bridge)
+        raise NavigationCancelled(nav_cancel_acknowledged=cancel_acknowledged) from None
     finally:
         heartbeat.cancel()
         bridge.off_event("nav_feedback", _on_feedback)
@@ -162,11 +182,12 @@ async def navigate_live(
     )
 
 
-async def _cancel_quietly(bridge: RosBridgeClient) -> None:
+async def _cancel_quietly(bridge: RosBridgeClient) -> bool:
+    """Best-effort cancel that never turns a missing acknowledgement into success."""
     try:
-        await asyncio.shield(bridge.nav_cancel())
+        return bool(await asyncio.shield(bridge.nav_cancel()))
     except (BridgeError, asyncio.CancelledError):
-        pass
+        return False
 
 
 async def navigate_with_fallback(

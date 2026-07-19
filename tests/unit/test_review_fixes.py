@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from jenai.adapters import locations as loc
 from jenai.adapters.ros2_adapter import _parse_topic_info, _safe_int
 from jenai.schemas import Location, Pose2D
@@ -13,6 +15,7 @@ from jenai.tools.approval_formatters import (
     format_ros_pub_approval,
     format_route_approval,
 )
+from jenai.tools.route_action import normalize_route_action
 
 
 def test_ros_pub_approval_reads_payload_json() -> None:
@@ -29,9 +32,7 @@ def test_ros_pub_approval_reads_payload_json() -> None:
 
 
 def test_route_approval_reads_outgoing_action_json() -> None:
-    fields = format_route_approval(
-        {"outgoing_action_json": '{"start": "lab", "goal": "kitchen"}'}
-    )
+    fields = format_route_approval({"outgoing_action_json": '{"start": "lab", "goal": "kitchen"}'})
     assert "lab" in fields.raw_action and "kitchen" in fields.raw_action
     assert "outgoing_action_json" not in fields.raw_action
 
@@ -41,6 +42,50 @@ def test_route_approval_reads_once_double_encoded_action() -> None:
     fields = format_route_approval({"outgoing_action_json": json.dumps(action)})
 
     assert json.loads(fields.raw_action) == {"goal": {"name": "dock"}}
+
+
+def test_route_approval_raw_action_matches_execution_for_all_supported_encodings() -> None:
+    action = {"goal": {"name": "dock", "pose": {"x": 1.0, "y": 2.0}}}
+    values = [
+        action,
+        json.dumps(action),
+        json.dumps(json.dumps(action)),
+        {"outgoing_action": action},
+        json.dumps({"outgoing_action": action}),
+        json.dumps(json.dumps({"outgoing_action": action})),
+    ]
+
+    for value in values:
+        expected = normalize_route_action(value)
+        fields = format_route_approval({"outgoing_action_json": value})
+
+        assert fields.title == "Send navigation route"
+        assert json.loads(fields.raw_action) == expected == action
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not json",
+        [],
+        1,
+        True,
+        {"outgoing_action": []},
+        {"outgoing_action": {"outgoing_action": {"goal": {}}}},
+        json.dumps(json.dumps(json.dumps({"goal": {}}))),
+    ],
+)
+def test_route_approval_explicitly_marks_payloads_execution_will_reject(value: object) -> None:
+    with pytest.raises(ValueError):
+        normalize_route_action(value)
+
+    fields = format_route_approval({"outgoing_action_json": value})
+    displayed = json.loads(fields.raw_action)
+
+    assert fields.title == "Invalid navigation route"
+    assert "refuse" in fields.summary
+    assert displayed["invalid_route_action"] is True
+    assert displayed["supplied"] == value
 
 
 def test_explore_approval_shows_all_hard_bounds() -> None:

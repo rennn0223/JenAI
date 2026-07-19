@@ -29,9 +29,14 @@ import rclpy
 # Sibling imports: this file runs as a script under system Python, outside the
 # JenAI venv/package, so pure helpers must be importable from its own directory.
 from _navigation_state import (
+    NavigationGenerations,
+    NavigationGoalToken,
     PoseJumpGuard,
+    cancellation_is_confirmed,
+    localization_halt_terminal,
     nav_result_status,
     navigation_active,
+    wait_for_cancel_acknowledgement,
 )
 from _protocol import dispatch_request
 from _watchdog import WatchdogState
@@ -68,11 +73,13 @@ class BridgeNode(Node):
         super().__init__("jenai_bridge")
         self._nav_client: ActionClient | None = None
         self._nav_goal_handle = None
+        self._nav_goal_handle_token: NavigationGoalToken | None = None
+        self._nav_generations = NavigationGenerations()
         # True from nav_send until the acceptance callback runs: a goal in
         # this window has no handle yet but MUST still count as active, or a
         # halt/EOF right after nav_send would skip the cancel entirely.
         self._nav_pending = False
-        self._cancel_on_accept = False
+        self._cancel_on_accept_token: NavigationGoalToken | None = None
         self._watches: dict[int, object] = {}  # watch_id -> subscription
         # halt is callable from the stdin loop AND the watchdog thread; the
         # lock serializes them (rclpy entity churn from two non-executor
@@ -89,8 +96,7 @@ class BridgeNode(Node):
         # so clients receive the specific safety reason exactly once.
         self._pose_jump_guard = PoseJumpGuard()
         self._pose_jump_subscription = None
-        self._pose_jump_tag = ""
-        self._localization_fault_tag: str | None = None
+        self._localization_fault_tokens: set[NavigationGoalToken] = set()
         self._pose_jump_cmd_vel_topic = "/cmd_vel"
         self._pose_jump_stamped = False
 
@@ -136,8 +142,14 @@ class BridgeNode(Node):
         if jump is None:
             return
 
-        tag = self._pose_jump_tag
-        self._localization_fault_tag = tag
+        token = jump.token
+        if not isinstance(token, NavigationGoalToken):
+            # nav_send always arms with a token. Keep this defensive branch
+            # fail-closed if a future caller arms the guard directly.
+            token = self._nav_generations.active
+            if token is None:
+                return
+        self._localization_fault_tokens.add(token)
         if math.isfinite(jump.distance_m):
             reason = (
                 "Localization safety stop: /amcl_pose jumped "
@@ -149,15 +161,25 @@ class BridgeNode(Node):
 
         def _halt_after_jump() -> None:
             try:
-                self.halt(self._pose_jump_cmd_vel_topic, self._pose_jump_stamped)
-                detail = f"{reason} Navigation canceled and zero velocity sent."
+                halt_result = self.halt(
+                    self._pose_jump_cmd_vel_topic,
+                    self._pose_jump_stamped,
+                )
+                status, detail = localization_halt_terminal(
+                    reason,
+                    cancel_acknowledged=bool(halt_result.get("active_nav_canceled")),
+                )
             except Exception as exc:
-                detail = f"{reason} Emergency halt failed: {exc}"
+                status, detail = localization_halt_terminal(
+                    reason,
+                    cancel_acknowledged=False,
+                    error=exc,
+                )
             _emit(
                 {
                     "event": "nav_result",
-                    "tag": tag,
-                    "status": "localization_jump",
+                    "tag": token.tag,
+                    "status": status,
                     "reason": detail,
                 }
             )
@@ -256,38 +278,66 @@ class BridgeNode(Node):
                 }
             )
 
-        self._pose_jump_tag = tag
-        self._localization_fault_tag = None
-        self._pose_jump_guard.arm()
+        token = self._nav_generations.begin(tag)
+        self._pose_jump_guard.arm(token)
         self._nav_pending = True
-        self._cancel_on_accept = False
+        self._cancel_on_accept_token = None
         try:
             send_future = self._nav_client.send_goal_async(goal, feedback_callback=_feedback)
         except Exception:
-            self._nav_pending = False
-            self._pose_jump_guard.disarm()
+            if self._nav_generations.finish(token):
+                self._nav_pending = False
+                self._pose_jump_guard.disarm(token)
             raise
 
         def _on_accepted(fut) -> None:
-            handle = fut.result()
+            try:
+                handle = fut.result()
+            except Exception as exc:
+                if self._nav_generations.finish(token):
+                    self._nav_pending = False
+                    self._pose_jump_guard.disarm(token)
+                _emit(
+                    {
+                        "event": "nav_result",
+                        "tag": tag,
+                        "status": "failed",
+                        "reason": f"Nav2 goal request failed: {exc}",
+                    }
+                )
+                return
             if not handle.accepted:
-                self._nav_pending = False
-                self._pose_jump_guard.disarm()
+                if self._nav_generations.finish(token):
+                    self._nav_pending = False
+                    self._pose_jump_guard.disarm(token)
                 _emit({"event": "nav_result", "tag": tag, "status": "rejected"})
                 return
-            self._nav_goal_handle = handle
-            self._nav_pending = False
-            if self._cancel_on_accept:
-                # A halt arrived while the goal was still in flight to the
-                # server — cancel it the moment we can address it.
-                self._cancel_on_accept = False
+
+            is_current = self._nav_generations.is_current(token)
+            if is_current:
+                self._nav_goal_handle = handle
+                self._nav_goal_handle_token = token
+                self._nav_pending = False
+            cancel_requested = self._cancel_on_accept_token == token
+            if cancel_requested:
+                self._cancel_on_accept_token = None
+            if not is_current or cancel_requested:
+                # A superseded goal, or one halted while acceptance was in
+                # flight, must be canceled as soon as its handle exists.
                 handle.cancel_goal_async()
             result_future = handle.get_result_async()
 
             def _on_result(rfut) -> None:
-                self._nav_goal_handle = None
-                self._pose_jump_guard.disarm()
-                if self._localization_fault_tag == tag:
+                if self._nav_goal_handle is handle and self._nav_goal_handle_token == token:
+                    self._nav_goal_handle = None
+                    self._nav_goal_handle_token = None
+                if self._nav_generations.finish(token):
+                    self._nav_pending = False
+                    if self._cancel_on_accept_token == token:
+                        self._cancel_on_accept_token = None
+                    self._pose_jump_guard.disarm(token)
+                if token in self._localization_fault_tokens:
+                    self._localization_fault_tokens.discard(token)
                     # The fail-closed halt thread owns the specific terminal event.
                     return
                 status = nav_result_status(rfut.result().status)
@@ -641,28 +691,85 @@ class BridgeNode(Node):
         and Nav2's controller would keep streaming cmd_vel after our zero
         pulses. The server-side cancel-all covers every owner.
         """
-        canceled = False
-        self._pose_jump_guard.disarm()
-        if self._drive_active:
+        requested = False
+        acknowledged = False
+        active_goal_acknowledged = False
+        had_drive_active = self._drive_active
+        if had_drive_active:
             # The odom driver stops within one control tick; no server round-trip.
             self._drive_cancel.set()
-            canceled = True
-        if self._nav_pending:
-            self._cancel_on_accept = True
-            canceled = True
+            requested = True
+            acknowledged = True
+            active_goal_acknowledged = True
+        active_token = self._nav_generations.active
+        active_was_pending = self._nav_pending and active_token is not None
+        if active_was_pending:
+            self._cancel_on_accept_token = active_token
+            requested = True
         handle = self._nav_goal_handle
+        handle_token = self._nav_goal_handle_token
         if handle is not None:
-            handle.cancel_goal_async()
-            canceled = True
+            requested = True
+            handle_acknowledged = self._cancel_goal_handle(handle)
+            acknowledged = handle_acknowledged or acknowledged
+            if handle_token == active_token:
+                active_goal_acknowledged = handle_acknowledged
         # ALWAYS ask the server to cancel-all: a goal owned by a DIFFERENT
         # process's bridge is invisible to _nav_client, so gating this on our
         # own client would silently drop cross-process emergency-stop coverage.
         # (Bounded 2s wait; returns fast when no Nav2 server is present.)
-        if self._cancel_all_nav_goals():
-            canceled = True
+        cancel_all_acknowledged = self._cancel_all_nav_goals()
+        requested = requested or cancel_all_acknowledged
+        acknowledged = acknowledged or cancel_all_acknowledged
+        # A cancel-all acknowledgement can confirm the current accepted handle,
+        # but must not let an old A handle stand in for a still-pending B goal.
+        if (
+            cancel_all_acknowledged
+            and active_token is not None
+            and not active_was_pending
+            and handle_token == active_token
+        ):
+            active_goal_acknowledged = True
+        if not requested:
+            return {
+                "canceled": False,
+                "cancel_requested": False,
+                "active_goal_canceled": False,
+                "detail": "no active navigation goal",
+            }
+        has_owned_active = had_drive_active or active_token is not None
+        canceled = cancellation_is_confirmed(
+            has_owned_active=has_owned_active,
+            any_acknowledged=acknowledged,
+            active_goal_acknowledged=active_goal_acknowledged,
+        )
         if not canceled:
-            return {"canceled": False, "detail": "no active navigation goal"}
-        return {"canceled": True}
+            detail = (
+                "another navigation cancellation was acknowledged, but the current active "
+                "goal cancellation was not acknowledged"
+                if acknowledged and has_owned_active
+                else "navigation cancellation was requested but not acknowledged"
+            )
+            return {
+                "canceled": False,
+                "cancel_requested": True,
+                "active_goal_canceled": False,
+                "detail": detail,
+            }
+        return {
+            "canceled": True,
+            "cancel_requested": True,
+            "active_goal_canceled": active_goal_acknowledged,
+        }
+
+    @staticmethod
+    def _cancel_goal_handle(handle, timeout: float = 2.0) -> bool:
+        """Cancel one owned goal and require a positive CancelGoal response."""
+        try:
+            future = handle.cancel_goal_async()
+        except Exception:
+            return False
+        return wait_for_cancel_acknowledgement(future, timeout)
 
     def _cancel_all_nav_goals(self, timeout: float = 2.0) -> bool:
         """Ask the Nav2 action server to cancel ALL goals (zeroed goal id),
@@ -674,11 +781,7 @@ class BridgeNode(Node):
             if not client.wait_for_service(timeout_sec=timeout):
                 return False  # no Nav2 → nothing to cancel
             future = client.call_async(CancelGoal.Request())  # zeroed = cancel all
-            done = threading.Event()
-            future.add_done_callback(lambda _f: done.set())
-            done.wait(timeout)
-            response = future.result() if future.done() else None
-            return bool(response is not None and response.goals_canceling)
+            return wait_for_cancel_acknowledgement(future, timeout)
         except Exception:
             return False
         finally:
@@ -741,12 +844,22 @@ class BridgeNode(Node):
                     pub.publish(msg)
                     time.sleep(1.0 / rate_hz)
 
+            cancel_result: dict = {}
+
+            def _cancel_navigation() -> bool:
+                cancel_result.update(self.nav_cancel())
+                return bool(cancel_result.get("canceled"))
+
             canceled = halt_in_order(
                 _send_zero,
-                lambda: self.nav_cancel().get("canceled", False),
+                _cancel_navigation,
                 pulses=pulses,
             )
-        return {"halted": True, "nav_canceled": canceled}
+        return {
+            "halted": True,
+            "nav_canceled": canceled,
+            "active_nav_canceled": bool(cancel_result.get("active_goal_canceled")),
+        }
 
     # -- camera -------------------------------------------------------------
 

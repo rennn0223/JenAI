@@ -126,6 +126,25 @@ B2–B4。**代價要知道**:Carter 是差速車,阿克曼運動學(Smac Hybrid
 4. Twin Gate:這個場景就是 B5 的雛形 —— `[twin]` 啟用 + 禁區設好,
    G1 用 contact sensor、G3 用你畫的禁區,消融數據(攔截率/誤攔率)就有了。
 
+## RTX LiDAR → LaserScan 的完整掃描要求
+
+Isaac Sim 的 ROS2 RTX LiDAR Helper 必須設定 **`Publish Full Scan=True`**。這個選項讓
+PointCloud2 每次發布包含時間上完整的 360° 點雲，避免每一幀只送旋轉中的約 60° wedge；
+目前 `pointcloud_to_laserscan` 再從該完整點雲裁出導航所用的前向 180° `/scan`
+（`angle_min=-π/2`、`angle_max=π/2`、362 bins）。轉換器是逐筆轉換，不會自行把多筆
+局部 wedge 累積成完整視野。
+
+`ros2 topic hz /scan` 只證明訊息持續抵達，**不能證明空間覆蓋足夠**。2026-07-19 的
+故障樣本雖然 topic 有頻率，10 筆 `/scan` 仍有 3 筆全為 `+inf`，有限 bin 覆蓋率只有
+18.48%；開啟 Full Scan 後，正式 HIL 樣本為 10/10 筆可用、0 筆全空、53.7569% finite。
+請以 [Isaac HIL preflight](ISAAC_HIL_ACCEPTANCE.md) 的 scan-quality gate 驗證，而不是只看
+Hz。正式門檻是全空樣本比例不高於 20%、aggregate finite-bin coverage 至少 25%。
+
+若 Helper 的完整掃描輸出為 10 Hz，`pointcloud_to_laserscan` 的 `scan_time` 應設為
+`0.1`；不要沿用與實際週期不符的 `0.3333`。`scan_time` 必須依實際 full-cloud 更新週期
+校正，修改後重建 navigation workspace、重啟 Nav2，再確認 runtime parameter 與
+LaserScan message 都是同一值。
+
 ## 常見坑
 
 | 症狀 | 原因/解法 |
@@ -135,6 +154,7 @@ B2–B4。**代價要知道**:Carter 是差速車,阿克曼運動學(Smac Hybrid
 | Nav2 起了但 RViz 沒地圖 | map yaml 路徑錯,或 map_server 沒起(看 bringup log) |
 | 車不動、RViz 能規劃 | `/cmd_vel` 沒接到車(Isaac 端 topic 名對齊;或 controller 輸出 remap) |
 | AMCL 不收斂 | 先 2D Pose Estimate;雷射高度帶與佔位圖 Z 帶不一致也會 |
+| `/scan` 有頻率但 AMCL 跳位／資料忽空忽有 | RTX Helper 仍在逐幀發布旋轉 wedge；頻率不能代表視野完整 | 設 `Publish Full Scan=True`，10 Hz full cloud 時令 converter `scan_time=0.1`，再跑 HIL scan-quality preflight |
 | topics 看不到 | Isaac 沒按 Play;或兩邊 ROS_DOMAIN_ID 不同 |
 | Isaac 用了內建 ROS 庫 | 開 Isaac 前忘了 source(24.04 沒 source 會自動載內建 Jazzy 庫,通常也能通,但版本混用問題難查) |
 

@@ -18,6 +18,7 @@
 | E3-20260718／E3-D2-20260718 | `not recorded` | `not recorded` | meta 保存 domain 42、provider、model 與 cases，但沒有 Git revision；檔名不能補足此欄 |
 | E4-20260716 | `not recorded` | `not recorded` | observed latency rows與 meta 保存 run/model/snapshot，但沒有 Git revision |
 | B4-20260716 | `not recorded` | `not recorded` | 102 份 patrol reports 可由本機固定的事後 subset manifest 重建；report schema 沒有 revision／run ID／獨立事件標註 |
+| HIL-FS-20260719 | `fb5645620c787bd54fc8368fe402366371561b1e` | 不適用 | clean source 的 prospective Isaac Sim/Nav2 live run；artifact 直接保存 revision、dirty=false、必要 preflight、scan 品質、route 與 cancel/stop 證據 |
 
 ### Protocol-specific preflight
 
@@ -30,6 +31,7 @@
 | E2 | ROS2、Nav2、map/pose、Isaac Sim/Twin Gate 與判準所需 topics | 純模擬 domain 0 場次的跨 domain `twin_isolation` | `not recorded` |
 | E3 | provider/model、`ROS_DOMAIN_ID=42`、mock `/cmd_vel`／`/odom` fixture | Nav2、Isaac Sim/Twin | meta 證明 domain/model；完整 doctor JSON `not recorded` |
 | B4 | ROS2、Nav2、map/pose、四個 route locations、模擬器 Play 與背景 driver 清查 | 純模擬 domain 0 場次的跨 domain `twin_isolation` | `not recorded` |
+| Isaac HIL | ROS2、Nav2、map/pose、`/scan` 品質、cmd_vel controller、合法起點；live run 另須雙重 opt-in | 未要求 Twin 時的跨 domain `twin_isolation` | HIL-FS-20260719 保存所有必要 gate；Twin 同 domain 0 明記 `skip` |
 
 純模擬同 domain 0 只在實體載具關機、有人監督的開發條件下使用；這不構成已驗證的虛實
 通訊隔離。跨 domain 隔離是虛實並存部署要求，須由另一份 protocol 與 artifact 驗收。
@@ -50,6 +52,7 @@
 | TUI-20260717 | Isaac Sim/Nav2 人工互動驗收 | 詳見逐項紀錄；四角補充預檢曾 3/4，左下由 G5 refer | 當日互動功能與誠實失敗行為 | 不取代 E1–E4／B4，不是實車驗證 | `TUI_LIVE_ACCEPTANCE_2026-07-17.md` |
 | TUI-R2-20260718 | Isaac Sim/Nav2；approve TUI；同 session NL follow-up | 修正前 1 次 `loc_lookup_tool` not found；修後 follow-up 到批准卡且拒絕後未移動；Esc session marker 通過；成功導航 0 次 | 導航 fallback、批准／拒絕與中斷後誠實收尾 | 不支持 Hero 10-run、成功導航、Twin 隔離或實體安全 | `TUI_LIVE_ACCEPTANCE_2026-07-18.md`；本機 trace IDs 詳見該檔 |
 | HIL-PF-20260718 | Isaac Sim/Nav2 domain 0；唯讀 production bridge 起點檢查 | ROS2/map/AMCL/scan/Nav2/cmd_vel 全 pass；AMCL `(-7.16,-9.48)` 命中 `SW-narrow-aisle`，overall fail，0 goal sent；revision `073de89…a90`、dirty=true | preflight 可在執行前拒絕禁區起點並保存實際位姿與來源狀態 | 成功 route、cancel/stop、Twin 隔離或實體安全 | 本地 `isaac-hil-preflight-start-guard-20260718.json`；SHA-256 `7fef28…392`（不進 GitHub） |
+| HIL-FS-20260719 | Isaac Sim 5.1.0-rc.19／ROS2 Jazzy／Nav2；domain 0；Dock `(-6,-1,π)`；clean `fb56456…b1e` | `pass_with_skips`；scan 10/10、0 blank、finite-bin 53.7569%（門檻 ≥25%）；`map_left_down` 66.985 s、Dock 46.754 s，皆 0 recoveries；cancel propagated、停止漂移 0.0000 m | 此固定環境的 production route、cancel/halt 與送 goal 前 scan 品質 gate 可被 artifact 稽核 | Twin 隔離／verdict（同 domain 明記 skip）、長時間成功率、實體或跨載具安全／泛化 | 本機 `isaac-hil-live-fullscan-guard-fb56456-20260719.json`；SHA-256 `51b3a7…d00`（不進 GitHub）；詳見 `TUI_LIVE_ACCEPTANCE_2026-07-19.md` |
 
 雜湊在表內採前 6＋後 3 位方便閱讀；交付或投稿時需以 `sha256sum` 輸出完整值並與封存
 artifact 一起保存。

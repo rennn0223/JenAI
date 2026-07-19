@@ -24,6 +24,7 @@ v1 的合適客戶。
 - 已有證據：Isaac Sim/Nav2 高階任務、固定場景 Twin Gate、模擬巡航、daemon soak，
   以及隔離 mock ROS graph 的自然語言發現—執行—回授鏈。不同實驗的 execution revision
   不完全相同；正式數字、derived/observed 性質與缺失 metadata 以 [EVIDENCE_LEDGER](EVIDENCE_LEDGER.md) 為準。
+- 2026-07-19 的 clean `fb56456…b1e` HIL 另通過 FullScan quality gate、兩條 route 與 cancel/software halt；Twin 同 domain 0 為 `skip`，所以不構成通訊隔離證據。
 - 未證明：正式實車安全、跨運動學物理泛化、未知地圖 frontier exploration、功能安全
   認證、多人／公網 SaaS，以及可量化的效率提升或 ROI。
 

@@ -10,7 +10,7 @@ from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.bridge import client as client_module
 from jenai.schemas import GateReport, Location, Pose2D, RouteOutput
 from jenai.tools.mission_core import parse_mission, run_mission
-from jenai.tools.nav_live import navigate_live
+from jenai.tools.nav_live import NavigationCancelled, navigate_live
 
 FAKE_BRIDGE = Path(__file__).parent / "fake_bridge.py"
 
@@ -60,6 +60,80 @@ def test_navigate_live_detaches_event_handlers(fake_bridge) -> None:
         assert client._event_handlers.get("nav_feedback", []) == []
         assert client._event_handlers.get("nav_result", []) == []
         await client.stop()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("acknowledged", [True, False])
+def test_navigate_live_cancellation_preserves_nav2_acknowledgement(acknowledged: bool) -> None:
+    class CancelBridge:
+        def __init__(self) -> None:
+            self.handlers: dict[str, list] = {}
+            self.sent = asyncio.Event()
+
+        def on_event(self, event: str, handler) -> None:
+            self.handlers.setdefault(event, []).append(handler)
+
+        def off_event(self, event: str, handler) -> None:
+            self.handlers[event].remove(handler)
+
+        async def nav_send(self, **_kwargs) -> None:
+            self.sent.set()
+
+        async def nav_cancel(self) -> bool:
+            return acknowledged
+
+        async def ping(self) -> bool:
+            return True
+
+    async def run() -> None:
+        bridge = CancelBridge()
+        task = asyncio.create_task(navigate_live(bridge, ACTION))
+        await bridge.sent.wait()
+        task.cancel()
+
+        with pytest.raises(NavigationCancelled) as raised:
+            await task
+
+        assert raised.value.nav_cancel_acknowledged is acknowledged
+        assert task.cancelled()
+        assert bridge.handlers["nav_feedback"] == []
+        assert bridge.handlers["nav_result"] == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("acknowledged", [True, False])
+def test_navigate_live_timeout_reports_cancel_acknowledgement(acknowledged: bool) -> None:
+    class TimeoutBridge:
+        def __init__(self) -> None:
+            self.handlers: dict[str, list] = {}
+
+        def on_event(self, event: str, handler) -> None:
+            self.handlers.setdefault(event, []).append(handler)
+
+        def off_event(self, event: str, handler) -> None:
+            self.handlers[event].remove(handler)
+
+        async def nav_send(self, **_kwargs) -> None:
+            return None
+
+        async def nav_cancel(self) -> bool:
+            return acknowledged
+
+        async def ping(self) -> bool:
+            return True
+
+    async def run() -> None:
+        output = await navigate_live(TimeoutBridge(), ACTION, timeout=0.001)
+
+        assert output.execution_status == "failed"
+        expected = (
+            "Nav2 cancellation acknowledged."
+            if acknowledged
+            else "Nav2 cancellation was not acknowledged."
+        )
+        assert expected in output.route_preview
 
     asyncio.run(run())
 
@@ -237,7 +311,9 @@ def test_parse_outgoing_action_accepts_object_and_bounded_json_strings() -> None
     assert _parse_outgoing_action(action) == action
     assert _parse_outgoing_action(json.dumps(action)) == action
     assert _parse_outgoing_action(json.dumps(json.dumps(action))) == action
+    assert _parse_outgoing_action({"outgoing_action": action}) == action
     assert _parse_outgoing_action(json.dumps({"outgoing_action": action})) == action
+    assert _parse_outgoing_action(json.dumps(json.dumps({"outgoing_action": action}))) == action
 
 
 @pytest.mark.parametrize(
@@ -264,7 +340,33 @@ def test_parse_outgoing_action_rejects_non_object_or_excess_nesting(value: objec
         _parse_outgoing_action(value)
 
 
-def test_navigate_live_surfaces_localization_jump_reason() -> None:
+def test_parse_outgoing_action_rejects_excess_string_or_wrapper_nesting() -> None:
+    import json
+
+    import jenai.agent.specialists  # noqa: F401  (module init order: agent → tools)
+    from jenai.tools.route_agent_tools import _parse_outgoing_action
+
+    action = {"goal": {"pose": {"x": 1.0, "y": 2.0}}}
+    invalid = [
+        json.dumps(json.dumps(json.dumps(action))),
+        {"outgoing_action": {"outgoing_action": action}},
+        {"outgoing_action": [action]},
+    ]
+
+    for value in invalid:
+        with pytest.raises(ValueError):
+            _parse_outgoing_action(value)
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        "localization_jump",
+        "localization_jump_halt_unconfirmed",
+        "localization_jump_halt_failed",
+    ],
+)
+def test_navigate_live_surfaces_localization_jump_reason(terminal_status: str) -> None:
     class JumpBridge:
         def __init__(self) -> None:
             self.handlers: dict[str, list] = {}
@@ -280,7 +382,7 @@ def test_navigate_live_surfaces_localization_jump_reason() -> None:
                 handler(
                     {
                         "event": "nav_result",
-                        "status": "localization_jump",
+                        "status": terminal_status,
                         "reason": (
                             "Localization safety stop: /amcl_pose jumped 24.00 m "
                             "in 0.10 s. Navigation canceled and zero velocity sent."
