@@ -232,9 +232,7 @@ class RosBridgeClient:
 
     async def get_pose(self, timeout: float = 3.0) -> PoseInfo:
         # /amcl_pose then /odom are each given `timeout`, so wait for both.
-        result = await self.request(
-            "pose", timeout=timeout * 2 + 2.0, params={"timeout": timeout}
-        )
+        result = await self.request("pose", timeout=timeout * 2 + 2.0, params={"timeout": timeout})
         return PoseInfo(
             x=result["x"],
             y=result["y"],
@@ -277,10 +275,16 @@ class RosBridgeClient:
             "drive_to_pose",
             timeout=8.0,
             params={
-                "x": x, "y": y, "yaw": yaw, "tag": tag,
-                "cmd_vel_topic": cmd_vel_topic, "stamped": stamped,
-                "max_linear": max_linear, "max_angular": max_angular,
-                "tolerance": tolerance, "timeout": timeout,
+                "x": x,
+                "y": y,
+                "yaw": yaw,
+                "tag": tag,
+                "cmd_vel_topic": cmd_vel_topic,
+                "stamped": stamped,
+                "max_linear": max_linear,
+                "max_angular": max_angular,
+                "tolerance": tolerance,
+                "timeout": timeout,
                 "avoidance": avoidance,
             },
         )
@@ -303,6 +307,8 @@ class RosBridgeClient:
         watchdog_s: float = 6.0,
         cmd_vel_topic: str = "/cmd_vel",
         stamped: bool = False,
+        pose_jump_threshold_m: float = 5.0,
+        pose_jump_window_s: float = 2.0,
     ) -> None:
         """Arm the bridge-side watchdog: if the client goes quiet for
         `watchdog_s` while a Nav2 goal is active, the bridge halts the robot
@@ -316,6 +322,8 @@ class RosBridgeClient:
             "timeout": watchdog_s,
             "cmd_vel_topic": cmd_vel_topic,
             "stamped": stamped,
+            "pose_jump_threshold_m": pose_jump_threshold_m,
+            "pose_jump_window_s": pose_jump_window_s,
         }
         if self.running:
             await self._send_request("watchdog", params=self._safety)

@@ -35,6 +35,9 @@ class FakeNode:
     def ensure_halt_publisher(self, *args, **kwargs):
         return self._call("ensure_halt_publisher", *args, **kwargs)
 
+    def configure_pose_jump_guard(self, *args, **kwargs):
+        return self._call("configure_pose_jump_guard", *args, **kwargs)
+
     def capture_frame(self, *args, **kwargs):
         return self._call("capture_frame", *args, **kwargs)
 
@@ -112,6 +115,7 @@ def test_watchdog_config_prewarms_halt_publisher() -> None:
 
     assert result == {"watchdog_s": 4.0}
     assert node.calls == [
+        ("configure_pose_jump_guard", (5.0, 2.0, "/safe_cmd", True), {}),
         ("ensure_halt_publisher", ("/safe_cmd", True), {}),
     ]
 

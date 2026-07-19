@@ -21,7 +21,8 @@
 | [DATA_LIFECYCLE](DATA_LIFECYCLE.md) | 本機資料盤點、權限 harden、allow-list 匯出、保留期 prune、明確 purge 與解除安裝邊界 |
 | [TEST](TEST.md) | 全部可測項目 + 期望輸出 + 環境須知(驗收手冊) |
 | [ISAAC_HIL_ACCEPTANCE](ISAAC_HIL_ACCEPTANCE.md) | 人工批准的 self-hosted Isaac route／cancel／stop／Twin artifact 驗收 |
-| [EXPERIMENTS](EXPERIMENTS.md) | 實驗 runbook:E1–E4/B4/soak 的指令、輸出位置、數據回填對照 |
+| [TUI_LIVE_ACCEPTANCE_2026-07-19](TUI_LIVE_ACCEPTANCE_2026-07-19.md) | clean commit 的 FullScan 診斷、正式 route／cancel／stop 數字與模擬證據邊界 |
+| [EXPERIMENTS](EXPERIMENTS.md) | 實驗 runbook:E1–E4/HIL-FS/B4/soak 的指令、輸出位置、數據回填對照 |
 | [USABILITY_STUDY](USABILITY_STUDY.md) | 手動 ROS2／Slash／自然語言的平衡受試、計時、失敗保留與效率報告流程 |
 | [VEHICLE_POC](VEHICLE_POC.md) | 第二種載具 adapter／實體 PoC 的固定任務、指標、證據與通過門檻 |
 | [DEMO_SCRIPT](DEMO_SCRIPT.md) | 15 分鐘 demo 劇本(B7):時間軸、指令、斷網備援橋段、各段救場台詞 |

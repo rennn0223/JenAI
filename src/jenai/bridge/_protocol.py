@@ -56,6 +56,12 @@ def dispatch_request(node: Any, op: str, req: dict, watchdog: WatchdogState) -> 
         )
     if op == "watchdog":
         result = watchdog.configure(req)
+        node.configure_pose_jump_guard(
+            float(req.get("pose_jump_threshold_m", 5.0)),
+            float(req.get("pose_jump_window_s", 2.0)),
+            watchdog.cmd_vel_topic,
+            watchdog.stamped,
+        )
         # Pre-create the zero-velocity publisher now so DDS discovery is done
         # long before an emergency halt needs it.
         with node._halt_lock:

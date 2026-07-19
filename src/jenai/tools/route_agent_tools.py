@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from agents import RunContextWrapper, function_tool
 
 from jenai.adapters.locations import (
@@ -17,6 +15,7 @@ from jenai.schemas import EffectScope, RiskLevel, ToolCallCategory, ToolCallReco
 from jenai.tools import route_core
 from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.registry import ToolRiskInfo, register_tool
+from jenai.tools.route_action import normalize_route_action, unwrap_route_action
 from jenai.tools.skills import ExploreSpec, exploration_candidates, run_explore
 
 
@@ -80,13 +79,13 @@ async def route_preview_tool(ctx: RunContextWrapper[JenAIRunContext], text: str)
 
 
 def _unwrap_outgoing_action(parsed: dict) -> dict:
-    """Tolerate a model quoting the whole preview response instead of just the
-    action: unwrap ``{"outgoing_action": {...}}`` (weak local models do this).
-    The pose validation at the navigation exit still rejects anything unsound."""
-    inner = parsed.get("outgoing_action")
-    if isinstance(inner, dict) and "goal" not in parsed:
-        return inner
-    return parsed
+    """Backward-compatible alias for the canonical route normalizer helper."""
+    return unwrap_route_action(parsed)
+
+
+def _parse_outgoing_action(value: object) -> dict:
+    """Backward-compatible alias used by route execution and focused tests."""
+    return normalize_route_action(value)
 
 
 @function_tool(needs_approval=True)
@@ -99,15 +98,15 @@ async def route_execute_tool(
     the outgoing_action dict from route_preview_tool's response, JSON-encoded."""
     call = _record_call(ctx, "route_execute_tool", "execute route")
     try:
-        outgoing_action = _unwrap_outgoing_action(json.loads(outgoing_action_json))
-    except json.JSONDecodeError as exc:
+        outgoing_action = _parse_outgoing_action(outgoing_action_json)
+    except ValueError as exc:
         _finish_call(ctx, call, ok=False, summary="invalid JSON action")
         return {
             "input_text": "",
             "outgoing_action": {},
             "approval_status": "approved",
             "execution_status": "failed",
-            "route_preview": f"outgoing_action_json is not valid JSON: {exc}",
+            "route_preview": f"outgoing_action_json is not a valid route action: {exc}",
         }
     run_ctx = ctx.context
     output = await execute_navigation(
@@ -162,8 +161,7 @@ async def explore_area_tool(
     candidates = exploration_candidates(locations, spec.tag)
     if len(candidates) < 2:
         message = (
-            "Exploration requires at least two eligible saved locations; "
-            f"found {len(candidates)}."
+            f"Exploration requires at least two eligible saved locations; found {len(candidates)}."
         )
         _finish_call(ctx, call, ok=False, summary=message)
         return {

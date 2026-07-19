@@ -210,9 +210,7 @@ def test_navigate_with_fallback_blocks_before_the_robot(monkeypatch) -> None:
     async def get_bridge():
         raise AssertionError("the real bridge must never be touched on a block")
 
-    out = asyncio.run(
-        navigate_with_fallback(config, get_bridge, _goal(), on_gate=seen.append)
-    )
+    out = asyncio.run(navigate_with_fallback(config, get_bridge, _goal(), on_gate=seen.append))
     assert out.execution_status == "blocked"
     assert "NOT moved" in out.route_preview
     assert "pit" in out.route_preview
@@ -251,6 +249,32 @@ def test_navigate_with_fallback_pass_proceeds_to_execution(monkeypatch) -> None:
     out = asyncio.run(navigate_with_fallback(config, None, _goal()))
     assert executed  # the goal reached the execution layer
     assert out.execution_status == "succeeded"
+
+
+def test_navigate_with_fallback_same_domain_skips_duplicate_rehearsal(monkeypatch) -> None:
+    config = AppConfig(twin=TwinProfile(enabled=True, domain_id=0))
+    monkeypatch.setenv("ROS_DOMAIN_ID", "00")
+    executed: list[dict] = []
+    statuses: list[str] = []
+
+    async def explode(*args, **kwargs):
+        raise AssertionError("same-domain rehearsal would command the target twice")
+
+    async def fake_route_execute(cfg, action):
+        executed.append(action)
+        return SimpleNamespace(execution_status="succeeded", route_preview="ok")
+
+    monkeypatch.setattr("jenai.twin.rehearse_goal", explode)
+    monkeypatch.setattr("jenai.tools.route_core.route_execute", fake_route_execute)
+
+    out = asyncio.run(navigate_with_fallback(config, None, _goal(), on_gate=statuses.append))
+
+    assert executed == [_goal()]
+    assert out.execution_status == "succeeded"
+    assert statuses == [
+        "Twin rehearsal skipped because Twin and target share "
+        "ROS_DOMAIN_ID=0; sending one target goal."
+    ]
 
 
 def test_gate_disabled_never_touches_the_twin(monkeypatch) -> None:
@@ -360,9 +384,7 @@ def test_forbidden_zones_without_pose_samples_refer() -> None:
             raise BridgeError("no pose on the twin domain")
 
     zone = ForbiddenZone(name="stairs", x_min=5, y_min=5, x_max=6, y_max=6)
-    report = _rehearse(
-        _twin(forbidden_zones=[zone]), NoPoseBridge(nav_status="succeeded")
-    )
+    report = _rehearse(_twin(forbidden_zones=[zone]), NoPoseBridge(nav_status="succeeded"))
 
     assert report.verdict == "refer"
     assert _status(report, "G3") == "skipped"
@@ -379,9 +401,7 @@ def test_non_finite_pose_samples_do_not_count_for_g3() -> None:
             )
 
     zone = ForbiddenZone(name="stairs", x_min=5, y_min=5, x_max=6, y_max=6)
-    report = _rehearse(
-        _twin(forbidden_zones=[zone]), NanPoseBridge(nav_status="succeeded")
-    )
+    report = _rehearse(_twin(forbidden_zones=[zone]), NanPoseBridge(nav_status="succeeded"))
 
     assert report.verdict == "refer"
     assert _status(report, "G3") == "skipped"

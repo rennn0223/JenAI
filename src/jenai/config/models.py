@@ -34,9 +34,7 @@ class ProviderProfile(BaseModel):
             return None
         stripped = value.strip()
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", stripped):
-            raise ValueError(
-                "api_key_env must be an environment variable name, not an API key"
-            )
+            raise ValueError("api_key_env must be an environment variable name, not an API key")
         return stripped
 
 
@@ -61,6 +59,13 @@ class VehicleProfile(BaseModel):
     # model or user asked. Defaults match the historical built-in limits.
     max_linear: float = Field(default=1.0, gt=0, allow_inf_nan=False)  # m/s
     max_angular: float = Field(default=2.0, gt=0, allow_inf_nan=False)  # rad/s
+    # Fail-closed AMCL discontinuity guard for Nav2 goals. A displacement over
+    # this threshold between two samples no more than `pose_jump_window_s`
+    # apart cancels navigation and pulses zero velocity. Five metres in two
+    # seconds is deliberately above this profile's normal 1 m/s motion while
+    # still catching simulator/localization resets measured in tens of metres.
+    pose_jump_threshold_m: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+    pose_jump_window_s: float = Field(default=2.0, gt=0, allow_inf_nan=False)
 
 
 class AvoidanceProfile(BaseModel):

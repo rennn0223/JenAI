@@ -6,6 +6,8 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from jenai.tools.route_action import normalize_route_action
+
 
 @dataclass(frozen=True)
 class ApprovalCardFields:
@@ -17,20 +19,22 @@ class ApprovalCardFields:
     justification: str
 
 
-def _decode_json_arg(arguments: dict, key: str) -> object:
+def _decode_json_arg(arguments: dict, key: str, *, max_layers: int = 1) -> object:
     """Return the decoded value for a `*_json` tool argument.
 
     Tool parameters carry structured payloads as JSON strings (e.g.
     ``payload_json``); decode them so the approval card shows the real content
     rather than an opaque string. Falls back to the raw value on bad JSON.
     """
-    raw = arguments.get(key)
-    if isinstance(raw, str):
+    value = arguments.get(key)
+    for _ in range(max_layers):
+        if not isinstance(value, str):
+            break
         try:
-            return json.loads(raw)
+            value = json.loads(value)
         except json.JSONDecodeError:
-            return raw
-    return raw if raw is not None else {}
+            break
+    return value if value is not None else {}
 
 
 def format_ros_pub_approval(arguments: dict) -> ApprovalCardFields:
@@ -40,7 +44,7 @@ def format_ros_pub_approval(arguments: dict) -> ApprovalCardFields:
     return ApprovalCardFields(
         title=f"Publish to {topic}",
         summary=f"Send a {message_type} message to ROS2 topic {topic}.",
-        raw_action=f"ros2 topic pub --once {topic} {message_type} \"{json.dumps(payload)}\"",
+        raw_action=f'ros2 topic pub --once {topic} {message_type} "{json.dumps(payload)}"',
         justification="The agent needs to publish this message to complete the requested task.",
     )
 
@@ -54,7 +58,7 @@ def format_ros_drive_approval(arguments: dict) -> ApprovalCardFields:
         title=f"Drive {topic} for {duration}s",
         summary=f"Publish a {message_type} to {topic} for {duration}s, then auto-stop.",
         raw_action=(
-            f"ros2 topic pub --rate 10 {topic} {message_type} \"{json.dumps(payload)}\" "
+            f'ros2 topic pub --rate 10 {topic} {message_type} "{json.dumps(payload)}" '
             f"for {duration}s, then zero-stop"
         ),
         justification="The agent needs time-bounded motion to complete the requested task.",
@@ -62,7 +66,22 @@ def format_ros_drive_approval(arguments: dict) -> ApprovalCardFields:
 
 
 def format_route_approval(arguments: dict) -> ApprovalCardFields:
-    action = _decode_json_arg(arguments, "outgoing_action_json")
+    supplied = arguments.get("outgoing_action_json")
+    try:
+        action = normalize_route_action(supplied)
+    except ValueError as exc:
+        invalid = {
+            "invalid_route_action": True,
+            "reason": str(exc),
+            "supplied": supplied,
+        }
+        return ApprovalCardFields(
+            title="Invalid navigation route",
+            summary="This payload is invalid and route execution will refuse it.",
+            raw_action=json.dumps(invalid, ensure_ascii=False, default=str),
+            justification="The route payload must be corrected before navigation can run.",
+        )
+
     return ApprovalCardFields(
         title="Send navigation route",
         summary="Send a navigation goal to the route adapter.",
@@ -95,9 +114,7 @@ def format_explore_approval(arguments: dict) -> ApprovalCardFields:
             f"bounded known-location exploration: duration={duration}m, goals={goals}, "
             f"failures={failures}, {seed_text}"
         ),
-        justification=(
-            "The agent needs one approved, bounded navigation run to explore the area."
-        ),
+        justification=("The agent needs one approved, bounded navigation run to explore the area."),
     )
 
 
@@ -108,9 +125,7 @@ def format_shell_approval(arguments: dict) -> ApprovalCardFields:
         title="Run shell command",
         summary=f"Execute a host shell command in {cwd}.",
         raw_action=command,
-        justification=(
-            "The agent needs to run this shell command to complete the requested task."
-        ),
+        justification=("The agent needs to run this shell command to complete the requested task."),
     )
 
 
