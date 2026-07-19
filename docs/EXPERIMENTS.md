@@ -100,13 +100,18 @@ uv run python scripts/isaac_hil_acceptance.py \
   --output artifacts/isaac-hil-live-<revision>-<date>.json
 ```
 
-- 必要 gate：ROS2 CLI、map、AMCL、laser、Nav2、cmd_vel、合法起點，以及 10 筆
-  `/scan` 品質（全空比例 ≤20%、aggregate finite-bin coverage ≥25%）
+- 必要 gate：ROS2 CLI、map、AMCL、laser、Nav2、cmd_vel、合法起點；10 筆 `/scan`
+  另檢查 bins、角寬、increment、幾何誤差、range bounds、scan_time、frame、timestamp、
+  全空比例與 aggregate valid-finite coverage。完整門檻見 `ISAAC_HIL_ACCEPTANCE.md`。
 - `--require-twin` 只用在 target 與 Twin 分離 ROS domain 的正式隔離場次；同 domain 0
-  的純模擬 run 必須記 `skip`，不能稱隔離或 Twin verdict 通過
-- 2026-07-19 clean `fb56456…b1e` 場次為 `pass_with_skips`：兩條 route 成功、取消／
-  停止成功；完整數字見 [當日驗收紀錄](TUI_LIVE_ACCEPTANCE_2026-07-19.md)
-- artifact 位於被忽略的 `artifacts/`，只留本機封存；每次用新檔名，失敗樣本不得覆寫
+  的純模擬 run 必須記 `skip`，不能稱隔離或 Twin verdict 通過。
+- 2026-07-19 clean `d942130…855` 主場次為 `pass_with_skips`：兩條 route、Nav2 cancel
+  acknowledgement 與 software halt 通過；完整數字見
+  [當日驗收紀錄](TUI_LIVE_ACCEPTANCE_2026-07-19.md)。
+- Hero 補充在 clean `cc6d217…f6e` 交替傳入 10 個 `--goal`（左下／Dock 各 5），保留
+  第一次 pose-feed fail-closed 與恢復後 10/10 legs。重複 `--goal` 是固定路線壓力樣本，
+  不得標成 10 次自然語言或 10 次完整 demo。
+- artifact 位於被忽略的 `artifacts/`，只留本機封存；每次用新檔名，失敗樣本不得覆寫。
 
 
 ## B4|模擬里程掛機(V1_GATE B4)

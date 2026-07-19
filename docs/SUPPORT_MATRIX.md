@@ -10,7 +10,7 @@
 |---|---|---|
 | Host | NVIDIA DGX Spark、aarch64、Ubuntu 24.04.4 LTS | 本機即時觀察；不是過去所有實驗的回溯 metadata |
 | ROS | ROS 2 Jazzy（`/opt/ros/jazzy`）、Nav2 bringup 可解析 | RMW 未明式設定；舊實驗 artifact 未完整保存套件版本 |
-| Simulator | Isaac Sim 5.1.0-rc.19（local build）、RViz2 Carter navigation workspace | clean `fb56456…b1e` 的 local HIL artifact 已保存 route／cancel／stop 與 scan gate；場景／map hash、10-run 與 workflow artifact 尚未關閉 |
+| Simulator | Isaac Sim 5.1.0-rc.19（local build）、RViz2 Carter navigation workspace | clean `d942130…855` 的 local HIL artifact 已保存完整 scan gate、route、acknowledged cancel／software halt；clean `cc6d217…f6e` 另有 10/10 固定 route legs。場景／map hash、10 次完整 demo 與 workflow artifact 尚未關閉 |
 | Domain | 當前 shell 預設 ROS_DOMAIN_ID 0 | 純模擬可驗功能但不提供實體隔離；Twin 正式 gate 需不同 domain |
 | Model | Ollama `qwen3.6:35b` | 完整 model digest 未封存，不宣稱跨重拉位元可重現 |
 
@@ -30,9 +30,9 @@
 
 | 項目 | 精確組合 | 等級 | 證據／限制 |
 |---|---|---|---|
-| ROS2 host | Jazzy + Nav2 on current DGX Spark | Supported | bridge／doctor／單測涵蓋；clean `fb56456…b1e` 已以 production HIL 完成兩條 route、cancel/stop 與 scan gate。此列不含 separated-domain Twin 或實體驗證 |
+| ROS2 host | Jazzy + Nav2 on current DGX Spark | Supported | bridge／doctor／單測涵蓋；clean `d942130…855` 已以 production HIL 完成兩條 route、完整 scan gate、Nav2 cancel acknowledgement 與 software halt。此列不含 separated-domain Twin 或實體驗證 |
 | ROS2 vehicle | Humble ↔ Jazzy host | Experimental | 跨機 DDS 尚未完成正式固定任務集 |
-| Simulation | Isaac Sim 5.1.0-rc.19 + ROS2 Jazzy/Nav2 + Carter/Leatherback acceptance scenes | Supported | HIL-FS-20260719 在 clean commit 通過兩條 route、cancel/stop 與 FullScan quality gate；Twin 同 domain 為 skip。因場景／map hash 與固定 10-run 尚缺，維持 Supported |
+| Simulation | Isaac Sim 5.1.0-rc.19 + ROS2 Jazzy/Nav2 + Carter/Leatherback acceptance scenes | Supported | HIL-FS2 在 clean `d942130…855` 通過兩條 route、acknowledged cancel／software halt 與完整 FullScan gate；Hero 在 clean `cc6d217…f6e` 為 10/10 固定 route legs，並保留 0-goal preflight failure。Twin 同 domain 為 skip；因場景／map hash、10 次完整 demo 與 separated-domain Twin 尚缺，維持 Supported |
 | Physical Ackermann | 小型 ROS2 Ackermann 車 | Experimental | 先前同指令整合作背景；本版未完成正式實體任務集 |
 | Quadruped | Vendor ROS2/Nav2 quadruped | Planned | 只有高階 schema 設計；adapter、步態 API 與物理 PoC 未完成 |
 | Unknown-map exploration | Frontier SLAM | Not supported | `/explore` 僅巡遊已知且合格的儲存點位 |

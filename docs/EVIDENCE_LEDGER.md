@@ -18,7 +18,10 @@
 | E3-20260718／E3-D2-20260718 | `not recorded` | `not recorded` | meta 保存 domain 42、provider、model 與 cases，但沒有 Git revision；檔名不能補足此欄 |
 | E4-20260716 | `not recorded` | `not recorded` | observed latency rows與 meta 保存 run/model/snapshot，但沒有 Git revision |
 | B4-20260716 | `not recorded` | `not recorded` | 102 份 patrol reports 可由本機固定的事後 subset manifest 重建；report schema 沒有 revision／run ID／獨立事件標註 |
-| HIL-FS-20260719 | `fb5645620c787bd54fc8368fe402366371561b1e` | 不適用 | clean source 的 prospective Isaac Sim/Nav2 live run；artifact 直接保存 revision、dirty=false、必要 preflight、scan 品質、route 與 cancel/stop 證據 |
+| HIL-FS0-20260719（歷史） | `fb5645620c787bd54fc8368fe402366371561b1e` | 不適用 | clean source；只通過當時的比例式 scan gate 與 local task cancel／zero-drift，早於現行 metadata gate 與 Nav2 cancel acknowledgement |
+| HIL-FS2-20260719（正式主證據） | `d942130a7b3a789ddfa5585b8554dea32588d855` | 不適用 | clean source；artifact 保存完整 scan metadata gate、兩條 route、Nav2 cancel acknowledgement 與 stop drift |
+| HERO10-20260719 | `cc6d21756d572cc73432c2d26baf80d48baffe6e` | 不適用 | clean source；保留一次 0-goal pose-feed fail-closed、恢復 preflight 與後續 10 個固定 route legs |
+| TUI-NL1-20260719 | `cc6d21756d572cc73432c2d26baf80d48baffe6e`＋dirty patch；後續 matching commit `d942130…855` | 不適用 | 一次監督式自然語言 TUI；因執行當下 dirty，只作補充，不作 clean-revision 成功率 |
 
 ### Protocol-specific preflight
 
@@ -31,7 +34,7 @@
 | E2 | ROS2、Nav2、map/pose、Isaac Sim/Twin Gate 與判準所需 topics | 純模擬 domain 0 場次的跨 domain `twin_isolation` | `not recorded` |
 | E3 | provider/model、`ROS_DOMAIN_ID=42`、mock `/cmd_vel`／`/odom` fixture | Nav2、Isaac Sim/Twin | meta 證明 domain/model；完整 doctor JSON `not recorded` |
 | B4 | ROS2、Nav2、map/pose、四個 route locations、模擬器 Play 與背景 driver 清查 | 純模擬 domain 0 場次的跨 domain `twin_isolation` | `not recorded` |
-| Isaac HIL | ROS2、Nav2、map/pose、`/scan` 品質、cmd_vel controller、合法起點；live run 另須雙重 opt-in | 未要求 Twin 時的跨 domain `twin_isolation` | HIL-FS-20260719 保存所有必要 gate；Twin 同 domain 0 明記 `skip` |
+| Isaac HIL | ROS2、Nav2、map/pose、`/scan` 樣本數／幾何／時間／frame／timestamp／range 品質、cmd_vel controller、合法起點；live run 另須雙重 opt-in | 未要求 Twin 時的跨 domain `twin_isolation` | HIL-FS2-20260719 保存現行所有必要 gate；Twin 同 domain 0 明記 `skip` |
 
 純模擬同 domain 0 只在實體載具關機、有人監督的開發條件下使用；這不構成已驗證的虛實
 通訊隔離。跨 domain 隔離是虛實並存部署要求，須由另一份 protocol 與 artifact 驗收。
@@ -52,7 +55,10 @@
 | TUI-20260717 | Isaac Sim/Nav2 人工互動驗收 | 詳見逐項紀錄；四角補充預檢曾 3/4，左下由 G5 refer | 當日互動功能與誠實失敗行為 | 不取代 E1–E4／B4，不是實車驗證 | `TUI_LIVE_ACCEPTANCE_2026-07-17.md` |
 | TUI-R2-20260718 | Isaac Sim/Nav2；approve TUI；同 session NL follow-up | 修正前 1 次 `loc_lookup_tool` not found；修後 follow-up 到批准卡且拒絕後未移動；Esc session marker 通過；成功導航 0 次 | 導航 fallback、批准／拒絕與中斷後誠實收尾 | 不支持 Hero 10-run、成功導航、Twin 隔離或實體安全 | `TUI_LIVE_ACCEPTANCE_2026-07-18.md`；本機 trace IDs 詳見該檔 |
 | HIL-PF-20260718 | Isaac Sim/Nav2 domain 0；唯讀 production bridge 起點檢查 | ROS2/map/AMCL/scan/Nav2/cmd_vel 全 pass；AMCL `(-7.16,-9.48)` 命中 `SW-narrow-aisle`，overall fail，0 goal sent；revision `073de89…a90`、dirty=true | preflight 可在執行前拒絕禁區起點並保存實際位姿與來源狀態 | 成功 route、cancel/stop、Twin 隔離或實體安全 | 本地 `isaac-hil-preflight-start-guard-20260718.json`；SHA-256 `7fef28…392`（不進 GitHub） |
-| HIL-FS-20260719 | Isaac Sim 5.1.0-rc.19／ROS2 Jazzy／Nav2；domain 0；Dock `(-6,-1,π)`；clean `fb56456…b1e` | `pass_with_skips`；scan 10/10、0 blank、finite-bin 53.7569%（門檻 ≥25%）；`map_left_down` 66.985 s、Dock 46.754 s，皆 0 recoveries；cancel propagated、停止漂移 0.0000 m | 此固定環境的 production route、cancel/halt 與送 goal 前 scan 品質 gate 可被 artifact 稽核 | Twin 隔離／verdict（同 domain 明記 skip）、長時間成功率、實體或跨載具安全／泛化 | 本機 `isaac-hil-live-fullscan-guard-fb56456-20260719.json`；SHA-256 `51b3a7…d00`（不進 GitHub）；詳見 `TUI_LIVE_ACCEPTANCE_2026-07-19.md` |
+| HIL-FS0-20260719（歷史） | Isaac Sim／ROS2 Jazzy／Nav2；domain 0；clean `fb56456…b1e` | 當時兩項比例式 scan gate、兩條 route、local task cancel 與 zero-drift 通過 | 保存歷史工程進展 | 不支持現行完整 scan metadata gate 或 Nav2 cancel acknowledgement；不得取代 HIL-FS2 | 本機 `isaac-hil-live-fullscan-guard-fb56456-20260719.json`；SHA-256 `51b3a7…d00`（不進 GitHub） |
+| HIL-FS2-20260719 | Isaac Sim 5.1.0-rc.19／ROS2 Jazzy／Nav2；domain 0；Dock `(-6,-1,π)`；JenAI 2.0.2；clean `d942130…855` | `pass_with_skips`；scan 10/10、362 bins/筆、valid-finite 57.0442%，完整 metadata gate 通過；`map_left_down` 82.881 s、Dock 45.804 s，皆 0 recoveries；Nav2 cancel acknowledged=true；停止漂移 0.0000 m | 此固定環境的 production route、現行 scan gate 與可確認取消／software halt 可被 artifact 稽核 | Twin 隔離／verdict（同 domain 明記 skip）、事故率、實體或跨載具安全／泛化 | 本機 `isaac-hil-live-final-d942130-20260719.json`；SHA-256 `b5e0f4…18b`（不進 GitHub）；詳見 `TUI_LIVE_ACCEPTANCE_2026-07-19.md` |
+| HERO10-20260719 | clean `cc6d217…f6e`；相同 Isaac／Nav2；`map_left_down`／Dock 各 5 次 | 首次 pose feed 暫失而 fail closed、0 goal；恢復後 10/10 route legs succeeded，45.155–111.668 s、0–4 recoveries | 固定 NavigationGateway／Nav2 序列在該場景的 10-leg 完成紀錄，且 preflight 失敗不移動 | 不是 10 次 NL／LLM 試驗、10 次完整 demo、事故率或實車成功率 | 成功 artifact SHA-256 `91032d…0de`；首次失敗 `e4efad…bbb`；恢復 preflight `ba6810…43e`（皆不進 GitHub） |
+| TUI-NL1-20260719 | qwen3.6:35b／Ollama；同 domain 0 Isaac；dirty patch 後提交為 `d942130…855` | 1 次自然語言到 Dock succeeded；Nav2 goal count 18→19，增量 1；無 invalid JSON | 補充一次解析—批准—單一 goal—回授鏈 | 執行時 dirty；不是 clean-revision 成功率、Twin 隔離或實車證據 | 本機 `tui-natural-language-single-goal-20260719.json`；SHA-256 `3f19b5…303` |
 
 雜湊在表內採前 6＋後 3 位方便閱讀；交付或投稿時需以 `sha256sum` 輸出完整值並與封存
 artifact 一起保存。
