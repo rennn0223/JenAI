@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from agents import RunContextWrapper, function_tool
@@ -10,6 +11,62 @@ from jenai.agent.context import JenAIRunContext
 from jenai.schemas import EffectScope, RiskLevel, ToolCallCategory, ToolCallRecord, ToolCallStatus
 from jenai.tools import ros2_core
 from jenai.tools.registry import ToolRiskInfo, register_tool
+
+_AGENT_TOPIC_LIMIT = 40
+_AGENT_TOPIC_LIMIT_MAX = 80
+_AGENT_SNAPSHOT_CHARS = 1600
+
+
+def _bounded_topic_inventory(output, query: str, limit: int) -> dict:
+    """Keep model context bounded while retaining queryable discovery.
+
+    The interactive `/ros topics` command still renders the complete graph.
+    The agent can request another filtered page with `query` when needed.
+    """
+
+    needle = query.strip().lower()
+    matches = [item for item in output.topics if not needle or needle in item.name.lower()]
+    bounded_limit = max(1, min(int(limit), _AGENT_TOPIC_LIMIT_MAX))
+    selected = matches[:bounded_limit]
+    truncated = len(matches) > len(selected)
+    return {
+        "query": query.strip(),
+        "total_count": len(output.topics),
+        "matched_count": len(matches),
+        "returned_count": len(selected),
+        "truncated": truncated,
+        "topics": [item.model_dump() for item in selected],
+        "next_step": (
+            "Call ros_topics_tool again with a narrower query to inspect omitted topics."
+            if truncated
+            else "All matching topics are included."
+        ),
+    }
+
+
+def _compact_robot_state(state: dict) -> dict:
+    """Retain state evidence without feeding full LaserScan arrays to the LLM."""
+
+    compact = dict(state)
+    truncated_fields: list[str] = []
+    for field in ("pose", "odom", "scan"):
+        value = compact.get(field)
+        if isinstance(value, str) and len(value) > _AGENT_SNAPSHOT_CHARS:
+            compact[field] = value[:_AGENT_SNAPSHOT_CHARS] + "\n... [snapshot truncated]"
+            truncated_fields.append(field)
+    compact["availability"] = {
+        field: bool(compact.get(field)) for field in ("pose", "odom", "scan")
+    }
+    compact["truncated_fields"] = truncated_fields
+    return compact
+
+
+def _combined_robot_status(state: dict, nav2: dict) -> dict:
+    """One timestamp-local payload for pose/scan evidence and Nav2 readiness."""
+
+    compact = _compact_robot_state(state)
+    compact["nav2"] = nav2
+    return compact
 
 
 def _record_call(
@@ -48,12 +105,17 @@ def _finish_call(
 
 
 @function_tool
-async def ros_topics_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
-    """List the ROS2 topics currently visible on the graph."""
+async def ros_topics_tool(
+    ctx: RunContextWrapper[JenAIRunContext],
+    query: str = "",
+    limit: int = _AGENT_TOPIC_LIMIT,
+) -> dict:
+    """List a bounded ROS2 topic inventory. Use `query` to filter by a name fragment when
+    the response is truncated; the user's direct `/ros topics` command remains unbounded."""
     call = _record_call(ctx, "ros_topics_tool", "list topics")
     output = await ros2_core.ros_topics(ctx.context.config)
     _finish_call(ctx, call, ok=True, summary=f"{len(output.topics)} topics")
-    return output.model_dump()
+    return _bounded_topic_inventory(output, query, limit)
 
 
 @function_tool
@@ -81,15 +143,25 @@ async def ros_echo_tool(
 @function_tool
 async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
     """Observe the robot's current state — a one-shot snapshot of the localized pose
-    (/amcl_pose), odometry (/odom) and laser scan (/scan). Use this to check where the
-    robot is or whether something is in the way before or after moving. The `pose`
-    field is the map-frame position; navigation only needs a destination, so a missing
-    pose must never make you ask the human where the robot is."""
+    (/amcl_pose), odometry (/odom), laser scan (/scan), and Nav2 readiness. Use this to
+    check where the robot is, whether scan feedback exists, and whether navigation is ready
+    before or after moving. The pose field is the map-frame position; navigation only needs
+    a destination, so a missing pose must never make you ask the human where the robot is."""
     call = _record_call(ctx, "ros_state_tool", "read robot state")
-    state = await ros2_core.ros_state(ctx.context.config)
+    state, nav2 = await asyncio.gather(
+        ros2_core.ros_state(ctx.context.config),
+        ros2_core.ros_nav_status(ctx.context.config),
+    )
     has = [k for k in ("pose", "odom", "scan") if state.get(k)]
-    _finish_call(ctx, call, ok=bool(has), summary=f"read {', '.join(has) or 'nothing'}")
-    return state
+    _finish_call(
+        ctx,
+        call,
+        ok=bool(has) and nav2["ready"],
+        summary=(
+            f"read {', '.join(has) or 'nothing'}; Nav2 {'ready' if nav2['ready'] else 'not ready'}"
+        ),
+    )
+    return _combined_robot_status(state, nav2)
 
 
 @function_tool

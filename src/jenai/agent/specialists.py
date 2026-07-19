@@ -149,6 +149,12 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
         # preserving route_execute/explore approval and NavigationGateway safety.
         tools=[
             shell_run_tool,
+            # Keep common live-state inspection directly reachable. Local
+            # models otherwise tend to choose the supervisor's shell tool
+            # instead of emitting a handoff for a simple read-only question.
+            ros_topics_tool,
+            ros_topic_info_tool,
+            ros_state_tool,
             loc_lookup_tool,
             route_preview_tool,
             route_execute_tool,

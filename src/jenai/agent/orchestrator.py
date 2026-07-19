@@ -18,6 +18,7 @@ from agents import (
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.session import JenAIFileSession
 from jenai.agent.tracing import install_local_tracing
+from jenai.providers.agent_model import ModelGenerationTimeoutError
 from jenai.schemas import (
     ApprovalRequest,
     ApprovalStatus,
@@ -55,9 +56,7 @@ async def _append_failed_turn_memory(session_id: str) -> None:
         tail = await session.get_items(limit=1)
         if not tail or tail[-1].get("role") == "assistant":
             return
-        await session.add_items(
-            [{"role": "assistant", "content": _FAILED_TURN_MEMORY}]
-        )
+        await session.add_items([{"role": "assistant", "content": _FAILED_TURN_MEMORY}])
     except Exception:
         # Conversation memory is best-effort; never hide the original run error.
         pass
@@ -286,6 +285,15 @@ def _error_from_exc(exc: Exception) -> JenAIError:
         )
     if isinstance(exc, ToolTimeoutError):
         return JenAIError(error_type=ErrorType.TOOL_ERROR, message=f"A tool timed out: {exc}")
+    if isinstance(exc, ModelGenerationTimeoutError):
+        return JenAIError(
+            error_type=ErrorType.MODEL_ERROR,
+            message=str(exc),
+            fix_suggestion=(
+                "Try again with a smaller local model, shorten the request, or check whether "
+                "Ollama is overloaded. No unreported robot action should be assumed successful."
+            ),
+        )
     if isinstance(exc, ModelBehaviorError):
         return JenAIError(error_type=ErrorType.MODEL_ERROR, message=str(exc))
     module = type(exc).__module__.split(".")[0]

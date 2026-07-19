@@ -100,14 +100,55 @@ def test_ros_topic_info_success(monkeypatch) -> None:
 
 
 def test_ros_topic_info_missing_gives_fuzzy_candidates(monkeypatch) -> None:
-    monkeypatch.setattr(
-        ros2_adapter, "list_topics", lambda **kw: ["/cmd_vel", "/cmd_vel_stamped"]
-    )
+    monkeypatch.setattr(ros2_adapter, "list_topics", lambda **kw: ["/cmd_vel", "/cmd_vel_stamped"])
 
     output = asyncio.run(ros2_core.ros_topic_info(_config(), "cmd_vel_"))
 
     assert output.message_type == ""
     assert "/cmd_vel_stamped" in output.candidates
+
+
+def test_ros_nav_status_reports_readiness_without_inventing_activity(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ros2_adapter,
+        "list_topics",
+        lambda **kw: ["/map", "/amcl_pose", "/scan", "/cmd_vel"],
+    )
+    monkeypatch.setattr(ros2_adapter, "list_actions", lambda **kw: ["/navigate_to_pose"])
+    monkeypatch.setattr(
+        ros2_adapter,
+        "topic_info",
+        lambda topic, **kw: ros2_adapter.TopicInfo(name=topic, subscriber_count=1),
+    )
+
+    status = asyncio.run(ros2_core.ros_nav_status(_config()))
+
+    assert status["ready"] is True
+    assert all(status["checks"].values())
+    assert status["activity"] == "not_observed"
+    assert "another client" in status["activity_note"]
+
+
+def test_ros_nav_status_fails_readiness_when_action_or_controller_is_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ros2_adapter,
+        "list_topics",
+        lambda **kw: ["/map", "/amcl_pose", "/scan", "/cmd_vel"],
+    )
+    monkeypatch.setattr(ros2_adapter, "list_actions", lambda **kw: [])
+    monkeypatch.setattr(
+        ros2_adapter,
+        "topic_info",
+        lambda topic, **kw: (_ for _ in ()).throw(ros2_adapter.Ros2CommandError("missing")),
+    )
+
+    status = asyncio.run(ros2_core.ros_nav_status(_config()))
+
+    assert status["ready"] is False
+    assert status["checks"]["navigate_to_pose"] is False
+    assert status["checks"]["cmd_vel_subscriber"] is False
 
 
 def test_example_payload_handles_nested_types() -> None:
@@ -132,12 +173,7 @@ def test_example_payload_handles_nested_types() -> None:
 
 
 def test_example_payload_arrays() -> None:
-    raw = (
-        "float64[] ranges\n"
-        "geometry_msgs/Point[] points\n"
-        "\tfloat64 x\n"
-        "\tfloat64 y\n"
-    )
+    raw = "float64[] ranges\ngeometry_msgs/Point[] points\n\tfloat64 x\n\tfloat64 y\n"
     payload = ros2_core._naive_example_payload(raw)
     assert payload == {"ranges": [], "points": [{"x": 0.0, "y": 0.0}]}
 
@@ -242,12 +278,8 @@ def test_zero_like_zeros_a_twist() -> None:
 def test_ros_drive_publishes_for_duration_then_stops(monkeypatch) -> None:
     captured = {}
 
-    async def fake_pub_for(
-        topic, message_type, payload_yaml, *, rate_hz, duration_s, stop_yaml
-    ):
-        captured.update(
-            topic=topic, duration_s=duration_s, rate_hz=rate_hz, stop_yaml=stop_yaml
-        )
+    async def fake_pub_for(topic, message_type, payload_yaml, *, rate_hz, duration_s, stop_yaml):
+        captured.update(topic=topic, duration_s=duration_s, rate_hz=rate_hz, stop_yaml=stop_yaml)
         return ros2_adapter.PubResult(ok=True, message="drove then stopped")
 
     monkeypatch.setattr(ros2_adapter, "topic_pub_for", fake_pub_for)
@@ -264,15 +296,13 @@ def test_ros_drive_publishes_for_duration_then_stops(monkeypatch) -> None:
     assert output.execution_status == "succeeded"
     assert captured["duration_s"] == 1.0
     # stop pulse is a zeroed Twist
-    assert '"x": 0' in captured["stop_yaml"] and '0.2' not in captured["stop_yaml"]
+    assert '"x": 0' in captured["stop_yaml"] and "0.2" not in captured["stop_yaml"]
 
 
 def test_ros_drive_clamps_duration(monkeypatch) -> None:
     captured = {}
 
-    async def fake_pub_for(
-        topic, message_type, payload_yaml, *, rate_hz, duration_s, stop_yaml
-    ):
+    async def fake_pub_for(topic, message_type, payload_yaml, *, rate_hz, duration_s, stop_yaml):
         captured["duration_s"] = duration_s
         return ros2_adapter.PubResult(ok=True, message="ok")
 
@@ -474,12 +504,8 @@ def test_ros_pub_execute_applies_ackermann_vehicle_limits(monkeypatch) -> None:
         )
     )
 
-    assert captured["payload"] == {
-        "drive": {"speed": 0.5, "steering_angle": 0.4}
-    }
-    assert captured["cancel_stop"] == {
-        "drive": {"speed": 0.0, "steering_angle": 0.0}
-    }
+    assert captured["payload"] == {"drive": {"speed": 0.5, "steering_angle": 0.4}}
+    assert captured["cancel_stop"] == {"drive": {"speed": 0.0, "steering_angle": 0.0}}
 
 
 def test_safety_clamp_does_not_treat_bool_as_speed() -> None:
@@ -501,18 +527,14 @@ def test_topic_pub_for_reports_publisher_failure(monkeypatch) -> None:
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
     monkeypatch.setattr(ros2_adapter, "run_process_async", fake_run)
 
-    result = asyncio.run(
-        ros2_adapter.topic_pub_for("/cmd_vel", "bad/type", "{}", duration_s=0.5)
-    )
+    result = asyncio.run(ros2_adapter.topic_pub_for("/cmd_vel", "bad/type", "{}", duration_s=0.5))
 
     assert result.ok is False
     assert "exited with code 1" in result.message
     assert "invalid message type" in result.message
     assert captured["args"][0] == "/usr/bin/python3"
     assert captured["args"][1].endswith("bridge/ros_bounded_publisher.py")
-    assert captured["args"][2:] == [
-        "/cmd_vel", "bad/type", "{}", "{}", "10.0", "0.5", "5"
-    ]
+    assert captured["args"][2:] == ["/cmd_vel", "bad/type", "{}", "{}", "10.0", "0.5", "5"]
     assert captured["timeout"] == 8.5
 
 
@@ -592,15 +614,18 @@ with events.open("a") as stream:
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
 
+
 def test_topic_pub_for_zero_duration_sends_stop_only(monkeypatch) -> None:
     published = []
 
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
+
     async def fake_stop_pub(topic, message_type, payload, **kwargs):
         published.append(payload)
         return ros2_adapter.PubResult(ok=True, message="published")
 
     monkeypatch.setattr(ros2_adapter, "topic_pub_async", fake_stop_pub)
+
     async def unexpected_motion(*args, **kwargs):
         raise AssertionError("motion publisher must not start for zero duration")
 

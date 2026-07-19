@@ -178,6 +178,44 @@ async def ros_state(
     }
 
 
+async def ros_nav_status(config: AppConfig) -> dict:
+    """Readiness snapshot for the high-level Nav2 path.
+
+    This deliberately reports action-server availability rather than inventing
+    an idle/moving verdict for goals that may have been sent by another client.
+    """
+
+    topics, actions = await asyncio.gather(
+        asyncio.to_thread(ros2_adapter.list_topics),
+        asyncio.to_thread(ros2_adapter.list_actions),
+    )
+    topic_names = set(topics)
+    action_names = set(actions)
+    cmd_vel_subscribed = False
+    try:
+        cmd_info = await asyncio.to_thread(ros2_adapter.topic_info, config.vehicle.cmd_vel_topic)
+        cmd_vel_subscribed = cmd_info.subscriber_count > 0
+    except ros2_adapter.Ros2AdapterError:
+        pass
+
+    checks = {
+        "map": "/map" in topic_names,
+        "localization": "/amcl_pose" in topic_names,
+        "laser": "/scan" in topic_names,
+        "navigate_to_pose": "/navigate_to_pose" in action_names,
+        "cmd_vel_subscriber": cmd_vel_subscribed,
+    }
+    return {
+        "ready": all(checks.values()),
+        "checks": checks,
+        "activity": "not_observed",
+        "activity_note": (
+            "Readiness is observable, but this snapshot cannot label Nav2 idle or moving "
+            "for goals that may have been sent by another client."
+        ),
+    }
+
+
 async def ros_echo(config: AppConfig, topic: str, *, limit: int = 1) -> RosEchoOutput:
     """Capture a snapshot of up to `limit` messages from a topic.
 
@@ -257,9 +295,7 @@ def _naive_example_payload(raw_interface: str) -> dict:
             stack.pop()
         parent = stack[-1][1]
 
-        next_indent = (
-            len(lines[i + 1]) - len(lines[i + 1].lstrip()) if i + 1 < len(lines) else -1
-        )
+        next_indent = len(lines[i + 1]) - len(lines[i + 1].lstrip()) if i + 1 < len(lines) else -1
         is_array = field_type.rstrip().endswith("]")
         if next_indent > indent:
             # Complex type with expanded sub-fields: recurse into a child dict.
@@ -526,9 +562,7 @@ def _requested_planar_motion(payload: object) -> tuple[bool, bool]:
         speed = payload.get("speed")
         steering = payload.get("steering_angle")
         wants_linear |= (
-            isinstance(speed, (int, float))
-            and not isinstance(speed, bool)
-            and abs(speed) > 1e-9
+            isinstance(speed, (int, float)) and not isinstance(speed, bool) and abs(speed) > 1e-9
         )
         wants_angular |= (
             isinstance(steering, (int, float))
@@ -582,8 +616,7 @@ async def ros_drive_verified(
             "position_change": None,
             "yaw_change": None,
             "message": (
-                "Baseline odometry was unavailable or could not be parsed; "
-                "no actuation sent."
+                "Baseline odometry was unavailable or could not be parsed; no actuation sent."
             ),
         }
 
@@ -620,8 +653,7 @@ async def ros_drive_verified(
             "position_change": None,
             "yaw_change": None,
             "message": (
-                "The bounded action auto-stopped, but no parseable post-action "
-                "odometry arrived."
+                "The bounded action auto-stopped, but no parseable post-action odometry arrived."
             ),
         }
 

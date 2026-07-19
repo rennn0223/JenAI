@@ -8,6 +8,7 @@ import threading
 from types import SimpleNamespace
 
 import jenai.agent.tracing as tracing_mod
+import jenai.providers.agent_model as agent_model
 from jenai.agent.session import JenAIFileSession
 from jenai.agent.specialists import (
     build_motion_agent,
@@ -62,9 +63,28 @@ def test_supervisor_hands_off_to_specialists() -> None:
         "route_preview_tool",
         "route_execute_tool",
         "explore_area_tool",
+        "ros_topics_tool",
+        "ros_topic_info_tool",
+        "ros_state_tool",
     } <= supervisor_tools
 
     assert "ros_drive_execute_tool" not in supervisor_tools
+
+
+def test_agent_client_has_a_bounded_non_retrying_request(monkeypatch) -> None:
+    captured: dict = {}
+    sentinel = object()
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(agent_model, "AsyncOpenAI", fake_client)
+
+    assert agent_model.make_agent_client(_config()) is sentinel
+    assert captured["timeout"] == agent_model.AGENT_REQUEST_TIMEOUT_SECONDS
+    assert captured["max_retries"] == 0
+
 
 def test_specialists_carry_focused_toolsets() -> None:
     explorer = build_ros_explorer_agent(_config())
@@ -78,9 +98,12 @@ def test_specialists_carry_focused_toolsets() -> None:
 
     developer = build_ros_developer_agent(_config())
     developer_tools = {t.name for t in developer.tools}
-    assert {"ros_topics_tool", "ros_schema_tool", "ros_drive_verified_tool", "ros_state_tool"} <= (
-        developer_tools
-    )
+    assert {
+        "ros_topics_tool",
+        "ros_schema_tool",
+        "ros_drive_verified_tool",
+        "ros_state_tool",
+    } <= developer_tools
     assert "ros_drive_execute_tool" not in developer_tools
     assert "shell_run_tool" not in developer_tools
 
