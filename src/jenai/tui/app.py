@@ -237,6 +237,8 @@ class JenAITuiApp(
         if not mark.display or not self.query_one("#welcome").display:
             return  # narrow layout hides the mascot — don't waste the repaint
         self._mascot_frame += 1
+        if mark.has_class("full-mascot"):
+            return  # the supplied 40×15 ANSI artwork is a single faithful frame
         running = self._active_task is not None and not self._active_task.done()
         mark.update(pixel_mark(self._mascot_frame, running=running))
 
@@ -250,7 +252,7 @@ class JenAITuiApp(
         try:
             welcome = self.query_one("#welcome")
             welcome.set_class(width < 92, "narrow")
-            welcome.set_class(width < 56, "compact")
+            welcome.set_class(width < 56 or height < 27, "compact")
             palette = self.query_one("#palette", CommandPalette)
             # The normal 16-row menu is unchanged on common terminals.  On
             # short screens cap it so the composer and status line stay visible.

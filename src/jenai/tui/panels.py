@@ -6,6 +6,9 @@ state. Everything here renders; nothing here decides.
 
 from __future__ import annotations
 
+from base64 import b64decode
+from functools import lru_cache
+from importlib.resources import files
 from pathlib import Path
 from typing import NamedTuple
 
@@ -60,7 +63,7 @@ class WelcomePanel(Container):
         with Horizontal(id="welcome-content"):
             with Vertical(id="welcome-left"):
                 yield Static("Welcome back!", id="welcome-greeting", classes="heading")
-                yield Static(pixel_mark(), id="pixel-mark")
+                yield Static(terminal_mascot(), id="pixel-mark", classes="full-mascot")
                 yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
             with Vertical(id="welcome-right"):
                 yield Static("Tips for getting started", classes="welcome-section-title")
@@ -318,6 +321,17 @@ _DESIGNED_DOG_COLORS = {
     "D": "#743b20",  # ear / shadow
     "T": "#d68742",  # muzzle / chest / paws
 }
+
+
+@lru_cache(maxsize=1)
+def terminal_mascot() -> Text:
+    """Return Claude Design's full-size ANSI mascot without resampling it."""
+
+    encoded = (
+        files("jenai.tui.assets").joinpath("mascot-terminal.b64").read_text(encoding="ascii")
+    )
+    ansi = b64decode(encoded).decode("utf-8").rstrip("\n")
+    return Text.from_ansi(ansi)
 
 
 def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:

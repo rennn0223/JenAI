@@ -138,21 +138,21 @@ Screen {
 }
 
 #welcome-content {
-    height: 15;
+    height: 19;
     layout: horizontal;
 }
 
 #welcome-left {
-    width: 42%;
+    width: 50%;
     height: 100%;
-    padding: 2 2 1 2;
+    padding: 1 1 0 1;
     align-horizontal: center;
 }
 
 #welcome-right {
-    width: 58%;
+    width: 50%;
     height: 100%;
-    padding: 2 3 1 3;
+    padding: 1 3 0 3;
     border-left: solid #553027;
 }
 
@@ -165,7 +165,7 @@ Screen {
 }
 
 #welcome-greeting {
-    margin-bottom: 1;
+    margin-bottom: 0;
 }
 
 #pixel-mark {
@@ -173,7 +173,7 @@ Screen {
     text-align: center;
     width: 100%;
     height: auto;
-    margin-bottom: 1;
+    margin-bottom: 0;
 }
 
 .meta {
@@ -222,6 +222,10 @@ Screen {
 
 #welcome.compact #pixel-mark {
     display: none;
+}
+
+#welcome.compact #welcome-content {
+    height: auto;
 }
 
 .prompt-line, .bullet-line {

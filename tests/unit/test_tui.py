@@ -18,11 +18,24 @@ from jenai.schemas import (
 )
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
-from jenai.tui.panels import OutputPanel, PromptPill, TimelineItem, WelcomePanel, pixel_mark
+from jenai.tui.panels import (
+    OutputPanel,
+    PromptPill,
+    TimelineItem,
+    WelcomePanel,
+    pixel_mark,
+    terminal_mascot,
+)
 from jenai.tui.widgets import AgentProgressBlock, ApprovalCard, ToolBlock
 
 
 def test_tui_uses_colored_dachshund_mascot() -> None:
+    full_mascot = terminal_mascot()
+    full_rows = full_mascot.plain.splitlines()
+    assert len(full_rows) == 15
+    assert max(map(len, full_rows)) == 40
+    assert any("#8c4c26" in str(span.style) for span in full_mascot.spans)
+
     mascot = pixel_mark()
     styles = {str(span.style) for span in mascot.spans}
 
@@ -1835,15 +1848,17 @@ def test_mascot_frames_animate_but_keep_size() -> None:
     assert len(sizes) == 1  # identical bounding box across all poses
 
 
-def test_mascot_animation_tick_updates_widget() -> None:
+def test_mascot_tick_preserves_supplied_full_size_artwork() -> None:
     async def run() -> None:
         app = _app()
         async with app.run_test() as pilot:
-            app.query_one("#pixel-mark")  # mascot mounted
+            mark = app.query_one("#pixel-mark")
+            before = str(mark.render())
             app._animate_mascot()
             app._animate_mascot()
             await pilot.pause()
-            assert app._mascot_frame >= 2  # ticks advanced without crashing
+            assert str(mark.render()) == before
+            assert mark.has_class("full-mascot")
 
     asyncio.run(run())
 
