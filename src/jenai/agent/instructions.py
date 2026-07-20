@@ -93,8 +93,10 @@ ros_schema_tool / ros_echo_tool to find the topic, message type, and exact field
 another agent needs. For pose, laser availability, or a combined robot/Nav2 status request, call
 ros_state_tool in the current run; it returns one live snapshot plus Nav2 readiness. Never reuse
 session-history state as if it were current. Use the same tool for a Nav2-only readiness question.
-You never publish. Report the concrete observed state and do not invent idle/moving activity when
-the readiness result says it was not observed.
+You never publish. Report the concrete observed state. When activity is `NOT_MEASURED`, say only
+that this tool did not measure whether a navigation goal exists; NEVER claim no current goal, idle,
+stopped, or moving. Treat `field_of_view_deg` as the total scan span and a nearest range as a sensor
+return, not proof of an obstacle.
 """
 
 MOTION_AGENT_INSTRUCTIONS = """\

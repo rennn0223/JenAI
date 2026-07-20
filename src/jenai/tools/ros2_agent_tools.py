@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import re
 
 from agents import RunContextWrapper, function_tool
 
@@ -15,6 +17,10 @@ from jenai.tools.registry import ToolRiskInfo, register_tool
 _AGENT_TOPIC_LIMIT = 40
 _AGENT_TOPIC_LIMIT_MAX = 80
 _AGENT_SNAPSHOT_CHARS = 1600
+_SCAN_SCALAR = re.compile(
+    r"^(angle_min|angle_max|angle_increment|range_min|range_max):\s*([^\s]+)\s*$",
+    re.MULTILINE,
+)
 
 
 def _bounded_topic_inventory(output, query: str, limit: int) -> dict:
@@ -44,10 +50,111 @@ def _bounded_topic_inventory(output, query: str, limit: int) -> dict:
     }
 
 
+def _scan_snapshot_summary(raw: str) -> dict:
+    """Reduce a ROS CLI LaserScan snapshot to factual, bounded measurements."""
+
+    scalars: dict[str, float] = {}
+    for name, raw_value in _SCAN_SCALAR.findall(raw):
+        try:
+            scalars[name] = float(raw_value)
+        except ValueError:
+            continue
+
+    ranges_section = raw.partition("ranges:")[2].partition("intensities:")[0]
+    ranges: list[float] = []
+    observed_sample_count = 0
+    ranges_truncated = False
+    for raw_value in re.findall(r"^-\s+([^\s]+)\s*$", ranges_section, re.MULTILINE):
+        normalized = raw_value.strip("'\"")
+        if normalized == "...":
+            ranges_truncated = True
+            continue
+        observed_sample_count += 1
+        try:
+            value = float(normalized)
+        except ValueError:
+            continue
+        if math.isfinite(value):
+            ranges.append(value)
+
+    angle_min = scalars.get("angle_min")
+    angle_max = scalars.get("angle_max")
+    field_of_view_deg = (
+        math.degrees(angle_max - angle_min)
+        if angle_min is not None and angle_max is not None
+        else None
+    )
+    increment = scalars.get("angle_increment")
+    expected_sample_count = (
+        round((angle_max - angle_min) / increment) + 1
+        if angle_min is not None
+        and angle_max is not None
+        and increment is not None
+        and increment > 0
+        else None
+    )
+    sample_count_complete = not ranges_truncated and (
+        expected_sample_count is None or observed_sample_count == expected_sample_count
+    )
+    return {
+        **scalars,
+        "field_of_view_deg": round(field_of_view_deg, 2) if field_of_view_deg is not None else None,
+        "expected_sample_count": expected_sample_count,
+        "observed_sample_count": observed_sample_count,
+        "sample_count_complete": sample_count_complete,
+        "ranges_truncated": ranges_truncated,
+        "observed_finite_sample_count": len(ranges),
+        "nearest_observed_valid_range_m": min(ranges) if ranges else None,
+        "interpretation_note": (
+            "field_of_view_deg is the total angular span. When ranges_truncated is true, "
+            "observed counts and nearest range cover only the ROS CLI-displayed prefix. "
+            "A range return is not an obstacle classification."
+        ),
+    }
+
+
+def _pose_snapshot_summary(raw: str) -> dict:
+    """Extract map position and yaw from an AMCL PoseWithCovariance snapshot."""
+
+    position_text = raw.partition("position:")[2].partition("orientation:")[0]
+    orientation_text = raw.partition("orientation:")[2].partition("covariance:")[0]
+
+    def _values(block: str) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for name, raw_value in re.findall(r"^\s+(x|y|z|w):\s*([^\s]+)\s*$", block, re.MULTILINE):
+            try:
+                values[name] = float(raw_value)
+            except ValueError:
+                continue
+        return values
+
+    position = _values(position_text)
+    orientation = _values(orientation_text)
+    yaw = None
+    if {"x", "y", "z", "w"} <= orientation.keys():
+        x, y, z, w = (orientation[name] for name in ("x", "y", "z", "w"))
+        yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    frame = re.search(r"^\s*frame_id:\s*(\S+)\s*$", raw, re.MULTILINE)
+    return {
+        "frame_id": frame.group(1) if frame else None,
+        "x": position.get("x"),
+        "y": position.get("y"),
+        "z": position.get("z"),
+        "yaw_rad": yaw,
+        "yaw_deg": math.degrees(yaw) if yaw is not None else None,
+    }
+
+
 def _compact_robot_state(state: dict) -> dict:
     """Retain state evidence without feeding full LaserScan arrays to the LLM."""
 
     compact = dict(state)
+    pose = compact.get("pose")
+    if isinstance(pose, str):
+        compact["pose_summary"] = _pose_snapshot_summary(pose)
+    scan = compact.get("scan")
+    if isinstance(scan, str):
+        compact["scan_summary"] = _scan_snapshot_summary(scan)
     truncated_fields: list[str] = []
     for field in ("pose", "odom", "scan"):
         value = compact.get(field)
@@ -66,6 +173,11 @@ def _combined_robot_status(state: dict, nav2: dict) -> dict:
 
     compact = _compact_robot_state(state)
     compact["nav2"] = nav2
+    compact["reporting_boundary"] = (
+        "Report only measured fields. Nav2 activity=NOT_MEASURED means this tool did not "
+        "check whether a goal exists; never claim no-current-goal, idle, stopped, or moving. "
+        "LaserScan returns must not be classified as obstacles."
+    )
     return compact
 
 
@@ -94,14 +206,16 @@ def _finish_call(
     *,
     ok: bool,
     summary: str,
+    raw_output: dict | None = None,
 ) -> None:
     run_ctx = ctx.context
-    run_ctx.run_store.update_tool_call(
-        run_ctx.run,
-        call.tool_call_id,
-        status=ToolCallStatus.SUCCEEDED if ok else ToolCallStatus.FAILED,
-        output_summary=summary,
-    )
+    fields = {
+        "status": ToolCallStatus.SUCCEEDED if ok else ToolCallStatus.FAILED,
+        "output_summary": summary,
+    }
+    if raw_output is not None:
+        fields["raw_output"] = raw_output
+    run_ctx.run_store.update_tool_call(run_ctx.run, call.tool_call_id, **fields)
 
 
 @function_tool
@@ -153,6 +267,7 @@ async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
         ros2_core.ros_nav_status(ctx.context.config),
     )
     has = [k for k in ("pose", "odom", "scan") if state.get(k)]
+    result = _combined_robot_status(state, nav2)
     _finish_call(
         ctx,
         call,
@@ -160,8 +275,9 @@ async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
         summary=(
             f"read {', '.join(has) or 'nothing'}; Nav2 {'ready' if nav2['ready'] else 'not ready'}"
         ),
+        raw_output=result,
     )
-    return _combined_robot_status(state, nav2)
+    return result
 
 
 @function_tool

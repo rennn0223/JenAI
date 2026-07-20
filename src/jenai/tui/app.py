@@ -56,7 +56,14 @@ from jenai.tui.panels import (
     status_color,
 )
 from jenai.tui.robot_commands import RobotCommandsMixin
-from jenai.tui.widgets import ApprovalCard, ErrorBlock, ModelPicker, PlanBlock, ToolBlock
+from jenai.tui.widgets import (
+    AgentProgressBlock,
+    ApprovalCard,
+    ErrorBlock,
+    ModelPicker,
+    PlanBlock,
+    ToolBlock,
+)
 
 
 def run_tui(
@@ -138,7 +145,7 @@ class JenAITuiApp(
         self.history = InputHistory(self.session)
         self._last_history_value: str | None = None
         self._last_plan_ctx: JenAIRunContext | None = None
-        self._rendered_tool_call_ids: set[str] = set()
+        self._tool_blocks: dict[str, ToolBlock] = {}
         # run_id -> {"agent", "ctx", "decisions", "expected"} for approvals raised
         # mid-Runner.run (agent-driven /run flow).
         self._pending_approvals: dict[str, dict] = {}
@@ -329,9 +336,7 @@ class JenAITuiApp(
         is_stop: bool = False,
         predecessor: asyncio.Task | None = None,
     ) -> None:
-        self._active_task = asyncio.create_task(
-            self._run_user_text(value, predecessor=predecessor)
-        )
+        self._active_task = asyncio.create_task(self._run_user_text(value, predecessor=predecessor))
         self._active_task_is_stop = is_stop
         self._update_statusbar()
 
@@ -882,10 +887,7 @@ class JenAITuiApp(
                 PlanBlock(f"Plan: {run.task_summary or run.user_input}", run.plan_steps)
             )
 
-        for tool_call in run.tool_calls:
-            if tool_call.tool_call_id not in self._rendered_tool_call_ids:
-                self._rendered_tool_call_ids.add(tool_call.tool_call_id)
-                await self._mount_event(ToolBlock(tool_call))
+        await self._render_live_tool_updates(run)
 
         if run.status == "awaiting_approval":
             pending_approvals = [a for a in run.interruptions if a.status == "pending"]
@@ -943,6 +945,42 @@ class JenAITuiApp(
 
         self._scroll_to_bottom()
 
+    async def _render_live_tool_updates(self, run: RunRecord) -> None:
+        """Mount tool calls as they start and refresh their terminal outcome in place."""
+
+        for tool_call in run.tool_calls:
+            block = self._tool_blocks.get(tool_call.tool_call_id)
+            if block is None:
+                block = ToolBlock(tool_call)
+                self._tool_blocks[tool_call.tool_call_id] = block
+                await self._mount_event(block)
+            else:
+                block.set_tool_call(tool_call)
+
+    async def _run_with_agent_progress(self, ctx: JenAIRunContext, awaitable) -> RunRecord:
+        """Keep Agent stages and recorded tools visible while the model is running."""
+
+        progress = AgentProgressBlock(ctx.run)
+        await self._mount_event(progress)
+        task = asyncio.create_task(awaitable)
+        try:
+            while not task.done():
+                progress.set_run(ctx.run)
+                await self._render_live_tool_updates(ctx.run)
+                self._scroll_to_bottom()
+                await asyncio.sleep(0.1)
+            run = await task
+        except asyncio.CancelledError:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            raise
+        await self._render_live_tool_updates(ctx.run)
+        progress.set_run(ctx.run)
+        return run
+
     async def _show_plan(self, arg: str) -> None:
         if not arg:
             await self._mount_event(TimelineItem("warn", "Usage: /plan <task description>"))
@@ -951,7 +989,7 @@ class JenAITuiApp(
         ctx = self._new_run_context(arg)
         self._last_plan_ctx = ctx
         self._scroll_to_bottom()
-        run = await run_plan(ctx, arg)
+        run = await self._run_with_agent_progress(ctx, run_plan(ctx, arg))
         await self._render_run_update(ctx, run)
 
     async def _show_run(self, arg: str) -> None:
@@ -962,7 +1000,7 @@ class JenAITuiApp(
         ctx = self._new_run_context(arg)
         agent = build_run_agent(self.config)
         self._scroll_to_bottom()
-        run = await orchestrator.start_run(agent, ctx, arg)
+        run = await self._run_with_agent_progress(ctx, orchestrator.start_run(agent, ctx, arg))
         await self._render_run_update(ctx, run, agent=agent)
 
     async def _show_why(self, _: str = "") -> None:

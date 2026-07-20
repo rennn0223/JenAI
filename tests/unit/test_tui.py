@@ -10,13 +10,16 @@ from jenai.schemas import (
     RosSchemaOutput,
     RosTopicsOutput,
     RouteOutput,
+    RunRecord,
     RunStatus,
+    ToolCallRecord,
+    ToolCallStatus,
     TopicItem,
 )
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
 from jenai.tui.panels import OutputPanel, PromptPill, TimelineItem, WelcomePanel, pixel_mark
-from jenai.tui.widgets import ApprovalCard
+from jenai.tui.widgets import AgentProgressBlock, ApprovalCard, ToolBlock
 
 
 def test_tui_uses_colored_dachshund_mascot() -> None:
@@ -79,6 +82,35 @@ def test_tui_p2_host_approval_is_one_shot_and_defaults_to_no() -> None:
     assert "❯ 2. No" in rendered
     assert "3." not in rendered
     assert card._selected == 1
+
+
+def test_agent_progress_and_tool_blocks_update_in_place() -> None:
+    run = RunRecord(session_id="session-1", user_input="inspect robot")
+    progress = AgentProgressBlock(run)
+    assert "Understanding the request" in str(progress.render())
+
+    call = ToolCallRecord(
+        tool_name="ros_state_tool",
+        category="ros2",
+        input_summary="read robot state",
+        status=ToolCallStatus.RUNNING,
+    )
+    run.tool_calls.append(call)
+    run.status = RunStatus.RUNNING
+    progress.set_run(run)
+    tool = ToolBlock(call)
+
+    assert "Using Inspect robot state" in str(progress.render())
+    assert "working…" in str(tool.render())
+
+    call.status = ToolCallStatus.SUCCEEDED
+    call.output_summary = "pose, scan, and Nav2 ready"
+    tool.set_tool_call(call)
+    run.status = RunStatus.COMPLETED
+    progress.set_run(run)
+
+    assert "pose, scan, and Nav2 ready" in str(tool.render())
+    assert "Reasoning complete · 1 recorded tool result" in str(progress.render())
 
 
 def test_tui_welcome_reflows_at_real_wide_narrow_and_compact_viewports(
@@ -634,9 +666,7 @@ def test_tui_shell_never_remembers_or_skips_a_later_command(monkeypatch) -> None
 
             # Even a forged remember bit cannot make the broad shell category sticky.
             call_id = first[0].approval.tool_call_id
-            await app.on_approval_card_decision(
-                ApprovalCard.Decision(call_id, True, remember=True)
-            )
+            await app.on_approval_card_decision(ApprovalCard.Decision(call_id, True, remember=True))
             await pilot.pause()
             if app._active_task is not None:
                 await app._active_task

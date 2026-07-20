@@ -165,7 +165,9 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
                 ),
             )
             return run
-        final_output = _final_text(result) or _tool_result_summary(run)
+        final_output = (
+            _deterministic_state_report(run) or _final_text(result) or _tool_result_summary(run)
+        )
         run_store.finish(run, status=RunStatus.COMPLETED, final_output=final_output)
         return run
 
@@ -243,6 +245,83 @@ def _tool_result_summary(run: RunRecord) -> str:
         outcome = call.output_summary or (call.error.message if call.error else call.status)
         parts.append(f"{call.tool_name}: {outcome}")
     return "Recorded tool results — " + "; ".join(parts)
+
+
+_STATE_SUBJECTS = ("state", "status", "position", "pose", "scan", "nav2", "位置", "雷射", "狀態")
+_STATE_INSPECTION = ("check", "inspect", "show", "current", "檢查", "查看", "現在", "目前")
+_STATE_DECISION = ("should", "recommend", "是否應該", "建議", "該不該")
+
+
+def _deterministic_state_report(run: RunRecord) -> str:
+    """Render factual status-only observations without letting an LLM alter measurements."""
+
+    calls = [call for call in run.tool_calls if call.tool_name == "ros_state_tool"]
+    if len(run.tool_calls) != 1 or len(calls) != 1 or calls[0].raw_output is None:
+        return ""
+    text = run.user_input.lower()
+    if not any(term in text for term in _STATE_SUBJECTS):
+        return ""
+    if not any(term in text for term in _STATE_INSPECTION):
+        return ""
+    if any(term in text for term in _STATE_DECISION):
+        return ""
+
+    payload = calls[0].raw_output
+    pose = payload.get("pose_summary") or {}
+    scan = payload.get("scan_summary") or {}
+    nav2 = payload.get("nav2") or {}
+    checks = nav2.get("checks") or {}
+    availability = payload.get("availability") or {}
+    zh = any("\u4e00" <= char <= "\u9fff" for char in run.user_input)
+
+    def _number(value: object, digits: int = 2) -> str:
+        return f"{value:.{digits}f}" if isinstance(value, (int, float)) else "not measured"
+
+    check_text = (
+        ", ".join(f"{name}={'PASS' if ok else 'FAIL'}" for name, ok in checks.items())
+        or "not measured"
+    )
+    if zh:
+        scan_count = (
+            f"預期樣本={scan.get('expected_sample_count', 'not measured')}，"
+            f"CLI 顯示={scan.get('observed_sample_count', 'not measured')}"
+        )
+        if scan.get("ranges_truncated"):
+            scan_count += "（序列已截斷）"
+        return (
+            "即時機器人狀態（由工具量測值確定性產生）\n"
+            f"- 位置（{pose.get('frame_id') or 'map'}）："
+            f"x={_number(pose.get('x'), 3)} m，y={_number(pose.get('y'), 3)} m，"
+            f"yaw={_number(pose.get('yaw_rad'), 3)} rad\n"
+            f"- 雷射：總視角={_number(scan.get('field_of_view_deg'))}°，"
+            f"量測範圍={_number(scan.get('range_min'))}–{_number(scan.get('range_max'))} m，"
+            f"{scan_count}，"
+            f"已顯示有限回傳={scan.get('observed_finite_sample_count', 'not measured')}，"
+            f"最近已顯示有效回傳={_number(scan.get('nearest_observed_valid_range_m'))} m\n"
+            f"- Nav2：{'READY' if nav2.get('ready') else 'NOT READY'}；{check_text}\n"
+            f"- Odom：{'有快照' if availability.get('odom') else '本次未取得快照'}\n"
+            "- Nav2 任務活動：本工具未量測，不能判定目前無任務、閒置、停止或移動中。\n"
+            "- 本次查詢未送出任何移動指令。"
+        )
+    return (
+        "Live robot status (deterministic tool report)\n"
+        f"- Position ({pose.get('frame_id') or 'map'}): "
+        f"x={_number(pose.get('x'), 3)} m, y={_number(pose.get('y'), 3)} m, "
+        f"yaw={_number(pose.get('yaw_rad'), 3)} rad\n"
+        f"- Laser: total FOV={_number(scan.get('field_of_view_deg'))} deg, "
+        f"measurement range={_number(scan.get('range_min'))}–"
+        f"{_number(scan.get('range_max'))} m, expected samples="
+        f"{scan.get('expected_sample_count', 'not measured')}, CLI-displayed samples="
+        f"{scan.get('observed_sample_count', 'not measured')}"
+        f"{' (truncated)' if scan.get('ranges_truncated') else ''}, displayed finite returns="
+        f"{scan.get('observed_finite_sample_count', 'not measured')}, nearest displayed valid "
+        f"return={_number(scan.get('nearest_observed_valid_range_m'))} m\n"
+        f"- Nav2: {'READY' if nav2.get('ready') else 'NOT READY'}; {check_text}\n"
+        f"- Odom: {'snapshot available' if availability.get('odom') else 'not captured'}\n"
+        "- Nav2 task activity was not measured; no idle, stopped, moving, or no-goal "
+        "conclusion is available.\n"
+        "- This query issued no motion command."
+    )
 
 
 def _ros_developer_actuation_is_unverified(result: Any, run: RunRecord) -> bool:

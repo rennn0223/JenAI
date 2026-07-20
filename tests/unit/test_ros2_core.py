@@ -125,7 +125,10 @@ def test_ros_nav_status_reports_readiness_without_inventing_activity(monkeypatch
 
     assert status["ready"] is True
     assert all(status["checks"].values())
-    assert status["activity"] == "not_observed"
+    assert status["activity"] == "NOT_MEASURED"
+    assert status["activity_observed"] is False
+    assert "did not measure" in status["activity_report"]
+    assert "no-current-goal" in status["activity_note"]
     assert "another client" in status["activity_note"]
 
 

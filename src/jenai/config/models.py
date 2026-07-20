@@ -52,6 +52,11 @@ class VehicleProfile(BaseModel):
     # Literal so a typo ("ackerman") fails at config load, not months later
     # when the first type-aware consumer appears.
     type: Literal["ackermann", "diff", "quadruped"] = "ackermann"
+    # Physical deployment graph. None preserves the historical behavior: the
+    # process's ambient ROS_DOMAIN_ID is treated as the vehicle domain. This
+    # documents isolation only; command routing still follows the environment
+    # JenAI was launched in.
+    domain_id: int | None = Field(default=None, ge=0, le=232)
     cmd_vel_topic: str = "/cmd_vel"
     cmd_vel_stamped: bool = False  # publish TwistStamped instead of Twist
     camera_topic: str = "/camera/image_raw"  # default for /vision camera & MCP camera_look

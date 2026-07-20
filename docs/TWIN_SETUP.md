@@ -30,12 +30,13 @@ Nav2、佔位圖、地圖全部留在最需要可靠的閘門側,而且不等第
 Gate 數據(載具側空著,預演照跑,執行端誠實回報 unavailable):
 
 ```
-孿生 graph:ROS_DOMAIN_ID=<環境預設 0>  ← 現有 Isaac 實例(已驗證的 Nav2+地圖)+ Contact Sensor
-載具 graph:ROS_DOMAIN_ID=42            ← JenAI 與(未來的)Isaac 實例 #2 跑在這
+孿生／模擬 graph:ROS_DOMAIN_ID=0       ← 現有 Isaac 實例(已驗證的 Nav2+地圖)+ Contact Sensor
+實體載具 graph:ROS_DOMAIN_ID=20        ← 實體部署時 JenAI 切到這一側
 ```
 
-倒置佈局的啟用方式:config 設 `[twin] domain_id = 0`、`enabled = true`,
-JenAI 以 `export ROS_DOMAIN_ID=42` 啟動。`jenai doctor` 的 **twin_isolation**
+倒置佈局的啟用方式:config 設 `[twin] domain_id = 0`、`[vehicle] domain_id = 20`、
+`enabled = true`。純模擬驗證時 JenAI 保持 `ROS_DOMAIN_ID=0`；實體部署才以
+`export ROS_DOMAIN_ID=20` 啟動，Twin bridge 仍會另外連 domain 0。`jenai doctor` 的 **twin_isolation**
 檢查會擋下「孿生與載具共用 domain」的誤設(共用時預演會直接動到真車)。
 傳統佈局(孿生=42)照舊支援,以下各節的 domain 值按你的佈局對調即可。
 

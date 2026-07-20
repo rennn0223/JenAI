@@ -208,10 +208,16 @@ async def ros_nav_status(config: AppConfig) -> dict:
     return {
         "ready": all(checks.values()),
         "checks": checks,
-        "activity": "not_observed",
+        "activity": "NOT_MEASURED",
+        "activity_observed": False,
+        "activity_report": (
+            "This tool did not measure whether a navigation goal is active. "
+            "本工具未量測目前是否有導航任務。"
+        ),
         "activity_note": (
-            "Readiness is observable, but this snapshot cannot label Nav2 idle or moving "
-            "for goals that may have been sent by another client."
+            "Do not report no-current-goal, idle, stopped, or moving. "
+            "A goal may have been sent by another client. "
+            "不得回答目前沒有任務、閒置、停止或移動中。"
         ),
     }
 
