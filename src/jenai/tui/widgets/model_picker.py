@@ -11,10 +11,10 @@ from rich.text import Text
 from textual.message import Message
 from textual.widgets import Static
 
-ACCENT = "#d97757"
-GREEN = "#7d9b6a"
-MUTED = "#9c9689"
-TEXT = "#f2ede1"
+ACCENT = "#e8683f"
+GREEN = "#8fbf6f"
+MUTED = "#8f897f"
+TEXT = "#f2ede4"
 
 
 class ModelPicker(Static):

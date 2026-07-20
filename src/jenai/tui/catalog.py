@@ -106,55 +106,58 @@ SLASH_COMMANDS = [
 
 TUI_CSS = """
 Screen {
-    background: #1c1b18;
-    color: #d9d3c7;
+    background: #0b0b0b;
+    color: #d9d4cc;
 }
 
 #stage, #window {
     width: 100%;
     height: 100%;
     padding: 0;
-    background: #1c1b18;
+    background: #0b0b0b;
 }
 
 #body {
     height: 1fr;
-    padding: 1 3 0 3;
+    padding: 1 2 0 2;
     scrollbar-size-vertical: 1;
-    scrollbar-background: #1c1b18;
-    scrollbar-color: #332f28;
-    scrollbar-color-hover: #3a352e;
-    scrollbar-color-active: #3a352e;
+    scrollbar-background: #0b0b0b;
+    scrollbar-color: #302b28;
+    scrollbar-color-hover: #403733;
+    scrollbar-color-active: #403733;
 }
 
 #welcome {
-    border: round #c15f3c;
-    padding: 0 1;
-    margin-bottom: 1;
+    border: round #e8683f;
+    border-title-color: #e8683f;
+    border-title-style: bold;
+    padding: 0;
+    margin: 0 0 1 0;
+    min-height: 15;
     height: auto;
 }
 
 #welcome-content {
-    height: auto;
+    height: 15;
     layout: horizontal;
 }
 
 #welcome-left {
-    width: 40%;
-    height: auto;
-    padding: 1 2;
+    width: 42%;
+    height: 100%;
+    padding: 2 2 1 2;
     align-horizontal: center;
 }
 
 #welcome-right {
-    width: 60%;
-    height: auto;
-    padding: 1 2;
-    border-left: solid #3a352e;
+    width: 58%;
+    height: 100%;
+    padding: 2 3 1 3;
+    border-left: solid #553027;
 }
 
 .heading {
-    color: #f2ede1;
+    color: #f2ede4;
     text-style: bold;
     text-align: center;
     width: 100%;
@@ -166,26 +169,22 @@ Screen {
 }
 
 #pixel-mark {
-    color: #d97757;
+    color: #e8683f;
     text-align: center;
     width: 100%;
     height: auto;
     margin-bottom: 1;
 }
 
-#welcome-product {
-    margin-bottom: 1;
-}
-
 .meta {
-    color: #9c9689;
+    color: #b8b2a7;
     text-align: center;
     width: 100%;
     height: auto;
 }
 
 .welcome-section-title {
-    color: #d97757;
+    color: #e8683f;
     text-style: bold;
     height: auto;
     margin-bottom: 1;
@@ -193,40 +192,42 @@ Screen {
 
 #welcome-quick-start {
     height: auto;
-    color: #9c9689;
+    color: #d9d4cc;
 }
 
 .recent-title {
-    border-top: solid #3a352e;
+    border-top: solid #4a403b;
     margin-top: 1;
     padding-top: 1;
 }
 
 #welcome-recent {
+    color: #b8b2a7;
     text-align: left;
 }
 
 #welcome.narrow #welcome-content {
     layout: vertical;
+    height: auto;
 }
 
 #welcome.narrow #welcome-left {
     width: 100%;
+    height: auto;
 }
 
 #welcome.narrow #welcome-right {
     display: none;
 }
 
-#welcome.compact #pixel-mark,
-#welcome.compact #welcome-product {
+#welcome.compact #pixel-mark {
     display: none;
 }
 
 .prompt-line, .bullet-line {
     height: auto;
     margin: 0 0 1 0;
-    color: #d9d3c7;
+    color: #d9d4cc;
 }
 
 #events {
@@ -235,9 +236,9 @@ Screen {
 }
 
 .approval-card {
-    background: #1c1b18;
-    border-top: solid #c15f3c;
-    border-bottom: solid #3a352e;
+    background: #0b0b0b;
+    border-top: solid #e8683f;
+    border-bottom: solid #4a403b;
     padding: 1 0;
     margin-bottom: 1;
     height: auto;
@@ -245,8 +246,8 @@ Screen {
 
 #composer-wrap {
     height: auto;
-    padding: 0 3 1 3;
-    background: #1c1b18;
+    padding: 0 2 1 2;
+    background: #0b0b0b;
 }
 
 #palette {
@@ -254,22 +255,35 @@ Screen {
     max-height: 16;
     margin-bottom: 1;
     padding: 1 1 0 1;
-    background: #1c1b18;
-    border-top: solid #3a352e;
+    background: #0b0b0b;
+    border-top: solid #4a403b;
 }
 
 #composer-frame {
     height: 3;
     padding: 0 1;
-    background: #1c1b18;
-    border-top: solid #3a352e;
-    border-bottom: solid #3a352e;
+    background: #0b0b0b;
+    border-top: solid #4a403b;
+    border-bottom: solid #4a403b;
+}
+
+#composer-line {
+    height: 1fr;
+    align-vertical: middle;
+}
+
+#composer-prompt {
+    width: 2;
+    height: 1;
+    color: #e8683f;
+    text-style: bold;
 }
 
 #composer {
     height: 1fr;
-    background: #1c1b18;
-    color: #f2ede1;
+    width: 1fr;
+    background: #0b0b0b;
+    color: #f2ede4;
     border: none;
     padding: 0;
 }
@@ -280,7 +294,7 @@ Screen {
 
 #spinner {
     height: auto;
-    color: #d97757;
+    color: #e8683f;
     margin-bottom: 1;
     display: none;
 }
@@ -297,13 +311,13 @@ Screen {
 #status-left {
     width: 1fr;
     height: 1;
-    color: #9c9689;
+    color: #7a756c;
 }
 
 #status-right {
     width: auto;
     height: 1;
-    color: #9c9689;
+    color: #7a756c;
     text-align: right;
 }
 """

@@ -9,10 +9,10 @@ from textual.widgets import Static
 from jenai.schemas import ApprovalRequest
 from jenai.tui.approval_policy import can_remember_approval
 
-ACCENT = "#d97757"
-GREEN = "#7d9b6a"
-MUTED = "#9c9689"
-TEXT = "#f2ede1"
+ACCENT = "#e8683f"
+GREEN = "#8fbf6f"
+MUTED = "#8f897f"
+TEXT = "#f2ede4"
 WARN = "⚠"
 
 # (label, approved, remember)
@@ -65,9 +65,7 @@ class ApprovalCard(Static):
     def __init__(self, approval: ApprovalRequest) -> None:
         super().__init__(classes="approval-card")
         self.approval = approval
-        self._options = (
-            _REMEMBER_OPTIONS if can_remember_approval(approval) else _ONCE_OPTIONS
-        )
+        self._options = _REMEMBER_OPTIONS if can_remember_approval(approval) else _ONCE_OPTIONS
         self._selected = len(self._options) - 1 if str(approval.risk_level) == "p2" else 0
 
     def on_mount(self) -> None:

@@ -189,10 +189,12 @@ class JenAITuiApp(
                     yield CommandPalette(id="palette")
                     yield Static("", id="spinner")
                     with Container(id="composer-frame"):
-                        yield Input(
-                            placeholder="Ask JenAI, / for commands, ! for shell",
-                            id="composer",
-                        )
+                        with Horizontal(id="composer-line"):
+                            yield Static(">", id="composer-prompt")
+                            yield Input(
+                                placeholder='Try "check the robot status"',
+                                id="composer",
+                            )
                     with Horizontal(id="statusbar"):
                         yield Static(self._status_left(), id="status-left")
                         yield Static(self._status_right(), id="status-right")
@@ -1154,12 +1156,12 @@ class JenAITuiApp(
         chip = self._MODE_CHIP.get(getattr(self, "_mode", "approve"), "")
         queued = len(getattr(self, "_command_queue", ()))
         queue_text = f" · queue {queued}" if queued else ""
-        return f"{chip} [#9c9689]shift+tab · ? help{queue_text}[/]"
+        return f"{chip} [#7a756c]shift+tab · ? shortcuts{queue_text}[/]"
 
     def _status_right(self) -> str:
         profile = self._active_profile()
         provider = profile.provider if profile else "no-provider"
-        return f"[#9c9689]{provider} · {self._chat_model_display()} · {_short_cwd()}[/]"
+        return f"[#7a756c]{provider} · {self._chat_model_display()} · {_short_cwd()}[/]"
 
     def _status_line(self) -> str:
         """Plain combined form retained for logs and compatibility."""
@@ -1248,8 +1250,8 @@ class JenAITuiApp(
         elapsed = int(time.monotonic() - self._spinner_started)
         try:
             self.query_one("#spinner", Static).update(
-                f"[#d97757]{frame}[/] {self._spinner_label}… "
-                f"[#9c9689]({elapsed}s · esc to interrupt)[/]"
+                f"[#e8683f]{frame}[/] {self._spinner_label}… "
+                f"[#7a756c]({elapsed}s · esc to interrupt)[/]"
             )
         except NoMatches:  # widget gone (app shutting down)
             pass

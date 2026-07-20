@@ -10,11 +10,11 @@ from jenai.schemas import JenAIError, PlanStep, RunRecord, ToolCallRecord
 # Claude Code-style markers (kept local to avoid importing the app module).
 BULLET = "⏺"
 ELBOW = "⎿"
-ACCENT = "#d97757"
-GREEN = "#7d9b6a"
-ERROR = "#cb6250"
-MUTED = "#9c9689"
-TEXT = "#f2ede1"
+ACCENT = "#e8683f"
+GREEN = "#8fbf6f"
+ERROR = "#d85f52"
+MUTED = "#8f897f"
+TEXT = "#f2ede4"
 
 _STEP_ICONS = {
     "pending": "○",

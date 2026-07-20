@@ -28,11 +28,11 @@ class SlashCommand(NamedTuple):
         return self.template or self.name
 
 
-ACCENT = "#d97757"
-ACCENT_DARK = "#c15f3c"
-MUTED = "#9c9689"
-GREEN = "#7d9b6a"
-ERROR = "#cb6250"
+ACCENT = "#e8683f"
+ACCENT_DARK = "#e8683f"
+MUTED = "#8f897f"
+GREEN = "#8fbf6f"
+ERROR = "#d85f52"
 
 
 class WelcomePanel(Container):
@@ -61,15 +61,13 @@ class WelcomePanel(Container):
             with Vertical(id="welcome-left"):
                 yield Static("Welcome back!", id="welcome-greeting", classes="heading")
                 yield Static(pixel_mark(), id="pixel-mark")
-                yield Static("Robot decision agent", id="welcome-product", classes="heading")
                 yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
             with Vertical(id="welcome-right"):
-                yield Static("Quick start", classes="welcome-section-title")
+                yield Static("Tips for getting started", classes="welcome-section-title")
                 yield Static(
-                    "[bold #d9d3c7]/help[/]         Learn commands and shortcuts\n"
-                    "[bold #d9d3c7]/doctor[/]       Check ROS 2 and provider readiness\n"
-                    "[bold #d9d3c7]/run[/]          Plan and execute a robot task\n"
-                    "[bold #d9d3c7]/permissions[/]  Review the decision boundary",
+                    "Run [bold #f2ede4]/doctor[/] to check ROS 2 and provider readiness\n"
+                    "Run [bold #f2ede4]/run <task>[/] to plan and execute a robot task\n"
+                    "Use [bold #f2ede4]/help[/] to learn commands and shortcuts",
                     id="welcome-quick-start",
                 )
                 yield Static("Recent activity", classes="welcome-section-title recent-title")
@@ -89,7 +87,7 @@ class WelcomePanel(Container):
             self._recent_activity.insert(0, label)
             del self._recent_activity[2:]
         self.query_one("#welcome-recent", Static).update(
-            "\n".join(f"• {item}" for item in self._recent_activity)
+            "\n".join(f"[#7a756c]now[/]  {item}" for item in self._recent_activity)
         )
 
     def clear_activity(self) -> None:

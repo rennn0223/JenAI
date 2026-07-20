@@ -125,8 +125,17 @@ def test_tui_welcome_reflows_at_real_wide_narrow_and_compact_viewports(
             assert welcome.has_class("compact") is compact
             assert app.query_one("#welcome-right").display is (not narrow)
             assert app.query_one("#pixel-mark").display is (not compact)
+            assert app.query_one("#welcome-greeting").region.height > 0
             assert not list(app.query("#welcome-workspace-meta"))
             assert not list(app.query("#welcome-doctor-status"))
+            assert str(app.query_one("#composer-prompt").render()) == ">"
+            assert app.query_one("#composer").placeholder == 'Try "check the robot status"'
+
+            if not narrow:
+                titles = [str(item.render()) for item in app.query(".welcome-section-title")]
+                assert titles == ["Tips for getting started", "Recent activity"]
+                tips = str(app.query_one("#welcome-quick-start").render())
+                assert "/doctor" in tips and "/run <task>" in tips and "/help" in tips
 
             for selector in ("#composer-frame", "#composer", "#statusbar"):
                 region = app.query_one(selector).region
@@ -255,6 +264,7 @@ def test_tui_recent_activity_tracks_inputs_redacts_shell_and_clears() -> None:
             await app.handle_user_text("/status")
             await app.handle_user_text("! echo secret-value")
             rendered = str(recent.render())
+            assert "now" in rendered
             assert "! shell command" in rendered
             assert "/status" in rendered
             assert "secret-value" not in rendered
