@@ -290,114 +290,63 @@ def _short_cwd() -> str:
         return str(cwd)
 
 
-# Extra torso columns beyond the original sketch — THE one number to bump
-# when the dachshund needs to be longer. Rear parts (tail, back legs, torso
-# start) shift left together; head/front stay put. Mind the welcome panel's
-# narrow-layout threshold in app.py when growing this.
-EXTRA_LENGTH = 4
+# Terminal-sized reduction of the mascot embedded in the user-approved HTML
+# concept (80×58 source pixels → 15×13 square pixels).  A terminal character
+# is roughly twice as tall as it is wide, so two vertical pixels are packed
+# into each half-block character below.  This keeps the source aspect ratio
+# instead of stretching the dachshund horizontally.
+_DESIGNED_DOG = (
+    "  KKKK",
+    " KBBBK",
+    "KBBKDK",
+    "KTTBDK        K",
+    "KTTBDK       KK",
+    " KBDK       KDK",
+    "  KDKKKKKKKDKK",
+    "   KBBBBBBBBBBK",
+    "   KTBBBBBBBBBK",
+    "   KBBBBBBBBBBK",
+    "   KBKBBBBBKBBK",
+    "   KTK     KTBK",
+    "   KKK     KKK",
+    "",
+)
+
+_DESIGNED_DOG_COLORS = {
+    "K": "#2b190d",  # outline / eye
+    "B": "#8c4c26",  # coat
+    "D": "#743b20",  # ear / shadow
+    "T": "#d68742",  # muzzle / chest / paws
+}
 
 
 def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
-    """The dachshund mascot, one animation frame at a time.
+    """Render the HTML concept's dachshund with a tiny terminal animation."""
 
-    frame cycles the idle animation (tail wag, an occasional blink);
-    ``running=True`` switches to a two-pose gallop — the mascot doubles as a
-    task-status indicator. Frame geometry is stable (same bounding box every
-    pose) so the welcome panel never jitters.
-    """
-    colors = {
-        "body": "#d98c69",
-        "belly": "#e8a987",
-        "dark": "#ad6248",
-        "black": "#34241d",
-        "white": "#fdf5ef",
-        "cheek": "#e89a9a",
-        "collar": "#5fb1c0",
-        "tag": "#f0c84e",
-    }
-    tail_up = frame % 2 == 0
-    blink = (not running) and frame % 8 == 6  # a blink every ~5s at idle pace
-    stride = frame % 2 if running else None
-    ext = EXTRA_LENGTH  # rear-half leftward shift (longer dog)
+    width, height = max(map(len, _DESIGNED_DOG)), len(_DESIGNED_DOG)
+    cells: dict[tuple[int, int], str | None] = {}
+    for y, row in enumerate(_DESIGNED_DOG):
+        for x, token in enumerate(row.ljust(width)):
+            cells[(x, y)] = _DESIGNED_DOG_COLORS.get(token)
 
-    cells: dict[tuple[int, int], str] = {}
+    # The approved sprite faces left. Its tail occupies the far-right pixels;
+    # alternate the tip without changing the 15×14 bounding box.
+    if frame % 2:
+        cells[(14, 3)] = None
+        cells[(14, 5)] = _DESIGNED_DOG_COLORS["K"]
 
-    def fill(x0: int, y0: int, x1: int, y1: int, color: str) -> None:
-        for y in range(y0, y1 + 1):
-            for x in range(x0, x1 + 1):
-                cells[(x, y)] = color
-
-    def put(x: int, y: int, color: str) -> None:
-        cells[(x, y)] = color
-
-    def delete(x: int, y: int) -> None:
-        cells.pop((x, y), None)
-
-    fill(9, 2, 11, 9, colors["dark"])
-    put(10, 10, colors["dark"])
-    fill(11, 1, 18, 7, colors["body"])
-    delete(11, 1)
-    delete(18, 1)
-    fill(16, 5, 20, 7, colors["body"])
-    delete(20, 7)
-    put(20, 5, colors["black"])
-    put(20, 6, colors["black"])
-    put(19, 6, colors["black"])
-    put(18, 7, colors["black"])
-    # Eye: open (pupil + highlight) or a closed lid line mid-blink.
-    if blink:
-        fill(14, 3, 15, 3, colors["body"])
-        fill(14, 4, 15, 4, colors["black"])
-    else:
-        fill(14, 3, 15, 4, colors["black"])
-        put(15, 3, colors["white"])
-    put(17, 6, colors["cheek"])
-    fill(-1 - ext, 7, 13, 10, colors["body"])
-    delete(-1 - ext, 7)
-    fill(0 - ext, 10, 12, 10, colors["belly"])
-    # Tail: wag between an up-curl and a down-sweep.
-    if tail_up:
-        put(-2 - ext, 6, colors["body"])
-        put(-3 - ext, 5, colors["body"])
-        put(-3 - ext, 4, colors["body"])
-        put(-2 - ext, 4, colors["body"])
-    else:
-        put(-2 - ext, 8, colors["body"])
-        put(-3 - ext, 9, colors["body"])
-        put(-3 - ext, 10, colors["body"])
-        put(-2 - ext, 10, colors["body"])
-    # Legs: standing, or a two-pose gallop (pairs spread ↔ tucked).
-    if stride is None:
-        fill(0 - ext, 11, 1 - ext, 13, colors["body"])
-        fill(3 - ext, 11, 4 - ext, 13, colors["body"])
-        fill(10, 11, 11, 13, colors["body"])
-        fill(13, 11, 14, 13, colors["body"])
-    elif stride == 0:  # spread: back pair kicks back, front pair reaches out
-        fill(-1 - ext, 11, 0 - ext, 13, colors["body"])
-        fill(4 - ext, 11, 5 - ext, 13, colors["body"])
-        fill(9, 11, 10, 13, colors["body"])
-        fill(14, 11, 15, 13, colors["body"])
-    else:  # tucked under the body
-        fill(1 - ext, 11, 2 - ext, 13, colors["body"])
-        fill(2 - ext, 11, 3 - ext, 13, colors["body"])
-        fill(11, 11, 12, 13, colors["body"])
-        fill(12, 11, 13, 13, colors["body"])
-    # Collar/tag is drawn last: the body fills above cover this region.
-    fill(11, 7, 12, 9, colors["collar"])
-    put(12, 10, colors["tag"])
-    # Pin the bounding box so every frame renders the same size (no jitter):
-    # x (−3−ext)..20 and y 1..13 are the extremes across all poses.
-    cells.setdefault((-3 - ext, 1), None)
-    cells.setdefault((20, 13), None)
-
-    min_x = min(x for x, _ in cells)
-    max_x = max(x for x, _ in cells)
-    min_y = min(y for _, y in cells)
-    max_y = max(y for _, y in cells)
+    # Preserve the old status animation: blink occasionally while idle and
+    # lift alternating paws while a task is running.
+    if not running and frame % 8 == 6:
+        cells[(3, 2)] = _DESIGNED_DOG_COLORS["B"]
+    if running:
+        lift = ((5, 12), (11, 12)) if frame % 2 else ((7, 11), (14, 11))
+        for point in lift:
+            cells[point] = None
 
     text = Text()
-    for y in range(min_y, max_y + 1, 2):
-        for x in range(min_x, max_x + 1):
+    for y in range(0, height, 2):
+        for x in range(width):
             top = cells.get((x, y))
             bottom = cells.get((x, y + 1))
             if top and bottom:
@@ -408,7 +357,7 @@ def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
                 text.append("▄", style=bottom)
             else:
                 text.append(" ")
-        if y + 1 < max_y:
+        if y + 2 < height:
             text.append("\n")
     return text
 

@@ -26,9 +26,11 @@ def test_tui_uses_colored_dachshund_mascot() -> None:
     mascot = pixel_mark()
     styles = {str(span.style) for span in mascot.spans}
 
-    assert any("#d98c69" in style for style in styles)
-    assert any("#5fb1c0" in style for style in styles)
+    assert any("#8c4c26" in style for style in styles)
+    assert any("#d68742" in style for style in styles)
+    assert any("#2b190d" in style for style in styles)
     assert 4 <= mascot.plain.count("\n") <= 7
+    assert pixel_mark(0).plain != pixel_mark(1).plain
 
 
 def test_tui_uses_claude_transcript_markers_and_flat_approval_copy() -> None:
