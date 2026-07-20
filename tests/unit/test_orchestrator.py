@@ -131,13 +131,11 @@ def test_status_only_run_uses_deterministic_measured_report() -> None:
 
     report = orchestrator._deterministic_state_report(run)
 
-    assert "x=-5.856" in report
-    assert "總視角=180.00°" in report
-    assert "量測範圍=0.05–100.00 m" in report
-    assert "預期樣本=362" in report
-    assert "CLI 顯示=128（序列已截斷）" in report
-    assert "最近已顯示有效回傳=19.81 m" in report
-    assert "不能判定目前無任務" in report
+    assert "x -5.856 m · y -1.298 m" in report
+    assert "視角 180.00° · 範圍 0.05–100.00 m" in report
+    assert "樣本：預期 362 · CLI 顯示 128（截斷）" in report
+    assert "最近已顯示有效回傳 19.81 m" in report
+    assert "不能判定閒置、停止或移動中" in report
     assert "未送出任何移動指令" in report
 
 

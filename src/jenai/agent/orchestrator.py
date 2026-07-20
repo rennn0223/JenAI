@@ -277,50 +277,68 @@ def _deterministic_state_report(run: RunRecord) -> str:
     def _number(value: object, digits: int = 2) -> str:
         return f"{value:.{digits}f}" if isinstance(value, (int, float)) else "not measured"
 
-    check_text = (
-        ", ".join(f"{name}={'PASS' if ok else 'FAIL'}" for name, ok in checks.items())
-        or "not measured"
-    )
+    check_items = [f"{name} {'PASS' if ok else 'FAIL'}" for name, ok in checks.items()]
+
+    def _check_lines(prefix: str) -> str:
+        """Keep readiness checks readable in narrow terminal windows."""
+
+        if not check_items:
+            return f"  {prefix}: not measured"
+        groups = [check_items[index : index + 3] for index in range(0, len(check_items), 3)]
+        return "\n".join(
+            f"  {f'{prefix}: ' if index == 0 else ' ' * (len(prefix) + 2)}{' · '.join(group)}"
+            for index, group in enumerate(groups)
+        )
+
     if zh:
         scan_count = (
-            f"預期樣本={scan.get('expected_sample_count', 'not measured')}，"
-            f"CLI 顯示={scan.get('observed_sample_count', 'not measured')}"
+            f"預期 {scan.get('expected_sample_count', 'not measured')} · "
+            f"CLI 顯示 {scan.get('observed_sample_count', 'not measured')}"
         )
         if scan.get("ranges_truncated"):
-            scan_count += "（序列已截斷）"
+            scan_count += "（截斷）"
         return (
-            "即時機器人狀態（由工具量測值確定性產生）\n"
-            f"- 位置（{pose.get('frame_id') or 'map'}）："
-            f"x={_number(pose.get('x'), 3)} m，y={_number(pose.get('y'), 3)} m，"
-            f"yaw={_number(pose.get('yaw_rad'), 3)} rad\n"
-            f"- 雷射：總視角={_number(scan.get('field_of_view_deg'))}°，"
-            f"量測範圍={_number(scan.get('range_min'))}–{_number(scan.get('range_max'))} m，"
-            f"{scan_count}，"
-            f"已顯示有限回傳={scan.get('observed_finite_sample_count', 'not measured')}，"
-            f"最近已顯示有效回傳={_number(scan.get('nearest_observed_valid_range_m'))} m\n"
-            f"- Nav2：{'READY' if nav2.get('ready') else 'NOT READY'}；{check_text}\n"
-            f"- Odom：{'有快照' if availability.get('odom') else '本次未取得快照'}\n"
-            "- Nav2 任務活動：本工具未量測，不能判定目前無任務、閒置、停止或移動中。\n"
-            "- 本次查詢未送出任何移動指令。"
+            "即時機器人狀態\n\n"
+            f"位置 [{pose.get('frame_id') or 'map'}]\n"
+            f"  x {_number(pose.get('x'), 3)} m · y {_number(pose.get('y'), 3)} m\n"
+            f"  yaw {_number(pose.get('yaw_rad'), 3)} rad\n\n"
+            "LaserScan\n"
+            f"  視角 {_number(scan.get('field_of_view_deg'))}° · "
+            f"範圍 {_number(scan.get('range_min'))}–{_number(scan.get('range_max'))} m\n"
+            f"  樣本：{scan_count}\n"
+            f"  已顯示有限回傳 {scan.get('observed_finite_sample_count', 'not measured')}\n"
+            f"  最近已顯示有效回傳 {_number(scan.get('nearest_observed_valid_range_m'))} m\n\n"
+            "Nav2\n"
+            f"  {'READY' if nav2.get('ready') else 'NOT READY'}\n"
+            f"{_check_lines('檢查')}\n"
+            "  任務活動：未量測，不能判定閒置、停止或移動中\n\n"
+            "Odom\n"
+            f"  {'有快照' if availability.get('odom') else '本次未取得快照'}\n\n"
+            "安全性\n"
+            "  本次查詢未送出任何移動指令。"
         )
+    sample_suffix = " (truncated)" if scan.get("ranges_truncated") else ""
     return (
-        "Live robot status (deterministic tool report)\n"
-        f"- Position ({pose.get('frame_id') or 'map'}): "
-        f"x={_number(pose.get('x'), 3)} m, y={_number(pose.get('y'), 3)} m, "
-        f"yaw={_number(pose.get('yaw_rad'), 3)} rad\n"
-        f"- Laser: total FOV={_number(scan.get('field_of_view_deg'))} deg, "
-        f"measurement range={_number(scan.get('range_min'))}–"
-        f"{_number(scan.get('range_max'))} m, expected samples="
-        f"{scan.get('expected_sample_count', 'not measured')}, CLI-displayed samples="
-        f"{scan.get('observed_sample_count', 'not measured')}"
-        f"{' (truncated)' if scan.get('ranges_truncated') else ''}, displayed finite returns="
-        f"{scan.get('observed_finite_sample_count', 'not measured')}, nearest displayed valid "
-        f"return={_number(scan.get('nearest_observed_valid_range_m'))} m\n"
-        f"- Nav2: {'READY' if nav2.get('ready') else 'NOT READY'}; {check_text}\n"
-        f"- Odom: {'snapshot available' if availability.get('odom') else 'not captured'}\n"
-        "- Nav2 task activity was not measured; no idle, stopped, moving, or no-goal "
-        "conclusion is available.\n"
-        "- This query issued no motion command."
+        "Live robot status\n\n"
+        f"Position [{pose.get('frame_id') or 'map'}]\n"
+        f"  x {_number(pose.get('x'), 3)} m · y {_number(pose.get('y'), 3)} m\n"
+        f"  yaw {_number(pose.get('yaw_rad'), 3)} rad\n\n"
+        "LaserScan\n"
+        f"  FOV {_number(scan.get('field_of_view_deg'))}° · "
+        f"range {_number(scan.get('range_min'))}–{_number(scan.get('range_max'))} m\n"
+        f"  Samples: expected {scan.get('expected_sample_count', 'not measured')} · "
+        f"CLI displayed {scan.get('observed_sample_count', 'not measured')}{sample_suffix}\n"
+        f"  Displayed finite returns {scan.get('observed_finite_sample_count', 'not measured')}\n"
+        f"  Nearest displayed valid return "
+        f"{_number(scan.get('nearest_observed_valid_range_m'))} m\n\n"
+        "Nav2\n"
+        f"  {'READY' if nav2.get('ready') else 'NOT READY'}\n"
+        f"{_check_lines('Checks')}\n"
+        "  Task activity: not measured; no idle, stopped, or moving conclusion\n\n"
+        "Odom\n"
+        f"  {'Snapshot available' if availability.get('odom') else 'Not captured'}\n\n"
+        "Safety\n"
+        "  This query issued no motion command."
     )
 
 
