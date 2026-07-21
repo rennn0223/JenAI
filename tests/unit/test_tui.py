@@ -10,22 +10,42 @@ from jenai.schemas import (
     RosSchemaOutput,
     RosTopicsOutput,
     RouteOutput,
+    RunRecord,
     RunStatus,
+    ToolCallRecord,
+    ToolCallStatus,
     TopicItem,
 )
 from jenai.tools.ros2_core import Ros2PubValidation
 from jenai.tui import JenAITuiApp
-from jenai.tui.panels import OutputPanel, PromptPill, TimelineItem, WelcomePanel, pixel_mark
-from jenai.tui.widgets import ApprovalCard
+from jenai.tui.panels import (
+    OutputPanel,
+    PromptPill,
+    TimelineItem,
+    WelcomePanel,
+    pixel_mark,
+    terminal_mascot,
+)
+from jenai.tui.widgets import AgentProgressBlock, ApprovalCard, ToolBlock
 
 
 def test_tui_uses_colored_dachshund_mascot() -> None:
+    full_mascot = terminal_mascot()
+    full_rows = full_mascot.plain.splitlines()
+    assert len(full_rows) == 15
+    assert max(map(len, full_rows)) == 40
+    assert any("#8c4c26" in str(span.style) for span in full_mascot.spans)
+
     mascot = pixel_mark()
     styles = {str(span.style) for span in mascot.spans}
 
-    assert any("#d98c69" in style for style in styles)
-    assert any("#5fb1c0" in style for style in styles)
-    assert 4 <= mascot.plain.count("\n") <= 7
+    assert any("#513d32" in style for style in styles)
+    assert any("#ba773e" in style for style in styles)
+    assert any("#1f110a" in style for style in styles)
+    assert any("#6ff8f9" in style for style in styles)
+    assert any("#f2ede4" in style for style in styles)
+    assert 6 <= mascot.plain.count("\n") <= 9
+    assert pixel_mark(0).plain != pixel_mark(1).plain
 
 
 def test_tui_uses_claude_transcript_markers_and_flat_approval_copy() -> None:
@@ -81,6 +101,35 @@ def test_tui_p2_host_approval_is_one_shot_and_defaults_to_no() -> None:
     assert card._selected == 1
 
 
+def test_agent_progress_and_tool_blocks_update_in_place() -> None:
+    run = RunRecord(session_id="session-1", user_input="inspect robot")
+    progress = AgentProgressBlock(run)
+    assert "Understanding the request" in str(progress.render())
+
+    call = ToolCallRecord(
+        tool_name="ros_state_tool",
+        category="ros2",
+        input_summary="read robot state",
+        status=ToolCallStatus.RUNNING,
+    )
+    run.tool_calls.append(call)
+    run.status = RunStatus.RUNNING
+    progress.set_run(run)
+    tool = ToolBlock(call)
+
+    assert "Using Inspect robot state" in str(progress.render())
+    assert "working…" in str(tool.render())
+
+    call.status = ToolCallStatus.SUCCEEDED
+    call.output_summary = "pose, scan, and Nav2 ready"
+    tool.set_tool_call(call)
+    run.status = RunStatus.COMPLETED
+    progress.set_run(run)
+
+    assert "pose, scan, and Nav2 ready" in str(tool.render())
+    assert "Reasoning complete · 1 recorded tool result" in str(progress.render())
+
+
 def test_tui_welcome_reflows_at_real_wide_narrow_and_compact_viewports(
     tmp_path: Path,
 ) -> None:
@@ -93,8 +142,27 @@ def test_tui_welcome_reflows_at_real_wide_narrow_and_compact_viewports(
             assert welcome.has_class("compact") is compact
             assert app.query_one("#welcome-right").display is (not narrow)
             assert app.query_one("#pixel-mark").display is (not compact)
+            assert app.query_one("#welcome-greeting").region.height > 0
             assert not list(app.query("#welcome-workspace-meta"))
             assert not list(app.query("#welcome-doctor-status"))
+            assert str(app.query_one("#composer-prompt").render()) == ">"
+            assert app.query_one("#composer").placeholder == 'Try "check the robot status"'
+
+            status_left = str(app.query_one("#status-left").render())
+            status_right = str(app.query_one("#status-right").render())
+            if size[0] < 70:
+                assert status_left == "approve"
+                assert "shift+tab" not in status_left
+                assert "~/" not in status_right
+            else:
+                assert "shift+tab" in status_left
+                assert "~/" in status_right
+
+            if not narrow:
+                titles = [str(item.render()) for item in app.query(".welcome-section-title")]
+                assert titles == ["Tips for getting started", "Recent activity"]
+                tips = str(app.query_one("#welcome-quick-start").render())
+                assert "/doctor" in tips and "/run <task>" in tips and "/help" in tips
 
             for selector in ("#composer-frame", "#composer", "#statusbar"):
                 region = app.query_one(selector).region
@@ -223,6 +291,7 @@ def test_tui_recent_activity_tracks_inputs_redacts_shell_and_clears() -> None:
             await app.handle_user_text("/status")
             await app.handle_user_text("! echo secret-value")
             rendered = str(recent.render())
+            assert "now" in rendered
             assert "! shell command" in rendered
             assert "/status" in rendered
             assert "secret-value" not in rendered
@@ -634,9 +703,7 @@ def test_tui_shell_never_remembers_or_skips_a_later_command(monkeypatch) -> None
 
             # Even a forged remember bit cannot make the broad shell category sticky.
             call_id = first[0].approval.tool_call_id
-            await app.on_approval_card_decision(
-                ApprovalCard.Decision(call_id, True, remember=True)
-            )
+            await app.on_approval_card_decision(ApprovalCard.Decision(call_id, True, remember=True))
             await pilot.pause()
             if app._active_task is not None:
                 await app._active_task
@@ -1793,15 +1860,13 @@ def test_mascot_frames_animate_but_keep_size() -> None:
     assert len(sizes) == 1  # identical bounding box across all poses
 
 
-def test_mascot_animation_tick_updates_widget() -> None:
+def test_welcome_uses_compact_animated_artwork() -> None:
     async def run() -> None:
         app = _app()
-        async with app.run_test() as pilot:
-            app.query_one("#pixel-mark")  # mascot mounted
-            app._animate_mascot()
-            app._animate_mascot()
-            await pilot.pause()
-            assert app._mascot_frame >= 2  # ticks advanced without crashing
+        async with app.run_test():
+            mark = app.query_one("#pixel-mark")
+            assert mark.render().spans
+            assert not mark.has_class("full-mascot")
 
     asyncio.run(run())
 
@@ -1857,18 +1922,31 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
     async def fake_run(self, arg):
         calls.append(("run", arg))
 
+    async def fake_state(self, arg):
+        calls.append(("state", arg))
+
     monkeypatch.setattr(JenAITuiApp, "_show_plan", fake_plan)
     monkeypatch.setattr(JenAITuiApp, "_show_run", fake_run)
+    monkeypatch.setattr(JenAITuiApp, "_show_state_inspection", fake_state)
 
     async def run() -> None:
         app = _app()
         async with app.run_test():
             await app.handle_user_text("帶我去機械系館")  # approve → agent
+            await app.handle_user_text(
+                "檢查位置、雷射與 Nav2 狀態，不要移動機器人。"
+            )
+            await app.handle_user_text("檢查 Nav2 狀態，然後回到 dock。")
             app._mode = "plan"
             await app.handle_user_text("帶我去機械系館")  # plan → planner
 
     asyncio.run(run())
-    assert calls == [("run", "帶我去機械系館"), ("plan", "帶我去機械系館")]
+    assert calls == [
+        ("run", "帶我去機械系館"),
+        ("state", "檢查位置、雷射與 Nav2 狀態，不要移動機器人。"),
+        ("run", "檢查 Nav2 狀態，然後回到 dock。"),
+        ("plan", "帶我去機械系館"),
+    ]
 
 
 def test_plain_greeting_uses_toolless_chat(monkeypatch) -> None:

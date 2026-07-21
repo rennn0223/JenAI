@@ -56,7 +56,14 @@ from jenai.tui.panels import (
     status_color,
 )
 from jenai.tui.robot_commands import RobotCommandsMixin
-from jenai.tui.widgets import ApprovalCard, ErrorBlock, ModelPicker, PlanBlock, ToolBlock
+from jenai.tui.widgets import (
+    AgentProgressBlock,
+    ApprovalCard,
+    ErrorBlock,
+    ModelPicker,
+    PlanBlock,
+    ToolBlock,
+)
 
 
 def run_tui(
@@ -138,7 +145,7 @@ class JenAITuiApp(
         self.history = InputHistory(self.session)
         self._last_history_value: str | None = None
         self._last_plan_ctx: JenAIRunContext | None = None
-        self._rendered_tool_call_ids: set[str] = set()
+        self._tool_blocks: dict[str, ToolBlock] = {}
         # run_id -> {"agent", "ctx", "decisions", "expected"} for approvals raised
         # mid-Runner.run (agent-driven /run flow).
         self._pending_approvals: dict[str, dict] = {}
@@ -182,10 +189,12 @@ class JenAITuiApp(
                     yield CommandPalette(id="palette")
                     yield Static("", id="spinner")
                     with Container(id="composer-frame"):
-                        yield Input(
-                            placeholder="Ask JenAI, / for commands, ! for shell",
-                            id="composer",
-                        )
+                        with Horizontal(id="composer-line"):
+                            yield Static(">", id="composer-prompt")
+                            yield Input(
+                                placeholder='Try "check the robot status"',
+                                id="composer",
+                            )
                     with Horizontal(id="statusbar"):
                         yield Static(self._status_left(), id="status-left")
                         yield Static(self._status_right(), id="status-right")
@@ -228,6 +237,8 @@ class JenAITuiApp(
         if not mark.display or not self.query_one("#welcome").display:
             return  # narrow layout hides the mascot — don't waste the repaint
         self._mascot_frame += 1
+        if mark.has_class("full-mascot"):
+            return  # the supplied 40×15 ANSI artwork is a single faithful frame
         running = self._active_task is not None and not self._active_task.done()
         mark.update(pixel_mark(self._mascot_frame, running=running))
 
@@ -241,7 +252,11 @@ class JenAITuiApp(
         try:
             welcome = self.query_one("#welcome")
             welcome.set_class(width < 92, "narrow")
-            welcome.set_class(width < 56, "compact")
+            welcome.set_class(width < 56 or height < 27, "compact")
+            compact_status = width < 70
+            if compact_status != getattr(self, "_compact_status", False):
+                self._compact_status = compact_status
+                self._update_statusbar()
             palette = self.query_one("#palette", CommandPalette)
             # The normal 16-row menu is unchanged on common terminals.  On
             # short screens cap it so the composer and status line stay visible.
@@ -329,9 +344,7 @@ class JenAITuiApp(
         is_stop: bool = False,
         predecessor: asyncio.Task | None = None,
     ) -> None:
-        self._active_task = asyncio.create_task(
-            self._run_user_text(value, predecessor=predecessor)
-        )
+        self._active_task = asyncio.create_task(self._run_user_text(value, predecessor=predecessor))
         self._active_task_is_stop = is_stop
         self._update_statusbar()
 
@@ -532,6 +545,8 @@ class JenAITuiApp(
                     await self._stream_chat_reply(value)
                 elif self._mode == "plan":
                     await self._show_plan(value)
+                elif orchestrator.is_read_only_state_request(value):
+                    await self._show_state_inspection(value)
                 else:  # approve / auto — the run agent answers questions too
                     await self._show_run(value)
             except Exception as exc:
@@ -882,10 +897,7 @@ class JenAITuiApp(
                 PlanBlock(f"Plan: {run.task_summary or run.user_input}", run.plan_steps)
             )
 
-        for tool_call in run.tool_calls:
-            if tool_call.tool_call_id not in self._rendered_tool_call_ids:
-                self._rendered_tool_call_ids.add(tool_call.tool_call_id)
-                await self._mount_event(ToolBlock(tool_call))
+        await self._render_live_tool_updates(run)
 
         if run.status == "awaiting_approval":
             pending_approvals = [a for a in run.interruptions if a.status == "pending"]
@@ -943,6 +955,42 @@ class JenAITuiApp(
 
         self._scroll_to_bottom()
 
+    async def _render_live_tool_updates(self, run: RunRecord) -> None:
+        """Mount tool calls as they start and refresh their terminal outcome in place."""
+
+        for tool_call in run.tool_calls:
+            block = self._tool_blocks.get(tool_call.tool_call_id)
+            if block is None:
+                block = ToolBlock(tool_call)
+                self._tool_blocks[tool_call.tool_call_id] = block
+                await self._mount_event(block)
+            else:
+                block.set_tool_call(tool_call)
+
+    async def _run_with_agent_progress(self, ctx: JenAIRunContext, awaitable) -> RunRecord:
+        """Keep Agent stages and recorded tools visible while the model is running."""
+
+        progress = AgentProgressBlock(ctx.run)
+        await self._mount_event(progress)
+        task = asyncio.create_task(awaitable)
+        try:
+            while not task.done():
+                progress.set_run(ctx.run)
+                await self._render_live_tool_updates(ctx.run)
+                self._scroll_to_bottom()
+                await asyncio.sleep(0.1)
+            run = await task
+        except asyncio.CancelledError:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            raise
+        await self._render_live_tool_updates(ctx.run)
+        progress.set_run(ctx.run)
+        return run
+
     async def _show_plan(self, arg: str) -> None:
         if not arg:
             await self._mount_event(TimelineItem("warn", "Usage: /plan <task description>"))
@@ -951,7 +999,7 @@ class JenAITuiApp(
         ctx = self._new_run_context(arg)
         self._last_plan_ctx = ctx
         self._scroll_to_bottom()
-        run = await run_plan(ctx, arg)
+        run = await self._run_with_agent_progress(ctx, run_plan(ctx, arg))
         await self._render_run_update(ctx, run)
 
     async def _show_run(self, arg: str) -> None:
@@ -962,8 +1010,18 @@ class JenAITuiApp(
         ctx = self._new_run_context(arg)
         agent = build_run_agent(self.config)
         self._scroll_to_bottom()
-        run = await orchestrator.start_run(agent, ctx, arg)
+        run = await self._run_with_agent_progress(ctx, orchestrator.start_run(agent, ctx, arg))
         await self._render_run_update(ctx, run, agent=agent)
+
+    async def _show_state_inspection(self, arg: str) -> None:
+        """Fast path for explicit read-only pose/scan/Nav2 status questions."""
+
+        ctx = self._new_run_context(arg)
+        self._scroll_to_bottom()
+        run = await self._run_with_agent_progress(
+            ctx, orchestrator.start_read_only_state_run(ctx)
+        )
+        await self._render_run_update(ctx, run)
 
     async def _show_why(self, _: str = "") -> None:
         run = self._current_run()
@@ -1114,14 +1172,18 @@ class JenAITuiApp(
 
     def _status_left(self) -> str:
         chip = self._MODE_CHIP.get(getattr(self, "_mode", "approve"), "")
+        if getattr(self, "_compact_status", False):
+            return chip
         queued = len(getattr(self, "_command_queue", ()))
         queue_text = f" · queue {queued}" if queued else ""
-        return f"{chip} [#9c9689]shift+tab · ? help{queue_text}[/]"
+        return f"{chip} [#7a756c]shift+tab · ? shortcuts{queue_text}[/]"
 
     def _status_right(self) -> str:
         profile = self._active_profile()
         provider = profile.provider if profile else "no-provider"
-        return f"[#9c9689]{provider} · {self._chat_model_display()} · {_short_cwd()}[/]"
+        if getattr(self, "_compact_status", False):
+            return f"[#7a756c]{provider} · {self._chat_model_display()}[/]"
+        return f"[#7a756c]{provider} · {self._chat_model_display()} · {_short_cwd()}[/]"
 
     def _status_line(self) -> str:
         """Plain combined form retained for logs and compatibility."""
@@ -1210,8 +1272,8 @@ class JenAITuiApp(
         elapsed = int(time.monotonic() - self._spinner_started)
         try:
             self.query_one("#spinner", Static).update(
-                f"[#d97757]{frame}[/] {self._spinner_label}… "
-                f"[#9c9689]({elapsed}s · esc to interrupt)[/]"
+                f"[#e8683f]{frame}[/] {self._spinner_label}… "
+                f"[#7a756c]({elapsed}s · esc to interrupt)[/]"
             )
         except NoMatches:  # widget gone (app shutting down)
             pass

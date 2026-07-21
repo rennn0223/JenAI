@@ -50,12 +50,14 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     )
     # Defaults: an existing config without [vehicle] behaves like before.
     assert config.vehicle.type == "ackermann"
+    assert config.vehicle.domain_id is None
     assert config.vehicle.cmd_vel_topic == "/cmd_vel"
     assert config.vehicle.cmd_vel_stamped is False
     assert config.vehicle.pose_jump_threshold_m == 5.0
     assert config.vehicle.pose_jump_window_s == 2.0
 
     config.vehicle.cmd_vel_topic = "/leatherback/cmd_vel"
+    config.vehicle.domain_id = 20
     config.vehicle.max_linear = 1.2
     config.vehicle.pose_jump_threshold_m = 6.5
     config.vehicle.pose_jump_window_s = 1.5
@@ -64,6 +66,7 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     loaded = load_config(path)
 
     assert loaded.vehicle.cmd_vel_topic == "/leatherback/cmd_vel"
+    assert loaded.vehicle.domain_id == 20
     assert loaded.vehicle.max_linear == 1.2
     assert loaded.vehicle.pose_jump_threshold_m == 6.5
     assert loaded.vehicle.pose_jump_window_s == 1.5
@@ -99,6 +102,7 @@ def test_config_round_trip_preserves_every_nested_safety_section(tmp_path: Path)
         ("vehicle", "pose_jump_threshold_m = 0.0"),
         ("vehicle", "pose_jump_window_s = -1.0"),
         ("vehicle", "max_angular = 0.0"),
+        ("vehicle", "domain_id = 233"),
         ("avoidance", "stop_distance = 2.0\nslow_distance = 1.0"),
         ("avoidance", "band_lo = 0.8\nband_hi = 0.2"),
         ("avoidance", "sectors = 0"),

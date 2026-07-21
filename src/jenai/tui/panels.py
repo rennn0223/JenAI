@@ -6,6 +6,9 @@ state. Everything here renders; nothing here decides.
 
 from __future__ import annotations
 
+from base64 import b64decode
+from functools import lru_cache
+from importlib.resources import files
 from pathlib import Path
 from typing import NamedTuple
 
@@ -28,11 +31,11 @@ class SlashCommand(NamedTuple):
         return self.template or self.name
 
 
-ACCENT = "#d97757"
-ACCENT_DARK = "#c15f3c"
-MUTED = "#9c9689"
-GREEN = "#7d9b6a"
-ERROR = "#cb6250"
+ACCENT = "#e8683f"
+ACCENT_DARK = "#e8683f"
+MUTED = "#8f897f"
+GREEN = "#8fbf6f"
+ERROR = "#d85f52"
 
 
 class WelcomePanel(Container):
@@ -61,15 +64,13 @@ class WelcomePanel(Container):
             with Vertical(id="welcome-left"):
                 yield Static("Welcome back!", id="welcome-greeting", classes="heading")
                 yield Static(pixel_mark(), id="pixel-mark")
-                yield Static("Robot decision agent", id="welcome-product", classes="heading")
                 yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
             with Vertical(id="welcome-right"):
-                yield Static("Quick start", classes="welcome-section-title")
+                yield Static("Tips for getting started", classes="welcome-section-title")
                 yield Static(
-                    "[bold #d9d3c7]/help[/]         Learn commands and shortcuts\n"
-                    "[bold #d9d3c7]/doctor[/]       Check ROS 2 and provider readiness\n"
-                    "[bold #d9d3c7]/run[/]          Plan and execute a robot task\n"
-                    "[bold #d9d3c7]/permissions[/]  Review the decision boundary",
+                    "Run [bold #f2ede4]/doctor[/] to check ROS 2 and provider readiness\n"
+                    "Run [bold #f2ede4]/run <task>[/] to plan and execute a robot task\n"
+                    "Use [bold #f2ede4]/help[/] to learn commands and shortcuts",
                     id="welcome-quick-start",
                 )
                 yield Static("Recent activity", classes="welcome-section-title recent-title")
@@ -89,7 +90,7 @@ class WelcomePanel(Container):
             self._recent_activity.insert(0, label)
             del self._recent_activity[2:]
         self.query_one("#welcome-recent", Static).update(
-            "\n".join(f"• {item}" for item in self._recent_activity)
+            "\n".join(f"[#7a756c]now[/]  {item}" for item in self._recent_activity)
         )
 
     def clear_activity(self) -> None:
@@ -292,114 +293,81 @@ def _short_cwd() -> str:
         return str(cwd)
 
 
-# Extra torso columns beyond the original sketch — THE one number to bump
-# when the dachshund needs to be longer. Rear parts (tail, back legs, torso
-# start) shift left together; head/front stay put. Mind the welcome panel's
-# narrow-layout threshold in app.py when growing this.
-EXTRA_LENGTH = 4
+# Compact, original dachshund mascot designed for the terminal welcome panel.
+# The dark coat and cyan status collar echo the robot-dog direction without
+# turning the friendly mascot into a mechanical character.  A terminal cell
+# is roughly twice as tall as it is wide, so two square pixels are packed into
+# each half-block character below.  This 34×18 grid was sampled from candidate
+# C's source artwork and occupies only 34×9 terminal cells.
+_DESIGNED_DOG = (
+    "                                  ",
+    "     KDBBBBBK                     ",
+    "    KBBBDDDDBK                    ",
+    "    KBBBDDDDDBK               K   ",
+    "    DDTTTDKDDDB              KB   ",
+    " DKBDDDWKDDDDDBK             KBK  ",
+    " BDBBBBDDDDDDDDK             DD   ",
+    " DTTTTTTDKDDDDD             KBK   ",
+    "  DBBTTTDKDDDDKKK          DBDK   ",
+    "       KCKKDDKDDBBBBBBBBBBBDDK    ",
+    "       BCDDDKDDDDDDDDDDDDDDDK     ",
+    "       DCDDDDDDDDDDDDDDDDDDDD     ",
+    "       BTBDDDDDDDDDDDDDDDDDDD     ",
+    "       KTTDDDDDDDDDDDDDDDDDDDK    ",
+    "        KDKDDDKBBBBBBDDDKKDDBD    ",
+    "       KTDKBTBKKDDDDK  KBDKBTD    ",
+    "       DBKBTTK         DBKBTTK    ",
+    "                           K      ",
+)
+
+_DESIGNED_DOG_COLORS = {
+    "K": "#1f110a",  # outline / eye
+    "B": "#513d32",  # chocolate coat highlight
+    "D": "#3c2c26",  # coat / floppy ear
+    "T": "#ba773e",  # muzzle / chest / paws
+    "C": "#6ff8f9",  # robot status collar
+    "W": "#f2ede4",  # bright eye against the dark coat
+}
+
+
+@lru_cache(maxsize=1)
+def terminal_mascot() -> Text:
+    """Return Claude Design's full-size ANSI mascot without resampling it."""
+
+    encoded = (
+        files("jenai.tui.assets").joinpath("mascot-terminal.b64").read_text(encoding="ascii")
+    )
+    ansi = b64decode(encoded).decode("utf-8").rstrip("\n")
+    return Text.from_ansi(ansi)
 
 
 def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
-    """The dachshund mascot, one animation frame at a time.
+    """Render the compact robot-dog dachshund with a tiny terminal animation."""
 
-    frame cycles the idle animation (tail wag, an occasional blink);
-    ``running=True`` switches to a two-pose gallop — the mascot doubles as a
-    task-status indicator. Frame geometry is stable (same bounding box every
-    pose) so the welcome panel never jitters.
-    """
-    colors = {
-        "body": "#d98c69",
-        "belly": "#e8a987",
-        "dark": "#ad6248",
-        "black": "#34241d",
-        "white": "#fdf5ef",
-        "cheek": "#e89a9a",
-        "collar": "#5fb1c0",
-        "tag": "#f0c84e",
-    }
-    tail_up = frame % 2 == 0
-    blink = (not running) and frame % 8 == 6  # a blink every ~5s at idle pace
-    stride = frame % 2 if running else None
-    ext = EXTRA_LENGTH  # rear-half leftward shift (longer dog)
+    width, height = max(map(len, _DESIGNED_DOG)), len(_DESIGNED_DOG)
+    cells: dict[tuple[int, int], str | None] = {}
+    for y, row in enumerate(_DESIGNED_DOG):
+        for x, token in enumerate(row.ljust(width)):
+            cells[(x, y)] = _DESIGNED_DOG_COLORS.get(token)
 
-    cells: dict[tuple[int, int], str] = {}
+    # The sprite faces left. Its tail occupies the far-right pixels; alternate
+    # the tip without changing the 34×18 bounding box.
+    if frame % 2:
+        cells[(30, 3)] = None
+        cells[(30, 2)] = _DESIGNED_DOG_COLORS["K"]
 
-    def fill(x0: int, y0: int, x1: int, y1: int, color: str) -> None:
-        for y in range(y0, y1 + 1):
-            for x in range(x0, x1 + 1):
-                cells[(x, y)] = color
-
-    def put(x: int, y: int, color: str) -> None:
-        cells[(x, y)] = color
-
-    def delete(x: int, y: int) -> None:
-        cells.pop((x, y), None)
-
-    fill(9, 2, 11, 9, colors["dark"])
-    put(10, 10, colors["dark"])
-    fill(11, 1, 18, 7, colors["body"])
-    delete(11, 1)
-    delete(18, 1)
-    fill(16, 5, 20, 7, colors["body"])
-    delete(20, 7)
-    put(20, 5, colors["black"])
-    put(20, 6, colors["black"])
-    put(19, 6, colors["black"])
-    put(18, 7, colors["black"])
-    # Eye: open (pupil + highlight) or a closed lid line mid-blink.
-    if blink:
-        fill(14, 3, 15, 3, colors["body"])
-        fill(14, 4, 15, 4, colors["black"])
-    else:
-        fill(14, 3, 15, 4, colors["black"])
-        put(15, 3, colors["white"])
-    put(17, 6, colors["cheek"])
-    fill(-1 - ext, 7, 13, 10, colors["body"])
-    delete(-1 - ext, 7)
-    fill(0 - ext, 10, 12, 10, colors["belly"])
-    # Tail: wag between an up-curl and a down-sweep.
-    if tail_up:
-        put(-2 - ext, 6, colors["body"])
-        put(-3 - ext, 5, colors["body"])
-        put(-3 - ext, 4, colors["body"])
-        put(-2 - ext, 4, colors["body"])
-    else:
-        put(-2 - ext, 8, colors["body"])
-        put(-3 - ext, 9, colors["body"])
-        put(-3 - ext, 10, colors["body"])
-        put(-2 - ext, 10, colors["body"])
-    # Legs: standing, or a two-pose gallop (pairs spread ↔ tucked).
-    if stride is None:
-        fill(0 - ext, 11, 1 - ext, 13, colors["body"])
-        fill(3 - ext, 11, 4 - ext, 13, colors["body"])
-        fill(10, 11, 11, 13, colors["body"])
-        fill(13, 11, 14, 13, colors["body"])
-    elif stride == 0:  # spread: back pair kicks back, front pair reaches out
-        fill(-1 - ext, 11, 0 - ext, 13, colors["body"])
-        fill(4 - ext, 11, 5 - ext, 13, colors["body"])
-        fill(9, 11, 10, 13, colors["body"])
-        fill(14, 11, 15, 13, colors["body"])
-    else:  # tucked under the body
-        fill(1 - ext, 11, 2 - ext, 13, colors["body"])
-        fill(2 - ext, 11, 3 - ext, 13, colors["body"])
-        fill(11, 11, 12, 13, colors["body"])
-        fill(12, 11, 13, 13, colors["body"])
-    # Collar/tag is drawn last: the body fills above cover this region.
-    fill(11, 7, 12, 9, colors["collar"])
-    put(12, 10, colors["tag"])
-    # Pin the bounding box so every frame renders the same size (no jitter):
-    # x (−3−ext)..20 and y 1..13 are the extremes across all poses.
-    cells.setdefault((-3 - ext, 1), None)
-    cells.setdefault((20, 13), None)
-
-    min_x = min(x for x, _ in cells)
-    max_x = max(x for x, _ in cells)
-    min_y = min(y for _, y in cells)
-    max_y = max(y for _, y in cells)
+    # Preserve the old status animation: blink occasionally while idle and
+    # lift alternating paws while a task is running.
+    if not running and frame % 8 == 6:
+        cells[(7, 5)] = _DESIGNED_DOG_COLORS["D"]
+    if running:
+        lift = ((10, 16), (29, 16)) if frame % 2 else ((13, 15), (32, 15))
+        for point in lift:
+            cells[point] = None
 
     text = Text()
-    for y in range(min_y, max_y + 1, 2):
-        for x in range(min_x, max_x + 1):
+    for y in range(0, height, 2):
+        for x in range(width):
             top = cells.get((x, y))
             bottom = cells.get((x, y + 1))
             if top and bottom:
@@ -410,7 +378,7 @@ def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
                 text.append("▄", style=bottom)
             else:
                 text.append(" ")
-        if y + 1 < max_y:
+        if y + 2 < height:
             text.append("\n")
     return text
 

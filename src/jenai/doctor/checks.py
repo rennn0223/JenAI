@@ -322,29 +322,49 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
         ]
 
     twin = config.twin
-    # The vehicle graph lives on the ambient ROS_DOMAIN_ID. If the twin shares
-    # it, "rehearsal" IS the real robot — the gate would physically move the
-    # vehicle while pretending to preview. Fail loudly; never probe further.
+    # Older configs inferred the physical vehicle from the ambient domain.
+    # New configs can state it explicitly while JenAI remains connected to a
+    # simulator. Actual command routing still follows the process environment.
     ambient = os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0"
-    if str(twin.domain_id) == ambient:
+    vehicle_domain = config.vehicle.domain_id
+    vehicle_domain_text = ambient if vehicle_domain is None else str(vehicle_domain)
+    if str(twin.domain_id) == vehicle_domain_text:
         return [
             DoctorCheckItem(
                 section="twin",
                 check_name="twin_isolation",
                 status=DoctorStatus.FAIL,
                 message=(
-                    f"[twin] domain_id={twin.domain_id} equals the vehicle's ROS_DOMAIN_ID "
-                    f"({ambient}) — rehearsal goals would drive the real robot."
+                    f"[twin] domain_id={twin.domain_id} equals the configured physical "
+                    f"vehicle domain ({vehicle_domain_text}) — rehearsal goals could reach "
+                    "the real robot."
                 ),
                 fix_suggestion=(
-                    "Give the twin its own domain (e.g. [twin] domain_id = 42), or run "
-                    "JenAI with a different ROS_DOMAIN_ID than the twin."
+                    "Give [twin] and [vehicle] different domain_id values; launch JenAI on "
+                    "the graph you intentionally want to control."
                 ),
             )
         ]
 
+    if ambient == str(twin.domain_id):
+        mode = "simulation target"
+    elif ambient == vehicle_domain_text:
+        mode = "physical-vehicle target"
+    else:
+        mode = "custom target"
+    isolation_item = DoctorCheckItem(
+        section="twin",
+        check_name="twin_isolation",
+        status=DoctorStatus.PASS,
+        message=(
+            f"Twin domain {twin.domain_id} and physical vehicle domain {vehicle_domain_text} "
+            f"are configured separately; active JenAI domain is {ambient} ({mode}). "
+            "This verifies configuration, not live cross-domain traffic."
+        ),
+    )
+
     if shutil.which("ros2") is None:
-        return []  # ros2_cli already reports the root cause
+        return [isolation_item]  # ros2_cli already reports the root cause
 
     from jenai.adapters import ros2_adapter
 
@@ -364,12 +384,13 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
         ]
 
     items = [
+        isolation_item,
         DoctorCheckItem(
             section="twin",
             check_name="twin_graph",
             status=DoctorStatus.PASS,
             message=f"Twin ROS graph is up on domain {twin.domain_id} ({len(topics)} topics).",
-        )
+        ),
     ]
 
     try:
@@ -426,8 +447,7 @@ def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:
                 check_name="active_provider",
                 status=DoctorStatus.FAIL,
                 message=(
-                    f"Active provider '{config.active_provider}' is missing from "
-                    "provider_profiles."
+                    f"Active provider '{config.active_provider}' is missing from provider_profiles."
                 ),
                 fix_suggestion="Update the config or rerun setup.",
             )

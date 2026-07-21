@@ -187,14 +187,27 @@ def update_location_pose(name: str, pose: Pose2D, frame_id: str, path: Path) -> 
 
 def find_location(locations: list[Location], query: str, *, limit: int = 5) -> Location:
     normalized = query.strip().lower()
-    if normalized:
+    # Tool-calling models sometimes preserve an English article when turning a
+    # request such as "go to the dock" into the location argument. Prefer the
+    # literal query first (a location may genuinely be named "The Lab"), then
+    # try the article-free form. This is lookup-only: destructive operations
+    # still require an exact saved name through ``_find_index``.
+    lookup_forms = [normalized]
+    article, separator, remainder = normalized.partition(" ")
+    if separator and article in {"a", "an", "the"} and remainder.strip():
+        lookup_forms.append(remainder.strip())
+
+    for lookup in lookup_forms:
+        if not lookup:
+            continue
         for location in locations:
-            if location.name.strip().lower() == normalized:
+            if location.name.strip().lower() == lookup:
                 return location
-            if any(alias.strip().lower() == normalized for alias in location.aliases):
+            if any(alias.strip().lower() == lookup for alias in location.aliases):
                 return location
 
-    raise LocationNotFoundError(query, _fuzzy_candidates(locations, normalized, limit=limit))
+    fuzzy_query = lookup_forms[-1]
+    raise LocationNotFoundError(query, _fuzzy_candidates(locations, fuzzy_query, limit=limit))
 
 
 def _fuzzy_candidates(

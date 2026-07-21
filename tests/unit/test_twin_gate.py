@@ -313,6 +313,7 @@ def test_doctor_twin_checks_probe_the_twin_domain(monkeypatch) -> None:
     items = _check_twin(config)
     assert seen_domains == [42]  # probed on the twin's domain, not the robot's
     assert {i.check_name: i.status for i in items} == {
+        "twin_isolation": "pass",
         "twin_graph": "pass",
         "twin_nav2": "pass",
         "twin_contact_sensor": "pass",

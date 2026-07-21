@@ -1,13 +1,13 @@
 # ROADMAP — 演進與維護深度規劃
 
-> 對應版本:**v2.0.2**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
+> 對應版本:**v2.1.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
 > 六條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
 > 方向收斂邏輯見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md);v1.0 驗收與兩層分工見
 > [V1_GATE](V1_GATE.md);每次改動的驗收標準見根目錄 `CLAUDE.md`。
 
 ---
 
-## 1. 現況真實快照(v2.0.2)
+## 1. 現況真實快照(v2.1.0)
 
 過去的 M1–M6 表低估了實際進度。誠實盤點「真的 shipped 了什麼」:
 
@@ -20,6 +20,7 @@
 - **感知**:PerceptionLoop(相機→VLM→SceneAnalysis),daemon `@perception` 規則共用同一 gating。
 - **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
 - **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
+- **確定性自然語言分流**:純唯讀的 pose／scan／Nav2 狀態要求直接走受記錄工具與固定摘要；混合決策／動作要求保留完整 LLM、批准與 NavigationGateway。ROS 狀態快照並行取得，session 同時受 item 與 byte cap 約束。
 - **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
 - **工程基建**:完整自動化測試套件、Python 3.12／3.13／3.14 CI matrix(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
 
@@ -165,6 +166,7 @@
 | **v0.24+** | 原規劃回補(數據期擋修) | 軌道 3 導航工具 + D1 sibling 抽取 + 軌道 2 depth→Nav2 costmap(僅在實測需要時做) |
 | **v1.0** | **監督式操作平台定稿** | V1_GATE 歷史簽字；安全相關 coverage、daemon 24h soak、B4 固定 102-report subset 與 E2 固定目標描述性比較已有 artifact；B4 不證明精確 20 h／零事件，E2 A／B 非 live；實體驗證選配不擋版 |
 | **v2.0** | **執行邊界與產品化基線** | P2／HOST 每次明確批准、可取消 subprocess 與兩階段停止、資料生命週期 CLI、responsive TUI、HIL 起點 guard、可稽核供應鏈產物；M6 未實作 |
+| **v2.1** | **可用性與回應延遲** | Claude 風格 TUI 視覺封版；明確唯讀自然語言狀態查詢採確定性快速路徑；ROS 快照並行、session prompt 有界化與地點自然語言容錯；決策／致動安全語意不變 |
 | **post-v2（候選 v3）** | **常駐自主決策研究** | 軌道 1:M6 DecisionLoop 完整迴圈與邊緣延遲研究；只有完整實作與實驗後才能升級主張 |
 | **後續** | 多機 / 平台 | 軌道 4/5:多載具、語音、costmap 疊圖、檔案定義技能 |
 

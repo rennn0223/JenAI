@@ -64,9 +64,7 @@ def test_doctor_reports_provider_and_models_from_config(tmp_path: Path, monkeypa
         for item in result.items
     )
     assert any(
-        item.section == "provider"
-        and item.check_name == "model_bindings"
-        and item.status == "pass"
+        item.section == "provider" and item.check_name == "model_bindings" and item.status == "pass"
         for item in result.items
     )
 
@@ -97,7 +95,6 @@ def test_doctor_none_config_path_resolves_locations_against_config_dir(
     loc = next(i for i in result.items if i.check_name == "locations_file")
     assert loc.status == "pass"
     assert str(tmp_path) in loc.message  # resolved via config dir, not cwd
-
 
 
 def test_nav_stack_checks_read_the_graph(monkeypatch, tmp_path) -> None:
@@ -137,9 +134,7 @@ def test_nav_stack_warns_and_points_at_onboarding(monkeypatch) -> None:
         "jenai.adapters.ros2_adapter.list_topics",
         lambda *, timeout=5.0: ["/rosout", "/parameter_events"],
     )
-    monkeypatch.setattr(
-        "jenai.adapters.ros2_adapter.list_actions", lambda *, timeout=5.0: []
-    )
+    monkeypatch.setattr("jenai.adapters.ros2_adapter.list_actions", lambda *, timeout=5.0: [])
 
     items = _check_nav_stack(None)
 
@@ -188,9 +183,32 @@ def test_twin_isolation_fails_when_domains_collide(monkeypatch) -> None:
     monkeypatch.setenv("ROS_DOMAIN_ID", "42")
     config.twin.domain_id = 0
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: None)
-    assert _check_twin(config) == []  # ros2 missing → root cause reported elsewhere
+    items = _check_twin(config)
+    assert [i.check_name for i in items] == ["twin_isolation"]
+    assert items[0].status == "pass"
 
     # Unset ambient means domain 0 — colliding with twin domain 0 must fail.
     monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
     items = _check_twin(config)
     assert [i.check_name for i in items] == ["twin_isolation"]
+
+
+def test_twin_isolation_uses_explicit_physical_vehicle_domain(monkeypatch) -> None:
+    from jenai.config.store import build_minimal_config
+    from jenai.doctor.checks import _check_twin
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.twin.enabled = True
+    config.twin.domain_id = 0
+    config.vehicle.domain_id = 20
+    monkeypatch.setenv("ROS_DOMAIN_ID", "0")
+    monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: None)
+
+    items = _check_twin(config)
+
+    assert [i.check_name for i in items] == ["twin_isolation"]
+    assert items[0].status == "pass"
+    assert "physical vehicle domain 20" in items[0].message
+    assert "simulation target" in items[0].message

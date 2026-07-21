@@ -168,13 +168,76 @@ async def ros_state(
     # /amcl_pose is the map-frame truth and must be read latched (AMCL only
     # re-publishes on updates). Vehicles may also rename odom (Carter uses
     # /chassis/odom), so pose must never depend on /odom alone.
+    # These are independent snapshots. Running them concurrently keeps the
+    # combined observation timestamp-local and prevents one absent optional
+    # topic (commonly /odom in Isaac/Nav2) from serially delaying pose and scan.
+    pose, odom, scan = await asyncio.gather(
+        _snap("/amcl_pose", latched=True),
+        _snap(odom_topic),
+        _snap(scan_topic),
+    )
     return {
         "pose_topic": "/amcl_pose",
         "odom_topic": odom_topic,
         "scan_topic": scan_topic,
-        "pose": await _snap("/amcl_pose", latched=True),
-        "odom": await _snap(odom_topic),
-        "scan": await _snap(scan_topic),
+        "pose": pose,
+        "odom": odom,
+        "scan": scan,
+    }
+
+
+async def ros_nav_status(config: AppConfig) -> dict:
+    """Readiness snapshot for the high-level Nav2 path.
+
+    This deliberately reports action-server availability rather than inventing
+    an idle/moving verdict for goals that may have been sent by another client.
+    """
+
+    topics, actions = await asyncio.gather(
+        asyncio.to_thread(ros2_adapter.list_topics),
+        asyncio.to_thread(ros2_adapter.list_actions),
+    )
+    topic_names = set(topics)
+    action_names = set(actions)
+    required_topics = {"/map", "/amcl_pose", "/scan"}
+    if not required_topics <= topic_names:
+        # A freshly started ros2 daemon can return a partial graph on its first
+        # discovery pass even though Nav2 is already publishing. Retry only the
+        # missing topic inventory once; keep the union so a transient second
+        # result can never erase evidence observed in the first pass.
+        await asyncio.sleep(0.2)
+        try:
+            topic_names.update(await asyncio.to_thread(ros2_adapter.list_topics))
+        except ros2_adapter.Ros2AdapterError:
+            pass
+    cmd_vel_subscribed = False
+    try:
+        cmd_info = await asyncio.to_thread(ros2_adapter.topic_info, config.vehicle.cmd_vel_topic)
+        cmd_vel_subscribed = cmd_info.subscriber_count > 0
+    except ros2_adapter.Ros2AdapterError:
+        pass
+
+    checks = {
+        "map": "/map" in topic_names,
+        "localization": "/amcl_pose" in topic_names,
+        "laser": "/scan" in topic_names,
+        "navigate_to_pose": "/navigate_to_pose" in action_names,
+        "cmd_vel_subscriber": cmd_vel_subscribed,
+    }
+    return {
+        "ready": all(checks.values()),
+        "checks": checks,
+        "activity": "NOT_MEASURED",
+        "activity_observed": False,
+        "activity_report": (
+            "This tool did not measure whether a navigation goal is active. "
+            "本工具未量測目前是否有導航任務。"
+        ),
+        "activity_note": (
+            "Do not report no-current-goal, idle, stopped, or moving. "
+            "A goal may have been sent by another client. "
+            "不得回答目前沒有任務、閒置、停止或移動中。"
+        ),
     }
 
 
@@ -257,9 +320,7 @@ def _naive_example_payload(raw_interface: str) -> dict:
             stack.pop()
         parent = stack[-1][1]
 
-        next_indent = (
-            len(lines[i + 1]) - len(lines[i + 1].lstrip()) if i + 1 < len(lines) else -1
-        )
+        next_indent = len(lines[i + 1]) - len(lines[i + 1].lstrip()) if i + 1 < len(lines) else -1
         is_array = field_type.rstrip().endswith("]")
         if next_indent > indent:
             # Complex type with expanded sub-fields: recurse into a child dict.
@@ -526,9 +587,7 @@ def _requested_planar_motion(payload: object) -> tuple[bool, bool]:
         speed = payload.get("speed")
         steering = payload.get("steering_angle")
         wants_linear |= (
-            isinstance(speed, (int, float))
-            and not isinstance(speed, bool)
-            and abs(speed) > 1e-9
+            isinstance(speed, (int, float)) and not isinstance(speed, bool) and abs(speed) > 1e-9
         )
         wants_angular |= (
             isinstance(steering, (int, float))
@@ -582,8 +641,7 @@ async def ros_drive_verified(
             "position_change": None,
             "yaw_change": None,
             "message": (
-                "Baseline odometry was unavailable or could not be parsed; "
-                "no actuation sent."
+                "Baseline odometry was unavailable or could not be parsed; no actuation sent."
             ),
         }
 
@@ -620,8 +678,7 @@ async def ros_drive_verified(
             "position_change": None,
             "yaw_change": None,
             "message": (
-                "The bounded action auto-stopped, but no parseable post-action "
-                "odometry arrived."
+                "The bounded action auto-stopped, but no parseable post-action odometry arrived."
             ),
         }
 

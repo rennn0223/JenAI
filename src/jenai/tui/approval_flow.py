@@ -52,11 +52,7 @@ class ApprovalFlowMixin:
             # same tool are auto-approved by _render_run_update.
             if message.approved and message.remember:
                 approval = self._approval_by_call_id(message.tool_call_id)
-                if (
-                    approval is not None
-                    and approval.tool_name
-                    and can_remember_approval(approval)
-                ):
+                if approval is not None and approval.tool_name and can_remember_approval(approval):
                     self._auto_approved.add(approval.tool_name)
                     await self._mount_event(
                         TimelineItem(
@@ -152,8 +148,11 @@ class ApprovalFlowMixin:
         """Resume a paused agent run once every interruption has a decision."""
         pending = self._pending_approvals.pop(run_id)
         self._scroll_to_bottom()
-        run = await orchestrator.resume_with_approvals(
-            pending["agent"], pending["ctx"], pending["decisions"]
+        run = await self._run_with_agent_progress(
+            pending["ctx"],
+            orchestrator.resume_with_approvals(
+                pending["agent"], pending["ctx"], pending["decisions"]
+            ),
         )
         await self._render_run_update(pending["ctx"], run, agent=pending["agent"])
         self._start_next_queued()

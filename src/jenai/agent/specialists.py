@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents import Agent
+from agents import Agent, FunctionToolResult, RunContextWrapper, ToolsToFinalOutputResult
 from openai import AsyncOpenAI
 
 from jenai.agent.context import JenAIRunContext
@@ -15,6 +15,7 @@ from jenai.agent.instructions import (
     ROS_EXPLORER_INSTRUCTIONS,
     SUPERVISOR_INSTRUCTIONS,
 )
+from jenai.agent.orchestrator import is_read_only_state_request
 from jenai.agent.runtime import build_model
 from jenai.config.models import AppConfig
 from jenai.providers.agent_model import make_agent_client
@@ -44,6 +45,28 @@ from jenai.tools.vision_agent_tools import vision_image_tool
 # carries only its own focused toolset, which keeps tool-selection reliable.
 
 
+def _finish_read_only_state(
+    ctx: RunContextWrapper[JenAIRunContext],
+    results: list[FunctionToolResult],
+) -> ToolsToFinalOutputResult:
+    """Skip a redundant second 35B turn after a complete state snapshot.
+
+    The orchestrator renders this payload with its deterministic state report.
+    Combined requests such as "check status, then go to dock" keep running the
+    normal model loop so the requested action is not silently dropped.
+    """
+
+    state_only = (
+        len(results) == 1
+        and results[0].tool.name == "ros_state_tool"
+        and is_read_only_state_request(ctx.context.run.user_input)
+    )
+    return ToolsToFinalOutputResult(
+        is_final_output=state_only,
+        final_output=results[0].output if state_only else None,
+    )
+
+
 def build_ros_explorer_agent(
     config: AppConfig, client: AsyncOpenAI | None = None
 ) -> Agent[JenAIRunContext]:
@@ -52,6 +75,7 @@ def build_ros_explorer_agent(
         handoff_description="Look up ROS2 topics, message types and formats (read-only).",
         instructions=ROS_EXPLORER_INSTRUCTIONS,
         model=build_model(config, binding="chat", client=client),
+        tool_use_behavior=_finish_read_only_state,
         tools=[
             ros_topics_tool,
             ros_topic_info_tool,
@@ -142,6 +166,7 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
         name="JenAI",
         instructions=SUPERVISOR_INSTRUCTIONS,
         model=build_model(config, binding="chat", client=client),
+        tool_use_behavior=_finish_read_only_state,
         # Mirror the complete bounded navigation workflow on the supervisor.
         # Some OpenAI-compatible local models select a specialist tool by name
         # but omit the handoff wrapper, especially on a follow-up turn. Keeping
@@ -149,6 +174,12 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
         # preserving route_execute/explore approval and NavigationGateway safety.
         tools=[
             shell_run_tool,
+            # Keep common live-state inspection directly reachable. Local
+            # models otherwise tend to choose the supervisor's shell tool
+            # instead of emitting a handoff for a simple read-only question.
+            ros_topics_tool,
+            ros_topic_info_tool,
+            ros_state_tool,
             loc_lookup_tool,
             route_preview_tool,
             route_execute_tool,

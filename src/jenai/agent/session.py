@@ -24,10 +24,13 @@ def _sessions_dir() -> Path:
     return Path.home() / ".config" / "jenai" / "sessions"
 
 
-# Keep only the most recent N conversation items per session. Bounds the on-disk
-# file and the number of tokens replayed to the model, so a long-lived session
-# stays cheap instead of growing without limit.
-_MAX_ITEMS = 200
+# Bound both item count and serialized size. Tool outputs (especially ROS scans)
+# can be thousands of characters each, so an item-only cap still lets a stable
+# project session grow into a large prompt whose prefill dominates local-model
+# latency. Trimming advances to a user-message boundary to avoid replaying a
+# dangling tool result without the call that produced it.
+_MAX_ITEMS = 80
+_MAX_BYTES = 64 * 1024
 
 # A lock on each session path closes the gap between separate
 # JenAIFileSession instances in one process. The on-disk lock below covers
@@ -124,6 +127,22 @@ class JenAIFileSession(SessionABC):
 
     def _save(self, items: list[dict]) -> None:
         capped = items[-_MAX_ITEMS:]
+        while capped:
+            payload = json.dumps(capped, ensure_ascii=False)
+            if len(payload.encode("utf-8")) <= _MAX_BYTES:
+                break
+            next_user = next(
+                (
+                    index
+                    for index, item in enumerate(capped[1:], start=1)
+                    if item.get("role") == "user"
+                ),
+                None,
+            )
+            # If no later user boundary exists, the newest turn cannot fit as a
+            # coherent unit (for example one oversized sensor/tool result).
+            # Drop it instead of persisting a dangling or over-budget item.
+            capped = capped[next_user:] if next_user is not None else []
         # Write to a temp file then atomically replace, so an interrupted write
         # (esc/kill mid-run) can never leave a truncated file that would load as
         # empty and silently wipe the whole session.

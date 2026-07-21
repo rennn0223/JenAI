@@ -193,6 +193,9 @@
   Perception),用 SDK 的 **handoffs** 接線 —— 每個專職只帶自己的小工具集,
   小模型選工具才穩(工具全塞一個 agent 會亂選)。
 - **orchestrator.py**:`/run` 的主迴圈。關鍵設計:
+  - **唯讀快速路徑**:明確只查位置、LaserScan 與 Nav2 readiness 的自然語言要求，
+    直接執行與 specialist 共用的受記錄 `ros_state` 工具並確定性渲染；一旦含有
+    動作、導航、建議或決策語意，仍交回完整 Agent 與批准流程。
   - `max_turns=6`:弱模型會迴圈(重發 drive 維持運動),回合上限止血。
   - **批准=SDK interruptions**:工具標 `needs_approval` → `Runner.run` 中斷
     → TUI 彈卡 → `resume_run` 帶決定續跑。動作本體在 server 側狀態裡,
@@ -203,7 +206,8 @@
   **結構保證**(沒有工具可呼叫),不是 prompt 央求。
 - **guardrails.py**:輸入 guardrail 攔「拆機器人」這類請求(SDK tripwire)。
 - **session.py**:`JenAIFileSession` 實作 SDK 的 Session 介面存 JSONL ——
-  跨重啟記憶;`/clear` 真的清檔案。
+  跨重啟記憶;每次新 user turn 依項目數與 UTF-8 位元組數修剪，避免長期使用讓
+  本地模型 context 無界膨脹;`/clear` 真的清檔案。
 - **context.py**:dataclass,把 config/run_store/bridge getter 穿過 SDK 的
   `context` 參數傳給每個工具 —— 工具不碰全域。
 - **tracing.py**:SDK TracingProcessor 落地本地 JSONL(`traces/`)——

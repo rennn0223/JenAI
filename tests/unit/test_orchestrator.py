@@ -11,7 +11,7 @@ from agents import Agent, MaxTurnsExceeded, Runner
 from jenai.agent import orchestrator
 from jenai.agent.context import JenAIRunContext
 from jenai.config.store import build_minimal_config
-from jenai.schemas import EffectScope, RiskLevel, ToolCallCategory, ToolCallRecord
+from jenai.schemas import EffectScope, RiskLevel, RunRecord, ToolCallCategory, ToolCallRecord
 from jenai.state.runs import RunStore
 from jenai.state.session import create_session
 from jenai.tools.registry import TOOL_RISK_REGISTRY, ToolRiskInfo
@@ -89,6 +89,54 @@ def test_tool_result_summary_falls_back_to_recorded_outcomes(monkeypatch) -> Non
     summary = orchestrator._tool_result_summary(ctx.run)
     assert "ros_schema_tool" in summary
     assert "geometry_msgs/msg/Twist" in summary
+
+
+def test_status_only_run_uses_deterministic_measured_report() -> None:
+    run = RunRecord(
+        session_id="session-1",
+        user_input="幫我檢查現在機器人的位置、雷射掃描與 Nav2 狀態",
+        tool_calls=[
+            ToolCallRecord(
+                tool_name="ros_state_tool",
+                category=ToolCallCategory.ROS2,
+                input_summary="read robot state",
+                status="succeeded",
+                raw_output={
+                    "pose_summary": {
+                        "frame_id": "map",
+                        "x": -5.856,
+                        "y": -1.298,
+                        "yaw_rad": 1.86,
+                    },
+                    "scan_summary": {
+                        "field_of_view_deg": 180.0,
+                        "range_min": 0.05,
+                        "range_max": 100.0,
+                        "expected_sample_count": 362,
+                        "observed_sample_count": 128,
+                        "ranges_truncated": True,
+                        "observed_finite_sample_count": 61,
+                        "nearest_observed_valid_range_m": 19.81,
+                    },
+                    "availability": {"pose": True, "odom": False, "scan": True},
+                    "nav2": {
+                        "ready": True,
+                        "checks": {"map": True, "laser": True},
+                        "activity": "NOT_MEASURED",
+                    },
+                },
+            )
+        ],
+    )
+
+    report = orchestrator._deterministic_state_report(run)
+
+    assert "x -5.856 m · y -1.298 m" in report
+    assert "視角 180.00° · 範圍 0.05–100.00 m" in report
+    assert "樣本：預期 362 · CLI 顯示 128（截斷）" in report
+    assert "最近已顯示有效回傳 19.81 m" in report
+    assert "不能判定閒置、停止或移動中" in report
+    assert "未送出任何移動指令" in report
 
 
 def test_ros_developer_cannot_complete_after_unverified_actuation(monkeypatch) -> None:

@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+from textual.markup import escape
 from textual.widgets import Static
 
-from jenai.schemas import JenAIError, PlanStep, ToolCallRecord
+from jenai.schemas import JenAIError, PlanStep, RunRecord, ToolCallRecord
 
 # Claude Code-style markers (kept local to avoid importing the app module).
 BULLET = "⏺"
 ELBOW = "⎿"
-ACCENT = "#d97757"
-GREEN = "#7d9b6a"
-ERROR = "#cb6250"
-MUTED = "#9c9689"
-TEXT = "#f2ede1"
+ACCENT = "#e8683f"
+GREEN = "#8fbf6f"
+ERROR = "#d85f52"
+MUTED = "#8f897f"
+TEXT = "#f2ede4"
 
 _STEP_ICONS = {
     "pending": "○",
@@ -29,6 +30,7 @@ _FRIENDLY_TOOL = {
     "ros_topic_info_tool": "Topic info",
     "ros_schema_tool": "Read message format",
     "ros_echo_tool": "Peek messages",
+    "ros_state_tool": "Inspect robot state",
     "ros_pub_validate_tool": "Check message",
     "ros_pub_execute_tool": "Publish",
     "ros_drive_execute_tool": "Drive",
@@ -75,16 +77,64 @@ class ToolBlock(Static):
     """A tool call rendered as `⏺ tool(args)` with an elbow result line."""
 
     def __init__(self, tool_call: ToolCallRecord) -> None:
-        call = tool_call
-        marker_color = GREEN if call.status == "succeeded" else ACCENT
+        super().__init__("", classes="bullet-line")
+        self.set_tool_call(tool_call)
+
+    @staticmethod
+    def _markup(call: ToolCallRecord) -> str:
+        marker_color = (
+            GREEN if call.status == "succeeded" else ERROR if call.status == "failed" else ACCENT
+        )
         header = f"[{marker_color}]{BULLET}[/] [bold {TEXT}]{_friendly_tool(call.tool_name)}[/]"
         if call.input_summary:
-            header += f" [{MUTED}]· {call.input_summary}[/]"
+            header += f" [{MUTED}]· {escape(call.input_summary)}[/]"
         lines = [header]
-        result = call.output_summary or f"status: {call.status}"
-        lines.append(f"  [{MUTED}]{ELBOW}[/] [{MUTED}]{result}[/]")
-        super().__init__("\n".join(lines), classes="bullet-line")
+        result = call.output_summary or ("working…" if call.status == "running" else call.status)
+        lines.append(f"  [{MUTED}]{ELBOW}[/] [{MUTED}]{escape(str(result))}[/]")
+        return "\n".join(lines)
+
+    def set_tool_call(self, tool_call: ToolCallRecord) -> None:
+        """Refresh a live tool row as it moves from running to a terminal state."""
+
         self.tool_call = tool_call
+        self.update(self._markup(tool_call))
+
+
+class AgentProgressBlock(Static):
+    """Visible execution-stage summary without exposing private chain-of-thought."""
+
+    def __init__(self, run: RunRecord) -> None:
+        super().__init__("", classes="bullet-line")
+        self.run_id = run.run_id
+        self.set_run(run)
+
+    @staticmethod
+    def _detail(run: RunRecord) -> str:
+        if run.status == "planning":
+            return "Planning the requested task…"
+        running = [call for call in run.tool_calls if call.status == "running"]
+        if running:
+            names = ", ".join(_friendly_tool(call.tool_name) for call in running)
+            return f"Using {names}…"
+        if run.status == "awaiting_approval":
+            return "Waiting for operator approval before taking action."
+        if run.status in {"completed", "failed", "blocked"}:
+            count = len(run.tool_calls)
+            noun = "tool result" if count == 1 else "tool results"
+            return f"Reasoning complete · {count} recorded {noun}."
+        if run.tool_calls:
+            count = len(run.tool_calls)
+            noun = "result" if count == 1 else "results"
+            return f"Reviewing {count} recorded tool {noun}…"
+        return "Understanding the request and selecting a capability…"
+
+    def set_run(self, run: RunRecord) -> None:
+        detail = escape(self._detail(run))
+        markup = (
+            f"[{ACCENT}]{BULLET}[/] [bold {TEXT}]Agent[/]\n"
+            f"  [{MUTED}]{ELBOW}[/] [{MUTED}]{detail}[/]"
+        )
+        self.update(markup)
 
 
 class ErrorBlock(Static):

@@ -25,6 +25,12 @@ from jenai.schemas import Location, Pose2D
 from jenai.tui.panels import MUTED, OutputPanel, TimelineItem
 
 
+def _format_location_row(location: Location) -> str:
+    aliases = ", ".join(location.aliases)
+    suffix = f" · {aliases}" if aliases else ""
+    return f"[bold #f2ede1]{location.name}[/]{suffix}"
+
+
 class LocationCommandsMixin:
     async def _show_loc_list(self, _: str = "") -> None:
         locations = self._load_locations()
@@ -33,10 +39,7 @@ class LocationCommandsMixin:
                 TimelineItem("warn", "No locations configured. Add entries to locations.toml.")
             )
             return
-        rows = [
-            f"[bold #f2ede1]{loc.name}[/] · {', '.join(loc.aliases) or 'no aliases'}"
-            for loc in locations
-        ]
+        rows = [_format_location_row(loc) for loc in locations]
         await self._mount_event(OutputPanel("Locations", "\n".join(rows)))
 
     async def _show_loc_add(self, arg: str) -> None:
