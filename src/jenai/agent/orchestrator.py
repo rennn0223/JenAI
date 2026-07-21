@@ -11,6 +11,7 @@ from agents import (
     MaxTurnsExceeded,
     ModelBehaviorError,
     RunConfig,
+    RunContextWrapper,
     Runner,
     ToolTimeoutError,
 )
@@ -32,6 +33,7 @@ from jenai.schemas import (
 from jenai.schemas.models import new_id
 from jenai.tools.approval_formatters import format_approval
 from jenai.tools.registry import TOOL_RISK_REGISTRY
+from jenai.tools.ros2_agent_tools import inspect_robot_state
 
 _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
 
@@ -88,6 +90,30 @@ async def start_run(
         return run
 
     return _process_result(ctx, result)
+
+
+async def start_read_only_state_run(ctx: JenAIRunContext) -> RunRecord:
+    """Execute an unambiguous observation request without an LLM round trip.
+
+    State inspection is not a high-level decision: the output is already
+    deterministic, measured, and read-only. Keeping it on the same recorded
+    tool primitive preserves the TUI timeline and audit evidence while avoiding
+    two expensive local-model turns and preventing live sensor payloads from
+    entering conversation memory.
+    """
+
+    run, run_store = ctx.run, ctx.run_store
+    run_store.set_status(run, RunStatus.UNDERSTANDING)
+    run_store.set_status(run, RunStatus.RUNNING)
+    try:
+        await inspect_robot_state(RunContextWrapper(ctx))
+    except Exception as exc:
+        run_store.finish(run, status=RunStatus.FAILED, error=_error_from_exc(exc))
+        return run
+
+    final_output = _deterministic_state_report(run) or _tool_result_summary(run)
+    run_store.finish(run, status=RunStatus.COMPLETED, final_output=final_output)
+    return run
 
 
 async def resume_with_approvals(
@@ -250,6 +276,35 @@ def _tool_result_summary(run: RunRecord) -> str:
 _STATE_SUBJECTS = ("state", "status", "position", "pose", "scan", "nav2", "位置", "雷射", "狀態")
 _STATE_INSPECTION = ("check", "inspect", "show", "current", "檢查", "查看", "現在", "目前")
 _STATE_DECISION = ("should", "recommend", "是否應該", "建議", "該不該")
+_STATE_ACTIONS = (
+    "drive",
+    "navigate",
+    "go to",
+    "move to",
+    "route",
+    "dock",
+    "patrol",
+    "explore",
+    "前往",
+    "移動到",
+    "導航到",
+    "回到",
+    "巡邏",
+    "探索",
+    "停靠",
+)
+
+
+def is_read_only_state_request(text: str) -> bool:
+    """Whether a request only asks for live state, with no decision or action."""
+
+    lowered = text.lower()
+    return (
+        any(term in lowered for term in _STATE_SUBJECTS)
+        and any(term in lowered for term in _STATE_INSPECTION)
+        and not any(term in lowered for term in _STATE_DECISION)
+        and not any(term in lowered for term in _STATE_ACTIONS)
+    )
 
 
 def _deterministic_state_report(run: RunRecord) -> str:
@@ -258,12 +313,7 @@ def _deterministic_state_report(run: RunRecord) -> str:
     calls = [call for call in run.tool_calls if call.tool_name == "ros_state_tool"]
     if len(run.tool_calls) != 1 or len(calls) != 1 or calls[0].raw_output is None:
         return ""
-    text = run.user_input.lower()
-    if not any(term in text for term in _STATE_SUBJECTS):
-        return ""
-    if not any(term in text for term in _STATE_INSPECTION):
-        return ""
-    if any(term in text for term in _STATE_DECISION):
+    if not is_read_only_state_request(run.user_input):
         return ""
 
     payload = calls[0].raw_output

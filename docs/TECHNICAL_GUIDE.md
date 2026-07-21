@@ -192,7 +192,7 @@ jenai daemon                                        # Ctrl-C 停止
 | `config/setup.py` | 223 | **Setup Wizard**:橘色主題三步設定;誤貼金鑰自動安全搬遷至 `.env`(0600) |
 | `tools/perception.py` | ~180 | **PerceptionLoop**:持續相機→VLM→結構化 `SceneAnalysis`(場景/物件/affordances/建議動作);TUI `/perception`、daemon `@perception` 規則共用;只觀察不動作 |
 | `mcp_server/server.py` | 183 | FastMCP stdio server:唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |
-| `agent/orchestrator.py` 等 | ~600 | /run 代理:規劃、specialist 工具、批准中斷、guardrails、tracing |
+| `agent/orchestrator.py` 等 | ~700 | /run 代理:規劃、specialist 工具、批准中斷、guardrails、tracing；純唯讀 ROS 狀態要求走共用工具的確定性快速路徑，混合／動作要求保留完整 LLM 與批准流程；session 有項目與 UTF-8 位元組上限 |
 | `providers/chat.py` | 337 | OpenAI 相容呼叫:`ask_provider`、**`stream_provider`(串流)**、`ask_json`、`ask_vision_json`、`list_provider_models`;`_provider_errors` 共用例外映射;`parse_json_reply`(寬容解析,thinking 模型必備) |
 | `adapters/ros2_adapter.py` | 304 | `ros2` CLI subprocess 包裝(有 timeout、錯誤分類) |
 | `adapters/locations.py` | ~200 | locations.toml 載入/儲存/模糊搜尋;`load_locations_tolerant`(全介面共用的容錯載入) |

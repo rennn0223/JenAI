@@ -39,10 +39,12 @@ def test_tui_uses_colored_dachshund_mascot() -> None:
     mascot = pixel_mark()
     styles = {str(span.style) for span in mascot.spans}
 
-    assert any("#8c4c26" in style for style in styles)
-    assert any("#d68742" in style for style in styles)
-    assert any("#2b190d" in style for style in styles)
-    assert 4 <= mascot.plain.count("\n") <= 7
+    assert any("#513d32" in style for style in styles)
+    assert any("#ba773e" in style for style in styles)
+    assert any("#1f110a" in style for style in styles)
+    assert any("#6ff8f9" in style for style in styles)
+    assert any("#f2ede4" in style for style in styles)
+    assert 6 <= mascot.plain.count("\n") <= 9
     assert pixel_mark(0).plain != pixel_mark(1).plain
 
 
@@ -145,6 +147,16 @@ def test_tui_welcome_reflows_at_real_wide_narrow_and_compact_viewports(
             assert not list(app.query("#welcome-doctor-status"))
             assert str(app.query_one("#composer-prompt").render()) == ">"
             assert app.query_one("#composer").placeholder == 'Try "check the robot status"'
+
+            status_left = str(app.query_one("#status-left").render())
+            status_right = str(app.query_one("#status-right").render())
+            if size[0] < 70:
+                assert status_left == "approve"
+                assert "shift+tab" not in status_left
+                assert "~/" not in status_right
+            else:
+                assert "shift+tab" in status_left
+                assert "~/" in status_right
 
             if not narrow:
                 titles = [str(item.render()) for item in app.query(".welcome-section-title")]
@@ -1848,17 +1860,13 @@ def test_mascot_frames_animate_but_keep_size() -> None:
     assert len(sizes) == 1  # identical bounding box across all poses
 
 
-def test_mascot_tick_preserves_supplied_full_size_artwork() -> None:
+def test_welcome_uses_compact_animated_artwork() -> None:
     async def run() -> None:
         app = _app()
-        async with app.run_test() as pilot:
+        async with app.run_test():
             mark = app.query_one("#pixel-mark")
-            before = str(mark.render())
-            app._animate_mascot()
-            app._animate_mascot()
-            await pilot.pause()
-            assert str(mark.render()) == before
-            assert mark.has_class("full-mascot")
+            assert mark.render().spans
+            assert not mark.has_class("full-mascot")
 
     asyncio.run(run())
 
@@ -1914,18 +1922,31 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
     async def fake_run(self, arg):
         calls.append(("run", arg))
 
+    async def fake_state(self, arg):
+        calls.append(("state", arg))
+
     monkeypatch.setattr(JenAITuiApp, "_show_plan", fake_plan)
     monkeypatch.setattr(JenAITuiApp, "_show_run", fake_run)
+    monkeypatch.setattr(JenAITuiApp, "_show_state_inspection", fake_state)
 
     async def run() -> None:
         app = _app()
         async with app.run_test():
             await app.handle_user_text("帶我去機械系館")  # approve → agent
+            await app.handle_user_text(
+                "檢查位置、雷射與 Nav2 狀態，不要移動機器人。"
+            )
+            await app.handle_user_text("檢查 Nav2 狀態，然後回到 dock。")
             app._mode = "plan"
             await app.handle_user_text("帶我去機械系館")  # plan → planner
 
     asyncio.run(run())
-    assert calls == [("run", "帶我去機械系館"), ("plan", "帶我去機械系館")]
+    assert calls == [
+        ("run", "帶我去機械系館"),
+        ("state", "檢查位置、雷射與 Nav2 狀態，不要移動機器人。"),
+        ("run", "檢查 Nav2 狀態，然後回到 dock。"),
+        ("plan", "帶我去機械系館"),
+    ]
 
 
 def test_plain_greeting_uses_toolless_chat(monkeypatch) -> None:

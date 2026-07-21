@@ -132,6 +132,28 @@ def test_ros_nav_status_reports_readiness_without_inventing_activity(monkeypatch
     assert "another client" in status["activity_note"]
 
 
+def test_ros_nav_status_retries_a_cold_partial_topic_graph(monkeypatch) -> None:
+    calls = 0
+
+    def list_topics(**kwargs):
+        nonlocal calls
+        calls += 1
+        return [] if calls == 1 else ["/map", "/amcl_pose", "/scan", "/cmd_vel"]
+
+    monkeypatch.setattr(ros2_adapter, "list_topics", list_topics)
+    monkeypatch.setattr(ros2_adapter, "list_actions", lambda **kw: ["/navigate_to_pose"])
+    monkeypatch.setattr(
+        ros2_adapter,
+        "topic_info",
+        lambda topic, **kw: ros2_adapter.TopicInfo(name=topic, subscriber_count=1),
+    )
+
+    status = asyncio.run(ros2_core.ros_nav_status(_config()))
+
+    assert calls == 2
+    assert status["ready"] is True
+
+
 def test_ros_nav_status_fails_readiness_when_action_or_controller_is_missing(
     monkeypatch,
 ) -> None:

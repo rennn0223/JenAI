@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import multiprocessing
 import threading
 from types import SimpleNamespace
@@ -69,6 +70,35 @@ def test_supervisor_hands_off_to_specialists() -> None:
     } <= supervisor_tools
 
     assert "ros_drive_execute_tool" not in supervisor_tools
+
+
+def test_state_snapshot_stops_without_second_model_turn_only_for_read_only_request() -> None:
+    sup = build_supervisor_agent(_config())
+    behavior = sup.tool_use_behavior
+    assert callable(behavior)
+    result = SimpleNamespace(
+        tool=SimpleNamespace(name="ros_state_tool"),
+        output={"nav2": {"ready": True}},
+    )
+
+    read_ctx = SimpleNamespace(
+        context=SimpleNamespace(
+            run=SimpleNamespace(
+                user_input="幫我檢查位置、雷射與 Nav2 狀態，不要移動機器人。"
+            )
+        )
+    )
+    combined_ctx = SimpleNamespace(
+        context=SimpleNamespace(
+            run=SimpleNamespace(user_input="檢查 Nav2 狀態，然後回到 dock。")
+        )
+    )
+
+    read_only = behavior(read_ctx, [result])
+    combined = behavior(combined_ctx, [result])
+    assert read_only.is_final_output is True
+    assert read_only.final_output == result.output
+    assert combined.is_final_output is False
 
 
 def test_agent_client_has_a_bounded_non_retrying_request(monkeypatch) -> None:
@@ -234,6 +264,45 @@ def test_session_history_is_capped(tmp_path) -> None:
         items = await session.get_items()
         assert len(items) == session_mod._MAX_ITEMS
         assert items[-1]["n"] == session_mod._MAX_ITEMS + 49  # newest kept
+
+    asyncio.run(run())
+
+
+def test_session_history_is_byte_capped_at_complete_turn_boundary(tmp_path) -> None:
+    from jenai.agent import session as session_mod
+
+    session = JenAIFileSession("large-tools", directory=tmp_path)
+    turns = []
+    for index in range(6):
+        turns.extend(
+            [
+                {"role": "user", "content": f"turn-{index}"},
+                {"role": "assistant", "content": "x" * 20_000},
+            ]
+        )
+
+    async def run():
+        await session.add_items(turns)
+        items = await session.get_items()
+        encoded = json.dumps(items, ensure_ascii=False).encode("utf-8")
+        assert len(encoded) <= session_mod._MAX_BYTES
+        assert items[0]["role"] == "user"
+        assert items[-2]["content"] == "turn-5"
+
+    asyncio.run(run())
+
+
+def test_session_drops_one_oversized_incomplete_turn(tmp_path) -> None:
+    session = JenAIFileSession("oversized-turn", directory=tmp_path)
+
+    async def run():
+        await session.add_items(
+            [
+                {"role": "user", "content": "inspect state"},
+                {"role": "assistant", "content": "x" * 70_000},
+            ]
+        )
+        assert await session.get_items() == []
 
     asyncio.run(run())
 

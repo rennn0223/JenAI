@@ -253,6 +253,10 @@ class JenAITuiApp(
             welcome = self.query_one("#welcome")
             welcome.set_class(width < 92, "narrow")
             welcome.set_class(width < 56 or height < 27, "compact")
+            compact_status = width < 70
+            if compact_status != getattr(self, "_compact_status", False):
+                self._compact_status = compact_status
+                self._update_statusbar()
             palette = self.query_one("#palette", CommandPalette)
             # The normal 16-row menu is unchanged on common terminals.  On
             # short screens cap it so the composer and status line stay visible.
@@ -541,6 +545,8 @@ class JenAITuiApp(
                     await self._stream_chat_reply(value)
                 elif self._mode == "plan":
                     await self._show_plan(value)
+                elif orchestrator.is_read_only_state_request(value):
+                    await self._show_state_inspection(value)
                 else:  # approve / auto — the run agent answers questions too
                     await self._show_run(value)
             except Exception as exc:
@@ -1007,6 +1013,16 @@ class JenAITuiApp(
         run = await self._run_with_agent_progress(ctx, orchestrator.start_run(agent, ctx, arg))
         await self._render_run_update(ctx, run, agent=agent)
 
+    async def _show_state_inspection(self, arg: str) -> None:
+        """Fast path for explicit read-only pose/scan/Nav2 status questions."""
+
+        ctx = self._new_run_context(arg)
+        self._scroll_to_bottom()
+        run = await self._run_with_agent_progress(
+            ctx, orchestrator.start_read_only_state_run(ctx)
+        )
+        await self._render_run_update(ctx, run)
+
     async def _show_why(self, _: str = "") -> None:
         run = self._current_run()
         if run is None:
@@ -1156,6 +1172,8 @@ class JenAITuiApp(
 
     def _status_left(self) -> str:
         chip = self._MODE_CHIP.get(getattr(self, "_mode", "approve"), "")
+        if getattr(self, "_compact_status", False):
+            return chip
         queued = len(getattr(self, "_command_queue", ()))
         queue_text = f" · queue {queued}" if queued else ""
         return f"{chip} [#7a756c]shift+tab · ? shortcuts{queue_text}[/]"
@@ -1163,6 +1181,8 @@ class JenAITuiApp(
     def _status_right(self) -> str:
         profile = self._active_profile()
         provider = profile.provider if profile else "no-provider"
+        if getattr(self, "_compact_status", False):
+            return f"[#7a756c]{provider} · {self._chat_model_display()}[/]"
         return f"[#7a756c]{provider} · {self._chat_model_display()} · {_short_cwd()}[/]"
 
     def _status_line(self) -> str:

@@ -97,6 +97,22 @@ def test_find_location_alias_match_case_insensitive() -> None:
     assert found.name == "Mechanical Hall"
 
 
+def test_find_location_ignores_model_supplied_english_article() -> None:
+    locations = _sample_locations()
+
+    assert find_location(locations, "the Engineering Building").name == "Engineering Building"
+    assert find_location(locations, "a mech hall").name == "Mechanical Hall"
+
+
+def test_find_location_prefers_literal_name_before_stripping_article() -> None:
+    locations = _sample_locations()
+    locations.append(
+        Location(name="The Engineering Building", pose=Pose2D(x=9.0, y=9.0, yaw=0.0))
+    )
+
+    assert find_location(locations, "The Engineering Building").pose.x == 9.0
+
+
 def test_find_location_fuzzy_suggests_candidates_on_miss() -> None:
     locations = _sample_locations()
     with pytest.raises(LocationNotFoundError) as exc_info:

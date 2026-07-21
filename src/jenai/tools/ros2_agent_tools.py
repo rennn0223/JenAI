@@ -254,13 +254,9 @@ async def ros_echo_tool(
     return output.model_dump()
 
 
-@function_tool
-async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
-    """Observe the robot's current state — a one-shot snapshot of the localized pose
-    (/amcl_pose), odometry (/odom), laser scan (/scan), and Nav2 readiness. Use this to
-    check where the robot is, whether scan feedback exists, and whether navigation is ready
-    before or after moving. The pose field is the map-frame position; navigation only needs
-    a destination, so a missing pose must never make you ask the human where the robot is."""
+async def inspect_robot_state(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
+    """Run the recorded read-only robot/Nav2 observation primitive."""
+
     call = _record_call(ctx, "ros_state_tool", "read robot state")
     state, nav2 = await asyncio.gather(
         ros2_core.ros_state(ctx.context.config),
@@ -278,6 +274,16 @@ async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
         raw_output=result,
     )
     return result
+
+
+@function_tool
+async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
+    """Observe the robot's current state — a one-shot snapshot of the localized pose
+    (/amcl_pose), odometry (/odom), laser scan (/scan), and Nav2 readiness. Use this to
+    check where the robot is, whether scan feedback exists, and whether navigation is ready
+    before or after moving. The pose field is the map-frame position; navigation only needs
+    a destination, so a missing pose must never make you ask the human where the robot is."""
+    return await inspect_robot_state(ctx)
 
 
 @function_tool

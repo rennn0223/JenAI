@@ -168,13 +168,21 @@ async def ros_state(
     # /amcl_pose is the map-frame truth and must be read latched (AMCL only
     # re-publishes on updates). Vehicles may also rename odom (Carter uses
     # /chassis/odom), so pose must never depend on /odom alone.
+    # These are independent snapshots. Running them concurrently keeps the
+    # combined observation timestamp-local and prevents one absent optional
+    # topic (commonly /odom in Isaac/Nav2) from serially delaying pose and scan.
+    pose, odom, scan = await asyncio.gather(
+        _snap("/amcl_pose", latched=True),
+        _snap(odom_topic),
+        _snap(scan_topic),
+    )
     return {
         "pose_topic": "/amcl_pose",
         "odom_topic": odom_topic,
         "scan_topic": scan_topic,
-        "pose": await _snap("/amcl_pose", latched=True),
-        "odom": await _snap(odom_topic),
-        "scan": await _snap(scan_topic),
+        "pose": pose,
+        "odom": odom,
+        "scan": scan,
     }
 
 
@@ -191,6 +199,17 @@ async def ros_nav_status(config: AppConfig) -> dict:
     )
     topic_names = set(topics)
     action_names = set(actions)
+    required_topics = {"/map", "/amcl_pose", "/scan"}
+    if not required_topics <= topic_names:
+        # A freshly started ros2 daemon can return a partial graph on its first
+        # discovery pass even though Nav2 is already publishing. Retry only the
+        # missing topic inventory once; keep the union so a transient second
+        # result can never erase evidence observed in the first pass.
+        await asyncio.sleep(0.2)
+        try:
+            topic_names.update(await asyncio.to_thread(ros2_adapter.list_topics))
+        except ros2_adapter.Ros2AdapterError:
+            pass
     cmd_vel_subscribed = False
     try:
         cmd_info = await asyncio.to_thread(ros2_adapter.topic_info, config.vehicle.cmd_vel_topic)

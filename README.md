@@ -258,7 +258,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v2.0.2，2026-07）
+## 狀態（v2.1.0，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
@@ -267,6 +267,8 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 > ✅ **介面**：Claude 風格 TUI（會動的吉祥物+權限三模式 Shift+Tab）、多頁 WebUI（Console／Camera／Status／API，token 認證+手機批准+即時地圖+STOP）、MCP server、daemon 常駐、`skills/*.toml` 檔案定義技能。全部走同一套共用原語（導航調度、急停、相機分析、地點載入各只有一份）。
 >
 > ✅ **Copilot 與決策腦**：`JenAI scaffold` 自然語言生成 ROS2 套件（`--build` 生成即驗證閉環）；`decision_core` 有界動作決策 + `JenAI eval` E1 評測；ROS Developer 依 live graph 完成 topic/schema 發現，並以單一 `ros_drive_verified` 能力原子化基準里程計、一次性受批准動作、自動停止與後驗回授，不持有任意 shell。
+>
+> ✅ **確定性快速路徑**：明確且純唯讀的自然語言狀態查詢（位置、LaserScan、Nav2 readiness）直接使用與 Agent 共用的受記錄 ROS2 工具，不等待本地 35B 模型；含導航、巡邏、建議或其他決策／致動語意的混合要求仍走完整 LLM、批准與執行邊界，不會因關鍵字分流遺失動作。
 >
 > ✅ **工程**：完整自動化測試套件（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >

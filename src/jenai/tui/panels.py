@@ -63,7 +63,7 @@ class WelcomePanel(Container):
         with Horizontal(id="welcome-content"):
             with Vertical(id="welcome-left"):
                 yield Static("Welcome back!", id="welcome-greeting", classes="heading")
-                yield Static(terminal_mascot(), id="pixel-mark", classes="full-mascot")
+                yield Static(pixel_mark(), id="pixel-mark")
                 yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
             with Vertical(id="welcome-right"):
                 yield Static("Tips for getting started", classes="welcome-section-title")
@@ -293,33 +293,40 @@ def _short_cwd() -> str:
         return str(cwd)
 
 
-# Terminal-sized reduction of the mascot embedded in the user-approved HTML
-# concept (80×58 source pixels → 15×13 square pixels).  A terminal character
-# is roughly twice as tall as it is wide, so two vertical pixels are packed
-# into each half-block character below.  This keeps the source aspect ratio
-# instead of stretching the dachshund horizontally.
+# Compact, original dachshund mascot designed for the terminal welcome panel.
+# The dark coat and cyan status collar echo the robot-dog direction without
+# turning the friendly mascot into a mechanical character.  A terminal cell
+# is roughly twice as tall as it is wide, so two square pixels are packed into
+# each half-block character below.  This 34×18 grid was sampled from candidate
+# C's source artwork and occupies only 34×9 terminal cells.
 _DESIGNED_DOG = (
-    "  KKKK",
-    " KBBBK",
-    "KBBKDK",
-    "KTTBDK        K",
-    "KTTBDK       KK",
-    " KBDK       KDK",
-    "  KDKKKKKKKDKK",
-    "   KBBBBBBBBBBK",
-    "   KTBBBBBBBBBK",
-    "   KBBBBBBBBBBK",
-    "   KBKBBBBBKBBK",
-    "   KTK     KTBK",
-    "   KKK     KKK",
-    "",
+    "                                  ",
+    "     KDBBBBBK                     ",
+    "    KBBBDDDDBK                    ",
+    "    KBBBDDDDDBK               K   ",
+    "    DDTTTDKDDDB              KB   ",
+    " DKBDDDWKDDDDDBK             KBK  ",
+    " BDBBBBDDDDDDDDK             DD   ",
+    " DTTTTTTDKDDDDD             KBK   ",
+    "  DBBTTTDKDDDDKKK          DBDK   ",
+    "       KCKKDDKDDBBBBBBBBBBBDDK    ",
+    "       BCDDDKDDDDDDDDDDDDDDDK     ",
+    "       DCDDDDDDDDDDDDDDDDDDDD     ",
+    "       BTBDDDDDDDDDDDDDDDDDDD     ",
+    "       KTTDDDDDDDDDDDDDDDDDDDK    ",
+    "        KDKDDDKBBBBBBDDDKKDDBD    ",
+    "       KTDKBTBKKDDDDK  KBDKBTD    ",
+    "       DBKBTTK         DBKBTTK    ",
+    "                           K      ",
 )
 
 _DESIGNED_DOG_COLORS = {
-    "K": "#2b190d",  # outline / eye
-    "B": "#8c4c26",  # coat
-    "D": "#743b20",  # ear / shadow
-    "T": "#d68742",  # muzzle / chest / paws
+    "K": "#1f110a",  # outline / eye
+    "B": "#513d32",  # chocolate coat highlight
+    "D": "#3c2c26",  # coat / floppy ear
+    "T": "#ba773e",  # muzzle / chest / paws
+    "C": "#6ff8f9",  # robot status collar
+    "W": "#f2ede4",  # bright eye against the dark coat
 }
 
 
@@ -335,7 +342,7 @@ def terminal_mascot() -> Text:
 
 
 def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
-    """Render the HTML concept's dachshund with a tiny terminal animation."""
+    """Render the compact robot-dog dachshund with a tiny terminal animation."""
 
     width, height = max(map(len, _DESIGNED_DOG)), len(_DESIGNED_DOG)
     cells: dict[tuple[int, int], str | None] = {}
@@ -343,18 +350,18 @@ def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
         for x, token in enumerate(row.ljust(width)):
             cells[(x, y)] = _DESIGNED_DOG_COLORS.get(token)
 
-    # The approved sprite faces left. Its tail occupies the far-right pixels;
-    # alternate the tip without changing the 15×14 bounding box.
+    # The sprite faces left. Its tail occupies the far-right pixels; alternate
+    # the tip without changing the 34×18 bounding box.
     if frame % 2:
-        cells[(14, 3)] = None
-        cells[(14, 5)] = _DESIGNED_DOG_COLORS["K"]
+        cells[(30, 3)] = None
+        cells[(30, 2)] = _DESIGNED_DOG_COLORS["K"]
 
     # Preserve the old status animation: blink occasionally while idle and
     # lift alternating paws while a task is running.
     if not running and frame % 8 == 6:
-        cells[(3, 2)] = _DESIGNED_DOG_COLORS["B"]
+        cells[(7, 5)] = _DESIGNED_DOG_COLORS["D"]
     if running:
-        lift = ((5, 12), (11, 12)) if frame % 2 else ((7, 11), (14, 11))
+        lift = ((10, 16), (29, 16)) if frame % 2 else ((13, 15), (32, 15))
         for point in lift:
             cells[point] = None
 
