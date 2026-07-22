@@ -21,6 +21,60 @@ _GOAL_ONLY_PATTERN = re.compile(
     r"(?:去|前往|到|\bgo to\b|\bnavigate to\b|\btake me to\b|\bto\b)\s*(.+)", re.IGNORECASE
 )
 
+# The TUI may bypass the LLM only for a narrow, explicit one-destination
+# command.  Negated, interrogative and multi-stop wording deliberately falls
+# back to the agent: a false negative costs latency; a false positive could
+# move a robot contrary to the user's intent.
+_EXPLICIT_ROUTE_VERB = (
+    r"(?:前往|導航到|移動到|開到|回到|去到|去|"
+    r"go\s+to|navigate\s+to|drive\s+to|move\s+to|return(?:\s+back)?\s+to)"
+)
+_ROUTE_NEGATION = re.compile(
+    r"(?:不要|別|不准|禁止|避免|do\s+not|don't|dont|must\s+not|avoid)", re.IGNORECASE
+)
+_ROUTE_QUESTION = re.compile(
+    r"(?:嗎\s*[？?]?\s*$|能不能|可不可以|怎麼|如何|"
+    r"\b(?:can|could|should|would|how)\b[^.!。！]*[?？]?\s*$)",
+    re.IGNORECASE,
+)
+_MULTI_STOP_ROUTE = re.compile(r"(?:從.+到|\bfrom\b.+\bto\b)", re.IGNORECASE)
+
+
+def explicit_route_goal(locations: list[Location], text: str) -> Location | None:
+    """Return one saved goal for an unambiguous imperative route request.
+
+    This is the natural-language reflex path used before the general agent. It
+    accepts only a navigation verb immediately followed by an exact saved name
+    or alias.  The normal approval card and route adapter still own execution;
+    this function only removes unnecessary model planning from commands such
+    as ``請前往 map_left_down，抵達後回報結果``.
+    """
+
+    request = " ".join(text.strip().split())
+    if (
+        not request
+        or _ROUTE_NEGATION.search(request)
+        or _ROUTE_QUESTION.search(request)
+        or _MULTI_STOP_ROUTE.search(request)
+    ):
+        return None
+
+    matches: list[Location] = []
+    for location in locations:
+        terms = [location.name, *location.aliases]
+        for term in sorted({item.strip() for item in terms if item.strip()}, key=len, reverse=True):
+            pattern = re.compile(
+                rf"{_EXPLICIT_ROUTE_VERB}\s*{re.escape(term)}"
+                r"(?=$|[\s,，。.!！?？、;；])",
+                re.IGNORECASE,
+            )
+            if pattern.search(request):
+                matches.append(location)
+                break
+
+    unique = {location.id: location for location in matches}
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
 
 def _extract_via_regex(text: str) -> tuple[str, str] | None:
     # An empty start is valid — only the goal is required (see route_preview).

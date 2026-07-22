@@ -37,7 +37,7 @@ from jenai.tools.ros2_core import (
     ros_topic_info,
     ros_topics,
 )
-from jenai.tools.route_core import route_preview
+from jenai.tools.route_core import explicit_route_goal, route_preview
 from jenai.tools.safety import arm_watchdog, halt_robot
 from jenai.tools.skills import (
     exploration_candidates,
@@ -505,7 +505,13 @@ class RobotCommandsMixin(LocationCommandsMixin):
 
     # -- Route / locations ----------------------------------------------------
 
-    async def _show_route(self, arg: str) -> None:
+    async def _show_route(
+        self,
+        arg: str,
+        *,
+        user_input: str | None = None,
+        justification: str = "Requested via /route.",
+    ) -> None:
         if not arg:
             await self._mount_event(
                 TimelineItem("warn", "Usage: /route <natural language request>")
@@ -527,7 +533,7 @@ class RobotCommandsMixin(LocationCommandsMixin):
             )
             return
 
-        ctx = self._new_run_context(f"/route {arg}")
+        ctx = self._new_run_context(user_input or f"/route {arg}")
         tool_call = ToolCallRecord(
             tool_name="route_execute_tool",
             category=ToolCallCategory.ROUTE,
@@ -544,9 +550,27 @@ class RobotCommandsMixin(LocationCommandsMixin):
             raw_action=str(output.outgoing_action),
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
-            justification="Requested via /route.",
+            justification=justification,
         )
         await self._request_direct_approval(ctx, tool_call, pending, approval)
+
+    async def _try_explicit_route_reflex(self, text: str) -> bool:
+        """Handle one exact saved-location command without calling the LLM.
+
+        Returning ``False`` hands ambiguous, negated, multi-stop or question
+        wording back to the normal agent.  A match still goes through the same
+        P1 approval and Nav2 execution path as ``/route``.
+        """
+
+        goal = explicit_route_goal(self._load_locations(), text)
+        if goal is None:
+            return False
+        await self._show_route(
+            goal.name,
+            user_input=text,
+            justification="Requested via explicit natural-language route reflex.",
+        )
+        return True
 
     async def _start_ordered_route(
         self, arg: str, start_name: str, goal_name: str, locations

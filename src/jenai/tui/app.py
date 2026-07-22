@@ -547,6 +547,11 @@ class JenAITuiApp(
                     await self._show_plan(value)
                 elif orchestrator.is_read_only_state_request(value):
                     await self._show_state_inspection(value)
+                elif await self._try_explicit_route_reflex(value):
+                    # Exact one-place imperatives are reflexes: preserve the
+                    # approval + Nav2 feedback boundary without spending a
+                    # model turn to rediscover a saved location.
+                    pass
                 else:  # approve / auto — the run agent answers questions too
                     await self._show_run(value)
             except Exception as exc:
