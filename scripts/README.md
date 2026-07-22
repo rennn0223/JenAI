@@ -16,8 +16,10 @@ soak/e2/e4/usability 為 stdlib+repo 內依賴;b4_driver 只需 tmux。
 
 ## `scripts/jenai` 與 release wheel
 
-`scripts/jenai` 是 source checkout 的開發便利 wrapper：必要時 source ROS2，再以 `uv run`
-啟動目前工作樹。它不會進 wheel，也不是公開安裝介面。只有在**沒有**用 `uv tool install`
+`scripts/jenai` 是 source checkout 的開發便利 wrapper：必要時 source ROS2，並自動載入
+`$HOME/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash`，再以 `uv run` 啟動目前工作樹。
+可用 `ROS_WORKSPACE_SETUP` 覆寫，或設為空字串停用。它不會進 wheel，也不是公開安裝
+介面。只有在**沒有**用 `uv tool install`
 安裝 JenAI 時，才可選擇建立 repo symlink：
 
 ```bash

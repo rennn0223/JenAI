@@ -53,7 +53,7 @@ printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.confi
 # 4) 地點檔(路徑導航用;也可以之後在 TUI 裡 /loc add here 現場建)
 cp locations.example.toml ~/.config/jenai/locations.toml   # 再編輯座標
 
-# 5) 一鍵啟動器(自動 source ROS2)
+# 5) 一鍵啟動器（自動 source ROS2 Jazzy 與 Isaac ROS jazzy_ws）
 ln -sf "$PWD/scripts/jenai" ~/.local/bin/jenai
 
 # 6) 驗收

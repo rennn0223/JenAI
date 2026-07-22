@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # JenAI one-key launcher.
-#   1. Sources ROS2 (so /ros* tools can see the graph) if none is active yet
+#   1. Sources ROS2 and the Isaac ROS workspace so tools can see the live graph
 #   2. Ensures uv is on PATH
 #   3. Launches JenAI through uv (auto-syncs the project venv)
 #
@@ -10,13 +10,19 @@
 #   jenai doctor     # environment health check
 #   jenai web        # WebUI dashboard
 #
-# Override the project location with:  JENAI_DIR=/path/to/JenAI jenai
+# Overrides:
+#   JENAI_DIR=/path/to/JenAI
+#   ROS_SETUP=/opt/ros/jazzy/setup.bash
+#   ROS_WORKSPACE_SETUP=/path/to/workspace/install/setup.bash
 #
 # API keys: JenAI itself loads ~/.config/jenai/.env (next to config.toml) at
 # startup, so no env handling is needed here. Override with JENAI_ENV_FILE.
 
 JENAI_DIR="${JENAI_DIR:-$HOME/JenAI}"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
+DEFAULT_ROS_WORKSPACE_SETUP="$HOME/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash"
+# Use `-` rather than `:-` so ROS_WORKSPACE_SETUP="" explicitly disables it.
+ROS_WORKSPACE_SETUP="${ROS_WORKSPACE_SETUP-$DEFAULT_ROS_WORKSPACE_SETUP}"
 
 # 1) Source ROS2 only when no ROS environment is fully active: ROS_DISTRO unset,
 #    or `ros2` missing from PATH (a partial/leaked env — ROS_DISTRO set but PATH
@@ -27,6 +33,19 @@ ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
 if [ -f "$ROS_SETUP" ] && { [ -z "${ROS_DISTRO:-}" ] || ! command -v ros2 >/dev/null 2>&1; }; then
     # shellcheck disable=SC1090
     source "$ROS_SETUP"
+fi
+
+# Source the workspace even when the Jazzy underlay was already active. Avoid
+# layering the default Jazzy workspace over a deliberately active non-Jazzy
+# distro; an explicitly overridden workspace remains the operator choice.
+if [ -f "$ROS_WORKSPACE_SETUP" ]; then
+    if [ "$ROS_WORKSPACE_SETUP" = "$DEFAULT_ROS_WORKSPACE_SETUP" ] \
+        && [ -n "${ROS_DISTRO:-}" ] && [ "$ROS_DISTRO" != "jazzy" ]; then
+        echo "jenai: skipping Jazzy workspace because ROS_DISTRO=$ROS_DISTRO." >&2
+    else
+        # shellcheck disable=SC1090
+        source "$ROS_WORKSPACE_SETUP"
+    fi
 fi
 
 # 2) Make sure uv (installed under ~/.local/bin) is reachable.
