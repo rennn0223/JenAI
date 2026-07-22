@@ -368,7 +368,10 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
 
     from jenai.adapters import ros2_adapter
 
-    fix = "Start the Isaac Sim twin scene (docs/operations/TWIN_SETUP.md) or set [twin] enabled = false."
+    fix = (
+        "Start the Isaac Sim twin scene (docs/operations/TWIN_SETUP.md) "
+        "or set [twin] enabled = false."
+    )
     try:
         # First call may also spawn this domain's ros2 daemon — give it headroom.
         topics = set(ros2_adapter.list_topics(timeout=15.0, domain_id=twin.domain_id))
