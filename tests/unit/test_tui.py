@@ -949,6 +949,71 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_tui_explicit_natural_route_uses_reflex_and_keeps_approval(monkeypatch, tmp_path) -> None:
+    locations_path = tmp_path / "locations.toml"
+    locations_path.write_text(
+        """[[locations]]
+name = "map_left_down"
+frame_id = "map"
+[locations.pose]
+x = -8.5
+y = -7.5
+yaw = 0.785
+""",
+        encoding="utf-8",
+    )
+    called = {"agent": False}
+
+    async def fake_show_run(self, arg):
+        called["agent"] = True
+
+    monkeypatch.setattr(JenAITuiApp, "_show_run", fake_show_run)
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.locations_path = "locations.toml"
+        async with app.run_test():
+            await app.handle_user_text("請前往 map_left_down，抵達後回報結果。")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            assert "map_left_down" in cards[0].approval.summary
+            assert "natural-language route reflex" in cards[0].approval.justification
+            assert called["agent"] is False
+
+    asyncio.run(run())
+
+
+def test_tui_negated_natural_route_falls_back_to_agent(monkeypatch, tmp_path) -> None:
+    locations_path = tmp_path / "locations.toml"
+    locations_path.write_text(
+        """[[locations]]
+name = "dock"
+frame_id = "map"
+[locations.pose]
+x = -6.0
+y = -1.0
+yaw = 3.142
+""",
+        encoding="utf-8",
+    )
+    called = {"agent": False}
+
+    async def fake_show_run(self, arg):
+        called["agent"] = True
+
+    monkeypatch.setattr(JenAITuiApp, "_show_run", fake_show_run)
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.locations_path = "locations.toml"
+        async with app.run_test():
+            await app.handle_user_text("不要前往 dock。")
+            assert list(app.query(ApprovalCard)) == []
+            assert called["agent"] is True
+
+    asyncio.run(run())
+
+
 def test_tui_plan_command(monkeypatch) -> None:
     async def fake_run_plan(ctx, task):
         ctx.run.task_summary = "Patrol area A"

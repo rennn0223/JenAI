@@ -28,6 +28,33 @@ def _locations() -> list[Location]:
     ]
 
 
+def test_explicit_route_goal_matches_safe_imperatives_without_a_model() -> None:
+    locations = _locations()
+    mechanical = locations[1]
+    mechanical.aliases = ["machine hall"]
+
+    for text in (
+        "請前往 Mechanical Hall，抵達後回報結果。",
+        "請回到 Mechanical Hall。",
+        "Please navigate to machine hall and report back.",
+    ):
+        assert route_core.explicit_route_goal(locations, text) is mechanical, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "不要前往 Mechanical Hall。",
+        "可以前往 Mechanical Hall 嗎？",
+        "如何前往 Mechanical Hall？",
+        "從 Engineering Building 到 Mechanical Hall",
+        "inspect the route to Mechanical Hall",
+    ],
+)
+def test_explicit_route_goal_rejects_unsafe_or_ambiguous_wording(text: str) -> None:
+    assert route_core.explicit_route_goal(_locations(), text) is None
+
+
 def test_route_preview_resolves_via_regex_chinese() -> None:
     output = asyncio.run(
         route_core.route_preview(
