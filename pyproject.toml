@@ -64,7 +64,7 @@ exclude = [
     "/.codex/",
     "/.env",
     "/.env.*",
-    "/artifacts/",
+    "/artifacts/**",
     "/audit.sqlite3*",
     "/log/",
     "/memory/",

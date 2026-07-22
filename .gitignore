@@ -12,7 +12,8 @@ build/
 .tmp/
 venv/
 .env
-artifacts/
+artifacts/*
+!artifacts/README.md
 *.log
 .coverage
 coverage.xml

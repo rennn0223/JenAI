@@ -66,7 +66,11 @@ def main() -> int:
         default=120.0,
         help="seconds excluded from the baseline (startup ramp: imports, uv sync, bridge spawn)",
     )
-    parser.add_argument("--out", default=None, help="output dir (default soak-<stamp>/)")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="output dir (default artifacts/experiments/soak/soak-<stamp>/)",
+    )
     args = parser.parse_args()
 
     if args.command:
@@ -76,7 +80,11 @@ def main() -> int:
     else:
         parser.error("need --rules or --command")
 
-    out = Path(args.out or f"soak-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+    out = Path(
+        args.out
+        or Path("artifacts/experiments/soak")
+        / f"soak-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    )
     out.mkdir(parents=True, exist_ok=True)
     log_file = (out / "daemon.log").open("w", encoding="utf-8")
     # New session: one killpg tears down the daemon AND its bridge sidecar.

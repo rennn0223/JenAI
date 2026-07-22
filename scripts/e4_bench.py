@@ -1,9 +1,9 @@
 """E4 延遲量測:情境快照 → 決策(decide)之端到端延遲分佈。
 
 用法(venv;量測期間場景照常運行 = 營運條件):
-    uv run python scripts/e4_bench.py --n 100 --out e4-local.jsonl
+    uv run python scripts/e4_bench.py --n 100 --out artifacts/experiments/e4/e4-local.jsonl
     uv run python scripts/e4_bench.py --n 100 --provider nvidia-cloud \
-        --model meta/llama-3.3-70b-instruct --out e4-cloud.jsonl
+        --model meta/llama-3.3-70b-instruct --out artifacts/experiments/e4/e4-cloud.jsonl
 
 固定一份代表性快照(倉庫巡邏情境)重複 n 次:E4 量的是延遲分佈
 (中位數/P95),不是正確率(那是 E1);固定輸入使兩配置可直接對照。
@@ -89,6 +89,7 @@ def main() -> None:
         )
 
     out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists() and out_path.stat().st_size:
         raise SystemExit(f"輸出已存在:{out_path};每個 E4 run 請使用新檔名")
     run_id = f"e4-{datetime.now():%Y%m%dT%H%M%S}-{uuid4().hex[:6]}"
