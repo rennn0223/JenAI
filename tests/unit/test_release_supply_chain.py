@@ -115,7 +115,7 @@ def test_sdist_explicitly_excludes_local_secrets_and_thesis_material() -> None:
         "/.claude/settings.local.json",
         "/.env",
         "/.env.*",
-        "/artifacts/",
+        "/artifacts/**",
         "/audit.sqlite3*",
         "/memory/",
         "/docs/local/thesis/",

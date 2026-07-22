@@ -289,6 +289,7 @@ async def main_async(args) -> None:
     config = load_config(config_path)
     selected = [case for case in CASES if not args.case or case.id in args.case]
     out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists() and out.stat().st_size:
         raise SystemExit(f"output exists: {out}")
     run_id = f"e3-{datetime.now():%Y%m%dT%H%M%S}-{uuid4().hex[:6]}"

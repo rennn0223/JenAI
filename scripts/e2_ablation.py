@@ -1,7 +1,7 @@
 """E2 消融實驗:以配對目標比較無閘門、靜態規則與完整 Twin Gate。
 
 用法(ROS-sourced shell;會實際驅動孿生車,跑前先停掉 B4 掛機):
-    python3 scripts/e2_ablation.py --per-class 20 --out e2-<date>/
+    python3 scripts/e2_ablation.py --per-class 20 --out artifacts/experiments/e2/e2-<date>/
     python3 scripts/e2_ablation.py --per-class 1           # 每類 1 發冒煙
 
 五類目標自佔位圖採樣(論文 4.3 之操作化程序):
@@ -414,7 +414,10 @@ def main():
     ap.add_argument("--sample-only", action="store_true")
     args = ap.parse_args()
 
-    out_dir = Path(args.out or f"e2-{datetime.now():%Y%m%d-%H%M%S}")
+    out_dir = Path(
+        args.out
+        or Path("artifacts/experiments/e2") / f"e2-{datetime.now():%Y%m%d-%H%M%S}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "trials.jsonl"
     targets_path = out_dir / "targets.json"
