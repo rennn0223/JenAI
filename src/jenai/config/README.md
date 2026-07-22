@@ -8,5 +8,5 @@
 | `store.py` | config/.env 尋徑與載入(`JENAI_CONFIG` → XDG → APPDATA;shell env 優先於 .env)、`build_minimal_config`、儲存 |
 | `setup.py` | 首次執行的 setup wizard:ASCII banner → 供應商預設選單(Ollama/NIM/OpenAI/custom)→ 逐欄範例 → 摘要卡 |
 
-config schema 是 public surface(見 `docs/VERSIONING.md`):欄位改動要附遷移,
+config schema 是 public surface(見 `docs/operations/VERSIONING.md`):欄位改動要附遷移,
 安全預設只能收緊。

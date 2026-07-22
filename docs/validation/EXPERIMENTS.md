@@ -7,7 +7,7 @@
 ## 前置:場景要活著(E2/B4 需要;E1/E4 不碰 ROS,E3 使用隔離 fixture)
 
 1. 先以 `ps -eo pid,etime,cmd | rg 'b4_driver|patrol|e3_agent_bench|ros2 topic pub'` 清查背景任務；要操作 domain 0 前必須停止舊 B4 driver，不能只相信上一個終端畫面的完成訊息。
-2. Isaac Sim 開 Carter 場景(照 [TWIN_SETUP](TWIN_SETUP.md) / [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md)),Nav2 起好
+2. Isaac Sim 開 Carter 場景(照 [TWIN_SETUP](../operations/TWIN_SETUP.md) / [ISAAC_NAV2_SETUP](../ISAAC_NAV2_SETUP.md)),Nav2 起好
 3. 健檢:`uv run JenAI doctor` —— twin 三檢查要全綠
 
 ## E1|決策腦 eval(論文 5.3)

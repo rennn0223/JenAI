@@ -27,7 +27,7 @@
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
 | 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.1.0 候選本機 675/675 全綠；遠端三版本 CI／build／audit-SBOM 只在對應 PR 實際通過後成立。v2.0.2 的 652/652 與 PR #108 是上一版獨立證據；本版新增確定性狀態分流、ROS 狀態並行、冷啟動 graph 重查、session byte cap、地點冠詞容錯與 responsive TUI 回歸 |
-| Isaac HIL（人工啟動） | Actions → `Isaac HIL Acceptance`，或依 `docs/ISAAC_HIL_ACCEPTANCE.md` 執行 | 一般 CI 絕不動車；精確確認後在 self-hosted runner 驗 route、Nav2 cancel acknowledgement、software halt、完整 scan metadata gate 與可選 Twin verdict。clean `d942130…855` 本機 artifact 已通過，Twin 同 domain 明記 skip；這不等於已產生 GitHub workflow artifact |
+| Isaac HIL（人工啟動） | Actions → `Isaac HIL Acceptance`，或依 `docs/validation/ISAAC_HIL_ACCEPTANCE.md` 執行 | 一般 CI 絕不動車；精確確認後在 self-hosted runner 驗 route、Nav2 cancel acknowledgement、software halt、完整 scan metadata gate 與可選 Twin verdict。clean `d942130…855` 本機 artifact 已通過，Twin 同 domain 明記 skip；這不等於已產生 GitHub workflow artifact |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | `test` job 以 Python 3.12／3.13／3.14 matrix 跑 ruff+pytest(coverage 表進 job summary,基準 76%)、`build` job(uv build + uvx 全新環境裝 wheel 跑 `jenai --help`)皆綠 |
 | Release gate | 推 `vX.Y.Z` tag,或手動 dispatch(輸入 tag) | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → tag push 建草稿(人工發佈);dispatch 由 workflow 建 tag 並以 `docs/releases/<tag>.md` 直接發佈 |

@@ -8,4 +8,4 @@ PYTHONPATH 會遮蔽 venv 依賴,不 unset 會炸。全套設計成**無 ROS 也
 - `conftest.py` — 共用 fixtures
 
 CI 同款入口 + 兩道閘:安全鏈覆蓋 `--fail-under=90`、架構鐵律測試。
-手動驗收項目與期望輸出見 `docs/TEST.md`。
+手動驗收項目與期望輸出見 `docs/validation/TEST.md`。

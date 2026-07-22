@@ -19,9 +19,9 @@ PRIVATE_RELEASE_TRUTH = (
 PRIVATE_RELEASE_DOCS = (
     ROOT / "README.md",
     ROOT / "docs" / "QUICKSTART.md",
-    ROOT / "docs" / "ROLLBACK.md",
+    ROOT / "docs" / "operations" / "ROLLBACK.md",
     ROOT / ".github" / "workflows" / "README.md",
-    ROOT / "docs" / "PRODUCT_READINESS.md",
+    ROOT / "docs" / "product" / "PRODUCT_READINESS.md",
     ROOT / "docs" / "releases" / "v2.0.1.md",
 )
 
@@ -118,8 +118,7 @@ def test_sdist_explicitly_excludes_local_secrets_and_thesis_material() -> None:
         "/artifacts/",
         "/audit.sqlite3*",
         "/memory/",
-        "/docs/PAPERS.md",
-        "/docs/THESIS_*.md",
+        "/docs/local/thesis/",
         "/docs/thesis-assets/",
         "/docs/thesis-v*-media/",
         "/scripts/build_thesis_*.py",

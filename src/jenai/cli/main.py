@@ -594,7 +594,7 @@ def help_command() -> None:
         ("JenAI → /stop 或 WebUI 紅色 STOP", "緊急停止,永遠免批准"),
     ):
         console.print(f"  [bold cyan]{recipe}[/bold cyan]  [dim]# {note}[/dim]", highlight=False)
-    console.print("\n[dim]完整規格:docs/COMMANDS.md;可測項目與期望輸出:docs/TEST.md[/dim]")
+    console.print("\n[dim]完整規格:docs/COMMANDS.md;可測項目與期望輸出:docs/validation/TEST.md[/dim]")
 
 
 @loc_app.command("list")

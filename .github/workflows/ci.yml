@@ -43,7 +43,7 @@ jobs:
       - name: Safety-chain coverage gate (no regressions)
         # Reuses the .coverage data from the test step. The safety chain
         # (estop/watchdog/bridge/gate/rules) sits at 92% as of v0.11 — this
-        # gate only ever ratchets up, never down (see docs/V1_GATE.md A3).
+        # gate only ever ratchets up, never down (see docs/product/V1_GATE.md A3).
         run: |
           # Exclude ros_bridge.py itself: the rclpy sidecar needs hardware.
           # Its stdlib-only sibling state modules are included and unit-tested.

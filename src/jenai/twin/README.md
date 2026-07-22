@@ -11,5 +11,5 @@
 `gate.py`:`TwinGate` 預演管線 + 一次性 `rehearse_goal`。掛載點在
 `tools/nav_live.py` 的 `navigate_with_fallback`(所有導航入口共用)。
 判準全用 ROS topics 計算,不碰 Isaac 內部 API。場景建置見
-`docs/TWIN_SETUP.md`;它攔的是「執行層錯誤」,與 HITL(意圖層)正交 ——
-論證見 `docs/SAFETY_CASE.md`。
+`docs/operations/TWIN_SETUP.md`;它攔的是「執行層錯誤」,與 HITL(意圖層)正交 ——
+論證見 `docs/validation/SAFETY_CASE.md`。

@@ -148,7 +148,7 @@
 - 規劃:Node20→24 actions 升級(release annotation 提醒過)、依賴掃描(pip-audit/Dependabot)、可選 HIL job、coverage 趨勢圖進 job summary。
 
 ### 3.5 文件可持續性
-- 20+ 份 doc:靠 **單一事實來源**紀律(TECHNICAL_GUIDE 模組表為準,README 各目錄一句話)+ doc 索引([README](README.md))。
+- 20+ 份 doc:靠 **單一事實來源**紀律(TECHNICAL_GUIDE 模組表為準,README 各目錄一句話)+ doc 索引([README](../README.md))。
 - 版本快照(TEST.md、本檔)隨 release 更新;`CLAUDE.md` DoD 強制「文件修齊」在每次改動。
 - 設計期文件(ARCHITECTURE/MOSCOW/UX 等)標歷史,不當現況。
 

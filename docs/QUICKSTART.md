@@ -174,7 +174,7 @@ JenAI doctor
 ```
 
 不要混用不同 release 的檔案，也不要把移動中的 `main` 當回滾來源。完整驗收流程見
-[ROLLBACK](ROLLBACK.md)。從本機 wheel 安裝時，`uv tool upgrade jenai` 不會自動選取下一個
+[ROLLBACK](operations/ROLLBACK.md)。從本機 wheel 安裝時，`uv tool upgrade jenai` 不會自動選取下一個
 GitHub release，因此仍應使用上述已驗證的 `--force` 流程。
 
 要解除安裝，先查看與匯出本機資料，再移除 Python package：
@@ -188,11 +188,11 @@ uv tool uninstall jenai
 
 `uv tool uninstall` 只移除 `JenAI`／`jenai` 程式與 tool environment，**不會刪除**
 `~/.config/jenai`。匯出不含 `.env`／`config.toml`，預設 purge 亦保留它們與 locations；
-若要在確認路徑後清除資料，依 [DATA_LIFECYCLE](DATA_LIFECYCLE.md) 的明確選項操作。
+若要在確認路徑後清除資料，依 [DATA_LIFECYCLE](operations/DATA_LIFECYCLE.md) 的明確選項操作。
 
 ## 下一步
 
 - 全部指令規格:[COMMANDS](COMMANDS.md)
 - 想懂它怎麼運作、怎麼改程式:[TECHNICAL_GUIDE](TECHNICAL_GUIDE.md) → [CODE_TOUR](CODE_TOUR.md)
 - 想接真車跑導航:[ONBOARDING](ONBOARDING.md)(doctor 的 nav 區段就是你的進度條)
-- 想備份、保留或清除本機資料:[DATA_LIFECYCLE](DATA_LIFECYCLE.md)
+- 想備份、保留或清除本機資料:[DATA_LIFECYCLE](operations/DATA_LIFECYCLE.md)

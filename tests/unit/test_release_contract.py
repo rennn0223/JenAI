@@ -11,9 +11,9 @@ from jenai import __version__
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONED_DOCS = (
-    ROOT / "docs" / "TEST.md",
+    ROOT / "docs" / "validation" / "TEST.md",
     ROOT / "docs" / "COMMANDS.md",
-    ROOT / "docs" / "ROADMAP.md",
+    ROOT / "docs" / "product" / "ROADMAP.md",
 )
 
 
@@ -37,13 +37,13 @@ def test_release_version_is_consistent_across_package_lock_and_living_docs() -> 
         assert match.group(1) == version, f"{path.name} targets v{match.group(1)}, not v{version}"
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    handoff = (ROOT / "docs" / "HANDOFF.md").read_text(encoding="utf-8")
+    handoff = (ROOT / "docs" / "product" / "HANDOFF.md").read_text(encoding="utf-8")
     assert f"## 狀態（v{version}" in readme
     handoff_title = handoff.splitlines()[0]
     assert f"目前版本 v{version}" in handoff_title
     assert f"最近發布 v{version}" in handoff_title
 
-    test_manual = (ROOT / "docs" / "TEST.md").read_text(encoding="utf-8")
+    test_manual = (ROOT / "docs" / "validation" / "TEST.md").read_text(encoding="utf-8")
     assert f"`JenAI {version}`" in test_manual
 
 

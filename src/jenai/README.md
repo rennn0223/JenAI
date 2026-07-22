@@ -1,7 +1,7 @@
 # jenai — 主套件
 
 載具無關的任務層大腦:自然語言 → 安全閘控 → ROS2 動作。分層地圖(細節見
-`docs/PROJECT_DIRECTION.md`、`docs/TECHNICAL_GUIDE.md`):
+`docs/product/PROJECT_DIRECTION.md`、`docs/TECHNICAL_GUIDE.md`):
 
 ```
 tui/ · webui/ · cli/ · mcp_server/   介面層(四個門,同一套批准哲學)

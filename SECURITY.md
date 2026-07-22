@@ -48,8 +48,8 @@ Ollama when those inputs must remain on the workstation. Switching provider chan
 does not revoke data already sent to a previous provider.
 
 The detailed trust boundaries and deliberate exclusions are documented in
-[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). Safety hazards and residual risks are documented in
-[`docs/SAFETY_CASE.md`](docs/SAFETY_CASE.md).
+[`docs/validation/THREAT_MODEL.md`](docs/validation/THREAT_MODEL.md). Safety hazards and residual risks are documented in
+[`docs/validation/SAFETY_CASE.md`](docs/validation/SAFETY_CASE.md).
 
 ## Disclosure and fixes
 

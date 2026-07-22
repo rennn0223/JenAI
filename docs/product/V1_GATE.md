@@ -22,13 +22,13 @@
 
 | # | 項目 | 內容 | 狀態 |
 |---|---|---|---|
-| A1 | semver 契約文件 | 明列 public surface(config schema、rules.toml、MCP 工具、CLI、locations.toml),版本政策 + config 遷移方案 → docs/VERSIONING.md | ✅ v0.10 |
-| A2 | WebUI auth | token 認證(Bearer/cookie/`?token=`,STOP 免認證)+ docs/THREAT_MODEL.md | ✅ v0.10 |
+| A1 | semver 契約文件 | 明列 public surface(config schema、rules.toml、MCP 工具、CLI、locations.toml),版本政策 + config 遷移方案 → docs/operations/VERSIONING.md | ✅ v0.10 |
+| A2 | WebUI auth | token 認證(Bearer/cookie/`?token=`,STOP 免認證)+ docs/validation/THREAT_MODEL.md | ✅ v0.10 |
 | A3 | 安全鏈覆蓋率 | 92%(safety 100/engine 98/gate 94/client 93/runner 76);CI 加 fail-under=90 倒退閘,只升不降 | ✅ v0.12 |
 | A4 | 故障注入測試 | bridge 永不 ready / watchdog 武裝失敗 / 串流垃圾行 / twin 預演中斷→refer / pose 失聯→G4 跳過 / halt 失敗誠實回報 / 未知地點 / 無地點檔 → 全部證明誠實降級 | ✅ v0.11 |
 | A5 | 架構鐵律 CI 防護 | tests/unit/test_architecture.py:反射層(bridge/engine/safety/gate)禁 import LLM 堆疊;技能層以上禁載具字眼(AST + 逐行掃描) | ✅ v0.12 |
 | A6 | 24h soak 腳本 | `scripts/soak.py`:RSS 樹採樣 + warmup 校正 + PASS/WARN 判定;真 daemon 短跑驗證過(+0.0% PASS)。**24h 正式跑 PASS**(2026-07-15 01:25 → 07-16 01:25,1439.6 min/2880 樣本,RSS baseline 212188 kB → final 214728 kB,**+1.2%**,限 20%;報告 `soak-20260715-012527/report.md`) | ✅ v0.13 + 24h PASS(2026-07-16) |
-| A7 | Safety case 草稿 | docs/SAFETY_CASE.md：v0.13 建立 H1–H8，2026-07-17 證據稽核追加 H9；均對應 R／G／H／P 防護、驗證證據與殘餘風險 | ✅ v0.13(草稿) |
+| A7 | Safety case 草稿 | docs/validation/SAFETY_CASE.md：v0.13 建立 H1–H8，2026-07-17 證據稽核追加 H9；均對應 R／G／H／P 防護、驗證證據與殘餘風險 | ✅ v0.13(草稿) |
 | A8 | 巡邏日報(C2) | patrol 結束自動存 log(`reports/patrol-*.json`);`/report` 確定性日報 + LLM 摘要(離線誠實降級)、`/report list` 回看歷次 | ✅ v0.12 |
 | A9 | M6 DecisionLoop 核心 | 有界動作集決策 + 延遲量測(**v2 線,不擋 v1.0**)。決策腦 `decision_core.py` + `JenAI eval`(E1)已於 v0.21 落地;剩常駐迴圈 perceive→decide→rehearse→act,詳見 [ROADMAP 軌道 1](ROADMAP.md) | 🚧 v2(腦已備) |
 | A10 | 注釋/結構清理 pass | v0.13 完成 TODO/FIXME、死碼與未引用模組稽核；這只代表當時清單完成，不代表大型核心模組已無拆分空間。現況與後續門檻以 `PRODUCT_READINESS` ENG-3 為準 | ✅ v0.13 歷史項 |
@@ -43,7 +43,7 @@
 
 | # | 項目 | 內容 | 狀態 |
 |---|---|---|---|
-| B5 | **Isaac 孿生場景**（關鍵路徑第一步） | 照 docs/TWIN_SETUP.md 建場景（DGX Spark GUI 作業）→ Twin Gate 端到端＋固定目標政策比較（攔截／誤介入／延遲） | ✅ 2026-07-15 場景、contact sensor、doctor twin 與 G1–G5 實跑完成。舊協議 `e2-20260715c/` 為 C=full-twin 的 100 筆 observed 前導；後續 `e2-20260715c-paired-reanalysis/` 將同目標的 A=no-gate、B=rules-only 以決定性政策離線重算，C 保留 observed。主要描述 subset 排除全部 20 組舊 `zone_crossing` 類，剩 80 組：60 組困難案例介入 A／B／C=0／20／60，20 組 normal 三條件皆 0 誤介入。歷史計算的 Q(2)=93.33、p<.001 可留作探索性摘要，但 A／B 非獨立觀測，不能作確認性推論。這是配對離線重分析，不是前瞻性三條件 live run；詳見 EVIDENCE_LEDGER E2-PAIR。 |
+| B5 | **Isaac 孿生場景**（關鍵路徑第一步） | 照 docs/operations/TWIN_SETUP.md 建場景（DGX Spark GUI 作業）→ Twin Gate 端到端＋固定目標政策比較（攔截／誤介入／延遲） | ✅ 2026-07-15 場景、contact sensor、doctor twin 與 G1–G5 實跑完成。舊協議 `e2-20260715c/` 為 C=full-twin 的 100 筆 observed 前導；後續 `e2-20260715c-paired-reanalysis/` 將同目標的 A=no-gate、B=rules-only 以決定性政策離線重算，C 保留 observed。主要描述 subset 排除全部 20 組舊 `zone_crossing` 類，剩 80 組：60 組困難案例介入 A／B／C=0／20／60，20 組 normal 三條件皆 0 誤介入。歷史計算的 Q(2)=93.33、p<.001 可留作探索性摘要，但 A／B 非獨立觀測，不能作確認性推論。這是配對離線重分析，不是前瞻性三條件 live run；詳見 EVIDENCE_LEDGER E2-PAIR。 |
 | B1 | 原生 nav 接口確認 | 於 twin 車跑 `ros2 action list \| grep -i navigate` 與 map/amcl/odom topics 清點;有 `NavigateToPose` 即直通(twin 車 = 第一個「原生 nav 載具」) | ✅ 2026-07-14(Carter 場景實測) |
 | B2 | 建 locations | twin 場景內 `/loc add here <名>` 建點,含 `tags=["dock"]` 充電點 | ✅ 2026-07-14(4 點含 dock;貼牆點以 /loc move 重定位) |
 | B3 | 解鎖 TEST.md 🔶 項 | B1/B2 完成後於 Isaac Sim 逐項實測 `/route` `/mission` `/patrol photo` `/dock` `/perception`,結果回填 TEST.md | ✅ 2026-07-14~15(slash + NL 全通;WebUI/MCP/daemon 亦實測,見 TEST.md) |

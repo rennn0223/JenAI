@@ -2,7 +2,7 @@
 
 > 📜 **設計期文件**（v0.1 規劃階段，僅供追溯）。實際現況以
 > [TECHNICAL_GUIDE](../../TECHNICAL_GUIDE.md)、[COMMANDS](../../COMMANDS.md)
-> 與程式碼為準；方向與 roadmap 見 [PROJECT_DIRECTION](../../PROJECT_DIRECTION.md)。
+> 與程式碼為準；方向與 roadmap 見 [PROJECT_DIRECTION](../../product/PROJECT_DIRECTION.md)。
 
 
 每個功能依以下格式定義：功能說明 / 輸入格式 / 輸出 schema / 錯誤情境 / TUI 行為 / 驗收條件。

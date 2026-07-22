@@ -40,7 +40,7 @@ ros2 topic hz /odom     # 里程計要在跑
 > **Isaac RTX LiDAR 注意**：`topic hz` 只證明訊息持續到達，不能證明每筆掃描的空間
 > 覆蓋。ROS2 RTX LiDAR Helper 請設 `Publish Full Scan=True`，讓每筆 PointCloud2 是
 > 時間上完整的 360° 點雲，再由 converter 裁成目前 Nav2 使用的前向 180° `/scan`；
-> 10 Hz full cloud 時 `scan_time=0.1`。用 [Isaac HIL preflight](ISAAC_HIL_ACCEPTANCE.md) 的 scan-quality
+> 10 Hz full cloud 時 `scan_time=0.1`。用 [Isaac HIL preflight](validation/ISAAC_HIL_ACCEPTANCE.md) 的 scan-quality
 > preflight 確認全空比例與 finite-bin coverage，不要只看頻率。
 
 ## 3. 建圖(slam_toolbox)
