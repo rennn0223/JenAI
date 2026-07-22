@@ -9,6 +9,7 @@ approval plumbing and app state come from the host class.
 from __future__ import annotations
 
 import json
+import math
 
 from rich.markup import escape
 
@@ -49,6 +50,27 @@ from jenai.tui.approval_policy import may_auto_approve
 from jenai.tui.location_commands import LocationCommandsMixin
 from jenai.tui.panels import MUTED, OutputPanel, TimelineItem, _is_number
 from jenai.tui.widgets import ApprovalCard
+
+
+def _navigation_progress_label(progress) -> str:
+    """Format Nav2 feedback without presenting a recovery sentinel as arrival.
+
+    Nav2 may report ``distance_remaining == 0`` while no valid path exists and
+    recovery behaviors are running. Only the terminal action result can prove
+    arrival, so that combination is rendered as unavailable instead of the
+    misleading "0.0 m left" observed during HIL.
+    """
+
+    distance = float(progress.distance_remaining)
+    recoveries = int(progress.recoveries)
+    if not math.isfinite(distance) or (recoveries > 0 and distance <= 0.05):
+        distance_text = "distance unavailable while recovering"
+    else:
+        distance_text = f"Nav2 estimate {max(distance, 0.0):.1f} m"
+    return (
+        f"Navigating · {distance_text} · {progress.elapsed:.0f}s"
+        + (f" · {recoveries} recoveries" if recoveries else "")
+    )
 
 
 class RobotCommandsMixin(LocationCommandsMixin):
@@ -809,10 +831,7 @@ class RobotCommandsMixin(LocationCommandsMixin):
         Nav2 is configured and ROS is present, otherwise the honest CLI adapter."""
 
         def _progress(p) -> None:
-            self._spinner_label = (
-                f"Navigating · {p.distance_remaining:.1f} m left · {p.elapsed:.0f}s"
-                + (f" · {p.recoveries} recoveries" if p.recoveries else "")
-            )
+            self._spinner_label = _navigation_progress_label(p)
 
         def _gate(message: str) -> None:
             self._spinner_label = message
