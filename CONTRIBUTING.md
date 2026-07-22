@@ -38,7 +38,7 @@ packages do not shadow the project environment.
 1. Add or update tests that prove the changed behavior, including failure and cancellation paths.
 2. Run inline code review and fix findings.
 3. Run lint, the full suite, build, and a clean wheel smoke test.
-4. Exercise the affected TUI/ROS2 path from `docs/TEST.md`; use Isaac Sim for motion changes.
+4. Exercise the affected TUI/ROS2 path from `docs/validation/TEST.md`; use Isaac Sim for motion changes.
 5. Update COMMANDS, TEST, TECHNICAL_GUIDE, support matrix, or safety documents when the public
    behavior or boundary changes.
 6. UI changes include a before/after screenshot and keyboard-only regression evidence.

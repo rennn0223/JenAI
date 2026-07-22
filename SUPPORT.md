@@ -26,7 +26,7 @@ camera images, site coordinates, or unredacted model prompts.
 ## Support scope
 
 - Release wheels installed with their same-release constraints on the validated combinations in
-  `docs/SUPPORT_MATRIX.md`.
+  `docs/operations/SUPPORT_MATRIX.md`.
 - A source install pinned to an exact reviewed tag or full commit SHA is supported, but has not
   received the same isolated install lifecycle validation as the release wheel. Moving branches
   and unpinned source snapshots are not reproducible support targets.
@@ -39,5 +39,5 @@ Public-internet hosting, multi-tenant operation, certified functional safety, ve
 controllers, and custom SLAM/Nav2 tuning are outside the v1 support commitment.
 
 Security-sensitive issues must follow `SECURITY.md`, not a public bug report. Upgrade and rollback
-steps are in `docs/ROLLBACK.md`; local export, retention, purge, and uninstall data boundaries are
-in `docs/DATA_LIFECYCLE.md`.
+steps are in `docs/operations/ROLLBACK.md`; local export, retention, purge, and uninstall data boundaries are
+in `docs/operations/DATA_LIFECYCLE.md`.

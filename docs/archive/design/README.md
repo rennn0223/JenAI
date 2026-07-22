@@ -8,8 +8,8 @@
 - 使用與安裝：[QUICKSTART](../../QUICKSTART.md)
 - 指令行為：[COMMANDS](../../COMMANDS.md)
 - 技術架構：[TECHNICAL_GUIDE](../../TECHNICAL_GUIDE.md)
-- 產品方向：[PROJECT_DIRECTION](../../PROJECT_DIRECTION.md)
-- 現行 UI/UX 基準：[UX](../../UX.md)
+- 產品方向：[PROJECT_DIRECTION](../../product/PROJECT_DIRECTION.md)
+- 現行 UI/UX 基準：[UX](../../design/UX.md)
 
 ## 歸檔內容
 

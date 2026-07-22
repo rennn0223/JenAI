@@ -10,4 +10,4 @@ slash+**指令選擇表**(輸入 `/` 彈出;清單=`commands.py` 的 `WEB_SLASH_
 | `render.py` | 純渲染:儀表板 HTML/CSS/JS(嵌字串,E501 豁免) |
 | `commands.py` | Web 版指令執行 + confirm 動作封存;`WEB_SLASH_COMMANDS`(選擇表資料,必與 `_slash` 同步擴充) |
 
-UI 美學基準:WebUI 像 Claude Desktop。信任邊界見 `docs/THREAT_MODEL.md`。
+UI 美學基準:WebUI 像 Claude Desktop。信任邊界見 `docs/validation/THREAT_MODEL.md`。

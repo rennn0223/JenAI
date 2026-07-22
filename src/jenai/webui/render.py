@@ -451,7 +451,7 @@ body:not(.view-api) #apicard{display:none}
   <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/topics</span><span class="api-d">即時 ROS graph topics(下表)</span></div>
   <div class="card-head" style="margin-top:14px"><h2 style="font-size:15px">ROS topics(即時)</h2><span class="dim" id="api-topics-meta">切到此頁時載入…</span></div>
   <div id="api-topics" class="mono" style="font-size:12.5px; line-height:1.9; overflow-wrap:anywhere"></div>
-  <div class="dim" style="margin-top:8px">程式化整合建議走 <span class="mono">JenAI mcp</span>(MCP 協定,預設唯讀);完整規格見 docs/THREAT_MODEL.md 與 docs/COMMANDS.md。</div>
+  <div class="dim" style="margin-top:8px">程式化整合建議走 <span class="mono">JenAI mcp</span>(MCP 協定,預設唯讀);完整規格見 docs/validation/THREAT_MODEL.md 與 docs/COMMANDS.md。</div>
 </section>
 <main>__MAIN__</main>
 <footer>Actions that move the robot always ask you to confirm first · served by <span class="mono">jenai web</span> (localhost).</footer>

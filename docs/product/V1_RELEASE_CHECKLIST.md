@@ -8,7 +8,7 @@
 
 按順序,每項完成就在這裡打勾(直接 commit 這個檔):
 
-- [x] **B1 車端後端**(✅ 2026-07-14,Carter 場景):照 [ONBOARDING](ONBOARDING.md) + [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md):
+- [x] **B1 車端後端**(✅ 2026-07-14,Carter 場景):照 [ONBOARDING](../ONBOARDING.md) + [ISAAC_NAV2_SETUP](../ISAAC_NAV2_SETUP.md):
       RGB/odom/scan → 建圖 → AMCL → Nav2(sim 先行,實車跟上)
 - [x] **B2 完成**(✅ 2026-07-14,4 點含 dock):dock 點建立(`/loc add here Dock`);GPS 兩點第一次導航實測,
       偏移大就修 `[map_datum]`(整批平移特性)
@@ -34,7 +34,7 @@
 git checkout -b release/v1.0.0
 # 1) 版本
 sed -i 's/^version = ".*"/version = "1.0.0"/' pyproject.toml && uv lock
-# 2) 快照文件對齊:docs/TEST.md 標頭版本、測試數;V1_GATE 全打勾
+# 2) 快照文件對齊:docs/validation/TEST.md 標頭版本、測試數;V1_GATE 全打勾
 # 3) 驗
 env -u PYTHONPATH uv run pytest        # 全綠
 env -u PYTHONPATH uv run ruff check scripts src tests
@@ -52,12 +52,12 @@ gh release edit v1.0.0 --notes-file docs/releases/v1.0.0.md --draft=false
 
 ## C|tag 之後立刻做
 
-- `docs/VERSIONING.md` 的承諾正式生效:public surface 變更從此走 semver 紀律
+- `docs/operations/VERSIONING.md` 的承諾正式生效:public surface 變更從此走 semver 紀律
 - 論文第四章開跑:E1(`JenAI eval` 已就緒)→ E2(前瞻性政策比較；既有 A／B 為 derived)→ E3(虛實一致性)
 - v2 主線 = M6 自主迴圈(決策核心 `decision_core.py` 已就緒,缺的是把
   perceive→decide→rehearse→act 接成常駐迴圈 —— 見 ROADMAP 軌道 1)
 
 ## 求助時
 
-任何一步卡住:開新 AI session,說「照 docs/V1_RELEASE_CHECKLIST.md 的第 X 項陪我除錯」——
+任何一步卡住:開新 AI session,說「照 docs/product/V1_RELEASE_CHECKLIST.md 的第 X 項陪我除錯」——
 CLAUDE.md 的 DoD 與 memory 會讓它接得上下文。

@@ -63,11 +63,11 @@ constraints、逐版 SBOM 或 provenance，也不能取代不同 revision 的 HI
 | 角色 | 第二輪 verdict | 審查範圍／證據參照 | 仍未通過的外部 gate |
 |---|---|---|---|
 | 工程師 | `SATISFIED_WITH_EXTERNAL_GATES` | PR #108 三版本 CI／build／audit-SBOM、本機 wheel smoke、clean `d942130…855` 完整 FullScan／cancel evidence，以及 clean Hero 10/10 legs | separated-domain Twin verdict；每版 self-hosted workflow artifact |
-| PM | `SATISFIED_WITH_EXTERNAL_GATES` | `README.md`、`docs/PRODUCT_BRIEF.md`、`docs/UX.md`、responsive TUI 測試與已接受的 120×30／80×30 樣本 | ≥5 位新手冷啟動紀錄；未來視覺變更仍須先看樣本 |
-| 經營者 | `SATISFIED_WITH_EXTERNAL_GATES` | `LICENSE`、`SUPPORT.md`、`docs/HANDOFF.md`、`docs/ROLLBACK.md`、v2.0.1 Release 與 published-release mutation guard | repo 仍 private／unprotected；未授權買家無下載通道；第二維護者零介入演練 |
+| PM | `SATISFIED_WITH_EXTERNAL_GATES` | `README.md`、`docs/product/PRODUCT_BRIEF.md`、`docs/design/UX.md`、responsive TUI 測試與已接受的 120×30／80×30 樣本 | ≥5 位新手冷啟動紀錄；未來視覺變更仍須先看樣本 |
+| 經營者 | `SATISFIED_WITH_EXTERNAL_GATES` | `LICENSE`、`SUPPORT.md`、`docs/product/HANDOFF.md`、`docs/operations/ROLLBACK.md`、v2.0.1 Release 與 published-release mutation guard | repo 仍 private／unprotected；未授權買家無下載通道；第二維護者零介入演練 |
 | 教授 | `SATISFIED_WITH_EXTERNAL_GATES` | `EVIDENCE_LEDGER`、`USABILITY_STUDY`、`SAFETY_CASE`、HIL-FS2 與 Hero10；derived／observed／sim-only 限制已對齊 | prospective 使用者研究、獨立事件觀察與非 Ackermann 實體 PoC；歷史 metadata 缺口仍在 |
 | 業務 | `SATISFIED_WITH_EXTERNAL_GATES` | `PRODUCT_BRIEF`、`DEMO_SCRIPT`、HIL-FS2 與 Hero 10/10 固定 route legs；核心 route／Dock／cancel 已有正式模擬樣本 | 10 次完整三分鐘 demo／NL 試驗尚未執行；效率結果與可引用案例 |
-| 買家 | `SATISFIED_WITH_EXTERNAL_GATES` | `docs/QUICKSTART.md`、`docs/ROLLBACK.md`、`docs/SUPPORT_MATRIX.md`、`docs/DATA_LIFECYCLE.md`、v2.0.1 Release 與實際下載 wheel lifecycle | 非維護者 fresh-machine 驗收；未授權者的交付通道；本機 data harden 仍等待使用者 opt-in |
+| 買家 | `SATISFIED_WITH_EXTERNAL_GATES` | `docs/QUICKSTART.md`、`docs/operations/ROLLBACK.md`、`docs/operations/SUPPORT_MATRIX.md`、`docs/operations/DATA_LIFECYCLE.md`、v2.0.1 Release 與實際下載 wheel lifecycle | 非維護者 fresh-machine 驗收；未授權者的交付通道；本機 data harden 仍等待使用者 opt-in |
 
 本輪沒有已知、可由目前 worktree 繼續修正的內部 blocker；這不是 product-ready 宣告。
 目前外部事實更新為：clean `d942130…855` 已在合法 Dock 起點完成現行 FullScan gate、兩條

@@ -65,7 +65,7 @@ uv run JenAI web
 `v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證；目前請使用已通過此流程的 `v2.0.1` 或後續資產完整版本。
 
 下列已驗證的 copy-paste 流程以 Linux／Ubuntu 為目標，使用系統提供的 GNU
-`sha256sum`。macOS 在 [SUPPORT_MATRIX](docs/SUPPORT_MATRIX.md) 仍是 Experimental；可自行
+`sha256sum`。macOS 在 [SUPPORT_MATRIX](docs/operations/SUPPORT_MATRIX.md) 仍是 Experimental；可自行
 安裝 GNU coreutils 並把命令換成 `gsha256sum`，但不因此取得與 Linux 相同的驗證等級。
 在提示中輸入 release tag 去掉 `v` 後的版本號，例如 `vX.Y.Z` 就輸入 `X.Y.Z`：
 
@@ -164,7 +164,7 @@ jenai web        # WebUI 儀表板
 
 更新與回滾都使用目標版本的 wheel、matching constraints 與 `SHA256SUMS` 重新驗證，再以
 `uv tool install --force --constraints ... <wheel>` 替換 tool；不要混用不同 release 的
-檔案，也不要從移動中的 `main` 回滾。完整可執行流程見 [ROLLBACK](docs/ROLLBACK.md)。
+檔案，也不要從移動中的 `main` 回滾。完整可執行流程見 [ROLLBACK](docs/operations/ROLLBACK.md)。
 
 解除安裝前可先安全匯出本機資料；package 移除**不會刪除** `~/.config/jenai`：
 
@@ -176,7 +176,7 @@ uv tool uninstall jenai
 ```
 
 匯出內容、預設 purge 保留項目與明確完整清除選項見
-[DATA_LIFECYCLE](docs/DATA_LIFECYCLE.md)。
+[DATA_LIFECYCLE](docs/operations/DATA_LIFECYCLE.md)。
 
 **API 金鑰用 `.env`（建議）**：把 provider 金鑰放在 `~/.config/jenai/.env`
 （`chmod 600`，跟 `config.toml` 同目錄），**JenAI 啟動時自動載入**——不論用
@@ -194,7 +194,7 @@ printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.confi
 
 Vehicle Profile 是載具差異的第一個設定邊界。若新平台已提供相同高階 capability schema，
 通常只需調整 topic、訊息封裝與速限；若介面或運動能力不同，仍需薄 adapter，並依
-[`VEHICLE_POC`](docs/VEHICLE_POC.md) 重新驗收，不能由設定檔推定物理泛化：
+[`VEHICLE_POC`](docs/validation/VEHICLE_POC.md) 重新驗收，不能由設定檔推定物理泛化：
 
 ```toml
 [vehicle]
@@ -229,7 +229,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（開發新人先讀這份） |
 | [docs/ONBOARDING.md](docs/ONBOARDING.md) | **機器人上線手把手**：裸 ROS2 → 建圖 → 定位 → Nav2 → 第一次 `/route`（`jenai doctor` 的 nav 檢查就是進度條） |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | CLI + slash 命令完整規格 |
-| [docs/EVIDENCE_LEDGER.md](docs/EVIDENCE_LEDGER.md) | **單一證據表**：論文、README 與簡報共用的正式數字與限制 |
+| [docs/validation/EVIDENCE_LEDGER.md](docs/validation/EVIDENCE_LEDGER.md) | **單一證據表**：論文、README 與簡報共用的正式數字與限制 |
 | [docs/archive/design/](docs/archive/design/README.md) | **設計歸檔**：v0.1 規劃文件，只供歷史追溯 |
 
 ---
@@ -259,9 +259,9 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > ✅ **工程**：完整自動化測試套件（無 ROS 的 CI 可全跑）、Python 3.12／3.13／3.14 CI 矩陣與三道檢查（執行邊界覆蓋倒退檢查+架構鐵律+wheel 冒煙）、rclpy bridge 協定有純 stdlib fake、批准中斷可跨重啟恢復、誠實回報原則貫穿每條路徑。
 >
-> ✅ **執行邊界與數位分身驗證**（[TWIN_SETUP.md](docs/TWIN_SETUP.md)）：Agent 被限制在觀察、決策、能力、權限與執行驗證五類邊界內；導航可選擇先在數位分身預演，依 G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗輸出 pass／block／refer。數位分身是執行驗證的一種機制，不是 Agent 的全部。
+> ✅ **執行邊界與數位分身驗證**（[TWIN_SETUP.md](docs/operations/TWIN_SETUP.md)）：Agent 被限制在觀察、決策、能力、權限與執行驗證五類邊界內；導航可選擇先在數位分身預演，依 G1 碰撞／G2 超時／G3 禁區／G4 終點偏差／G5 Nav2 失敗輸出 pass／block／refer。數位分身是執行驗證的一種機制，不是 Agent 的全部。
 >
-> 🚧 **研究證據狀態**（見 [EVIDENCE_LEDGER](docs/EVIDENCE_LEDGER.md)）：
+> 🚧 **研究證據狀態**（見 [EVIDENCE_LEDGER](docs/validation/EVIDENCE_LEDGER.md)）：
 >
 > - E2 是固定目標集的配對描述性再分析；A／B 為決定性政策推導，C 為舊 live observed。
 > - E3 僅驗證 ROS_DOMAIN_ID=42 的隔離 mock fixture。

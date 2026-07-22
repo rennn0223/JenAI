@@ -14,8 +14,8 @@ sim-first 驗證(2026-07 定調)下,「載具」與「孿生」**都是 Isaac Si
 
 | 階段 | 做什麼 | 照哪份文件 | 完成的檢查點 |
 |---|---|---|---|
-| 1 | 官方 Nova Carter 倉庫樣例跑通 Nav2(學工具鏈,不接 JenAI) | [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) 路線 A | RViz 點 Navigation2 Goal,Carter 會繞開貨架 |
-| 2 | 建**你的** Leatherback 場景 + 佔位圖 + Nav2(這就是「載具」,跑在預設 domain)。**捷徑**:直接沿用階段 1 的 Carter 倉庫當載具場景(見 ISAAC_NAV2_SETUP「路線 A 直接當驗證載具」;差速車,阿克曼 sim 數據需回頭補路線 B) | [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) 路線 B(或 A 捷徑) | `ros2 action list` 看得到 `/navigate_to_pose`;RViz 下 goal 車會走 |
+| 1 | 官方 Nova Carter 倉庫樣例跑通 Nav2(學工具鏈,不接 JenAI) | [ISAAC_NAV2_SETUP](../ISAAC_NAV2_SETUP.md) 路線 A | RViz 點 Navigation2 Goal,Carter 會繞開貨架 |
+| 2 | 建**你的** Leatherback 場景 + 佔位圖 + Nav2(這就是「載具」,跑在預設 domain)。**捷徑**:直接沿用階段 1 的 Carter 倉庫當載具場景(見 ISAAC_NAV2_SETUP「路線 A 直接當驗證載具」;差速車,阿克曼 sim 數據需回頭補路線 B) | [ISAAC_NAV2_SETUP](../ISAAC_NAV2_SETUP.md) 路線 B(或 A 捷徑) | `ros2 action list` 看得到 `/navigate_to_pose`;RViz 下 goal 車會走 |
 | 3 | 接上 JenAI:`route_adapter="nav2"`、建點、`/route` 實測(解鎖 B1–B4,**還不需要 Gate**) | 本文件 §5 | TUI `/route` 能導航、即時剩餘距離、Esc 可取消 |
 | 4 | 孿生側:同一場景複製到 domain 42 + 接觸感測器 + `[twin]` 啟用(B5) | 本文件 §1–§4 | `jenai doctor` twin 三項全 pass;`/route` 前多一步預演 |
 

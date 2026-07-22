@@ -10,7 +10,7 @@
 `gh release download` 取得 assets，未授權使用者沒有公開下載通道。新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path 不會產生或宣稱 GitHub artifact attestations。
 Release consumer 應同時下載同一版的 `jenai-X.Y.Z-py3-none-any.whl`、
 `jenai-X.Y.Z-constraints.txt` 與 `SHA256SUMS`，驗證後才執行 `uv tool install --constraints`；
-完整命令見 [QUICKSTART](../../docs/QUICKSTART.md) 與 [ROLLBACK](../../docs/ROLLBACK.md)。
+完整命令見 [QUICKSTART](../../docs/QUICKSTART.md) 與 [ROLLBACK](../../docs/operations/ROLLBACK.md)。
 GitHub attestation 驗證只適用發布時為 public、且實際附有 `.sigstore.json` bundles
 的 release；private 或舊 release 不能執行或宣稱這一層已通過。release workflow 亦拒絕把 DOCX／PDF／PPTX、thesis source/media、
 credentials、agent workspace 或實驗 artifact 包進 sdist；論文不屬 GitHub release 交付物。

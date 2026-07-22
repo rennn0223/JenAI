@@ -316,7 +316,7 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
                 ),
                 fix_suggestion=(
                     "Enable with [twin] enabled = true once the twin scene is "
-                    "running (docs/TWIN_SETUP.md)."
+                    "running (docs/operations/TWIN_SETUP.md)."
                 ),
             )
         ]
@@ -368,7 +368,7 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
 
     from jenai.adapters import ros2_adapter
 
-    fix = "Start the Isaac Sim twin scene (docs/TWIN_SETUP.md) or set [twin] enabled = false."
+    fix = "Start the Isaac Sim twin scene (docs/operations/TWIN_SETUP.md) or set [twin] enabled = false."
     try:
         # First call may also spawn this domain's ros2 daemon — give it headroom.
         topics = set(ros2_adapter.list_topics(timeout=15.0, domain_id=twin.domain_id))
@@ -421,7 +421,7 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
             else f"No {twin.collision_topic} topic — G1 collision will be skipped.",
             fix_suggestion=None
             if contact_ok
-            else "Add a contact sensor to the twin scene (docs/TWIN_SETUP.md §3).",
+            else "Add a contact sensor to the twin scene (docs/operations/TWIN_SETUP.md §3).",
         )
     )
     return items

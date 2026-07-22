@@ -258,4 +258,5 @@ Profile 與高階能力契約降低移植成本，但新平台仍可能需要薄
 本地預設模型 **qwen3.6:35b**。V1_GATE 層二各項已依此重定義。
 
 *本文件為專案方向參考,由 PM/工程師/客戶三視角推演收斂;
-論文對應規劃見 docs/THESIS_PLAN.md、docs/THESIS_DRAFT.md(均不入版控)。*
+論文對應規劃見 `docs/local/thesis/THESIS_PLAN.md`、
+`docs/local/thesis/THESIS_DRAFT.md`（均不入版控）。*

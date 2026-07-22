@@ -35,7 +35,7 @@ JenAI 的命令分為兩層：
 
 `data harden／prune／purge` 不會因非互動環境而默認同意；要自動化必須明確使用 `--yes`，
 而 `--yes` 也不會擴張當次畫面列出的範圍。完整資料分類、匯出排除項與解除安裝流程見
-[DATA_LIFECYCLE](DATA_LIFECYCLE.md)。
+[DATA_LIFECYCLE](operations/DATA_LIFECYCLE.md)。
 
 ### 關於 `JenAI` 主入口行為
 

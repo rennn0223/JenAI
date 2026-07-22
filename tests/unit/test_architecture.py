@@ -1,6 +1,6 @@
 """Architecture iron rules as tests (V1_GATE A5).
 
-The rules live in docs/PROJECT_DIRECTION.md; these tests make violating them
+The rules live in docs/product/PROJECT_DIRECTION.md; these tests make violating them
 a red CI instead of a code-review hope:
 
 1. The reflex/safety layer must work with the LLM stack dead — so its modules
