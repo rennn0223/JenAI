@@ -224,26 +224,13 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 | 文件 | 說明 |
 |---|---|
+| [docs/README.md](docs/README.md) | **完整文件庫索引**：依開始使用、ROS 2、開發、驗證、產品與歷史分類 |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | **零基礎上手手冊**：從安裝、設定到第一句對話；尚未以正式冷啟動研究保證完成時間 |
-| [docs/PRODUCT_BRIEF.md](docs/PRODUCT_BRIEF.md) | **產品一頁摘要**：給 PM、主管、業務與買家的定位、證據、demo 與採購驗收 |
-| [docs/EVIDENCE_LEDGER.md](docs/EVIDENCE_LEDGER.md) | **單一證據表**：論文、README 與簡報共用的正式數字與限制 |
-| [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) | **支援矩陣**：OS、ROS2、模擬、載具、模型與介面的驗證等級 |
-| [SECURITY.md](SECURITY.md) | **安全政策**：私下通報、部署邊界、敏感資料與安全修補流程 |
-| [SUPPORT.md](SUPPORT.md) | **支援政策**：支援範圍、提問資料、best-effort 與無 SLA 邊界 |
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（開發新人先讀這份） |
-| [docs/CODE_TOUR.md](docs/CODE_TOUR.md) | **全程式碼逐檔導讀**：每個檔案在做什麼、為什麼這樣設計 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | **前瞻主圖**：現況快照、演進五軌、工程健康度、風險登記 |
-| [docs/V1_GATE.md](docs/V1_GATE.md) | v1.0 驗收基準與兩層分工（agent 可獨力 vs 需客戶下場） |
-| [docs/HANDOFF.md](docs/HANDOFF.md) | 交接與臨別備忘：狀態、方法、誠實的話 |
 | [docs/ONBOARDING.md](docs/ONBOARDING.md) | **機器人上線手把手**：裸 ROS2 → 建圖 → 定位 → Nav2 → 第一次 `/route`（`jenai doctor` 的 nav 檢查就是進度條） |
-| [docs/PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md) | **專案方向**：三方視角收斂的六層架構、功能優先序（必做 M1–M5）與可用性評估 |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | CLI + slash 命令完整規格 |
-| [docs/FEATURES.md](docs/FEATURES.md) | 設計期文件：14 個核心功能規格 |
-| [docs/UX.md](docs/UX.md) | 設計期文件：TUI/WebUI 互動設計 |
-| [docs/DATA_SCHEMAS.md](docs/DATA_SCHEMAS.md) | 設計期文件：共用資料結構 |
-| [docs/STATE_MACHINE.md](docs/STATE_MACHINE.md) | 設計期文件：Run 狀態機 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 設計期文件：模組架構 |
-| [docs/MOSCOW.md](docs/MOSCOW.md) | 設計期文件：v0.1.0 功能優先級 |
+| [docs/EVIDENCE_LEDGER.md](docs/EVIDENCE_LEDGER.md) | **單一證據表**：論文、README 與簡報共用的正式數字與限制 |
+| [docs/archive/design/](docs/archive/design/README.md) | **設計歸檔**：v0.1 規劃文件，只供歷史追溯 |
 
 ---
 

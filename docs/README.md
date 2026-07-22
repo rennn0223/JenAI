@@ -1,42 +1,62 @@
 # docs — 文件索引
 
-**新手**：先讀 [QUICKSTART](QUICKSTART.md)（零基礎安裝與首次對話；不承諾固定完成時間）。
-**開發者先讀**:[PROJECT_DIRECTION](PROJECT_DIRECTION.md)(方向與架構收斂)→
-[ROADMAP](ROADMAP.md)(演進與維護深度規劃、版本里程碑)→
-[TECHNICAL_GUIDE](TECHNICAL_GUIDE.md)(模組導覽、設計決策)→
-[V1_GATE](V1_GATE.md)(v1.0 驗收基準與兩層待辦)。
+這裡只保留一個新手入口；其他文件依使用情境分類。若不知道該讀哪份，從
+[QUICKSTART](QUICKSTART.md) 開始。
 
-| 文件 | 內容 |
+## 1. 開始使用
+
+| 文件 | 用途 |
 |---|---|
-| [QUICKSTART](QUICKSTART.md) | **零基礎上手手冊**:裝 uv → 設定精靈 → 第一句話 → 第一次導航,含常見狀況對照 |
-| [PRODUCT_READINESS](PRODUCT_READINESS.md) | 工程師、PM、經營者、教授、業務與買家的可驗證產品化驗收矩陣 |
-| [PRODUCT_BRIEF](PRODUCT_BRIEF.md) | ICP、核心價值、三分鐘 demo、證據邊界與採購驗收的一頁摘要 |
-| [ADOPTION_MODEL](ADOPTION_MODEL.md) | Apache 核心＋整合服務方向、TCO 輸入表、責任分界與商務 gate |
-| [EVIDENCE_LEDGER](EVIDENCE_LEDGER.md) | README／論文／簡報共用的正式數字、artifact 雜湊與不可延伸主張 |
-| [ROADMAP](ROADMAP.md) | 現況快照、六條演進軌道、工程健康度/技術債、版本里程碑、風險登記 |
-| [HANDOFF](HANDOFF.md) | 交接備忘:狀態、AI 協作方法、誠實指正、下一步優先序 |
-| [V1_RELEASE_CHECKLIST](V1_RELEASE_CHECKLIST.md) | v1.0 上版程序(實測清單 + tag 當天指令) |
-| [CODE_TOUR](CODE_TOUR.md) | 全程式碼逐檔導讀:功能/SDK/為什麼這樣寫 + 6 小時閱讀路徑 |
-| [COMMANDS](COMMANDS.md) | CLI 與 slash 指令規格、批准清單、快捷鍵 |
-| [DATA_LIFECYCLE](DATA_LIFECYCLE.md) | 本機資料盤點、權限 harden、allow-list 匯出、保留期 prune、明確 purge 與解除安裝邊界 |
-| [TEST](TEST.md) | 全部可測項目 + 期望輸出 + 環境須知(驗收手冊) |
-| [ISAAC_HIL_ACCEPTANCE](ISAAC_HIL_ACCEPTANCE.md) | 人工批准的 self-hosted Isaac route／cancel／stop／Twin artifact 驗收 |
-| [TUI_LIVE_ACCEPTANCE_2026-07-19](TUI_LIVE_ACCEPTANCE_2026-07-19.md) | clean commit 的 FullScan 診斷、正式 route／cancel／stop 數字與模擬證據邊界 |
-| [EXPERIMENTS](EXPERIMENTS.md) | 實驗 runbook:E1–E4/HIL-FS/B4/soak 的指令、輸出位置、數據回填對照 |
-| [USABILITY_STUDY](USABILITY_STUDY.md) | 手動 ROS2／Slash／自然語言的平衡受試、計時、失敗保留與效率報告流程 |
-| [VEHICLE_POC](VEHICLE_POC.md) | 第二種載具 adapter／實體 PoC 的固定任務、指標、證據與通過門檻 |
-| [DEMO_SCRIPT](DEMO_SCRIPT.md) | 15 分鐘 demo 劇本(B7):時間軸、指令、斷網備援橋段、各段救場台詞 |
-| [ONBOARDING](ONBOARDING.md) | 裸 ROS2 → 第一次導航的手把手(建圖/AMCL/Nav2) |
-| [TWIN_SETUP](TWIN_SETUP.md) | Isaac Sim 孿生場景建置、domain 隔離、G1–G5 |
-| [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) | Isaac 佔位圖生成 + Nav2 試跑完整流程(官方文件整理,接 JenAI /route) |
-| [SAFETY_CASE](SAFETY_CASE.md) | H1–H9 危害分析 → 防護層對應(HARA-lite) |
-| [THREAT_MODEL](THREAT_MODEL.md) | 信任邊界(WebUI token、MCP、/shell)一頁 |
-| [SUPPORT_MATRIX](SUPPORT_MATRIX.md) | OS、Python、ROS2、模擬、載具、模型與介面的實際支援等級 |
-| [SECURITY](../SECURITY.md) | 私下漏洞通報、部署信任邊界與安全修補政策 |
-| [SUPPORT](../SUPPORT.md) | 支援範圍、問題回報資料、best-effort 與 SLA 邊界 |
-| [ROLLBACK](ROLLBACK.md) | uv tool／原始碼安裝的升級回滾與回歸驗收流程 |
-| [VERSIONING](VERSIONING.md) | semver 契約:public surface、棄用/遷移政策 |
-| [releases/](releases/) | 各版手寫 release notes(隨 PR review 版本化;發佈時作為 notes 來源) |
-| [ARCHITECTURE](ARCHITECTURE.md) / [STATE_MACHINE](STATE_MACHINE.md) / [DATA_SCHEMAS](DATA_SCHEMAS.md) / [FEATURES](FEATURES.md) / [MOSCOW](MOSCOW.md) / [UX](UX.md) | v0.1 設計期文件(含歷史標註)與 UX 基準 |
+| [QUICKSTART](QUICKSTART.md) | 安裝、設定精靈、健檢、第一次對話與第一次導航 |
+| [COMMANDS](COMMANDS.md) | CLI、Slash 指令、批准語意與快捷鍵速查 |
+| [SUPPORT_MATRIX](SUPPORT_MATRIX.md) | 確認 OS、Python、ROS 2、模擬器、載具與模型支援等級 |
+| [SUPPORT](../SUPPORT.md) | 支援範圍與問題回報需要提供的資料 |
 
-驗收流程(每次改動)見根目錄 `CLAUDE.md`。
+## 2. 接上 ROS 2 與機器人
+
+| 文件 | 用途 |
+|---|---|
+| [ONBOARDING](ONBOARDING.md) | 裸 ROS 2 → 感測 → 建圖 → AMCL → Nav2 → 第一次導航 |
+| [ISAAC_NAV2_SETUP](ISAAC_NAV2_SETUP.md) | Isaac Sim Warehouse／Leatherback 與 Nav2 啟動流程 |
+| [TWIN_SETUP](TWIN_SETUP.md) | 模擬分身、domain 隔離與 Twin Gate G1–G5 |
+| [DEMO_SCRIPT](DEMO_SCRIPT.md) | 可重複執行的 15 分鐘展示腳本 |
+
+## 3. 開發與維護
+
+| 文件 | 用途 |
+|---|---|
+| [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md) | 現行架構、建置、設定、模組與擴充方式；開發者主指南 |
+| [CODE_TOUR](CODE_TOUR.md) | 逐目錄與逐檔閱讀路徑 |
+| [PROJECT_DIRECTION](PROJECT_DIRECTION.md) | 產品方向、能力邊界與功能優先序 |
+| [ROADMAP](ROADMAP.md) | 演進軌道、技術債、里程碑與風險 |
+| [UX](UX.md) | 現行 TUI／WebUI 互動與視覺驗收基準 |
+| [DATA_LIFECYCLE](DATA_LIFECYCLE.md) | 本機資料、匯出、保留、清除與解除安裝邊界 |
+| [VERSIONING](VERSIONING.md) | SemVer、公開介面與遷移政策 |
+| [ROLLBACK](ROLLBACK.md) | 升級、回滾與回歸驗收 |
+| [HANDOFF](HANDOFF.md) | 維護交接與專案狀態 |
+
+## 4. 驗證、安全與研究證據
+
+| 文件 | 用途 |
+|---|---|
+| [TEST](TEST.md) | 一般測試、CI 與驗收入口 |
+| [ISAAC_HIL_ACCEPTANCE](ISAAC_HIL_ACCEPTANCE.md) | Isaac route／cancel／stop／Twin HIL 驗收 |
+| [EXPERIMENTS](EXPERIMENTS.md) | E1–E4、HIL、B4 與 soak runbook |
+| [USABILITY_STUDY](USABILITY_STUDY.md) | 手動 ROS 2、Slash、自然語言的使用者研究流程 |
+| [EVIDENCE_LEDGER](EVIDENCE_LEDGER.md) | 正式數字、artifact 雜湊與不可延伸主張 |
+| [SAFETY_CASE](SAFETY_CASE.md) | 危害、防護層、驗證證據與殘餘風險 |
+| [THREAT_MODEL](THREAT_MODEL.md) | WebUI、MCP、Shell 與部署信任邊界 |
+| [SECURITY](../SECURITY.md) | 漏洞通報與安全修補政策 |
+
+## 5. 產品與歷史
+
+| 文件 | 用途 |
+|---|---|
+| [PRODUCT_BRIEF](PRODUCT_BRIEF.md) | 產品定位、核心價值、Demo 與採購驗收 |
+| [PRODUCT_READINESS](PRODUCT_READINESS.md) | 六種角色的產品化驗收矩陣 |
+| [ADOPTION_MODEL](ADOPTION_MODEL.md) | 採用方式、責任分界與商務 gate |
+| [V1_GATE](V1_GATE.md) | v1 驗收基準（歷史 gate，仍供追溯） |
+| [archive/design](archive/design/README.md) | v0.1 架構、資料模型、功能與優先級設計歸檔 |
+| [releases](releases/README.md) | 版本化 release notes |
+
+維護者的每次改動驗收合約見根目錄 `CLAUDE.md`。
