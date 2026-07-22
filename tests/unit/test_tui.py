@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from jenai.config.store import build_minimal_config
 from jenai.schemas import (
@@ -26,6 +27,7 @@ from jenai.tui.panels import (
     pixel_mark,
     terminal_mascot,
 )
+from jenai.tui.robot_commands import _navigation_progress_label
 from jenai.tui.widgets import AgentProgressBlock, ApprovalCard, ToolBlock
 
 
@@ -46,6 +48,17 @@ def test_tui_uses_colored_dachshund_mascot() -> None:
     assert any("#f2ede4" in style for style in styles)
     assert 6 <= mascot.plain.count("\n") <= 9
     assert pixel_mark(0).plain != pixel_mark(1).plain
+
+
+def test_navigation_progress_does_not_present_recovery_zero_as_arrival() -> None:
+    recovering = SimpleNamespace(distance_remaining=0.0, recoveries=5, elapsed=30.0)
+    healthy = SimpleNamespace(distance_remaining=3.24, recoveries=0, elapsed=12.0)
+
+    recovery_label = _navigation_progress_label(recovering)
+    assert "distance unavailable while recovering" in recovery_label
+    assert "0.0 m left" not in recovery_label
+    assert "5 recoveries" in recovery_label
+    assert "Nav2 estimate 3.2 m" in _navigation_progress_label(healthy)
 
 
 def test_tui_uses_claude_transcript_markers_and_flat_approval_copy() -> None:
