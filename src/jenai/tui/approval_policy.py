@@ -20,9 +20,8 @@ def requires_explicit_approval(approval: ApprovalRequest) -> bool:
     later destructive one.
     """
 
-    return (
-        str(approval.risk_level) == str(RiskLevel.P2)
-        or str(approval.effect_scope) == str(EffectScope.HOST_COMMAND)
+    return str(approval.risk_level) == str(RiskLevel.P2) or str(approval.effect_scope) == str(
+        EffectScope.HOST_COMMAND
     )
 
 
@@ -30,6 +29,15 @@ def can_remember_approval(approval: ApprovalRequest) -> bool:
     """Only bounded, non-host P0/P1 capabilities may be remembered."""
 
     return not requires_explicit_approval(approval)
+
+
+def should_default_to_reject(approval: ApprovalRequest) -> bool:
+    """Keep Enter fail-safe for high-risk, host, and robot-control prompts."""
+    return (
+        str(approval.risk_level) == str(RiskLevel.P2)
+        or str(approval.effect_scope) == str(EffectScope.HOST_COMMAND)
+        or str(approval.effect_scope) == str(EffectScope.SIM_CONTROL)
+    )
 
 
 def may_auto_approve(

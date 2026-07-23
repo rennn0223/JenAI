@@ -92,7 +92,7 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists() and out_path.stat().st_size:
         raise SystemExit(f"輸出已存在:{out_path};每個 E4 run 請使用新檔名")
-    run_id = f"e4-{datetime.now():%Y%m%dT%H%M%S}-{uuid4().hex[:6]}"
+    run_id = f"e4-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:6]}"
     metadata = {
         "schema_version": 2,
         "run_id": run_id,
@@ -104,9 +104,7 @@ def main() -> None:
         "snapshot": SNAPSHOT_FIELDS,
     }
     metadata_path = out_path.with_suffix(out_path.suffix + ".meta.json")
-    metadata_path.write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     latencies, errors = asyncio.run(run(config, args.n, out_path, run_id=run_id))
     if not latencies:
         raise SystemExit(f"沒有成功樣本(errors={errors}/{args.n});不產生延遲統計")

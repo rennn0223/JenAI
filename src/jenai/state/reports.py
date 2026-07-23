@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ProviderChatError, ask_provider
@@ -70,7 +71,7 @@ def list_patrol_logs(config_path: Path) -> list[Path]:
     return sorted(directory.glob("patrol-*.json"), reverse=True)
 
 
-def load_patrol_log(path: Path) -> dict | None:
+def load_patrol_log(path: Path) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -78,7 +79,7 @@ def load_patrol_log(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def render_patrol_markdown(log: dict) -> str:
+def render_patrol_markdown(log: dict[str, Any]) -> str:
     """Deterministic report body — correct with or without an LLM."""
     lines = [
         f"時間:{log.get('saved_at', '?')}",
@@ -96,13 +97,11 @@ def render_patrol_markdown(log: dict) -> str:
     return "\n".join(lines)
 
 
-async def summarize_patrol(config: AppConfig, log: dict) -> str | None:
+async def summarize_patrol(config: AppConfig, log: dict[str, Any]) -> str | None:
     """One digest paragraph from the chat model; None when unavailable —
     the caller must show the deterministic body either way."""
     try:
-        response = await ask_provider(
-            config, _SUMMARY_PROMPT + json.dumps(log, ensure_ascii=False)
-        )
+        response = await ask_provider(config, _SUMMARY_PROMPT + json.dumps(log, ensure_ascii=False))
     except ProviderChatError:
         return None
     return response.content.strip() or None

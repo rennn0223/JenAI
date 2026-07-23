@@ -20,9 +20,7 @@ def test_data_harden_dry_run_cancel_then_yes(tmp_path: Path, monkeypatch) -> Non
         pending_runs=tmp_path / "pending-runs",
         reports=tmp_path / "reports",
         traces=tmp_path / "traces",
-
         audit=tmp_path / "audit.sqlite3",
-
         config_backups=(),
     )
     paths.config.write_text("config", encoding="utf-8")
@@ -66,9 +64,7 @@ def test_data_status_json_exposes_insecure_child_count(tmp_path: Path, monkeypat
         pending_runs=tmp_path / "pending-runs",
         reports=tmp_path / "reports",
         traces=tmp_path / "traces",
-
         audit=tmp_path / "audit.sqlite3",
-
         config_backups=(),
     )
     paths.sessions.mkdir(mode=0o700)

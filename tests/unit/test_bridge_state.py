@@ -11,6 +11,7 @@ from jenai.bridge._navigation_state import (
     localization_halt_terminal,
     nav_result_status,
     navigation_active,
+    resolve_navigation_terminal,
     wait_for_cancel_acknowledgement,
 )
 from jenai.bridge._watchdog import WatchdogState
@@ -22,6 +23,34 @@ from jenai.bridge._watchdog import WatchdogState
 )
 def test_nav_result_status_is_stable(code: int, expected: str) -> None:
     assert nav_result_status(code) == expected
+
+
+class _ResultFuture:
+    def __init__(self, response=None, error: Exception | None = None) -> None:
+        self._response = response
+        self._error = error
+
+    def result(self):
+        if self._error is not None:
+            raise self._error
+        return self._response
+
+
+def test_navigation_terminal_validates_result_future() -> None:
+    terminal = resolve_navigation_terminal(_ResultFuture(SimpleNamespace(status=4)))
+    assert terminal.status == "succeeded"
+    assert terminal.error is None
+
+    raised = resolve_navigation_terminal(_ResultFuture(error=RuntimeError("lost result")))
+    assert raised.status is None
+    assert raised.error == "RuntimeError: lost result"
+
+
+@pytest.mark.parametrize("status", [None, True, "4", 4.0])
+def test_navigation_terminal_rejects_untrusted_status(status) -> None:
+    terminal = resolve_navigation_terminal(_ResultFuture(SimpleNamespace(status=status)))
+    assert terminal.status is None
+    assert terminal.error == "Nav2 result did not contain an integer status code"
 
 
 def test_navigation_pending_counts_as_active() -> None:
@@ -42,6 +71,27 @@ def test_watchdog_is_disabled_until_configured_and_uses_requested_transport() ->
     }
     assert state.cmd_vel_topic == "/base/cmd_vel"
     assert state.stamped is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"timeout": "6"},
+        {"timeout": float("nan")},
+        {"timeout": 0.0},
+        {"timeout": 6.0, "cmd_vel_topic": ""},
+        {"timeout": 6.0, "stamped": "false"},
+    ],
+)
+def test_watchdog_rejects_invalid_configuration_without_mutation(payload) -> None:
+    state = WatchdogState()
+
+    with pytest.raises(ValueError, match="invalid watchdog request"):
+        state.configure(payload)
+
+    assert state.timeout_s == 0.0
+    assert state.cmd_vel_topic == "/cmd_vel"
+    assert state.stamped is False
 
 
 def test_watchdog_expires_retries_and_resets_when_client_returns() -> None:

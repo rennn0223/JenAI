@@ -11,11 +11,11 @@
 | WebUI(`JenAI web`) | 預設 127.0.0.1;`--host` 可進 LAN | **token 認證**(每次啟動自動生成,Bearer/cookie/`?token=`;`--token` 可固定)、批准動作 server 端一次性且 120 秒到期的 confirm_id、JSON body 64 KiB 上限 | **`/api/stop` 免認證且不等待 body**，並立即撤銷舊確認；這是隔離室內場域的 fail-safe 取捨，但陌生 LAN client 可造成 DoS／非預期停止。若停止本身可能造成危害，不得把 WebUI 開到該共享網段，須在上游做網路隔離／認證與場域風險評估 |
 | MCP(`JenAI mcp`) | stdio,由宿主(Claude Code 等)管控 | **預設唯讀**;`navigate_to` 需明式 `--allow-actions`;`stop` 唯讀模式也提供 | 信任 MCP 宿主行程;不做行程間認證(stdio 無網路面) |
 | daemon | 本機行程 | `halt` 免批准;`goto` 需 `auto_approve` + nav2 明式授權 | 規則檔是本機檔案 = 信任本機檔案系統 |
-| `/shell`、`!` | 等同操作者 shell | 每次皆需 HITL 批准;HOST_COMMAND 不吃 auto/remember，P2 預選 No | **批准後即操作者級 RCE,by design** —— 它就是給操作者用的 shell;防護在逐次批准卡,不在沙箱 |
+| `/shell`、`!` | 等同操作者 shell | 每個任意命令一律 P2、每次需 HITL 批准、預選 No；HOST_COMMAND 不吃 auto/remember，不使用可被 Python／子 shell／管線繞過的關鍵字降級 | **批准後即操作者級 RCE,by design** —— 它就是給操作者用的 shell;防護在逐次批准卡,不在沙箱 |
 | bridge(rclpy sidecar) | ROS graph(DDS) | 速度硬夾限(`[vehicle]`)、watchdog 斷線自主停車、twin 隔離 ROS_DOMAIN_ID | DDS 本身無認證 —— 這是 ROS2 部署現實;場域 LAN 隔離是部署前提(可選 SROS2,不在 v1 範圍) |
 | 金鑰 | `~/.config/jenai/.env` | 檔案權限;不進版控(.gitignore) | — |
 | 模型 provider | 本機 Ollama 或外部 OpenAI-compatible endpoint | provider 明式可見/可切換;雲端傳輸揭露於 SECURITY | 雲端推論會送出該請求文字；vision 會送完整選定圖片/相機幀，provider retention 由部署者審核 |
-| 稽核紀錄 | `<config 目錄>/audit.sqlite3` | 0600、有界 10,000 筆;只記事件 metadata,不記 user prompt、raw action、完整 tool payload | 稽核失敗不得阻擋急停或動作;需要完整內容時由人工 incident report 補充 |
+| 稽核紀錄 | `<config 目錄>/audit.sqlite3` | 0600、有界 10,000 筆;只記事件 metadata,不記 user prompt、raw action、完整 tool payload；落盤失敗寫入本機日誌 | 稽核失敗不得阻擋急停或動作;需要完整內容時由人工 incident report 補充 |
 
 ## 主要威脅 → 對應
 

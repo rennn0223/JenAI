@@ -8,6 +8,7 @@ forcing the operator to read a numbered list and retype `/model <n>`.
 from __future__ import annotations
 
 from rich.text import Text
+from textual.events import Key
 from textual.message import Message
 from textual.widgets import Static
 
@@ -74,7 +75,7 @@ class ModelPicker(Static):
         body.append("\n↑/↓ move · Enter select · Esc cancel", style=MUTED)
         return body
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: Key) -> None:
         if event.key == "down":
             self._selected = (self._selected + 1) % len(self._models)
             self.refresh()

@@ -28,9 +28,7 @@ def test_prune_never_selects_credentials_config_or_locations(tmp_path: Path) -> 
         pending_runs=tmp_path / "pending-runs",
         reports=reports,
         traces=traces,
-
         audit=tmp_path / "audit.sqlite3",
-
         config_backups=(),
     )
 

@@ -1,6 +1,6 @@
 [project]
 name = "jenai"
-version = "2.1.0"
+version = "2.2.0"
 description = "Terminal-first AI agent interface for ROS2 robot workflows."
 readme = "README.md"
 authors = [{ name = "林書任 / LIN, SHU-JEN" }]
@@ -21,14 +21,14 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "openai>=1.50.0",
-    "openai-agents>=0.2.0",
-    "pydantic>=2.8.0",
-    "rich>=13.7.0",
-    "textual>=0.80.0",
-    "typer>=0.12.0",
-    "mcp>=1.28.1",
-    "tomli-w>=1.2.0",
+    "openai>=1.50.0,<3",
+    "openai-agents>=0.2.0,<1",
+    "pydantic>=2.8.0,<3",
+    "rich>=13.7.0,<16",
+    "textual>=0.80.0,<9",
+    "typer>=0.12.0,<1",
+    "mcp>=1.28.1,<2",
+    "tomli-w>=1.2.0,<2",
 ]
 
 [project.urls]
@@ -38,10 +38,11 @@ Issues = "https://github.com/rennn0223/JenAI/issues"
 
 [dependency-groups]
 dev = [
-    "hatchling>=1.25.0",
-    "pytest>=8.2.0",
-    "pytest-cov>=5.0.0",
-    "ruff>=0.6.0",
+    "hatchling>=1.25.0,<2",
+    "mypy>=1.15.0,<3",
+    "pytest>=8.2.0,<10",
+    "pytest-cov>=5.0.0,<8",
+    "ruff>=0.6.0,<1",
 ]
 
 [project.scripts]
@@ -49,7 +50,7 @@ JenAI = "jenai.cli.main:app"
 jenai = "jenai.cli.main:app"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.25.0,<2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -73,6 +74,7 @@ exclude = [
     "/docs/thesis-v*-media/",
     "/scripts/build_thesis_*.py",
     "/scripts/export_thesis_markdown.py",
+    "/website/",
     "/*.docx",
     "/*.pdf",
     "/*.pptx",
@@ -83,14 +85,23 @@ testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["src"]
 
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+show_error_codes = true
+pretty = true
+files = ["src/jenai"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "DTZ", "PERF", "PIE", "RUF012", "S101"]
 
 [tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
 # The WebUI embeds CSS/HTML/JS as string literals (fonts URL, CSS rules, HTML
 # fragments) that legitimately exceed the line-length limit.
 "src/jenai/webui/server.py" = ["E501"]

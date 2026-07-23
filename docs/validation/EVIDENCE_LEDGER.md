@@ -22,6 +22,8 @@
 | HIL-FS2-20260719（正式主證據） | `d942130a7b3a789ddfa5585b8554dea32588d855` | 不適用 | clean source；artifact 保存完整 scan metadata gate、兩條 route、Nav2 cancel acknowledgement 與 stop drift |
 | HERO10-20260719 | `cc6d21756d572cc73432c2d26baf80d48baffe6e` | 不適用 | clean source；保留一次 0-goal pose-feed fail-closed、恢復 preflight 與後續 10 個固定 route legs |
 | TUI-NL1-20260719 | `cc6d21756d572cc73432c2d26baf80d48baffe6e`＋dirty patch；後續 matching commit `d942130…855` | 不適用 | 一次監督式自然語言 TUI；因執行當下 dirty，只作補充，不作 clean-revision 成功率 |
+| HIL-PREC0-20260724 | `3826d3c9ba94ada3ebb61b1e07edd7e0585fd7c5`＋dirty | 不適用 | 工程調參補充：同步 0.05 m DWB／goal-checker 後 terminal feedback 0.04 m；yaw 0.15 rad 在場次中調整，且早於 JenAI terminal-pose 二次核對，不能升格為正式主證據 |
+| HIL-SITE1-20260724 | `3826d3c9ba94ada3ebb61b1e07edd7e0585fd7c5`＋dirty | 不適用 | 工程驗收補充：正式 Site Profile／map identity gate、terminal-pose 二次核對、兩條 route、Nav2 cancel acknowledgement 與 zero-drift halt 全數實際執行；dirty source，不能取代 clean HIL-FS2 |
 
 ### Protocol-specific preflight
 
@@ -59,6 +61,8 @@
 | HIL-FS2-20260719 | Isaac Sim 5.1.0-rc.19／ROS2 Jazzy／Nav2；domain 0；Dock `(-6,-1,π)`；JenAI 2.0.2；clean `d942130…855` | `pass_with_skips`；scan 10/10、362 bins/筆、valid-finite 57.0442%，完整 metadata gate 通過；`map_left_down` 82.881 s、Dock 45.804 s，皆 0 recoveries；Nav2 cancel acknowledged=true；停止漂移 0.0000 m | 此固定環境的 production route、現行 scan gate 與可確認取消／software halt 可被 artifact 稽核 | Twin 隔離／verdict（同 domain 明記 skip）、事故率、實體或跨載具安全／泛化 | 本機 `isaac-hil-live-final-d942130-20260719.json`；SHA-256 `b5e0f4…18b`（不進 GitHub）；詳見 `TUI_LIVE_ACCEPTANCE_2026-07-19.md` |
 | HERO10-20260719 | clean `cc6d217…f6e`；相同 Isaac／Nav2；`map_left_down`／Dock 各 5 次 | 首次 pose feed 暫失而 fail closed、0 goal；恢復後 10/10 route legs succeeded，45.155–111.668 s、0–4 recoveries | 固定 NavigationGateway／Nav2 序列在該場景的 10-leg 完成紀錄，且 preflight 失敗不移動 | 不是 10 次 NL／LLM 試驗、10 次完整 demo、事故率或實車成功率 | 成功 artifact SHA-256 `91032d…0de`；首次失敗 `e4efad…bbb`；恢復 preflight `ba6810…43e`（皆不進 GitHub） |
 | TUI-NL1-20260719 | qwen3.6:35b／Ollama；同 domain 0 Isaac；dirty patch 後提交為 `d942130…855` | 1 次自然語言到 Dock succeeded；Nav2 goal count 18→19，增量 1；無 invalid JSON | 補充一次解析—批准—單一 goal—回授鏈 | 執行時 dirty；不是 clean-revision 成功率、Twin 隔離或實車證據 | 本機 `tui-natural-language-single-goal-20260719.json`；SHA-256 `3f19b5…303` |
+| HIL-PREC0-20260724（工程補充） | Isaac Carter／Nav2；同步 xy=0.05 m；yaw 最終 0.15 rad；dirty `3826d3…c5` | `pass_with_skips`；Dock terminal feedback 0.04 m；164.219 s、5 recoveries；cancel/halt 通過 | 證明該場景可進入 5 cm 位置門檻，並暴露 DWB 與 goal checker tolerance 必須同步 | 不是 clean run；yaw 在場次中調整；早於 terminal-pose 二次核對；不支持效能、實體或正式到點精度主張 | 本機 `isaac-hil-live-precision-loaded-20260724.json`；SHA-256 `ba71af…925`（不進 GitHub） |
+| HIL-SITE1-20260724（工程驗收） | Isaac Warehouse／Nova Carter／ROS2 Jazzy／Nav2；active Site Profile map SHA-256 `0bbe99…2e3`；domain 0；JenAI 2.1.0；dirty `3826d3…c5` | `pass_with_skips`；scan 10/10、362 bins/筆、valid-finite 46.989%；`map_left_down` 174.073 s、4 recoveries、終點 0.043 m／0.149 rad；Dock 92.248 s、3 recoveries、終點 0.038 m／0.149 rad；Nav2 cancel acknowledged=true；停止漂移 0.0000 m；final halt／bridge shutdown 通過 | 證明現行 Site Profile 地圖指紋 gate、terminal-pose 二次核對、route、可確認取消與 software halt 在這次固定模擬場景可共同運作 | dirty run；Twin 同 domain 只記 skip；Dock 只有姿態驗證，無充電回授；3–4 次 recoveries 與 0.149 rad yaw 暴露姿態一致性／規劃效能仍待改善；不支持實體、跨載具或產品可靠度主張 | 本機 `isaac-hil-live-product-v4-20260724.json`；SHA-256 `47b2dc…1e3`（不進 GitHub）；對應 preflight SHA-256 `483984…3de` |
 
 雜湊在表內採前 6＋後 3 位方便閱讀；交付或投稿時需以 `sha256sum` 輸出完整值並與封存
 artifact 一起保存。

@@ -29,8 +29,11 @@ def _locs() -> list[Location]:
         Location(name="A", frame_id="map", pose=Pose2D(x=0, y=0, yaw=0)),
         Location(name="B", frame_id="map", pose=Pose2D(x=1, y=1, yaw=0)),
         Location(
-            name="Charger", aliases=["充電站"], tags=["dock"],
-            frame_id="map", pose=Pose2D(x=9, y=9, yaw=0),
+            name="Charger",
+            aliases=["充電站"],
+            tags=["dock"],
+            frame_id="map",
+            pose=Pose2D(x=9, y=9, yaw=0),
         ),
     ]
 
@@ -59,18 +62,21 @@ def test_run_patrol_loops_and_continues_after_failure() -> None:
         visited.append(name)
         status = "failed" if name == "B" else "succeeded"
         return RouteOutput(
-            input_text="", outgoing_action=action,
-            execution_status=status, route_preview=f"{name} done",
+            input_text="",
+            outgoing_action=action,
+            execution_status=status,
+            route_preview=f"{name} done",
         )
 
     spec = parse_patrol("A, B x2")
-    report = asyncio.run(
-        run_patrol(_config(), _locs(), spec, navigate=navigate)
-    )
+    report = asyncio.run(run_patrol(_config(), _locs(), spec, navigate=navigate))
 
     assert visited == ["A", "B", "A", "B"]  # B's failure didn't stop the loop
     assert [r.status for r in report.results] == [
-        "succeeded", "failed", "succeeded", "failed",
+        "succeeded",
+        "failed",
+        "succeeded",
+        "failed",
     ]
     assert "2/4" in report.summary
     assert report.results[2].loop == 2
@@ -79,23 +85,52 @@ def test_run_patrol_loops_and_continues_after_failure() -> None:
 def test_run_patrol_photo_observation_and_unknown_point() -> None:
     async def navigate(action: dict) -> RouteOutput:
         return RouteOutput(
-            input_text="", outgoing_action=action,
-            execution_status="succeeded", route_preview="arrived",
+            input_text="",
+            outgoing_action=action,
+            execution_status="succeeded",
+            route_preview="arrived",
         )
 
     async def observe() -> str:
         return "a red box on the floor"
 
     spec = parse_patrol("A, nowhere photo")
-    report = asyncio.run(
-        run_patrol(_config(), _locs(), spec, navigate=navigate, observe=observe)
-    )
+    report = asyncio.run(run_patrol(_config(), _locs(), spec, navigate=navigate, observe=observe))
 
     assert report.results[0].observation == "a red box on the floor"
     # Unknown waypoint: recorded as failed, never navigated, no observation.
     assert report.results[1].status == "failed"
     assert "unknown location" in report.results[1].detail
     assert report.results[1].observation is None
+
+
+def test_patrol_missing_requested_photo_is_partial_not_success() -> None:
+    async def navigate(action: dict) -> RouteOutput:
+        return RouteOutput(
+            input_text="",
+            outgoing_action=action,
+            execution_status="succeeded",
+            route_preview="arrived",
+        )
+
+    async def blank_observation() -> str:
+        return "   "
+
+    spec = parse_patrol("A photo")
+    report = asyncio.run(
+        run_patrol(
+            _config(),
+            _locs(),
+            spec,
+            navigate=navigate,
+            observe=blank_observation,
+        )
+    )
+
+    assert report.results[0].status == "partial"
+    assert "no observation" in report.results[0].observation
+    assert "1/1 waypoints reached" in report.summary
+    assert "without required photo evidence" in report.summary
 
 
 def test_find_dock_by_tag_then_name() -> None:
@@ -276,6 +311,35 @@ def test_run_explore_honors_soft_time_limit_and_photo_observation() -> None:
     assert len(report.results) == 1
     assert report.results[0].observation == "clear corridor"
     assert report.stop_reason == "duration"
+
+
+def test_explore_camera_failure_keeps_arrival_but_marks_partial() -> None:
+    async def navigate(action: dict) -> RouteOutput:
+        return RouteOutput(
+            input_text="",
+            outgoing_action=action,
+            execution_status="succeeded",
+            route_preview="arrived",
+        )
+
+    async def failed_observation() -> str:
+        raise RuntimeError("camera offline")
+
+    report = asyncio.run(
+        run_explore(
+            _config(),
+            _locs(),
+            ExploreSpec(duration_s=60, max_goals=1, photo=True),
+            navigate=navigate,
+            observe=failed_observation,
+            rng=random.Random(1),
+        )
+    )
+
+    assert report.results[0].status == "partial"
+    assert report.success_count == 1
+    assert "camera offline" in report.results[0].observation
+    assert "reached without required photo evidence" in report.summary
 
 
 def test_run_explore_time_limit_cancels_an_active_goal() -> None:

@@ -9,8 +9,9 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO, cast
 
+from agents import TResponseInputItem
 from agents.memory import SessionABC
 
 from jenai.secure_files import (
@@ -50,7 +51,8 @@ def _lock_file(handle: BinaryIO) -> None:
             handle.write(b"\0")
             handle.flush()
         handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        windows_lock = cast(Any, msvcrt)
+        windows_lock.locking(handle.fileno(), windows_lock.LK_LOCK, 1)
         return
 
     import fcntl
@@ -63,7 +65,8 @@ def _unlock_file(handle: BinaryIO) -> None:
         import msvcrt
 
         handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        windows_lock = cast(Any, msvcrt)
+        windows_lock.locking(handle.fileno(), windows_lock.LK_UNLCK, 1)
         return
 
     import fcntl
@@ -119,13 +122,18 @@ class JenAIFileSession(SessionABC):
                 finally:
                     _unlock_file(handle)
 
-    def _load(self) -> list[dict]:
+    def _load(self) -> list[TResponseInputItem]:
         try:
-            return json.loads(self._path.read_text(encoding="utf-8"))
+            raw: Any = json.loads(self._path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             return []
+        if not isinstance(raw, list):
+            return []
+        # SDK response-input items are JSON objects (TypedDict unions). Reject
+        # malformed scalar entries rather than feeding them into a later run.
+        return [cast(TResponseInputItem, item) for item in raw if isinstance(item, dict)]
 
-    def _save(self, items: list[dict]) -> None:
+    def _save(self, items: list[TResponseInputItem]) -> None:
         capped = items[-_MAX_ITEMS:]
         while capped:
             payload = json.dumps(capped, ensure_ascii=False)
@@ -152,13 +160,13 @@ class JenAIFileSession(SessionABC):
             harden_parent=True,
         )
 
-    def _append(self, items: list[dict]) -> None:
+    def _append(self, items: list[TResponseInputItem]) -> None:
         with self._transaction():
             current = self._load()
             current.extend(items)
             self._save(current)
 
-    def _pop(self) -> dict | None:
+    def _pop(self) -> TResponseInputItem | None:
         with self._transaction():
             current = self._load()
             if not current:
@@ -171,16 +179,16 @@ class JenAIFileSession(SessionABC):
         with self._transaction():
             self._path.unlink(missing_ok=True)
 
-    async def get_items(self, limit: int | None = None) -> list[dict]:
+    async def get_items(self, limit: int | None = None) -> list[TResponseInputItem]:
         items = await asyncio.to_thread(self._load)
         if limit is None:  # None means "all" — a falsy check would break limit=0
             return items
         return items[-limit:] if limit > 0 else []
 
-    async def add_items(self, items: list[dict]) -> None:
+    async def add_items(self, items: list[TResponseInputItem]) -> None:
         await asyncio.to_thread(self._append, items)
 
-    async def pop_item(self) -> dict | None:
+    async def pop_item(self) -> TResponseInputItem | None:
         return await asyncio.to_thread(self._pop)
 
     async def clear_session(self) -> None:

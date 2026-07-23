@@ -1,2 +1,1 @@
 """External system adapters placeholder."""
-

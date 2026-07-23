@@ -10,7 +10,8 @@ Speaks newline-delimited JSON over stdin/stdout:
 This file must stay importable by a bare system python: standard library +
 ROS packages only — never import jenai (the venv is not visible here).
 
-Ops: ping, pose, nav_send, drive_to_pose, nav_cancel, halt, capture_frame, watch, unwatch, shutdown.
+Ops: ping, pose, map_cell, nav_plan, nav_send, drive_to_pose, nav_cancel, halt,
+capture_frame, watch, unwatch, shutdown.
 """
 
 from __future__ import annotations
@@ -23,32 +24,52 @@ import sys
 import tempfile
 import threading
 import time
+from typing import TYPE_CHECKING, Any, cast
 
 import rclpy
 
-# Sibling imports: this file runs as a script under system Python, outside the
-# JenAI venv/package, so pure helpers must be importable from its own directory.
-from _navigation_state import (
-    NavigationGenerations,
-    NavigationGoalToken,
-    PoseJumpGuard,
-    cancellation_is_confirmed,
-    localization_halt_terminal,
-    nav_result_status,
-    navigation_active,
-    wait_for_cancel_acknowledgement,
-)
-from _protocol import dispatch_request
-from _watchdog import WatchdogState
+if TYPE_CHECKING:
+    # Relative imports give mypy the real helper signatures. Runtime uses the
+    # bare siblings below because this file is launched as a system-Python script.
+    from ._navigation_state import (
+        NavigationGenerations,
+        NavigationGoalToken,
+        PoseJumpGuard,
+        cancellation_is_confirmed,
+        localization_halt_terminal,
+        navigation_active,
+        resolve_navigation_terminal,
+        wait_for_cancel_acknowledgement,
+    )
+    from ._occupancy import occupancy_grid_identity, sample_occupancy_cell
+    from ._protocol import dispatch_request
+    from ._server import serve_requests
+    from ._watchdog import WatchdogState
+else:
+    from _navigation_state import (
+        NavigationGenerations,
+        NavigationGoalToken,
+        PoseJumpGuard,
+        cancellation_is_confirmed,
+        localization_halt_terminal,
+        navigation_active,
+        resolve_navigation_terminal,
+        wait_for_cancel_acknowledgement,
+    )
+    from _occupancy import occupancy_grid_identity, sample_occupancy_cell
+    from _protocol import dispatch_request
+    from _server import serve_requests
+    from _watchdog import WatchdogState
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSPresetProfiles
 
 _STDOUT_LOCK = threading.Lock()
+WirePayload = dict[str, Any]
 
 
-def _emit(payload: dict) -> None:
+def _emit(payload: WirePayload) -> None:
     with _STDOUT_LOCK:
         sys.stdout.write(json.dumps(payload) + "\n")
         sys.stdout.flush()
@@ -61,17 +82,18 @@ def _new_frame_path(suffix: str) -> str:
     return path
 
 
-def _yaw_from_quaternion(q) -> float:
+def _yaw_from_quaternion(q: Any) -> float:
     # yaw (z-rotation) from quaternion; robots here move in the plane.
     siny = 2.0 * (q.w * q.z + q.x * q.y)
     cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
     return math.atan2(siny, cosy)
 
 
-class BridgeNode(Node):
+class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
     def __init__(self) -> None:
         super().__init__("jenai_bridge")
         self._nav_client: ActionClient | None = None
+        self._plan_client: ActionClient | None = None
         self._nav_goal_handle = None
         self._nav_goal_handle_token: NavigationGoalToken | None = None
         self._nav_generations = NavigationGenerations()
@@ -106,7 +128,7 @@ class BridgeNode(Node):
         window_s: float,
         cmd_vel_topic: str,
         stamped: bool,
-    ) -> dict:
+    ) -> WirePayload:
         """Configure the fail-closed AMCL discontinuity guard."""
         self._pose_jump_guard.configure(threshold_m=threshold_m, window_s=window_s)
         self._pose_jump_cmd_vel_topic = cmd_vel_topic
@@ -135,7 +157,7 @@ class BridgeNode(Node):
             qos,
         )
 
-    def _observe_amcl_pose(self, msg) -> None:
+    def _observe_amcl_pose(self, msg: Any) -> None:
         """Fail closed when map localization moves implausibly between samples."""
         pose = msg.pose.pose.position
         jump = self._pose_jump_guard.observe(pose.x, pose.y)
@@ -188,17 +210,17 @@ class BridgeNode(Node):
 
     # -- pose ---------------------------------------------------------------
 
-    def get_pose(self, timeout: float = 2.0) -> dict:
+    def get_pose(self, timeout: float = 2.0) -> WirePayload:
         """Current robot pose from /amcl_pose, falling back to /odom."""
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from nav_msgs.msg import Odometry
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
-        def _try_topic(topic: str, msg_type, frame_id: str, qos) -> dict | None:
-            got: list = []
+        def _try_topic(topic: str, msg_type: Any, frame_id: str, qos: Any) -> WirePayload | None:
+            got: list[Any] = []
             event = threading.Event()
 
-            def _cb(msg) -> None:
+            def _cb(msg: Any) -> None:
                 got.append(msg.pose.pose)
                 event.set()
 
@@ -233,11 +255,202 @@ class BridgeNode(Node):
             raise RuntimeError("No pose received on /amcl_pose or /odom (are they publishing?)")
         return result
 
+    def map_cell(self, x: float, y: float, timeout: float = 3.0) -> WirePayload:
+        """Read the latched static-map cell at one map-frame coordinate."""
+        from nav_msgs.msg import OccupancyGrid
+        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+        got: list[Any] = []
+        event = threading.Event()
+
+        def _cb(msg: Any) -> None:
+            if not got:
+                got.append(msg)
+                event.set()
+
+        qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        sub = self.create_subscription(OccupancyGrid, "/map", _cb, qos)
+        try:
+            if not event.wait(timeout):
+                raise RuntimeError("No latched OccupancyGrid received on /map")
+        finally:
+            self.destroy_subscription(sub)
+
+        message = got[0]
+        result = sample_occupancy_cell(
+            message.data,
+            width=int(message.info.width),
+            height=int(message.info.height),
+            resolution=float(message.info.resolution),
+            origin_x=float(message.info.origin.position.x),
+            origin_y=float(message.info.origin.position.y),
+            origin_yaw=_yaw_from_quaternion(message.info.origin.orientation),
+            x=float(x),
+            y=float(y),
+        )
+        result.update({"frame_id": message.header.frame_id or "map", "source": "/map"})
+        return result
+
+    def map_identity(self, timeout: float = 3.0) -> WirePayload:
+        """Read and fingerprint the complete latched static map."""
+        from nav_msgs.msg import OccupancyGrid
+        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+        got: list[Any] = []
+        event = threading.Event()
+
+        def _cb(msg: Any) -> None:
+            if not got:
+                got.append(msg)
+                event.set()
+
+        qos = QoSProfile(
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        sub = self.create_subscription(OccupancyGrid, "/map", _cb, qos)
+        try:
+            if not event.wait(timeout):
+                raise RuntimeError("No latched OccupancyGrid received on /map")
+        finally:
+            self.destroy_subscription(sub)
+
+        message = got[0]
+        origin = message.info.origin
+        frame_id = message.header.frame_id or "map"
+        resolution = float(message.info.resolution)
+        origin_x = float(origin.position.x)
+        origin_y = float(origin.position.y)
+        origin_yaw = _yaw_from_quaternion(origin.orientation)
+        digest = occupancy_grid_identity(
+            message.data,
+            width=int(message.info.width),
+            height=int(message.info.height),
+            resolution=resolution,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            origin_yaw=origin_yaw,
+            frame_id=frame_id,
+        )
+        return {
+            "algorithm": "sha256-occupancy-grid-v1",
+            "digest": digest,
+            "width": int(message.info.width),
+            "height": int(message.info.height),
+            "resolution": resolution,
+            "origin_x": origin_x,
+            "origin_y": origin_y,
+            "origin_yaw": origin_yaw,
+            "frame_id": frame_id,
+            "source": "/map",
+        }
+
     # -- Nav2 ---------------------------------------------------------------
+
+    def nav_plan(
+        self,
+        x: float,
+        y: float,
+        yaw: float,
+        frame_id: str = "map",
+        timeout: float = 5.0,
+    ) -> WirePayload:
+        """Compute a Nav2 path without commanding the robot."""
+        from nav2_msgs.action import ComputePathToPose
+
+        if self._plan_client is None:
+            self._plan_client = ActionClient(self, ComputePathToPose, "/compute_path_to_pose")
+        if not self._plan_client.wait_for_server(timeout_sec=min(timeout, 10.0)):
+            raise RuntimeError("Nav2 (/compute_path_to_pose) action server is not running.")
+
+        goal = ComputePathToPose.Goal()
+        goal.goal.header.frame_id = frame_id
+        goal.goal.pose.position.x = float(x)
+        goal.goal.pose.position.y = float(y)
+        goal.goal.pose.orientation.z = math.sin(yaw / 2.0)
+        goal.goal.pose.orientation.w = math.cos(yaw / 2.0)
+        goal.use_start = False
+
+        finished = threading.Event()
+        timed_out = threading.Event()
+        state: dict[str, Any] = {}
+
+        def _on_result(future: Any) -> None:
+            try:
+                wrapped = future.result()
+                result = wrapped.result
+                poses = result.path.poses
+                path_length = sum(
+                    math.hypot(
+                        current.pose.position.x - previous.pose.position.x,
+                        current.pose.position.y - previous.pose.position.y,
+                    )
+                    for previous, current in zip(poses, poses[1:], strict=False)
+                )
+                error_code = int(result.error_code)
+                error_names = {
+                    0: "NONE",
+                    200: "UNKNOWN",
+                    201: "INVALID_PLANNER",
+                    202: "TF_ERROR",
+                    203: "START_OUTSIDE_MAP",
+                    204: "GOAL_OUTSIDE_MAP",
+                    205: "START_OCCUPIED",
+                    206: "GOAL_OCCUPIED",
+                    207: "TIMEOUT",
+                    208: "NO_VALID_PATH",
+                }
+                state["result"] = {
+                    "feasible": error_code == 0 and bool(poses),
+                    "pose_count": len(poses),
+                    "path_length_m": path_length,
+                    "planning_time_s": (
+                        result.planning_time.sec + result.planning_time.nanosec / 1_000_000_000
+                    ),
+                    "error_code": error_code,
+                    "error_name": error_names.get(error_code, f"ERROR_{error_code}"),
+                    "error_message": str(result.error_msg),
+                }
+            except Exception as exc:
+                state["error"] = f"Nav2 planning result failed: {exc}"
+            finally:
+                finished.set()
+
+        def _on_accepted(future: Any) -> None:
+            try:
+                handle = future.result()
+                if not handle.accepted:
+                    state["error"] = "Nav2 rejected the path-planning request."
+                    finished.set()
+                    return
+                state["handle"] = handle
+                if timed_out.is_set():
+                    handle.cancel_goal_async()
+                    return
+                handle.get_result_async().add_done_callback(_on_result)
+            except Exception as exc:
+                state["error"] = f"Nav2 path-planning request failed: {exc}"
+                finished.set()
+
+        self._plan_client.send_goal_async(goal).add_done_callback(_on_accepted)
+        if not finished.wait(timeout):
+            timed_out.set()
+            handle = state.get("handle")
+            if handle is not None:
+                handle.cancel_goal_async()
+            raise RuntimeError(f"Nav2 path planning timed out after {timeout:.1f}s.")
+        if "error" in state:
+            raise RuntimeError(state["error"])
+        return cast(WirePayload, state["result"])
 
     def nav_send(
         self, x: float, y: float, yaw: float, frame_id: str = "map", tag: str = ""
-    ) -> dict:
+    ) -> WirePayload:
         """Send a NavigateToPose goal; feedback/result events carry `tag`.
 
         The tag lets the client match events to the goal it sent — without it,
@@ -265,9 +478,22 @@ class BridgeNode(Node):
         goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
 
         started = time.monotonic()
+        # NavigateToPose.Result does not contain the terminal robot pose.  Keep
+        # the latest pose carried by Nav2 feedback so the client can verify the
+        # endpoint instead of treating the action status as proof of accuracy.
+        last_pose: WirePayload | None = None
 
-        def _feedback(fb) -> None:
+        def _feedback(fb: Any) -> None:
+            nonlocal last_pose
             f = fb.feedback
+            current = f.current_pose
+            last_pose = {
+                "x": float(current.pose.position.x),
+                "y": float(current.pose.position.y),
+                "yaw": _yaw_from_quaternion(current.pose.orientation),
+                "frame_id": current.header.frame_id or frame_id,
+                "source": "nav2_feedback",
+            }
             _emit(
                 {
                     "event": "nav_feedback",
@@ -290,7 +516,7 @@ class BridgeNode(Node):
                 self._pose_jump_guard.disarm(token)
             raise
 
-        def _on_accepted(fut) -> None:
+        def _on_accepted(fut: Any) -> None:
             try:
                 handle = fut.result()
             except Exception as exc:
@@ -327,26 +553,110 @@ class BridgeNode(Node):
                 handle.cancel_goal_async()
             result_future = handle.get_result_async()
 
-            def _on_result(rfut) -> None:
-                if self._nav_goal_handle is handle and self._nav_goal_handle_token == token:
-                    self._nav_goal_handle = None
-                    self._nav_goal_handle_token = None
-                if self._nav_generations.finish(token):
-                    self._nav_pending = False
-                    if self._cancel_on_accept_token == token:
-                        self._cancel_on_accept_token = None
-                    self._pose_jump_guard.disarm(token)
-                if token in self._localization_fault_tokens:
-                    self._localization_fault_tokens.discard(token)
-                    # The fail-closed halt thread owns the specific terminal event.
-                    return
-                status = nav_result_status(rfut.result().status)
-                _emit({"event": "nav_result", "tag": tag, "status": status})
+            def _on_result(rfut: Any) -> None:
+                self._handle_navigation_result(
+                    rfut,
+                    handle=handle,
+                    token=token,
+                    tag=tag,
+                    final_pose=dict(last_pose) if last_pose is not None else None,
+                )
 
             result_future.add_done_callback(_on_result)
 
         send_future.add_done_callback(_on_accepted)
         return {"sent": True}
+
+    def _finish_navigation_goal(self, handle: Any, token: NavigationGoalToken) -> None:
+        """Release only the goal named by ``token``; stale callbacks are harmless."""
+        if self._nav_goal_handle is handle and self._nav_goal_handle_token == token:
+            self._nav_goal_handle = None
+            self._nav_goal_handle_token = None
+        if self._nav_generations.finish(token):
+            self._nav_pending = False
+            if self._cancel_on_accept_token == token:
+                self._cancel_on_accept_token = None
+            self._pose_jump_guard.disarm(token)
+
+    def _handle_navigation_result(
+        self,
+        result_future: Any,
+        *,
+        handle: Any,
+        token: NavigationGoalToken,
+        tag: str,
+        final_pose: WirePayload | None = None,
+    ) -> None:
+        """Validate one terminal result and fail closed when its state is unknown."""
+        if token in self._localization_fault_tokens:
+            self._localization_fault_tokens.discard(token)
+            self._finish_navigation_goal(handle, token)
+            # The fail-closed localization halt thread owns the terminal event.
+            return
+
+        terminal = resolve_navigation_terminal(result_future)
+        if terminal.error is None and terminal.status is not None:
+            self._finish_navigation_goal(handle, token)
+            event: WirePayload = {
+                "event": "nav_result",
+                "tag": tag,
+                "status": terminal.status,
+            }
+            if final_pose is not None:
+                event["final_pose"] = final_pose
+            _emit(event)
+            return
+
+        # Keep the goal active and watchdog armed until the emergency halt
+        # completes. A stale result belongs to a superseded goal and cannot
+        # stop or finish the current one.
+        if not self._nav_generations.is_current(token):
+            return
+        threading.Thread(
+            target=self._halt_after_navigation_result_error,
+            args=(
+                handle,
+                token,
+                tag,
+                terminal.error or "Nav2 terminal result had no status",
+            ),
+            daemon=True,
+        ).start()
+
+    def _halt_after_navigation_result_error(
+        self,
+        handle: Any,
+        token: NavigationGoalToken,
+        tag: str,
+        terminal_error: str,
+    ) -> None:
+        """Emergency-stop an indeterminate Nav2 terminal, then emit one result."""
+        try:
+            halt_result = self.halt(
+                self._pose_jump_cmd_vel_topic,
+                self._pose_jump_stamped,
+            )
+            acknowledged = bool(halt_result.get("active_nav_canceled"))
+            halt_detail = (
+                "active-goal cancellation was acknowledged"
+                if acknowledged
+                else "active-goal cancellation was not acknowledged; "
+                "zero-velocity pulses were still sent"
+            )
+        except Exception as exc:
+            halt_detail = f"emergency halt raised {type(exc).__name__}: {exc}"
+        finally:
+            self._finish_navigation_goal(handle, token)
+        _emit(
+            {
+                "event": "nav_result",
+                "tag": tag,
+                "status": "failed",
+                "reason": (
+                    f"Nav2 terminal result was unavailable ({terminal_error}); {halt_detail}."
+                ),
+            }
+        )
 
     def drive_to_pose(
         self,
@@ -360,9 +670,10 @@ class BridgeNode(Node):
         max_linear: float = 1.0,
         max_angular: float = 2.0,
         tolerance: float = 0.3,
+        odom_timeout_s: float = 1.0,
         timeout: float = 600.0,
-        avoidance: dict | None = None,
-    ) -> dict:
+        avoidance: dict[str, Any] | None = None,
+    ) -> WirePayload:
         """Nav2-less point-to-point drive: closed loop on /odom → /cmd_vel.
 
         For open ground with no map/planner (e.g. an Isaac ground plane): the
@@ -385,6 +696,7 @@ class BridgeNode(Node):
                 "max_linear": max_linear,
                 "max_angular": max_angular,
                 "tolerance": tolerance,
+                "odom_timeout_s": odom_timeout_s,
                 "timeout": timeout,
                 "avoidance": avoidance,
             },
@@ -404,23 +716,17 @@ class BridgeNode(Node):
         max_linear: float,
         max_angular: float,
         tolerance: float,
+        odom_timeout_s: float,
         timeout: float,
-        avoidance: dict | None = None,
+        avoidance: dict[str, Any] | None = None,
     ) -> None:
-        # Sibling module (stdlib-only): the bridge runs as a script so its dir is
-        # on sys.path; the venv tests import it as jenai.bridge._avoidance.
-        from _avoidance import (
-            StuckDetector,
-            apply_floor_filter,
-            corridor_nearest,
-            plan_detour,
-            scan_is_fresh,
-        )
-        from geometry_msgs.msg import Twist, TwistStamped
+        # Sibling module (stdlib-only): ROS I/O stays here; all control branch
+        # decisions live in a dependency-free unit tested without rclpy.
+        from _drive_control import DirectDriveController
         from nav_msgs.msg import Odometry
 
-        latest: dict = {}
-        depth: dict = {}  # "ranges"/"angles": pseudo-laserscan from the depth cam
+        latest: dict[str, Any] = {}
+        depth: dict[str, Any] = {}  # "ranges"/"angles": depth pseudo-laserscan
         sub = None
         depth_sub = None
         status = "failed"  # "timed_out" on the deadline path (not Nav2 "aborted")
@@ -430,11 +736,12 @@ class BridgeNode(Node):
         # its timeout and every later drive rejects with "already running".
         try:
 
-            def _odom_cb(msg) -> None:
+            def _odom_cb(msg: Any) -> None:
                 p = msg.pose.pose
                 latest["x"] = p.position.x
                 latest["y"] = p.position.y
                 latest["yaw"] = _yaw_from_quaternion(p.orientation)
+                latest["updated_at"] = time.monotonic()
 
             sub = self.create_subscription(
                 Odometry, "/odom", _odom_cb, QoSPresetProfiles.SENSOR_DATA.value
@@ -443,133 +750,53 @@ class BridgeNode(Node):
                 depth_sub = self._start_depth_scan(avoid, depth)
             with self._halt_lock:  # serialize rclpy entity creation vs halt()
                 pub = self.ensure_halt_publisher(cmd_vel_topic, stamped)
-            msg_type = TwistStamped if stamped else Twist
             started = time.monotonic()
             last_fb = 0.0
-            stuck = StuckDetector()
-            # Stop-and-go avoidance: when the forward corridor is blocked,
-            # STOP, plan a small odom-frame detour from the current sighting
-            # (plan_detour), drive its waypoints blind, then resume the goal.
-            # Sighting memory instead of continuous sight — a down-pitched
-            # depth camera only sees a low obstacle inside a distance window,
-            # so any scheme that must keep seeing it while rounding it fails.
-            waypoints: list[tuple[float, float]] = []
-            replans = 0
-            max_replans = int(avoid.get("max_replans", 4)) if avoid else 0
-            depth_timeout = float(avoid.get("depth_timeout_s", 1.0)) if avoid else 0.0
-
-            def _zero_pulse() -> None:
-                z = msg_type()
-                if stamped:
-                    z.header.stamp = self.get_clock().now().to_msg()
-                for _ in range(3):
-                    pub.publish(z)
-                    time.sleep(0.05)
+            controller = DirectDriveController(
+                gx,
+                gy,
+                max_linear=max_linear,
+                max_angular=max_angular,
+                tolerance=tolerance,
+                odom_timeout_s=odom_timeout_s,
+                avoidance=avoid,
+            )
 
             while True:
                 if self._drive_cancel.is_set():
                     status = "canceled"
                     break
-                if time.monotonic() - started > timeout:
+                now = time.monotonic()
+                elapsed = now - started
+                if elapsed > timeout:
                     status = "timed_out"
                     break
                 if "x" not in latest:
+                    if elapsed > odom_timeout_s:
+                        status = "odom_unavailable"
+                        break
                     time.sleep(0.05)  # wait for the first /odom sample
                     continue
-                dist = math.hypot(gx - latest["x"], gy - latest["y"])
-                if not waypoints and dist <= tolerance:
-                    status = "succeeded"
+                tick = controller.step(
+                    now=now,
+                    elapsed=elapsed,
+                    x=latest["x"],
+                    y=latest["y"],
+                    yaw=latest["yaw"],
+                    odom_updated_at=latest["updated_at"],
+                    ranges=depth.get("ranges"),
+                    angles=depth.get("angles"),
+                    scan_updated_at=depth.get("updated_at"),
+                )
+                if tick.zero_first:
+                    self._pulse_zero(pub, stamped, interval_s=0.05)
+                if tick.status is not None:
+                    status = tick.status
                     break
-                now = time.monotonic()
-                if avoid is not None and not scan_is_fresh(
-                    depth.get("updated_at"), now=now, timeout_s=depth_timeout
-                ):
-                    _zero_pulse()
-                    if now - started > depth_timeout:
-                        status = "sensor_unavailable"
-                        break
+                if tick.action != "move":
                     time.sleep(0.05)
                     continue
-                if waypoints and (
-                    math.hypot(waypoints[0][0] - latest["x"], waypoints[0][1] - latest["y"])
-                    <= max(0.35, tolerance)
-                ):
-                    waypoints.pop(0)  # leg done → next leg, or back to seeking
-                    continue
-                tx, ty = waypoints[0] if waypoints else (gx, gy)
-                bearing = math.atan2(ty - latest["y"], tx - latest["x"])
-                heading_err = math.atan2(
-                    math.sin(bearing - latest["yaw"]), math.cos(bearing - latest["yaw"])
-                )
-                nearest = math.inf
-                if avoid is not None and depth.get("ranges"):
-                    filtered = apply_floor_filter(
-                        depth["ranges"],
-                        float(avoid.get("floor_ref", 0.0)),
-                        float(avoid.get("floor_tol", 0.2)),
-                    )
-                    # Path-corridor test, not an angle cone: an obstacle
-                    # blocks us when its LATERAL offset from the heading line
-                    # is under half a vehicle-corridor — an angle cone misses
-                    # a near on-path obstacle approached at a slant (live:
-                    # cube at 33° bearing, 1.35 m) and false-triggers on far
-                    # off-path returns near the scan edge.
-                    nearest = corridor_nearest(filtered, depth["angles"], heading_err=heading_err)
-                    # Seeking: anything inside slow_distance ahead → plan.
-                    # On a detour leg: only an emergency (inside stop_distance)
-                    # forces a REplan — the legs are meant to run blind.
-                    threshold = avoid["stop_distance"] if waypoints else avoid["slow_distance"]
-                    if nearest <= threshold:
-                        _zero_pulse()  # stop first: plan from a settled scan
-                        replans += 1
-                        if replans > max_replans:
-                            status = "blocked"
-                            break
-                        det = plan_detour(
-                            latest["x"],
-                            latest["y"],
-                            latest["yaw"],
-                            gx,
-                            gy,
-                            filtered,
-                            depth["angles"],
-                            clearance=float(avoid.get("detour_clearance", 0.5)),
-                            beyond=float(avoid.get("detour_beyond", 1.2)),
-                        )
-                        if det:
-                            waypoints = det
-                        elif nearest <= avoid["stop_distance"]:
-                            status = "blocked"  # nothing plannable, nowhere to go
-                            break
-                        continue
-                # Emergency-close with no progress → end honestly, don't grind.
-                if stuck.update(
-                    time.monotonic(),
-                    latest["x"],
-                    latest["y"],
-                    avoid is not None and nearest <= avoid["stop_distance"],
-                ):
-                    status = "blocked"
-                    break
-                angular = max(-max_angular, min(max_angular, 1.5 * heading_err))
-                # Gate forward speed by steering alignment (slow while turning
-                # onto the bearing) and by obstacle proximity on detour legs.
-                align = max(0.2, math.cos(heading_err))
-                tdist = math.hypot(tx - latest["x"], ty - latest["y"])
-                prox = 1.0
-                if avoid is not None and math.isfinite(nearest):
-                    prox = (nearest - avoid["stop_distance"]) / max(
-                        1e-3, avoid["slow_distance"] - avoid["stop_distance"]
-                    )
-                    prox = max(0.3, min(1.0, prox))
-                forward = align * min(max_linear, 0.8 * tdist + 0.2) * prox
-                msg = msg_type()
-                twist = msg.twist if stamped else msg
-                if stamped:
-                    msg.header.stamp = self.get_clock().now().to_msg()
-                twist.linear.x = float(forward)
-                twist.angular.z = float(angular)
-                pub.publish(msg)
+                pub.publish(self._velocity_message(stamped, tick.linear, tick.angular))
                 now = time.monotonic()
                 if now - last_fb >= 0.5:
                     last_fb = now
@@ -577,36 +804,80 @@ class BridgeNode(Node):
                         {
                             "event": "nav_feedback",
                             "tag": tag,
-                            "distance_remaining": round(dist, 2),
-                            "recoveries": replans,  # detour replans, not Nav2's
-                            "avoiding": bool(waypoints),
+                            "distance_remaining": round(tick.distance_remaining, 2),
+                            "recoveries": tick.recoveries,
+                            "avoiding": tick.avoiding,
                             "elapsed": round(now - started, 1),
                         }
                     )
                 time.sleep(0.05)  # ~20 Hz control
         finally:
-            # Guard every step: setup may have failed before pub/sub existed,
-            # but _drive_active MUST reset and a result MUST be emitted so the
-            # client never hangs waiting on a drive that already ended.
-            try:
-                from geometry_msgs.msg import Twist, TwistStamped
+            self._finish_direct_drive(
+                cmd_vel_topic,
+                stamped,
+                subscriptions=(sub, depth_sub),
+                tag=tag,
+                status=status,
+            )
 
-                stop = (TwistStamped if stamped else Twist)()
-                if stamped:
-                    stop.header.stamp = self.get_clock().now().to_msg()
-                for _ in range(3):  # pulse zero so the robot actually stops
-                    self.ensure_halt_publisher(cmd_vel_topic, stamped).publish(stop)
-                    time.sleep(0.02)
-            except Exception:
-                pass
-            for s in (sub, depth_sub):
-                if s is not None:
-                    with contextlib.suppress(Exception):
-                        self.destroy_subscription(s)
-            self._drive_active = False
-            _emit({"event": "nav_result", "tag": tag, "status": status})
+    def _velocity_message(self, stamped: bool, linear: float, angular: float) -> Any:
+        """Create one bounded velocity message in the configured ROS family."""
+        from geometry_msgs.msg import Twist, TwistStamped
 
-    def _start_depth_scan(self, avoid: dict, out: dict):
+        message = (TwistStamped if stamped else Twist)()
+        twist = message.twist if stamped else message
+        if stamped:
+            message.header.stamp = self.get_clock().now().to_msg()
+        twist.linear.x = float(linear)
+        twist.angular.z = float(angular)
+        return message
+
+    def _pulse_zero(self, publisher: Any, stamped: bool, *, interval_s: float) -> None:
+        """Publish redundant zero velocity samples to overcome DDS packet loss."""
+        stop = self._velocity_message(stamped, 0.0, 0.0)
+        for _ in range(3):
+            publisher.publish(stop)
+            time.sleep(interval_s)
+
+    def _finish_direct_drive(
+        self,
+        cmd_vel_topic: str,
+        stamped: bool,
+        *,
+        subscriptions: tuple[object | None, ...],
+        tag: str,
+        status: str,
+    ) -> None:
+        """Fail-safe terminal cleanup, valid even after partial ROS setup."""
+        from _drive_control import terminal_status_after_halt
+
+        halt_completed = False
+        halt_error: Exception | None = None
+        try:
+            publisher = self.ensure_halt_publisher(cmd_vel_topic, stamped)
+            self._pulse_zero(publisher, stamped, interval_s=0.02)
+            halt_completed = True
+        except Exception as exc:
+            halt_error = exc
+        for subscription in subscriptions:
+            if subscription is not None:
+                with contextlib.suppress(Exception):
+                    self.destroy_subscription(subscription)
+        # A failed final zero is a latched safety fault: keeping the drive
+        # "active" makes the watchdog continue its redundant halt attempts and
+        # prevents another direct-drive task until the sidecar is restarted.
+        self._drive_active = not halt_completed
+        terminal_status = terminal_status_after_halt(status, halt_completed=halt_completed)
+        event: WirePayload = {"event": "nav_result", "tag": tag, "status": terminal_status}
+        if halt_error is not None:
+            event["reason"] = (
+                "Final zero-velocity pulse failed: "
+                f"{type(halt_error).__name__}: {halt_error}. "
+                "The bridge is fault-latched and must be restarted before another direct drive."
+            )
+        _emit(event)
+
+    def _start_depth_scan(self, avoid: dict[str, Any], out: dict[str, Any]) -> Any:
         """Subscribe to the depth camera and keep `out` updated with a
         pseudo-laserscan: nearest range per angular sector across the FOV.
 
@@ -637,7 +908,7 @@ class BridgeNode(Node):
         # Sector centre angles: leftmost = +hfov/2, rightmost = -hfov/2.
         out["angles"] = [hfov * (0.5 - (i + 0.5) / n) for i in range(n)]
 
-        def _cb(msg) -> None:
+        def _cb(msg: Any) -> None:
             try:
                 h, w = msg.height, msg.width
                 # frombuffer reads the array.array/bytes buffer zero-copy (no
@@ -648,12 +919,13 @@ class BridgeNode(Node):
                 buf = np.frombuffer(msg.data, dtype=np.float32).reshape(h, row)[:, :w]
                 snapped = snap is not None and snap.shape == buf.shape
                 if snapped:
-                    buf = np.where(buf >= snap - snap_tol, np.inf, buf)
+                    snapshot = cast(Any, snap)
+                    buf = np.where(buf >= snapshot - snap_tol, np.inf, buf)
                 band = buf[int(h * lo) : int(h * hi), :]
                 valid = np.where(
                     np.isfinite(band) & (band > min_valid) & (band < 100.0), band, np.inf
                 )
-                ranges = []
+                ranges: list[float] = []
                 for chunk in np.array_split(valid, n, axis=1):
                     vals = chunk[np.isfinite(chunk)]
                     if snapped:
@@ -683,7 +955,7 @@ class BridgeNode(Node):
             Image, avoid["depth_topic"], _cb, QoSPresetProfiles.SENSOR_DATA.value
         )
 
-    def nav_cancel(self) -> dict:
+    def nav_cancel(self) -> WirePayload:
         """Cancel our own goal AND everything else on the Nav2 action server.
 
         The own-handle path alone is not an emergency stop: a goal sent by a
@@ -763,7 +1035,7 @@ class BridgeNode(Node):
         }
 
     @staticmethod
-    def _cancel_goal_handle(handle, timeout: float = 2.0) -> bool:
+    def _cancel_goal_handle(handle: Any, timeout: float = 2.0) -> bool:
         """Cancel one owned goal and require a positive CancelGoal response."""
         try:
             future = handle.cancel_goal_async()
@@ -797,7 +1069,7 @@ class BridgeNode(Node):
 
     # -- emergency stop -------------------------------------------------------
 
-    def ensure_halt_publisher(self, cmd_vel_topic: str, stamped: bool):
+    def ensure_halt_publisher(self, cmd_vel_topic: str, stamped: bool) -> Any:
         """Create (once) and cache the zero-velocity publisher.
 
         Called eagerly when the watchdog is configured so DDS discovery has
@@ -821,7 +1093,7 @@ class BridgeNode(Node):
         stamped: bool = False,
         pulses: int = 5,
         rate_hz: float = 20.0,
-    ) -> dict:
+    ) -> WirePayload:
         """EMERGENCY STOP: pulse zero, cancel Nav2, then pulse zero again.
 
         Zero is pulsed (not sent once) because a single message can lose the
@@ -844,7 +1116,7 @@ class BridgeNode(Node):
                     pub.publish(msg)
                     time.sleep(1.0 / rate_hz)
 
-            cancel_result: dict = {}
+            cancel_result: WirePayload = {}
 
             def _cancel_navigation() -> bool:
                 cancel_result.update(self.nav_cancel())
@@ -865,7 +1137,7 @@ class BridgeNode(Node):
 
     def avoid_snapshot(
         self, depth_topic: str, path: str, frames: int = 5, timeout: float = 10.0
-    ) -> dict:
+    ) -> WirePayload:
         """Calibrate the avoidance floor reference: per-pixel median depth.
 
         Run with the view EMPTY (no obstacles inside sensor range). The median
@@ -881,10 +1153,10 @@ class BridgeNode(Node):
         import numpy as np
         from sensor_msgs.msg import Image
 
-        got: list = []
+        got: list[Any] = []
         event = threading.Event()
 
-        def _cb(msg) -> None:
+        def _cb(msg: Any) -> None:
             try:
                 h, w = msg.height, msg.width
                 row = (msg.step // 4) if msg.step else w
@@ -922,16 +1194,16 @@ class BridgeNode(Node):
             "min_m": round(float(finite.min()), 2) if finite.size else None,
         }
 
-    def capture_frame(self, topic: str, timeout: float = 5.0) -> dict:
+    def capture_frame(self, topic: str, timeout: float = 5.0) -> WirePayload:
         """Grab one frame from an image topic; returns a temp file path."""
         from sensor_msgs.msg import CompressedImage, Image
 
         compressed = topic.endswith("/compressed") or "compressed" in topic
         msg_type = CompressedImage if compressed else Image
-        got: list = []
+        got: list[Any] = []
         event = threading.Event()
 
-        def _cb(msg) -> None:
+        def _cb(msg: Any) -> None:
             if not got:
                 got.append(msg)
                 event.set()
@@ -977,7 +1249,7 @@ class BridgeNode(Node):
 
     # -- generic topic watch (daemon rules) -----------------------------------
 
-    def watch(self, watch_id: int, topic: str, msg_type: str, throttle: float = 1.0) -> dict:
+    def watch(self, watch_id: int, topic: str, msg_type: str, throttle: float = 1.0) -> WirePayload:
         """Stream messages from a topic as events, at most one per `throttle` seconds."""
         from rosidl_runtime_py.convert import message_to_ordereddict
         from rosidl_runtime_py.utilities import get_message
@@ -985,7 +1257,7 @@ class BridgeNode(Node):
         cls = get_message(msg_type)
         last_emit = [0.0]
 
-        def _cb(msg) -> None:
+        def _cb(msg: Any) -> None:
             now = time.monotonic()
             if now - last_emit[0] < throttle:
                 return
@@ -1003,7 +1275,7 @@ class BridgeNode(Node):
         self._watches[watch_id] = sub
         return {"watch_id": watch_id}
 
-    def unwatch(self, watch_id: int) -> dict:
+    def unwatch(self, watch_id: int) -> WirePayload:
         sub = self._watches.pop(watch_id, None)
         if sub is not None:
             self.destroy_subscription(sub)
@@ -1037,36 +1309,12 @@ def main() -> None:
 
     _emit({"event": "ready"})
 
-    # Ops that block for seconds must not hold up the request loop: an
-    # emergency halt queued behind a camera capture would arrive seconds
-    # late. They are read-only, so running them on worker threads is safe;
-    # responses are matched by id client-side, order doesn't matter.
-    slow_ops = {"capture_frame", "pose"}
-
-    def _serve(req_id, op, req) -> None:
-        try:
-            _emit({"id": req_id, "ok": True, "result": dispatch_request(node, op, req, watchdog)})
-        except Exception as exc:  # keep serving; report the failure to the client
-            _emit({"id": req_id, "ok": False, "error": str(exc)})
-
-    for line in sys.stdin:  # EOF (parent died/closed) ends the bridge
-        line = line.strip()
-        if not line:
-            continue
-        watchdog.touch()
-        req_id = None
-        try:
-            req = json.loads(line)
-            req_id, op = req.get("id"), req.get("op")
-            if op == "shutdown":
-                _emit({"id": req_id, "ok": True, "result": {}})
-                break
-            if op in slow_ops:
-                threading.Thread(target=_serve, args=(req_id, op, req), daemon=True).start()
-            else:
-                _serve(req_id, op, req)
-        except Exception as exc:  # malformed line — report, keep serving
-            _emit({"id": req_id, "ok": False, "error": str(exc)})
+    serve_requests(
+        sys.stdin,
+        emit=_emit,
+        dispatch=lambda op, params: dispatch_request(node, op, params, watchdog),
+        touch_watchdog=watchdog.touch,
+    )
 
     watchdog_stop.set()
     # The client is gone (EOF or shutdown). A robot still executing a goal must

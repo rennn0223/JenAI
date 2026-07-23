@@ -15,6 +15,7 @@ from jenai.doctor import run_doctor
 from jenai.providers import ProviderChatError, chat_model_name, list_provider_models
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tui.help_content import build_help_output
+from jenai.tui.host_contract import TuiHostContract
 from jenai.tui.panels import (
     ACCENT,
     ERROR,
@@ -41,7 +42,7 @@ APPROVAL_REQUIRED_COMMANDS = (
 MODEL_BINDING_NAMES = ("chat", "plan", "vision", "route", "default")
 
 
-class InfoCommandsMixin:
+class InfoCommandsMixin(TuiHostContract):
     async def _show_help(self, arg: str = "") -> None:
         help_output = build_help_output(arg or None)
         lines = [help_output.summary, ""]
@@ -129,6 +130,7 @@ class InfoCommandsMixin:
 
         first, _, rest = arg.partition(" ")
         rest = rest.strip()
+        targets: tuple[str, ...]
         if first in (*MODEL_BINDING_NAMES, "all") and rest:
             targets = MODEL_BINDING_NAMES if first == "all" else (first,)
             spec = rest
@@ -304,16 +306,14 @@ class InfoCommandsMixin:
         )
 
     async def _show_permissions(self, _: str = "") -> None:
-        lines = [
-            f"[bold #f2ede1]{cmd}[/] requires approval"
-            for cmd in APPROVAL_REQUIRED_COMMANDS
-        ]
+        lines = [f"[bold #f2ede1]{cmd}[/] requires approval" for cmd in APPROVAL_REQUIRED_COMMANDS]
         lines.extend(
             [
                 "",
                 "Auto mode applies only to bounded, non-host P0/P1 actions.",
                 "HOST_COMMAND and P2 always require a fresh decision and cannot be remembered.",
-                "P2 prompts default to No; /stop never requires approval.",
+                "P2, host-command, and robot-control prompts default to No; "
+                "/stop never requires approval.",
                 "",
                 "Tool risk registry:",
             ]

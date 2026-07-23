@@ -21,9 +21,7 @@ def _paths(tmp_path: Path) -> DataPaths:
         pending_runs=tmp_path / "pending-runs",
         reports=tmp_path / "reports",
         traces=tmp_path / "traces",
-
         audit=tmp_path / "audit.sqlite3",
-
         config_backups=(),
     )
 
@@ -121,3 +119,25 @@ def test_apply_revalidates_inode_if_candidate_is_swapped_to_symlink(
 
     assert (result.hardened, result.skipped) == (0, 1)
     assert _mode(paths.config) == 0o644
+
+
+def test_hardening_includes_nested_task_receipts(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    tasks = paths.reports / "tasks"
+    tasks.mkdir(parents=True)
+    receipt = tasks / "task-20260723-run.json"
+    unrelated = paths.reports / "customer-notes.json"
+    receipt.write_text('{"request":"private task"}', encoding="utf-8")
+    unrelated.write_text("{}", encoding="utf-8")
+    os.chmod(paths.reports, 0o755)
+    os.chmod(tasks, 0o755)
+    os.chmod(receipt, 0o644)
+    os.chmod(unrelated, 0o644)
+
+    plan = build_hardening_plan(paths)
+    planned = {(item.path, item.target_mode) for item in plan.candidates}
+    assert (paths.reports, 0o700) in planned
+    assert (tasks, 0o700) in planned
+    assert (receipt, 0o600) in planned
+    assert all(path != unrelated for path, _mode_target in planned)
+    assert _mode(unrelated) == 0o644

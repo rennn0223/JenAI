@@ -25,9 +25,7 @@ _BANNER_LINES = (
 )
 # Warm orange sweep (light→deep), one shade per banner row — the wizard wears
 # the same Claude-orange theme as the TUI (see ACCENT in tui/panels.py).
-_BANNER_COLORS = (
-    "#f2b28c", "#eda680", "#e69468", "#d97757", "#cb6a49", "#c15f3c"
-)
+_BANNER_COLORS = ("#f2b28c", "#eda680", "#e69468", "#d97757", "#cb6a49", "#c15f3c")
 
 # TUI palette twins (kept literal: config/ must not import the tui/ layer).
 _ACCENT = "#d97757"  # tui.panels.ACCENT
@@ -98,7 +96,7 @@ def _prompt(label: str, *, default: str, example: str = "") -> str:
     # typer.prompt renders its own [default]; the example rides in the label so
     # every field shows "怎麼填" without extra lines.
     hint = f" (例:{example})" if example and example != default else ""
-    return typer.prompt(f"  {label}{hint}", default=default, show_default=bool(default))
+    return str(typer.prompt(f"  {label}{hint}", default=default, show_default=bool(default)))
 
 
 def _secure_api_key_input(
@@ -168,16 +166,16 @@ def run_setup_wizard(config_path: Path) -> Path:
     provider_name = _prompt("Profile 名稱", default=preset.key, example="local")
     default_model = _prompt("預設模型", default=preset.model_example, example=preset.model_example)
     base_url = _prompt(
-        "Base URL(供應商官方端點可留白)", default=preset.base_url, example="http://localhost:11434/v1"
+        "Base URL(供應商官方端點可留白)",
+        default=preset.base_url,
+        example="http://localhost:11434/v1",
     )
     api_key_env = _prompt(
         "API 金鑰環境變數名稱(貼入金鑰會安全搬到 .env;本地模型留白)",
         default=preset.api_key_env,
         example="NVIDIA_API_KEY",
     )
-    api_key_env, saved_credential_path = _secure_api_key_input(
-        api_key_env, preset, config_path
-    )
+    api_key_env, saved_credential_path = _secure_api_key_input(api_key_env, preset, config_path)
 
     console.print(
         Panel(

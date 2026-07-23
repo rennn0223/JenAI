@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from jenai.acceptance import EXECUTION_CONFIRMATION, IsaacHilOptions, run_isaac_hil
@@ -28,7 +28,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(f"artifacts/isaac-hil-{datetime.now():%Y%m%d-%H%M%S}.json"),
+        default=Path(f"artifacts/isaac-hil-{datetime.now(UTC):%Y%m%d-%H%M%S}.json"),
     )
     parser.add_argument("--execute", action="store_true", help="Allow live navigation checks")
     parser.add_argument(

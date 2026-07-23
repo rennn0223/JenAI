@@ -83,15 +83,11 @@ def test_state_snapshot_stops_without_second_model_turn_only_for_read_only_reque
 
     read_ctx = SimpleNamespace(
         context=SimpleNamespace(
-            run=SimpleNamespace(
-                user_input="幫我檢查位置、雷射與 Nav2 狀態，不要移動機器人。"
-            )
+            run=SimpleNamespace(user_input="幫我檢查位置、雷射與 Nav2 狀態，不要移動機器人。")
         )
     )
     combined_ctx = SimpleNamespace(
-        context=SimpleNamespace(
-            run=SimpleNamespace(user_input="檢查 Nav2 狀態，然後回到 dock。")
-        )
+        context=SimpleNamespace(run=SimpleNamespace(user_input="檢查 Nav2 狀態，然後回到 dock。"))
     )
 
     read_only = behavior(read_ctx, [result])

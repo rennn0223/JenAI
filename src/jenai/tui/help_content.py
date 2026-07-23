@@ -4,78 +4,11 @@ from __future__ import annotations
 
 from jenai import __version__
 from jenai.schemas import CommandGroup, HelpOutput, KeyboardShortcut
+from jenai.tui.catalog import COMMAND_GROUPS
 
 _COMMAND_GROUPS = [
-    CommandGroup(
-        name="Safety",
-        commands=["/stop  (EMERGENCY STOP — works even while a task is running)"],
-    ),
-    CommandGroup(
-        name="Session",
-        commands=["/help", "/status", "/doctor", "/queue [clear]", "/clear"],
-    ),
-    CommandGroup(
-        name="Planning",
-        commands=["/plan <task>", "/run <task>", "/why", "/review", "/abort"],
-    ),
-    CommandGroup(
-        name="ROS2",
-        commands=[
-            "/ros topics",
-            "/ros topic-info <topic>",
-            "/ros schema <topic>",
-            "/ros echo <topic> [count]",
-            "/ros pub <topic> <payload>",
-            "/ros drive <topic> <payload> [秒]",
-        ],
-    ),
-    CommandGroup(
-        name="Route",
-        commands=[
-            "/route <text>",
-            "/loc list",
-            "/loc show <name>",
-            "/loc add here <name>",
-            "/loc add gps <name> <lat> <lon>",
-            "/loc move <name>",
-            "/loc rename <old> <new>",
-            "/loc rm <name>",
-        ],
-    ),
-    CommandGroup(
-        name="Skills",
-        commands=[
-            "/mission <place>, <place>, …",
-            "/patrol <place>, <place> [xN] [photo]",
-            "/explore [5m] [goals=N] [failures=N] [tag=room] [photo]",
-            "/dock",
-            "/report [list]",
-            "/skills(列出檔案定義技能;skills/*.toml 自訂 slash 指令)",
-        ],
-    ),
-    CommandGroup(
-        name="Vision",
-        commands=[
-            "/vision image <path>",
-            "/vision camera [topic]",
-            "/perception start [topic] [hz]",
-            "/perception stop",
-        ],
-    ),
-    CommandGroup(
-        name="System",
-        commands=["/shell <cmd>", "/mode [approve|plan|auto](權限模式;Shift+Tab 的備援)"],
-    ),
-    CommandGroup(
-        name="Provider / Model",
-        commands=[
-            "/provider [name|number]",
-            "/providers",
-            "/model [name|number]",
-            "/models",
-            "/permissions",
-        ],
-    ),
+    CommandGroup(name=name, commands=[command.completion for command in commands])
+    for name, commands in COMMAND_GROUPS
 ]
 
 _EXAMPLES = [

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 
 import pytest
@@ -20,8 +21,14 @@ class FakeNode:
     def get_pose(self, *args, **kwargs):
         return self._call("pose", *args, **kwargs)
 
+    def map_cell(self, *args, **kwargs):
+        return self._call("map_cell", *args, **kwargs)
+
     def nav_send(self, *args, **kwargs):
         return self._call("nav_send", *args, **kwargs)
+
+    def nav_plan(self, *args, **kwargs):
+        return self._call("nav_plan", *args, **kwargs)
 
     def drive_to_pose(self, *args, **kwargs):
         return self._call("drive_to_pose", *args, **kwargs)
@@ -51,13 +58,14 @@ class FakeNode:
         return self._call("unwatch", *args, **kwargs)
 
 
-def test_protocol_ping_and_pose_defaults() -> None:
+def test_protocol_ping_pose_and_map_cell_defaults() -> None:
     node = FakeNode()
     watchdog = WatchdogState()
 
     assert dispatch_request(node, "ping", {}, watchdog) == {"pong": True}
-    assert dispatch_request(node, "pose", {"timeout": "3.5"}, watchdog) == {"op": "pose"}
-    assert node.calls == [("pose", (3.5,), {})]
+    assert dispatch_request(node, "pose", {"timeout": 3.5}, watchdog) == {"op": "pose"}
+    assert dispatch_request(node, "map_cell", {"x": 1, "y": 2}, watchdog) == {"op": "map_cell"}
+    assert node.calls == [("pose", (3.5,), {}), ("map_cell", (1, 2, 3.0), {})]
 
 
 def test_protocol_maps_nav_and_drive_parameters() -> None:
@@ -72,24 +80,33 @@ def test_protocol_maps_nav_and_drive_parameters() -> None:
     )
     dispatch_request(
         node,
+        "nav_plan",
+        {"x": 5, "y": 6, "yaw": 0.25, "frame_id": "map", "timeout": 4.0},
+        watchdog,
+    )
+    dispatch_request(
+        node,
         "drive_to_pose",
         {
             "x": 3,
             "y": 4,
-            "stamped": 1,
-            "max_linear": "0.4",
-            "max_angular": "0.8",
-            "tolerance": "0.2",
-            "timeout": "9",
+            "stamped": True,
+            "max_linear": 0.4,
+            "max_angular": 0.8,
+            "tolerance": 0.2,
+            "odom_timeout_s": 0.7,
+            "timeout": 9.0,
             "avoidance": {"enabled": True},
         },
         watchdog,
     )
 
     assert node.calls[0] == ("nav_send", (1, 2, 0.5, "odom", "abc"), {})
-    name, args, kwargs = node.calls[1]
+    assert node.calls[1] == ("nav_plan", (5, 6, 0.25, "map", 4.0), {})
+    name, args, kwargs = node.calls[2]
     assert name == "drive_to_pose"
     assert args == (3, 4, 0.0)
+    avoidance = kwargs.pop("avoidance")
     assert kwargs == {
         "tag": "",
         "cmd_vel_topic": "/cmd_vel",
@@ -97,9 +114,61 @@ def test_protocol_maps_nav_and_drive_parameters() -> None:
         "max_linear": 0.4,
         "max_angular": 0.8,
         "tolerance": 0.2,
+        "odom_timeout_s": 0.7,
         "timeout": 9.0,
-        "avoidance": {"enabled": True},
     }
+    assert avoidance["enabled"] is True
+    assert avoidance["stop_distance"] == 0.6
+    assert avoidance["slow_distance"] == 2.0
+
+
+@pytest.mark.parametrize(
+    ("op", "payload"),
+    [
+        ("pose", {"timeout": "3.5"}),
+        ("nav_send", {"y": 2.0}),
+        ("map_cell", {"x": math.nan, "y": 0.0}),
+        ("nav_send", {"x": 1.0, "y": 2.0, "frame_id": ""}),
+        ("nav_plan", {"x": 1.0, "y": 2.0, "timeout": 0.0}),
+        ("drive_to_pose", {"x": 1.0, "y": 2.0, "stamped": "false"}),
+        ("drive_to_pose", {"x": 1.0, "y": 2.0, "max_linear": math.inf}),
+        ("drive_to_pose", {"x": 1.0, "y": 2.0, "avoidance": []}),
+        ("drive_to_pose", {"x": 1.0, "y": 2.0, "avoidance": {"hfov_deg": 181.0}}),
+        ("drive_to_pose", {"x": 1.0, "y": 2.0, "avoidance": {"sectors": 361}}),
+        ("drive_to_pose", {"x": 1.0, "y": 2.0, "avoidance": {"band_lo": -0.1}}),
+        ("drive_to_pose", {"x": 1.0, "y": 2.0, "avoidance": {"band_hi": 1.1}}),
+        (
+            "drive_to_pose",
+            {
+                "x": 1.0,
+                "y": 2.0,
+                "avoidance": {"enabled": True, "stop_distance": 2.0, "slow_distance": 1.0},
+            },
+        ),
+        ("halt", {"stamped": 1}),
+        ("watchdog", {"timeout": 0.0}),
+        ("capture_frame", {"topic": ""}),
+        ("avoid_snapshot", {"path": "/tmp/floor.npy", "frames": 2.5}),
+        ("watch", {"watch_id": 1, "topic": "/scan", "msg_type": "Scan", "throttle": -1.0}),
+        ("watch", {"watch_id": True, "topic": "/scan", "msg_type": "Scan"}),
+        ("unwatch", {"watch_id": 0}),
+    ],
+)
+def test_protocol_rejects_malformed_requests_before_node_dispatch(op, payload) -> None:
+    node = FakeNode()
+
+    with pytest.raises(ValueError, match="invalid bridge request"):
+        dispatch_request(node, op, payload, WatchdogState())
+
+    assert node.calls == []
+
+
+def test_protocol_direct_drive_defaults_to_no_avoidance() -> None:
+    node = FakeNode()
+
+    dispatch_request(node, "drive_to_pose", {"x": 1.0, "y": 2.0}, WatchdogState())
+
+    assert node.calls[0][2]["avoidance"] is None
 
 
 def test_watchdog_config_prewarms_halt_publisher() -> None:

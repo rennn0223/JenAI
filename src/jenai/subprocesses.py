@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import BinaryIO
 
 
 def _signal_process_group(
@@ -59,7 +60,7 @@ async def terminate_process_tree(
         _signal_process_group(process, force=True)
 
 
-def _captured_text(stream) -> str:
+def _captured_text(stream: BinaryIO) -> str:
     stream.flush()
     stream.seek(0)
     return stream.read().decode("utf-8", errors="replace")
@@ -75,11 +76,8 @@ async def run_process_async(
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess that is killed and reaped on timeout or cancellation."""
 
-    kwargs = {
-        "cwd": cwd,
-        "env": dict(env) if env is not None else None,
-        "start_new_session": os.name == "posix",
-    }
+    child_env = dict(env) if env is not None else None
+    start_new_session = os.name == "posix"
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         if shell:
             if not isinstance(command, str):
@@ -88,7 +86,9 @@ async def run_process_async(
                 command,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                **kwargs,
+                cwd=cwd,
+                env=child_env,
+                start_new_session=start_new_session,
             )
         else:
             if isinstance(command, str):
@@ -97,7 +97,9 @@ async def run_process_async(
                 *command,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                **kwargs,
+                cwd=cwd,
+                env=child_env,
+                start_new_session=start_new_session,
             )
 
         try:
@@ -109,9 +111,12 @@ async def run_process_async(
             await asyncio.shield(terminate_process_tree(process))
             raise
 
+        returncode = process.returncode
+        if returncode is None:  # defensive: wait() above must set it
+            raise RuntimeError("subprocess exited without a return code")
         return subprocess.CompletedProcess(
             command,
-            process.returncode,
+            returncode,
             _captured_text(stdout_file),
             _captured_text(stderr_file),
         )

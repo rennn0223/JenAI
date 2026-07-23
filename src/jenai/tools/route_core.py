@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
-from jenai.adapters.locations import LocationNotFoundError, find_location
+from jenai.adapters.locations import LocationNotFoundError, find_dock, find_location
 from jenai.adapters.route_adapter import get_route_adapter
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_json
@@ -12,9 +13,7 @@ from jenai.schemas import Location, RouteOutput
 
 # English `to`/`from` require word boundaries so they don't match inside words
 # (e.g. the "to" in "photo"); Chinese 從/到 have no such boundaries and match as-is.
-_SPLIT_PATTERN = re.compile(
-    r"(?:從|\bfrom\b)\s*(.+?)\s*(?:到|\bto\b)\s*(.+)", re.IGNORECASE
-)
+_SPLIT_PATTERN = re.compile(r"(?:從|\bfrom\b)\s*(.+?)\s*(?:到|\bto\b)\s*(.+)", re.IGNORECASE)
 # Destination-only phrasings ("去X", "go to X"). Tried only after the from-to
 # pattern fails, so 到/to acting as the from-to separator is never shadowed.
 _GOAL_ONLY_PATTERN = re.compile(
@@ -160,7 +159,9 @@ async def route_preview(config: AppConfig, locations: list[Location], text: str)
             route_preview=f"Could not resolve goal '{goal_query}'. {hint}",
         )
 
-    outgoing_action: dict = {"goal": resolved_goal.model_dump(mode="json")}
+    outgoing_action: dict[str, Any] = {"goal": resolved_goal.model_dump(mode="json")}
+    if (dock := find_dock(locations)) is not None and dock.id == resolved_goal.id:
+        outgoing_action["capability_id"] = "dock_approach"
     if resolved_start is not None:
         outgoing_action["start"] = resolved_start.model_dump(mode="json")
     return RouteOutput(
@@ -172,7 +173,7 @@ async def route_preview(config: AppConfig, locations: list[Location], text: str)
     )
 
 
-async def route_execute(config: AppConfig, outgoing_action: dict) -> RouteOutput:
+async def route_execute(config: AppConfig, outgoing_action: dict[str, Any]) -> RouteOutput:
     adapter = get_route_adapter(config.route_adapter)
     # Every adapter is async. In particular the Nav2 CLI fallback owns a native
     # subprocess group, so Esc and /stop kill and reap send_goal before unwinding.

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from jenai.schemas import (
     ApprovalRequest,
     ApprovalStatus,
@@ -69,7 +71,42 @@ def test_run_store_audits_lifecycle_without_raw_payloads(tmp_path) -> None:
         "run_status",
         "run_finished",
     ]
-    serialized = " ".join(
-        f"{event.summary} {event.details}" for event in events
-    )
+    serialized = " ".join(f"{event.summary} {event.details}" for event in events)
     assert "secret" not in serialized
+
+
+def test_tool_call_updates_reject_unknown_fields_and_invalid_types() -> None:
+    store = RunStore()
+    run = store.create_run("session-1", "test")
+    tool = ToolCallRecord(
+        tool_name="ros_topics_tool",
+        category=ToolCallCategory.ROS2,
+        input_summary="topics",
+    )
+    store.add_tool_call(run, tool)
+
+    with pytest.raises(ValueError, match="immutable or unknown"):
+        store.update_tool_call(run, tool.tool_call_id, tool_name="forged")
+    with pytest.raises(ValueError):
+        store.update_tool_call(run, tool.tool_call_id, status="not-a-status")
+    with pytest.raises(KeyError, match="missing"):
+        store.update_tool_call(run, "missing", status=ToolCallStatus.SUCCEEDED)
+
+    assert tool.tool_name == "ros_topics_tool"
+    assert tool.status == ToolCallStatus.QUEUED
+
+
+def test_audit_failure_is_logged_without_blocking_the_run(tmp_path, monkeypatch, caplog) -> None:
+    audit = AuditStore(tmp_path / "audit.sqlite3")
+
+    def broken_record(*_args, **_kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(audit, "record", broken_record)
+    store = RunStore(audit_store=audit)
+
+    with caplog.at_level("WARNING"):
+        run = store.create_run("session-1", "keep running")
+
+    assert run.session_id == "session-1"
+    assert "could not be persisted" in caplog.text

@@ -86,6 +86,7 @@ Helper 的 `Publish Full Scan=True`，10 Hz full cloud 對應 converter `scan_ti
 
 ```bash
 source /opt/ros/jazzy/setup.bash
+source /home/nvidia/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash
 uv run python scripts/isaac_hil_acceptance.py \
   --goal map_left_down \
   --goal dock \

@@ -244,8 +244,9 @@ def test_route_command_prompts_and_executes(tmp_path: Path, monkeypatch) -> None
     )
 
     assert result.exit_code == 0
-    # No navigation backend wired: the CLI honestly reports "unavailable", not success.
-    assert "unavailable" in result.stdout
+    # Saved coordinates are never sent without an explicitly active Site Profile.
+    assert "blocked" in result.stdout
+    assert "Site Profile" in result.stdout
 
 
 def test_route_command_cancelled_by_user(tmp_path: Path) -> None:

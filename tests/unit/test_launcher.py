@@ -37,9 +37,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
 def test_launcher_sources_jazzy_underlay_and_workspace(tmp_path: Path) -> None:
     home, project, env = _fixture(tmp_path)
     ros_setup = tmp_path / "ros-setup.bash"
-    workspace_setup = (
-        home / "IsaacSim-ros_workspaces" / "jazzy_ws" / "install" / "setup.bash"
-    )
+    workspace_setup = home / "IsaacSim-ros_workspaces" / "jazzy_ws" / "install" / "setup.bash"
     workspace_setup.parent.mkdir(parents=True)
     ros_setup.write_text("export ROS_DISTRO=jazzy\nexport JENAI_ROS_BASE=ready\n", encoding="utf-8")
     workspace_setup.write_text("export JENAI_ROS_WORKSPACE=ready\n", encoding="utf-8")
@@ -56,9 +54,7 @@ def test_launcher_sources_jazzy_underlay_and_workspace(tmp_path: Path) -> None:
 
 def test_launcher_allows_workspace_bootstrap_to_be_disabled(tmp_path: Path) -> None:
     _, _, env = _fixture(tmp_path)
-    env.update(
-        {"ROS_SETUP": str(tmp_path / "missing.bash"), "ROS_WORKSPACE_SETUP": ""}
-    )
+    env.update({"ROS_SETUP": str(tmp_path / "missing.bash"), "ROS_WORKSPACE_SETUP": ""})
 
     result = subprocess.run([str(LAUNCHER)], env=env, check=False)
 

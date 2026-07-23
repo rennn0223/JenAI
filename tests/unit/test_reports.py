@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,7 +29,7 @@ def _report() -> PatrolReport:
 
 def test_save_and_load_roundtrip(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
-    path = save_patrol_log(_report(), config_path, now=datetime(2026, 7, 4, 12, 0))
+    path = save_patrol_log(_report(), config_path, now=datetime(2026, 7, 4, 12, 0, tzinfo=UTC))
     assert path.parent == tmp_path / "reports"
     log = load_patrol_log(path)
     assert log["route"] == ["A", "B"]
@@ -42,8 +42,8 @@ def test_save_and_load_roundtrip(tmp_path: Path) -> None:
 def test_list_logs_newest_first_and_empty_dir(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     assert list_patrol_logs(config_path) == []  # no dir yet — honest empty
-    save_patrol_log(_report(), config_path, now=datetime(2026, 7, 4, 8, 0))
-    save_patrol_log(_report(), config_path, now=datetime(2026, 7, 4, 9, 0))
+    save_patrol_log(_report(), config_path, now=datetime(2026, 7, 4, 8, 0, tzinfo=UTC))
+    save_patrol_log(_report(), config_path, now=datetime(2026, 7, 4, 9, 0, tzinfo=UTC))
     logs = list_patrol_logs(config_path)
     assert [p.name for p in logs] == ["patrol-20260704-090000.json", "patrol-20260704-080000.json"]
 
@@ -58,7 +58,7 @@ def test_load_rejects_corrupt_log(tmp_path: Path) -> None:
 
 def test_render_markdown_is_honest_about_failures(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
-    path = save_patrol_log(_report(), config_path, now=datetime(2026, 7, 4, 12, 0))
+    path = save_patrol_log(_report(), config_path, now=datetime(2026, 7, 4, 12, 0, tzinfo=UTC))
     body = render_patrol_markdown(load_patrol_log(path))
     assert "A → B ×2" in body
     assert "3/4" in body

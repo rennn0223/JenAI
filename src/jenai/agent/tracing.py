@@ -6,9 +6,10 @@ import json
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from agents import set_trace_processors
-from agents.tracing import TracingProcessor
+from agents.tracing import Span, Trace, TracingProcessor
 
 from jenai.secure_files import private_append_file, write_all
 
@@ -32,7 +33,7 @@ class FileTracingProcessor(TracingProcessor):
         self._path = path or _traces_path()
         self._lock = threading.Lock()
 
-    def _write(self, record: dict) -> None:
+    def _write(self, record: dict[str, Any]) -> None:
         record["ts"] = datetime.now(UTC).isoformat(timespec="seconds")
         payload = (json.dumps(record, ensure_ascii=False, default=str) + "\n").encode()
         try:
@@ -41,16 +42,16 @@ class FileTracingProcessor(TracingProcessor):
         except OSError:
             pass  # tracing must never break a run
 
-    def on_trace_start(self, trace) -> None:
+    def on_trace_start(self, trace: Trace) -> None:
         self._write({"event": "trace_start", "trace_id": trace.trace_id, "name": trace.name})
 
-    def on_trace_end(self, trace) -> None:
+    def on_trace_end(self, trace: Trace) -> None:
         self._write({"event": "trace_end", "trace_id": trace.trace_id})
 
-    def on_span_start(self, span) -> None:
+    def on_span_start(self, span: Span[Any]) -> None:
         pass  # we log spans on completion (when timing/errors are known)
 
-    def on_span_end(self, span) -> None:
+    def on_span_end(self, span: Span[Any]) -> None:
         span_type = type(span.span_data).__name__.removesuffix("SpanData")
         self._write(
             {

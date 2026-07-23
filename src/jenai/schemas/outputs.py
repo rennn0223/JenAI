@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -37,7 +37,7 @@ class RosSchemaOutput(JenAIModel):
     message_type: str
     raw_interface: str
     field_summary: list[FieldSummary] = Field(default_factory=list)
-    example_payload: dict = Field(default_factory=dict)
+    example_payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class RosTopicInfoOutput(JenAIModel):
@@ -54,14 +54,14 @@ class RosTopicInfoOutput(JenAIModel):
 class RosEchoOutput(JenAIModel):
     topic: str
     mode: Literal["stream", "snapshot"] = "snapshot"
-    messages: list[dict] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     summary: str = ""
 
 
 class RosPubOutput(JenAIModel):
     topic: str
     message_type: str
-    payload_preview: dict = Field(default_factory=dict)
+    payload_preview: dict[str, Any] = Field(default_factory=dict)
     approval_status: str = "pending"
     execution_status: str = "not_executed"
     result_message: str = ""
@@ -73,7 +73,7 @@ class RouteOutput(JenAIModel):
     resolved_goal: Location | None = None
     candidate_matches: list[Location] = Field(default_factory=list)
     route_preview: str = ""
-    outgoing_action: dict = Field(default_factory=dict)
+    outgoing_action: dict[str, Any] = Field(default_factory=dict)
     approval_status: str = "pending"
     execution_status: str = "not_executed"
 

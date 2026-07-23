@@ -16,9 +16,7 @@ def _paths(tmp_path: Path) -> DataPaths:
         pending_runs=tmp_path / "pending-runs",
         reports=tmp_path / "reports",
         traces=tmp_path / "traces",
-
         audit=tmp_path / "audit.sqlite3",
-
         config_backups=(),
     )
 

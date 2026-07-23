@@ -36,6 +36,7 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
@@ -152,8 +153,13 @@ jobs:
 
       - name: Gate the tag (lint + full suite with coverage)
         run: |
+          uv run ruff format --check src tests
           uv run ruff check src tests
-          uv run pytest -q --cov=jenai --cov-report=term
+          uv run mypy
+          uv run pytest -q --cov=jenai --cov-branch --cov-report=term
+
+      - name: Overall branch-coverage gate (same threshold as PR CI)
+        run: uv run coverage report --fail-under=76
 
       - name: Safety-chain coverage gate (same threshold as PR CI)
         run: |

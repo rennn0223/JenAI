@@ -216,6 +216,18 @@ def test_web_command_drive_asks_confirm_not_execute(tmp_path: Path) -> None:
     assert "danger" in res
 
 
+def test_web_ros_commands_reject_non_object_payloads(tmp_path: Path) -> None:
+    config_path = tmp_path / "c.toml"
+
+    drive = asyncio.run(run_web_command(_config(), config_path, "/ros drive /cmd_vel [] 1"))
+    publish = asyncio.run(run_web_command(_config(), config_path, "/ros pub /cmd_vel []"))
+
+    assert drive["kind"] == "error"
+    assert publish["kind"] == "error"
+    assert "JSON object" in drive["html"]
+    assert "JSON object" in publish["html"]
+
+
 def test_web_command_topics_is_read(monkeypatch, tmp_path: Path) -> None:
     from jenai.schemas import RosTopicsOutput, TopicItem
     from jenai.webui import commands
@@ -238,15 +250,19 @@ def test_web_confirm_executes_drive(monkeypatch, tmp_path: Path) -> None:
     async def fake_drive(topic, message_type, payload, *, duration_s=1.0, **limits):
         called["duration"] = duration_s
         return RosPubOutput(
-            topic=topic, message_type=message_type,
-            execution_status="succeeded", result_message="drove then stopped",
+            topic=topic,
+            message_type=message_type,
+            execution_status="succeeded",
+            result_message="drove then stopped",
         )
 
     monkeypatch.setattr(commands.ros2_core, "ros_drive", fake_drive)
     action = {
-        "type": "drive", "topic": "/cmd_vel",
+        "type": "drive",
+        "topic": "/cmd_vel",
         "message_type": "geometry_msgs/msg/Twist",
-        "payload": {"linear": {"x": 0.2}}, "duration": 2.0,
+        "payload": {"linear": {"x": 0.2}},
+        "duration": 2.0,
     }
     config_path = tmp_path / "config.toml"
     res = asyncio.run(run_web_confirm(_config(), action, config_path=config_path))
@@ -395,8 +411,14 @@ def test_api_map_pose_staleness(tmp_path) -> None:
 
     cache = PoseCache()
     cache._started = True  # don't spawn a bridge in tests
-    cache.latest = {"x": 1.0, "y": 2.0, "yaw": 0.0, "frame_id": "map", "source": "/odom",
-                    "ts": time.time()}
+    cache.latest = {
+        "x": 1.0,
+        "y": 2.0,
+        "yaw": 0.0,
+        "frame_id": "map",
+        "source": "/odom",
+        "ts": time.time(),
+    }
     assert build_map_payload(config, config_path, cache)["pose"] is not None
 
     cache.latest["ts"] = time.time() - 60  # stale → treated as no pose
@@ -446,9 +468,7 @@ def test_pose_cache_backs_off_after_bridge_failure(monkeypatch) -> None:
     from jenai.webui import server as server_module
     from jenai.webui.server import PoseCache
 
-    monkeypatch.setattr(
-        server_module.RosBridgeClient, "available", staticmethod(lambda: True)
-    )
+    monkeypatch.setattr(server_module.RosBridgeClient, "available", staticmethod(lambda: True))
     spawned: list[int] = []
     monkeypatch.setattr(
         server_module.threading,

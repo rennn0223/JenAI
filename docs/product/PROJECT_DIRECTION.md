@@ -174,7 +174,7 @@ ROS topics 就能算,不用碰 Isaac 內部 API,增量成本可控。
 | M5 | **Onboarding 精靈/文件:裸 ROS2 → 第一次導航** | 客戶 | ⚠️ **文件完成** | doctor `nav` + ONBOARDING.md 已完成，≥3 位使用者曾在指導下順跑；純冷啟動、無人協助與正式碼表計時尚未執行 |
 | M6 | **常駐自主決策迴圈(post-v2／候選 v3 研究方向)** | PM(後續) | 🚧 **零件齊,迴圈未串** | 目前主軸是具執行邊界的受監督高階決策與工作流代理；感知/有界動作/Gate/規則引擎尚未串成常駐 DecisionLoop。v2.0 不包含此能力，後續規劃見 [ROADMAP 軌道 1](ROADMAP.md) |
 
-> **v0.9–v0.25 新增(不在原 M 表,但已 shipped)**:odom 直驅(`route_adapter=odom`,無 Nav2 開闊地導航)、局部避障(depth stop-and-go detour + stale-frame fail-closed)、GPS 地點(`/loc add gps` + `[map_datum]`)、`/route 從A到B` 依序、多頁 WebUI(Camera/API)、`/report` 巡邏日報(=C2)、`JenAI help`、V1_GATE 層一工程(semver/威脅模型/safety case/soak/架構鐵律/覆蓋倒退閘)。完整前瞻見 **[ROADMAP.md](ROADMAP.md)**。
+> **v0.9–v0.25 歷史實作（目前僅保留 bring-up／回歸，不屬於產品高階能力）**：odom 直驅（`route_adapter=odom`）與 depth stop-and-go detour。**目前產品導航只走載具既有 Nav2，NavigationGateway 會拒絕 odom 高階任務。** 其餘 shipped 能力：GPS 地點（`/loc add gps` + `[map_datum]`）、`/route 從A到B` 依序、多頁 WebUI(Camera/API)、`/report` 巡邏日報(=C2)、`JenAI help`、V1_GATE 層一工程(semver/威脅模型/safety case/soak/架構鐵律/覆蓋倒退閘)。完整前瞻見 **[ROADMAP.md](ROADMAP.md)**。
 
 ### 可做(有明確價值,排在必做之後)
 

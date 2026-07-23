@@ -131,9 +131,7 @@ def test_nav2_reports_unavailable_when_action_missing(monkeypatch) -> None:
 
     monkeypatch.setattr(ros2_adapter, "is_available", lambda: True)
     monkeypatch.setattr(ros2_adapter, "action_available_async", unavailable)
-    result = asyncio.run(
-        Nav2RouteAdapter().resolve({"goal": {"pose": {"x": 1, "y": 2, "yaw": 0}}})
-    )
+    result = asyncio.run(Nav2RouteAdapter().resolve({"goal": {"pose": {"x": 1, "y": 2, "yaw": 0}}}))
     assert result.execution_status == "unavailable"
     assert "NOT sent" in result.detail
 

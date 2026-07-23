@@ -5,21 +5,26 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
+from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, ScrollableContainer, Vertical
 from textual.css.query import NoMatches
+from textual.events import Key, Resize
 from textual.markup import escape
 from textual.widgets import Input, Static
 
 from jenai import __version__
 from jenai.agent import build_run_agent, orchestrator, review_plan, run_plan
 from jenai.agent.context import JenAIRunContext
+from jenai.agent.fast_paths import start_capability_card_run
 from jenai.agent.instructions import CHAT_INSTRUCTIONS
 from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
+from jenai.capability_reporting import is_capability_card_request
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.providers import (
     ProviderChatError,
@@ -36,7 +41,7 @@ from jenai.schemas import (
     ToolCallCategory,
     ToolCallRecord,
 )
-from jenai.state import AuditStore, InputHistory, RunStore, create_session
+from jenai.state import AuditStore, InputHistory, RunStore, TaskReceiptStore, create_session
 from jenai.tools.shell_core import assess_command, preview_command
 from jenai.tools.user_skills import load_user_skills
 from jenai.tui.approval_flow import ApprovalFlowMixin
@@ -53,7 +58,9 @@ from jenai.tui.panels import (
     WelcomePanel,
     _short_cwd,
     pixel_mark,
-    status_color,
+)
+from jenai.tui.panels import (
+    status_color as status_color,
 )
 from jenai.tui.robot_commands import RobotCommandsMixin
 from jenai.tui.widgets import (
@@ -64,6 +71,8 @@ from jenai.tui.widgets import (
     PlanBlock,
     ToolBlock,
 )
+
+SlashHandler = Callable[[str], Awaitable[None]]
 
 
 def run_tui(
@@ -87,7 +96,7 @@ class JenAITuiApp(
     # priority=True: dispatch checks the focused widget first, so without it
     # these keys never reach the App — Screen grabs shift+tab (focus_previous)
     # and the composer Input grabs ctrl+c (copy) / ctrl+d (delete_right).
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("ctrl+d", "quit", "Quit", priority=True),
         ("escape", "focus_composer", "Focus input"),
@@ -103,7 +112,7 @@ class JenAITuiApp(
     #             Hard clamps, Twin Gate, watchdog and /stop remain mandatory.
     PERMISSION_MODES = ("approve", "plan", "auto")
     COMMAND_QUEUE_LIMIT = 20
-    _MODE_LABEL = {
+    _MODE_LABEL: ClassVar[dict[str, str]] = {
         "approve": "[#5fb1c0]approve[/] · 自然語言交給 agent,動作先過批准卡",
         "plan": "[#f0c84e]plan[/] · 只規劃與教學,不執行任何動作",
         "auto": "[#d99a86]auto[/] · P0/P1 可自動批准;host/P2 仍逐次詢問",
@@ -135,6 +144,7 @@ class JenAITuiApp(
         self.run_store = RunStore(
             pending_dir=config_path.parent / "pending-runs",
             audit_store=audit_store,
+            receipt_store=TaskReceiptStore(config_path.parent / "reports" / "tasks"),
         )
         # Freeze the startup set before Textual schedules restoration. A live
         # /run may begin while the callback is waiting; scanning the mutable
@@ -148,13 +158,13 @@ class JenAITuiApp(
         self._tool_blocks: dict[str, ToolBlock] = {}
         # run_id -> {"agent", "ctx", "decisions", "expected"} for approvals raised
         # mid-Runner.run (agent-driven /run flow).
-        self._pending_approvals: dict[str, dict] = {}
+        self._pending_approvals: dict[str, dict[str, Any]] = {}
         # tool_call_id -> {"kind", "ctx", ...} for approvals from deterministic,
         # non-agent commands (/ros pub, /route) that skip the LLM entirely.
-        self._pending_direct_approvals: dict[str, dict] = {}
+        self._pending_direct_approvals: dict[str, dict[str, Any]] = {}
         self._command_queue: deque[str] = deque()
         # Claude Code-style working indicator + interruptible execution.
-        self._active_task: asyncio.Task | None = None
+        self._active_task: asyncio.Task[None] | None = None
         # True while the active task IS the emergency stop — Esc must not
         # cancel it, and a preempted task must not clear its spinner.
         self._active_task_is_stop = False
@@ -242,7 +252,7 @@ class JenAITuiApp(
         running = self._active_task is not None and not self._active_task.done()
         mark.update(pixel_mark(self._mascot_frame, running=running))
 
-    def on_resize(self, event) -> None:
+    def on_resize(self, event: Resize) -> None:
         self._apply_responsive(event.size.width, event.size.height)
 
     def _apply_responsive(self, width: int, height: int) -> None:
@@ -294,7 +304,8 @@ class JenAITuiApp(
         is_queue_command = command == "/queue"
         if is_stop:
             value = "/stop"
-        active = self._active_task is not None and not self._active_task.done()
+        active_task = self._active_task
+        active = active_task is not None and not active_task.done()
 
         if is_queue_command:
             # Queue management must remain available while another command is
@@ -307,7 +318,7 @@ class JenAITuiApp(
             # active command and invalidates everything that was queued behind it.
             cleared = len(self._command_queue)
             self._command_queue.clear()
-            predecessor = self._active_task if active else None
+            predecessor = active_task if active else None
             # The stop task sends an immediate bridge halt before cancelling the
             # predecessor, then waits for reap and sends a final halt. Replacing
             # the active slot here also makes Esc unable to cancel that sequence.
@@ -321,7 +332,9 @@ class JenAITuiApp(
         if is_abort and active:
             # Abort affects only the current command. Its task-finally hook
             # starts the next queued item after cancellation has unwound.
-            self._active_task.cancel()
+            if active_task is None:
+                return
+            active_task.cancel()
             await self._mount_event(
                 TimelineItem(
                     "warn",
@@ -342,7 +355,7 @@ class JenAITuiApp(
         value: str,
         *,
         is_stop: bool = False,
-        predecessor: asyncio.Task | None = None,
+        predecessor: asyncio.Task[None] | None = None,
     ) -> None:
         self._active_task = asyncio.create_task(self._run_user_text(value, predecessor=predecessor))
         self._active_task_is_stop = is_stop
@@ -386,7 +399,7 @@ class JenAITuiApp(
         self,
         value: str,
         *,
-        predecessor: asyncio.Task | None = None,
+        predecessor: asyncio.Task[None] | None = None,
     ) -> None:
         """Run one submission with a working spinner; cancellable via Esc."""
         self._start_spinner(self._spinner_label_for(value))
@@ -465,7 +478,7 @@ class JenAITuiApp(
                 # Run status is authoritative; memory repair must not hide the interrupt.
                 pass
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: Key) -> None:
         # Key routing priority: (1) Esc interrupts a running task, (2) the slash
         # palette owns up/down/tab while open, (3) up/down otherwise walks the
         # input history. Each branch stops the event so only one thing reacts.
@@ -538,7 +551,9 @@ class JenAITuiApp(
             # catch these) surfaces as a clean message instead of an unhandled
             # task exception — the exception net the removed chat stream had.
             try:
-                if is_casual_greeting(value):
+                if is_capability_card_request(value):
+                    await self._show_capability_card(value)
+                elif is_casual_greeting(value):
                     # A greeting needs neither robot state nor an agent handoff.
                     # Keep it structurally tool-free so weak local models cannot
                     # turn "hi" into a visible specialist/tool call.
@@ -767,10 +782,13 @@ class JenAITuiApp(
 
         lines: list[str] = []
         for s in self._user_skills.values():
-            lines.append(f"[bold #f2ede1]/{s.name}[/] — {s.description}")
-            lines.append(f"    [#9c9689]{s.steps}[/]")
-        for warning in self._skill_warnings:
-            lines.append(f"[#d99a86]⚠ {warning}[/]")
+            lines.extend(
+                (
+                    f"[bold #f2ede1]/{s.name}[/] — {s.description}",
+                    f"    [#9c9689]{s.steps}[/]",
+                )
+            )
+        lines.extend(f"[#d99a86]⚠ {warning}[/]" for warning in self._skill_warnings)
         if not lines:
             lines.append("No user skills yet.")
         lines.append("")
@@ -789,10 +807,10 @@ class JenAITuiApp(
         )
         await self._show_mission(skill.steps)
 
-    def _resolve_command_handler(self, command: str, arg: str):
+    def _resolve_command_handler(self, command: str, arg: str) -> tuple[SlashHandler | None, str]:
         if command == "/ros":
             subcommand, _, rest = arg.partition(" ")
-            ros_handlers = {
+            ros_handlers: dict[str, SlashHandler] = {
                 "topics": self._show_ros_topics,
                 "topic-info": self._show_ros_topic_info,
                 "schema": self._show_ros_schema,
@@ -804,7 +822,7 @@ class JenAITuiApp(
 
         if command == "/loc":
             subcommand, _, rest = arg.partition(" ")
-            loc_handlers = {
+            loc_handlers: dict[str, SlashHandler] = {
                 "list": self._show_loc_list,
                 "add": self._show_loc_add,
                 "show": self._show_loc_show,
@@ -814,7 +832,7 @@ class JenAITuiApp(
             }
             return loc_handlers.get(subcommand), rest.strip()
 
-        handlers = {
+        handlers: dict[str, SlashHandler] = {
             "/stop": self._show_stop,
             "/help": self._show_help,
             "/status": self._show_status,
@@ -895,7 +913,7 @@ class JenAITuiApp(
         ctx: JenAIRunContext,
         run: RunRecord,
         *,
-        agent=None,
+        agent: Any | None = None,
     ) -> None:
         if run.plan_steps:
             await self._mount_event(
@@ -972,7 +990,9 @@ class JenAITuiApp(
             else:
                 block.set_tool_call(tool_call)
 
-    async def _run_with_agent_progress(self, ctx: JenAIRunContext, awaitable) -> RunRecord:
+    async def _run_with_agent_progress(
+        self, ctx: JenAIRunContext, awaitable: Coroutine[Any, Any, RunRecord]
+    ) -> RunRecord:
         """Keep Agent stages and recorded tools visible while the model is running."""
 
         progress = AgentProgressBlock(ctx.run)
@@ -1018,14 +1038,20 @@ class JenAITuiApp(
         run = await self._run_with_agent_progress(ctx, orchestrator.start_run(agent, ctx, arg))
         await self._render_run_update(ctx, run, agent=agent)
 
+    async def _show_capability_card(self, arg: str) -> None:
+        """Fast, recorded identity/capability report with no live-state claim."""
+
+        ctx = self._new_run_context(arg)
+        self._scroll_to_bottom()
+        run = await self._run_with_agent_progress(ctx, start_capability_card_run(ctx, self.config))
+        await self._render_run_update(ctx, run)
+
     async def _show_state_inspection(self, arg: str) -> None:
         """Fast path for explicit read-only pose/scan/Nav2 status questions."""
 
         ctx = self._new_run_context(arg)
         self._scroll_to_bottom()
-        run = await self._run_with_agent_progress(
-            ctx, orchestrator.start_read_only_state_run(ctx)
-        )
+        run = await self._run_with_agent_progress(ctx, orchestrator.start_read_only_state_run(ctx))
         await self._render_run_update(ctx, run)
 
     async def _show_why(self, _: str = "") -> None:
@@ -1169,7 +1195,7 @@ class JenAITuiApp(
 
     _SPINNER_FRAMES = "✻✳✢✦✳"
 
-    _MODE_CHIP = {
+    _MODE_CHIP: ClassVar[dict[str, str]] = {
         "approve": "[#5fb1c0]approve[/]",
         "plan": "[#f0c84e]plan[/]",
         "auto": "[#d99a86]auto[/]",
@@ -1215,7 +1241,7 @@ class JenAITuiApp(
 
     # Typed fallback for terminals that never deliver Shift+Tab (common over
     # SSH clients and embedded terminals) — same state, same announcement.
-    _MODE_ALIASES = {
+    _MODE_ALIASES: ClassVar[dict[str, str]] = {
         "approve": "approve",
         "審批": "approve",
         "plan": "plan",

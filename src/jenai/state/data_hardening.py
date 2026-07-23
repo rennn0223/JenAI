@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -12,15 +13,32 @@ from jenai.secure_files import PRIVATE_DIR_MODE, PRIVATE_FILE_MODE
 
 
 class DataPathsLike(Protocol):
-    config: Path
-    credentials: Path
-    locations: Path
-    sessions: Path
-    pending_runs: Path
-    reports: Path
-    traces: Path
-    audit: Path
-    config_backups: tuple[Path, ...]
+    @property
+    def config(self) -> Path: ...
+
+    @property
+    def credentials(self) -> Path: ...
+
+    @property
+    def locations(self) -> Path: ...
+
+    @property
+    def sessions(self) -> Path: ...
+
+    @property
+    def pending_runs(self) -> Path: ...
+
+    @property
+    def reports(self) -> Path: ...
+
+    @property
+    def traces(self) -> Path: ...
+
+    @property
+    def audit(self) -> Path: ...
+
+    @property
+    def config_backups(self) -> tuple[Path, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -71,7 +89,6 @@ class HardenResult:
 _CATEGORY_PATTERNS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("sessions", "sessions", ("*.json", "*.json.lock")),
     ("pending_runs", "pending_runs", ("*.json",)),
-    ("reports", "reports", ("patrol-*.json",)),
     ("traces", "traces", ("*.jsonl", "*.jsonl.lock")),
 )
 
@@ -115,9 +132,7 @@ def build_hardening_plan(paths: DataPathsLike) -> HardenPlan:
     )
     refusals.extend(audit_refusals)
     candidates.extend(_candidates("audit", audit_entries))
-    audits.append(
-        _audit_collection("audit", paths.audit, audit_entries, audit_refusals)
-    )
+    audits.append(_audit_collection("audit", paths.audit, audit_entries, audit_refusals))
 
     backup_entries, backup_refusals = _inspect_files(
         "config_backups",
@@ -149,6 +164,31 @@ def build_hardening_plan(paths: DataPathsLike) -> HardenPlan:
         refusals.extend(category_refusals)
         candidates.extend(_candidates(category, entries))
         audits.append(_audit(category, root, entries, category_refusals))
+
+    # Reports is user-visible, so harden only JenAI-owned formats instead of
+    # recursively adopting every JSON document placed below this directory.
+    report_entries, report_refusals = _inspect_directory(
+        "reports",
+        paths.reports,
+        ("patrol-*.json",),
+        protected_paths=protected_paths,
+        protected_identities=protected_identities,
+        recursive=False,
+    )
+    task_entries, task_refusals = _inspect_directory(
+        "reports",
+        paths.reports / "tasks",
+        ("task-*.json",),
+        protected_paths=protected_paths,
+        protected_identities=protected_identities,
+        recursive=False,
+    )
+    report_entries_by_path = {entry.path: entry for entry in (*report_entries, *task_entries)}
+    all_report_refusals = [*report_refusals, *task_refusals]
+    managed_report_entries = list(report_entries_by_path.values())
+    refusals.extend(all_report_refusals)
+    candidates.extend(_candidates("reports", managed_report_entries))
+    audits.append(_audit("reports", paths.reports, managed_report_entries, all_report_refusals))
 
     return HardenPlan(
         audits=tuple(audits),
@@ -259,6 +299,7 @@ def _inspect_directory(
     *,
     protected_paths: set[Path],
     protected_identities: frozenset[tuple[int, int]],
+    recursive: bool = True,
 ) -> tuple[list[_Entry], list[HardenRefusal]]:
     if not root.exists() and not root.is_symlink():
         return [], []
@@ -275,7 +316,7 @@ def _inspect_directory(
     matched: set[Path] = set()
     for pattern in patterns:
         try:
-            matched.update(root.rglob(pattern))
+            matched.update(root.rglob(pattern) if recursive else root.glob(pattern))
         except OSError:
             refusals.append(HardenRefusal(category, root, "could not enumerate directory"))
             return list(entries.values()), refusals
@@ -363,7 +404,7 @@ def _inspect_directory_entry(
     )
 
 
-def _parents_within(path: Path, root: Path):
+def _parents_within(path: Path, root: Path) -> Iterator[Path]:
     current = path
     while current != root:
         try:

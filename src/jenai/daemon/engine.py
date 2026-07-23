@@ -52,9 +52,7 @@ class Rule(BaseModel):
             and self.affordance is None
         ):
             raise ValueError(f"rule '{self.name}' needs one of below/above/equals/affordance")
-        if not (
-            self.action in ("notify", "halt") or self.action.startswith("goto ")
-        ):
+        if not (self.action in ("notify", "halt") or self.action.startswith("goto ")):
             raise ValueError(
                 f"rule '{self.name}': action must be 'notify', 'halt', or 'goto <location>'"
             )
@@ -84,7 +82,7 @@ def load_rules(path: Path) -> list[Rule]:
     return rules
 
 
-def extract_field(data: dict, dotted: str) -> Any | None:
+def extract_field(data: dict[str, Any], dotted: str) -> Any | None:
     """Walk a dotted path ("pose.pose.position.x") into a message dict; None if absent."""
     cur: Any = data
     for part in dotted.split("."):
@@ -94,7 +92,7 @@ def extract_field(data: dict, dotted: str) -> Any | None:
     return cur
 
 
-def condition_met(rule: Rule, value: Any, data: dict | None = None) -> bool:
+def condition_met(rule: Rule, value: Any, data: dict[str, Any] | None = None) -> bool:
     """True when the extracted value crosses the rule's threshold.
 
     Missing or non-numeric values never fire — a sensor dropout must not
@@ -114,7 +112,7 @@ def condition_met(rule: Rule, value: Any, data: dict | None = None) -> bool:
     if value is None:
         return False
     if rule.equals is not None:
-        return value == rule.equals
+        return bool(value == rule.equals)
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -154,7 +152,7 @@ class RuleEngine:
     nav_allowed: bool = False  # route_adapter == "nav2"
     _last_fired: dict[str, float] = field(default_factory=dict)
 
-    def handle_event(self, rule: Rule, data: dict, now: float | None = None) -> Decision:
+    def handle_event(self, rule: Rule, data: dict[str, Any], now: float | None = None) -> Decision:
         """Evaluate one topic message against one rule.
 
         Returns a Decision that says what happened and why; `navigate_to` is

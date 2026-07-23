@@ -1,25 +1,25 @@
 # ROADMAP — 演進與維護深度規劃
 
-> 對應版本:**v2.1.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
+> 對應版本:**v2.2.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
 > 六條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
 > 方向收斂邏輯見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md);v1.0 驗收與兩層分工見
 > [V1_GATE](V1_GATE.md);每次改動的驗收標準見根目錄 `CLAUDE.md`。
 
 ---
 
-## 1. 現況真實快照(v2.1.0)
+## 1. 現況真實快照(v2.2.0)
 
 過去的 M1–M6 表低估了實際進度。誠實盤點「真的 shipped 了什麼」:
 
 ### 已完成且驗證
 - **互補式安全邊界**:watchdog 斷線自主停車 → 四介面一鍵急停(免批准、可搶佔)→ 執行期硬限速 → HITL 批准卡 → daemon 明式授權。各控制處理不同危害與時間尺度，未證明統計獨立或任兩層即可保證安全；跨程序 cancel-all 已修復(v0.17.1)。
 - **rclpy bridge**:pose、Nav2 導航(feedback/cancel)、**odom 直驅**(無 Nav2 的閉環點對點)、**局部避障**(depth stop-and-go detour,逾時即停)、相機抓幀、topic 監看、halt/watchdog。
-- **導航語意**:`/route 從A到B` 依序兩段、`/mission`、`/patrol …photo`、`/dock`;`route_adapter` = stub/nav2/**odom**。
+- **導航語意**：`/route 從A到B` 依序兩段、`/mission`、`/patrol …photo`、`/dock`；產品 `route_adapter` = nav2（stub 供離線，odom 僅 legacy bridge bring-up）。
 - **地點**:`/loc add here`(pose)、**`/loc add gps`**(經緯度 + `[map_datum]` 換算)。
 - **Twin Gate pipeline**:G1–G5、pass/block/refer、自主路徑 refer→block，並支援可設定的獨立 ROS_DOMAIN_ID；歷史單一 Isaac Sim/domain 0 驗收未證明通訊隔離，隔離部署仍須跑 TWIN_SETUP §2 probe。
 - **感知**:PerceptionLoop(相機→VLM→SceneAnalysis),daemon `@perception` 規則共用同一 gating。
 - **介面**:TUI(Claude Code 風,會動的吉祥物 + **權限三模式 Shift+Tab:審批/規劃/自動**,v0.21–v0.22)、**多頁 WebUI**(Console/Camera/Status/API,token 認證)、MCP(唯讀 + `--allow-actions`)、`JenAI help`、檔案定義技能(`skills/*.toml`,v0.20)。
-- **巡邏日報**:`/report`(確定性 + LLM 摘要,離線誠實降級)。
+- **任務與事件可追溯性**:`/report` 巡邏日報；終止 TUI run 自動產出結構化 task receipt；daemon 事件觸發、派遣與終端結果寫入 audit，`/report task|event` 可查。
 - **確定性自然語言分流**:純唯讀的 pose／scan／Nav2 狀態要求直接走受記錄工具與固定摘要；混合決策／動作要求保留完整 LLM、批准與 NavigationGateway。ROS 狀態快照並行取得，session 同時受 item 與 byte cap 約束。
 - **開發 copilot**:`JenAI scaffold`(NL→ROS2 套件,`--build` 生成即驗證,v0.19–v0.20)、決策核心 + `JenAI eval`(E1 評測,v0.21)。
 - **工程基建**:完整自動化測試套件、Python 3.12／3.13／3.14 CI matrix(覆蓋倒退閘 + 架構鐵律 + wheel 冒煙)、tag 觸發 release 草稿(notes 版本化在 `docs/releases/`)、`scripts/soak.py`、23 份目錄 README、semver 契約、威脅模型、safety case 草稿。
@@ -127,7 +127,7 @@
 | D1 | **bridge node 仍有無法 venv 單元測試的 rclpy 邏輯**——watchdog、導航結果/active-state、halt 順序、避障判斷已抽成 stdlib-only sibling;nav_send callback 與 drive_loop 的 ROS 接線仍只有 E2E 覆蓋 | 安全相關接線的回歸仍靠 review + E2E,漏網風險高(v0.17.1 的跨程序急停回歸就是這樣漏的) | 沿用 sibling 純模組模式,繼續抽出 nav callback 狀態轉移與控制迴圈判斷;保留薄 rclpy shell。目標:安全鏈純邏輯覆蓋 ~100% |
 | D2 | **雙 ROS 發行版**(車 Humble / 工作站 Jazzy) | bridge/DDS 相容、`ROS_SETUP` 需正確指向 | 文件化(已記 memory);CI 用 fake_bridge 不綁發行版;長期:bridge 協定版本化 |
 | D3 | **sim 測不到的真機路徑**(depth row padding、感測噪聲) | v0.18.1 的 stride bug 在 Isaac 永遠測不出 | 加 padded-image / noisy-depth fixture 單測 `_avoidance` 的輸入處理;真機冒煙清單 |
-| D4 | **觀測性尚未完整**——run/status、批准、工具狀態與 Gate verdict 已進有界 SQLite audit;決策 prompt/延遲與查詢 UI 尚缺 | 基本事故序列可跨重啟回溯,但效能分析仍無數據 | 補 `bench` 延遲量測與唯讀 audit 查詢介面;敏感 prompt/raw payload 維持不落盤 |
+| D4 | **觀測性部分完成**——run/status、批准、工具、Gate 與 daemon event 已進有界 SQLite audit；終止 TUI run 另有 task receipt 與 `/report task|event` 唯讀查詢。決策 prompt/逐階段延遲仍未保存 | 事故與任務結果可跨重啟回溯，但尚不足以分析模型各階段效能 | 補 `bench` 分階段延遲；敏感 prompt/raw payload 維持不落盤 |
 | D5 | **release 節奏過碎**(一天十幾 patch) | changelog 噪音、版本語意稀釋 | 收斂:feature 累積成有意義的 minor;patch 只留真 bug/安全修;semver 契約(VERSIONING)已立 |
 
 ### 3.2 測試策略演進

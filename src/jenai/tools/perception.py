@@ -123,7 +123,7 @@ class PerceptionLoop:
         self.interval = 1.0 / max(0.05, hz)
         self._on_analysis = on_analysis
         self._on_status = on_status
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self.latest: SceneAnalysis | None = None
         self.frames = 0
 

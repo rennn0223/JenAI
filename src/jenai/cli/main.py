@@ -438,7 +438,7 @@ def daemon(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
-    from jenai.daemon import RuleError, load_rules, run_daemon
+    from jenai.daemon import Decision, RuleError, load_rules, run_daemon
 
     rules_path = rules or config_path.parent / "rules.toml"
     try:
@@ -451,7 +451,7 @@ def daemon(
         console.print(f"[yellow]No rules defined in {rules_path}.[/yellow]")
         raise typer.Exit(1)
 
-    def on_decision(decision) -> None:
+    def on_decision(decision: Decision) -> None:
         console.print(
             f"[bold #d97757]▲ {decision.rule.name}[/] "
             f"{decision.rule.fld}={decision.value} → {decision.reason}"
@@ -594,7 +594,9 @@ def help_command() -> None:
         ("JenAI → /stop 或 WebUI 紅色 STOP", "緊急停止,永遠免批准"),
     ):
         console.print(f"  [bold cyan]{recipe}[/bold cyan]  [dim]# {note}[/dim]", highlight=False)
-    console.print("\n[dim]完整規格:docs/COMMANDS.md;可測項目與期望輸出:docs/validation/TEST.md[/dim]")
+    console.print(
+        "\n[dim]完整規格:docs/COMMANDS.md;可測項目與期望輸出:docs/validation/TEST.md[/dim]"
+    )
 
 
 @loc_app.command("list")

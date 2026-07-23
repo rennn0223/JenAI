@@ -6,11 +6,19 @@ import asyncio
 import json
 import math
 import re
+from typing import Any
 
 from agents import RunContextWrapper, function_tool
 
 from jenai.agent.context import JenAIRunContext
-from jenai.schemas import EffectScope, RiskLevel, ToolCallCategory, ToolCallRecord, ToolCallStatus
+from jenai.schemas import (
+    EffectScope,
+    RiskLevel,
+    RosTopicsOutput,
+    ToolCallCategory,
+    ToolCallRecord,
+    ToolCallStatus,
+)
 from jenai.tools import ros2_core
 from jenai.tools.registry import ToolRiskInfo, register_tool
 
@@ -21,9 +29,19 @@ _SCAN_SCALAR = re.compile(
     r"^(angle_min|angle_max|angle_increment|range_min|range_max):\s*([^\s]+)\s*$",
     re.MULTILINE,
 )
+ToolPayload = dict[str, Any]
 
 
-def _bounded_topic_inventory(output, query: str, limit: int) -> dict:
+def _parse_payload_object(payload_json: str) -> ToolPayload:
+    """Decode one ROS message payload and enforce its object-shaped boundary."""
+
+    payload = json.loads(payload_json)
+    if not isinstance(payload, dict):
+        raise ValueError("payload_json must decode to a JSON object")
+    return payload
+
+
+def _bounded_topic_inventory(output: RosTopicsOutput, query: str, limit: int) -> ToolPayload:
     """Keep model context bounded while retaining queryable discovery.
 
     The interactive `/ros topics` command still renders the complete graph.
@@ -50,7 +68,7 @@ def _bounded_topic_inventory(output, query: str, limit: int) -> dict:
     }
 
 
-def _scan_snapshot_summary(raw: str) -> dict:
+def _scan_snapshot_summary(raw: str) -> ToolPayload:
     """Reduce a ROS CLI LaserScan snapshot to factual, bounded measurements."""
 
     scalars: dict[str, float] = {}
@@ -113,7 +131,7 @@ def _scan_snapshot_summary(raw: str) -> dict:
     }
 
 
-def _pose_snapshot_summary(raw: str) -> dict:
+def _pose_snapshot_summary(raw: str) -> ToolPayload:
     """Extract map position and yaw from an AMCL PoseWithCovariance snapshot."""
 
     position_text = raw.partition("position:")[2].partition("orientation:")[0]
@@ -145,7 +163,7 @@ def _pose_snapshot_summary(raw: str) -> dict:
     }
 
 
-def _compact_robot_state(state: dict) -> dict:
+def _compact_robot_state(state: ToolPayload) -> ToolPayload:
     """Retain state evidence without feeding full LaserScan arrays to the LLM."""
 
     compact = dict(state)
@@ -168,7 +186,7 @@ def _compact_robot_state(state: dict) -> dict:
     return compact
 
 
-def _combined_robot_status(state: dict, nav2: dict) -> dict:
+def _combined_robot_status(state: ToolPayload, nav2: ToolPayload) -> ToolPayload:
     """One timestamp-local payload for pose/scan evidence and Nav2 readiness."""
 
     compact = _compact_robot_state(state)
@@ -206,10 +224,10 @@ def _finish_call(
     *,
     ok: bool,
     summary: str,
-    raw_output: dict | None = None,
+    raw_output: ToolPayload | None = None,
 ) -> None:
     run_ctx = ctx.context
-    fields = {
+    fields: dict[str, Any] = {
         "status": ToolCallStatus.SUCCEEDED if ok else ToolCallStatus.FAILED,
         "output_summary": summary,
     }
@@ -223,7 +241,7 @@ async def ros_topics_tool(
     ctx: RunContextWrapper[JenAIRunContext],
     query: str = "",
     limit: int = _AGENT_TOPIC_LIMIT,
-) -> dict:
+) -> ToolPayload:
     """List a bounded ROS2 topic inventory. Use `query` to filter by a name fragment when
     the response is truncated; the user's direct `/ros topics` command remains unbounded."""
     call = _record_call(ctx, "ros_topics_tool", "list topics")
@@ -233,7 +251,7 @@ async def ros_topics_tool(
 
 
 @function_tool
-async def ros_topic_info_tool(ctx: RunContextWrapper[JenAIRunContext], topic: str) -> dict:
+async def ros_topic_info_tool(ctx: RunContextWrapper[JenAIRunContext], topic: str) -> ToolPayload:
     """Get a ROS2 topic's message type, publisher and subscriber details. When the topic is
     not found, the response includes fuzzy `candidates`."""
     call = _record_call(ctx, "ros_topic_info_tool", f"info for {topic}")
@@ -246,7 +264,7 @@ async def ros_topic_info_tool(ctx: RunContextWrapper[JenAIRunContext], topic: st
 @function_tool
 async def ros_echo_tool(
     ctx: RunContextWrapper[JenAIRunContext], topic: str, count: int = 1
-) -> dict:
+) -> ToolPayload:
     """Capture a snapshot of up to `count` recent messages published on a ROS2 topic."""
     call = _record_call(ctx, "ros_echo_tool", f"echo {topic}")
     output = await ros2_core.ros_echo(ctx.context.config, topic, limit=count)
@@ -254,7 +272,7 @@ async def ros_echo_tool(
     return output.model_dump()
 
 
-async def inspect_robot_state(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
+async def inspect_robot_state(ctx: RunContextWrapper[JenAIRunContext]) -> ToolPayload:
     """Run the recorded read-only robot/Nav2 observation primitive."""
 
     call = _record_call(ctx, "ros_state_tool", "read robot state")
@@ -277,7 +295,7 @@ async def inspect_robot_state(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
 
 
 @function_tool
-async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
+async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> ToolPayload:
     """Observe the robot's current state — a one-shot snapshot of the localized pose
     (/amcl_pose), odometry (/odom), laser scan (/scan), and Nav2 readiness. Use this to
     check where the robot is, whether scan feedback exists, and whether navigation is ready
@@ -287,7 +305,7 @@ async def ros_state_tool(ctx: RunContextWrapper[JenAIRunContext]) -> dict:
 
 
 @function_tool
-async def ros_schema_tool(ctx: RunContextWrapper[JenAIRunContext], topic: str) -> dict:
+async def ros_schema_tool(ctx: RunContextWrapper[JenAIRunContext], topic: str) -> ToolPayload:
     """Resolve a ROS2 topic's message type and summarize its fields in plain language."""
     call = _record_call(ctx, "ros_schema_tool", f"schema for {topic}")
     output = await ros2_core.ros_schema(ctx.context.config, topic)
@@ -300,14 +318,14 @@ async def ros_pub_validate_tool(
     ctx: RunContextWrapper[JenAIRunContext],
     topic: str,
     payload_json: str,
-) -> dict:
+) -> ToolPayload:
     """Validate a ROS2 topic publish request (topic exists, payload is a JSON object) before
     calling ros_pub_execute_tool. Always call this first. `payload_json` is the message payload
     encoded as a JSON object string, e.g. '{"linear": {"x": 0.5}}'."""
     call = _record_call(ctx, "ros_pub_validate_tool", f"validate publish to {topic}")
     try:
-        payload = json.loads(payload_json)
-    except json.JSONDecodeError as exc:
+        payload = _parse_payload_object(payload_json)
+    except ValueError as exc:
         _finish_call(ctx, call, ok=False, summary="invalid JSON payload")
         return {"ok": False, "message_type": "", "payload_preview": None, "error": str(exc)}
 
@@ -327,14 +345,14 @@ async def ros_pub_execute_tool(
     topic: str,
     message_type: str,
     payload_json: str,
-) -> dict:
+) -> ToolPayload:
     """Publish a validated payload to a ROS2 topic. Requires human approval. Only call this
     after ros_pub_validate_tool has confirmed the request is valid. `payload_json` is the
     message payload encoded as a JSON object string."""
     call = _record_call(ctx, "ros_pub_execute_tool", f"publish to {topic}")
     try:
-        payload = json.loads(payload_json)
-    except json.JSONDecodeError as exc:
+        payload = _parse_payload_object(payload_json)
+    except ValueError as exc:
         _finish_call(ctx, call, ok=False, summary="invalid JSON payload")
         return {
             "topic": topic,
@@ -365,15 +383,15 @@ async def ros_drive_execute_tool(
     message_type: str,
     payload_json: str,
     duration_seconds: float = 1.0,
-) -> dict:
+) -> ToolPayload:
     """Drive the robot by publishing a payload continuously for `duration_seconds`, then
     automatically send a zeroed message so it stops. Use this for time-bounded motion like
     "move forward for 1 second" — do NOT loop ros_pub_execute_tool to sustain motion. Requires
     human approval. `payload_json` is the message payload (e.g. a Twist) as a JSON object string."""
     call = _record_call(ctx, "ros_drive_execute_tool", f"drive {topic} for {duration_seconds}s")
     try:
-        payload = json.loads(payload_json)
-    except json.JSONDecodeError as exc:
+        payload = _parse_payload_object(payload_json)
+    except ValueError as exc:
         _finish_call(ctx, call, ok=False, summary="invalid JSON payload")
         return {
             "topic": topic,
@@ -406,7 +424,7 @@ async def ros_drive_verified_tool(
     payload_json: str,
     duration_seconds: float = 1.0,
     feedback_topic: str = "/odom",
-) -> dict:
+) -> ToolPayload:
     """Atomically read baseline odometry, drive once for a bounded duration, auto-stop,
     then read odometry again. Prefer this over ros_drive_execute_tool whenever the request
     asks whether motion actually occurred. Missing baseline prevents movement; missing
@@ -417,8 +435,8 @@ async def ros_drive_verified_tool(
         f"verified drive {topic} for {duration_seconds}s using {feedback_topic}",
     )
     try:
-        payload = json.loads(payload_json)
-    except json.JSONDecodeError as exc:
+        payload = _parse_payload_object(payload_json)
+    except ValueError as exc:
         _finish_call(ctx, call, ok=False, summary="invalid JSON payload")
         return {
             "verdict": "not_executed",

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable
+from typing import Any
 
 
 class WatchdogState:
@@ -31,11 +33,23 @@ class WatchdogState:
             self.last_rx = self._clock()
             self.last_halt = None
 
-    def configure(self, req: dict) -> dict:
+    def configure(self, req: dict[str, Any]) -> dict[str, Any]:
+        timeout = req.get("timeout")
+        cmd_vel_topic = req.get("cmd_vel_topic", "/cmd_vel")
+        stamped = req.get("stamped", False)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise ValueError("invalid watchdog request: timeout must be numeric")
+        parsed_timeout = float(timeout)
+        if not math.isfinite(parsed_timeout) or parsed_timeout <= 0.0:
+            raise ValueError("invalid watchdog request: timeout must be positive and finite")
+        if not isinstance(cmd_vel_topic, str) or not cmd_vel_topic.strip():
+            raise ValueError("invalid watchdog request: cmd_vel_topic must be non-empty text")
+        if type(stamped) is not bool:
+            raise ValueError("invalid watchdog request: stamped must be a boolean")
         with self.lock:
-            self.timeout_s = float(req.get("timeout", 0.0))
-            self.cmd_vel_topic = str(req.get("cmd_vel_topic", "/cmd_vel"))
-            self.stamped = bool(req.get("stamped", False))
+            self.timeout_s = parsed_timeout
+            self.cmd_vel_topic = cmd_vel_topic
+            self.stamped = stamped
         return {"watchdog_s": self.timeout_s}
 
     def should_halt(self) -> bool:

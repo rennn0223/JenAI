@@ -5,10 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -25,13 +33,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Formatting (ruff)
+        run: uv run ruff format --check src tests
+
       - name: Lint (ruff)
         run: uv run ruff check src tests
+
+      - name: Typecheck all production code (mypy strict)
+        run: uv run mypy
 
       - name: Tests (with coverage)
         # No ROS in CI: the suite is designed to pass without ros2 on PATH
         # (ROS-touching checks report unavailable instead of failing).
-        run: uv run pytest -q --cov=jenai --cov-report=term
+        run: uv run pytest -q --cov=jenai --cov-branch --cov-report=term
 
       - name: Coverage summary
         run: |
@@ -40,9 +54,15 @@ jobs:
             uv run coverage report --format=markdown
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Overall branch-coverage gate (no regressions)
+        # Baseline measured on the complete suite. This covers branch choices,
+        # not only executed lines, and is ratcheted upward as weak modules gain tests.
+        run: uv run coverage report --fail-under=76
+
       - name: Safety-chain coverage gate (no regressions)
         # Reuses the .coverage data from the test step. The safety chain
-        # (estop/watchdog/bridge/gate/rules) sits at 92% as of v0.11 — this
+        # (estop/watchdog/bridge/gate/rules) sits at 93% branch coverage as of
+        # v2.1.0 — this
         # gate only ever ratchets up, never down (see docs/product/V1_GATE.md A3).
         run: |
           # Exclude ros_bridge.py itself: the rclpy sidecar needs hardware.
@@ -52,6 +72,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 

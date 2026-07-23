@@ -334,9 +334,7 @@ _DESIGNED_DOG_COLORS = {
 def terminal_mascot() -> Text:
     """Return Claude Design's full-size ANSI mascot without resampling it."""
 
-    encoded = (
-        files("jenai.tui.assets").joinpath("mascot-terminal.b64").read_text(encoding="ascii")
-    )
+    encoded = files("jenai.tui.assets").joinpath("mascot-terminal.b64").read_text(encoding="ascii")
     ansi = b64decode(encoded).decode("utf-8").rstrip("\n")
     return Text.from_ansi(ansi)
 

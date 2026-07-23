@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v2.1.0(2026-07)。
+> 對應版本:v2.2.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -108,7 +108,7 @@ LLM。若同一句包含判斷或後續動作（例如「檢查狀態後回到 d
 |---|---|---|
 | `/ros topics` | 列出目前 ROS2 graph 中的 topics（含類型提示） | `/ros topics` |
 | `/ros topic-info <topic>` | 查詢 topic 的 type、publishers、subscribers | `/ros topic-info /cmd_vel` |
-| `/ros schema <topic>` | 解析 message type 並以人話摘要欄位 | `/ros schema /cmd_vel` |
+| `/ros schema <topic>` | 確定性解析 message type 與欄位（不呼叫 LLM） | `/ros schema /cmd_vel` |
 | `/ros echo <topic> [count]` | 擷取 N 筆訊息快照（snapshot 模式） | `/ros echo /scan 3` |
 | `/ros pub <topic> <payload>` | 向 topic 發送訊息（需批准；速度過 `[vehicle]` 硬限速） | `/ros pub /cmd_vel {"linear":{"x":0.5}}` |
 | `/ros drive <topic> <payload> [秒]` | 定頻發布 N 秒後自動送 0 停車（需批准） | `/ros drive /cmd_vel {"linear":{"x":0.5}} 2` |
@@ -117,7 +117,7 @@ LLM。若同一句包含判斷或後續動作（例如「檢查狀態後回到 d
 
 | 指令 | 說明 | 範例 |
 |---|---|---|
-| `/route <text>` | 自然語言路由（需批准）。**「從 A 到 B」兩端都是已知地點 → 依序先去 A 再去 B**（兩段導航逐段回報）;只認得目的地 → 從當前位置導航過去。即時剩餘距離、Esc 真取消。`route_adapter=odom` + `[avoidance]` 時,直驅會用 depth 反應式繞開障礙 | `/route 從應科大樓到機械系館` |
+| `/route <text>` | 自然語言路由（需批准）。**「從 A 到 B」兩端都是已知地點 → 依序先去 A 再去 B**（兩段導航逐段回報）;只認得目的地 → 從當前位置導航過去。即時剩餘距離、Esc 真取消。產品路徑只使用受監督的 Nav2；`route_adapter=odom` 僅供 bridge bring-up，不接受高階導航任務 | `/route 從應科大樓到機械系館` |
 | `/drive <自然語言>` | 說人話控車：解析成速度指令後定時發布（需批准；發到 `vehicle.cmd_vel_topic`） | `/drive 前進兩秒` |
 | `/loc list` | 列出所有地點 | `/loc list` |
 | `/loc show <名>` | 顯示地點詳細資料 | `/loc show 應科大樓` |
@@ -132,10 +132,10 @@ LLM。若同一句包含判斷或後續動作（例如「檢查狀態後回到 d
 | 指令 | 說明 | 範例 |
 |---|---|---|
 | `/mission <地點, …>` | 多步任務：依序導航/移動各點並回報（批准一次跑整趟；`drive <動作>` 段落可混排） | `/mission 廚房, drive 左轉, 大廳` |
-| `/patrol <地點, …> [xN] [photo]` | **循環巡邏**：點位 × 圈數；`photo` 時每個到達點抓相機幀給 VLM 並即時回報觀察。一點失敗記錄後續行 | `/patrol A, B x3 photo` |
+| `/patrol <地點, …> [xN] [photo]` | **循環巡邏**：點位 × 圈數；`photo` 時每個到達點抓相機幀給 VLM 並即時回報觀察；缺照片證據時保留到達事實但結果為 `partial`。一點導航失敗仍記錄後續行 | `/patrol A, B x3 photo` |
 | `/explore [時間] [goals=N] [failures=N] [tag=標籤] [photo] [seed=N]` | **有界隨機巡遊**：在已儲存點位中，隨機選擇目前造訪次數最少者；同一趟不重試失敗點。預設 5 分鐘／最多 8 個目標／連續失敗 2 次即停。排除 dock 與 `restricted`、`hazard`、`no-explore` 標籤。這是已知點位巡遊，不是未知地圖的 frontier SLAM | `/explore 5m goals=8 tag=room photo` |
-| `/dock` | 回充：導航到 `tags = ["dock"]` 的地點（名字/別名是 Dock、充電站也認得） | `/dock` |
-| `/report` | 顯示最近一次巡邏日報（確定性內容 + LLM 摘要段；provider 離線時誠實只給前者）。log 存 `<config 目錄>/reports/`，patrol 結束自動寫入 | `/report`、`/report list` |
+| `/dock` | Dock 接近：導航到 `tags = ["dock"]` 的地點（名字/別名是 Dock、充電站也認得）；只驗證姿態，不宣稱已接合或充電 | `/dock` |
+| `/report` | 報告入口：`/report`／`list` 為巡邏日報；`task`／`task list` 顯示每個已完成 TUI run 的結構化收據（耗時、工具、批准、結果、失敗代碼）；`event` 顯示 daemon 規則觸發與動作結果。內容皆存於 `<config 目錄>/reports/` 或本機 audit，task/event 不需 LLM | `/report`、`/report task`、`/report task list`、`/report event` |
 | `/skills` | 列出**檔案定義技能**：`<config 目錄>/skills/*.toml`（name/description/steps=/mission 語法）→ 重啟後 `/名稱` 即新指令，進 palette、走同一張批准卡；保留字（stop/route…）拒載。範例見 repo 根目錄 `skills.example.toml` | `/skills`、`/inspect` |
 
 ### Vision
@@ -163,8 +163,8 @@ LLM。若同一句包含判斷或後續動作（例如「檢查狀態後回到 d
 | `Enter` | 送出輸入;忙碌時自動加入 FIFO 佇列 / 選定 approval 目前選項 |
 | `Shift+Tab` | **切換權限模式**:⏵ 審批(NL→agent 執行,動作過批准卡)→ ⏸ 規劃(只規劃教學,零執行)→ ⏩ 自動(有界、非 host 的 P0/P1 可自動批准;HOST_COMMAND/P2 仍逐次詢問;急停/限速/閘門仍有效)。目前模式顯示在底部狀態列。**終端不支援 Shift+Tab 時用 `/mode`**(不帶參數循環;`/mode approve|plan|auto` 直接指定,中文別名 審批/規劃/自動 也通) |
 | `!` | 以 `!` 開頭 → 該行當 shell 命令執行 |
-| `Esc` | 中斷目前任務並繼續下一個排隊項目（**Nav2 goal 真的會取消**）/ 拒絕 approval / 關閉 palette |
-| `1` `2` `3` | 直接選畫面上存在的 approval 選項；HOST_COMMAND/P2 為一次性 Yes/No，P2 預選 No |
+| `Esc` | 中斷目前任務並繼續下一個排隊項目（取消 Nav2 並補送零速度；未確認取消時誠實回報）/ 拒絕 approval / 關閉 palette |
+| `1` `2` `3` | 直接選畫面上存在的 approval 選項；HOST_COMMAND/P2 為一次性 Yes/No；P2、HOST_COMMAND 與機器人控制皆預選 No |
 | `Tab` | 補全命令名稱或模板 |
 | `↑` `↓` | 歷史輸入、slash palette 選項、或 approval 選項 |
 
@@ -184,7 +184,7 @@ LLM。若同一句包含判斷或後續動作（例如「檢查狀態後回到 d
 Approval card 為 Claude Code 風格的**編號選項**，可用 `↑/↓`+`Enter` 或直接按畫面上的數字鍵：
 
 - 有界、非 host 的 P0/P1：`Yes`／`Yes, and remember...`／`No`。
-- `HOST_COMMAND` 或 P2：只有一次性的 `Yes`／`No`，不能記住；P2 預選 `No`。
+- `HOST_COMMAND` 或 P2：只有一次性的 `Yes`／`No`，不能記住；P2、`HOST_COMMAND` 與機器人控制皆預選 `No`。
 - `auto` 模式與既有 remembered tool 都不能繞過 `HOST_COMMAND`／P2。
 - `Esc` 永遠等同拒絕；`/stop` 是唯一免批准的致動相關例外。
 
@@ -197,6 +197,8 @@ Approval card 為 Claude Code 風格的**編號選項**，可用 `↑/↓`+`Ente
 | `"notify"`（預設） | 無 | 只通報，不動作 |
 | `"halt"` | **無**（停車永遠安全） | 緊急停止：取消進行中導航 + 零速度 |
 | `"goto <地點>"` | `auto_approve = true` **且** `route_adapter = "nav2"` | 導航到地點；條件不足時印出「本來會做什麼」 |
+
+每次條件實際觸發後，daemon 會把 `event_triggered` 與終端 `event_action_finished` 寫入有界 SQLite audit；導航另有 `event_action_started`。紀錄只含規則、來源 topic、設定動作、裁決原因與結果，不保存原始 topic payload。TUI 以 `/report event` 查看最近紀錄。
 
 ### 感知規則（`topic = "@perception"`）
 

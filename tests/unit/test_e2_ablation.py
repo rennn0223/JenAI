@@ -30,17 +30,15 @@ def test_static_condition_only_blocks_goal_inside_zone() -> None:
     assert criteria == {"G3": "pass"}
 
 
-
 def test_offline_conditions_do_not_start_ros(tmp_path) -> None:
     targets = [{"target_id": "T001", "class": "normal", "x": 0.5, "y": -1.5, "yaw": 0.0}]
     out = tmp_path / "trials.jsonl"
-    done = asyncio.run(
-        e2.run_trials(targets, out, run_id="offline", conditions=("A", "B"))
-    )
+    done = asyncio.run(e2.run_trials(targets, out, run_id="offline", conditions=("A", "B")))
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert done == 2
     assert [row["condition"] for row in rows] == ["A", "B"]
     assert all(row["verdict"] == "pass" for row in rows)
+
 
 def test_go_home_retries_before_accepting_trial() -> None:
     class Client:
@@ -57,9 +55,7 @@ def test_go_home_retries_before_accepting_trial() -> None:
 
         async def nav_send(self, x, y, yaw, tag) -> None:
             status = next(self.statuses)
-            asyncio.get_running_loop().call_soon(
-                self.callback, {"tag": tag, "status": status}
-            )
+            asyncio.get_running_loop().call_soon(self.callback, {"tag": tag, "status": status})
 
         async def halt(self) -> None:
             self.halts += 1

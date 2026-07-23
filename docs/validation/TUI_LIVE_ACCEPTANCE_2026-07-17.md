@@ -52,6 +52,8 @@
 1. `/ros schema` 的 LLM 人話摘要可能長時間等待。現加入 8 秒上限，超時即回傳確定性的欄位解析，不阻塞 TUI FIFO。
 2. 模型可能把尚未執行的 plan step 標成 done/failed。現由 planner 將新計畫一律正規化為 pending，只有執行器能推進狀態；空計畫也由 schema 拒絕。
 3. Nav2 回報成功但 Ackermann 端點常停在 0.75–0.77 m。當日場景的 `goal_tolerance_m` 由 0.5 m 校準為 0.8 m；這是模擬場景驗收值，不是可直接搬到實車的通用安全參數。
+   此數值是當日 Twin G4 歷史門檻，已被 2026-07-24 的 Carter 精準 profile 與 JenAI
+   terminal-pose 二次核對取代；不得引用為現行到點精度。
 4. 已在目標附近時，Nav2 可能立即成功，舊版背景 sampler 尚未取得 pose 而造成 G3 refer。現於預演前同步擷取初始 pose，結束後再擷取最終 pose；非有限值與禁區判定仍保持 fail-closed。
 5. 本機 35B 模型的自然語言路徑會有明顯推理等待；Slash Explore 幾乎立即進入執行，自然語言版本則需等待模型工具選擇與完成摘要。此延遲適合高階任務，不適合即時控制。
 

@@ -59,7 +59,8 @@ def test_release_repeats_safety_gate_and_emits_visibility_appropriate_assets() -
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     required = (
-        "uv run pytest -q --cov=jenai --cov-report=term",
+        "uv run pytest -q --cov=jenai --cov-branch --cov-report=term",
+        "uv run coverage report --fail-under=76",
         "uv run coverage report --fail-under=90",
         "pip-audit==2.10.1",
         "constraints.txt",
@@ -80,21 +81,41 @@ def test_release_repeats_safety_gate_and_emits_visibility_appropriate_assets() -
     for contract in required:
         assert contract in workflow
 
-    assert workflow.count(
-        "uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0"
-    ) == 2
+    assert (
+        workflow.count("uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0")
+        == 2
+    )
     public_only = (
         "if: github.event.repository.visibility == 'public' && "
         "steps.integrity_mode.outputs.attestations_enabled == 'true'"
     )
     assert workflow.count(public_only) == 2
+    assert "timeout-minutes: 45" in workflow
     assert workflow.index("Safety-chain coverage gate") < workflow.index("Build wheel and sdist")
     assert workflow.index("Declare release integrity mode") < workflow.index(
         "Generate signed build provenance"
     )
-    assert workflow.index("Generate signed SBOM attestation") < workflow.index(
-        "Bundle optional public attestations and SHA-256 checksums"
-    ) < workflow.index("Release with artifacts")
+    assert (
+        workflow.index("Generate signed SBOM attestation")
+        < workflow.index("Bundle optional public attestations and SHA-256 checksums")
+        < workflow.index("Release with artifacts")
+    )
+
+
+def test_ci_enforces_overall_and_safety_branch_coverage() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "permissions:\n  contents: read" in workflow
+    assert "group: ci-${{ github.workflow }}-${{ github.ref }}" in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert "timeout-minutes: 30" in workflow
+    assert "timeout-minutes: 20" in workflow
+    assert "uv run pytest -q --cov=jenai --cov-branch --cov-report=term" in workflow
+    assert "uv run coverage report --fail-under=76" in workflow
+    assert "uv run coverage report --fail-under=90" in workflow
+    assert workflow.index("Overall branch-coverage gate") < workflow.index(
+        "Safety-chain coverage gate"
+    )
 
 
 def test_sdist_explicitly_excludes_local_secrets_and_thesis_material() -> None:
@@ -123,11 +144,29 @@ def test_sdist_explicitly_excludes_local_secrets_and_thesis_material() -> None:
         "/docs/thesis-v*-media/",
         "/scripts/build_thesis_*.py",
         "/scripts/export_thesis_markdown.py",
+        "/website/",
         "/*.docx",
         "/*.pdf",
         "/*.pptx",
     }
     assert required <= excluded
+
+
+def test_direct_dependencies_have_reviewable_major_version_ceiling() -> None:
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        config = tomllib.load(handle)
+
+    dependencies = [
+        *config["project"]["dependencies"],
+        *config["dependency-groups"]["dev"],
+        *config["build-system"]["requires"],
+    ]
+    missing_upper_bound = [dependency for dependency in dependencies if "<" not in dependency]
+
+    assert not missing_upper_bound, (
+        "Every direct dependency needs an upper major-version boundary; "
+        f"missing: {missing_upper_bound}"
+    )
 
 
 def test_all_workflow_actions_are_pinned_to_verified_upstream_commits() -> None:
@@ -143,7 +182,7 @@ def test_all_workflow_actions_are_pinned_to_verified_upstream_commits() -> None:
     }
     workflows = [
         ROOT / ".github" / "workflows" / name
-        for name in ("ci.yml", "security.yml", "release.yml")
+        for name in ("ci.yml", "security.yml", "release.yml", "isaac-hil.yml")
     ]
 
     seen: set[str] = set()
@@ -163,16 +202,17 @@ def test_all_workflow_actions_are_pinned_to_verified_upstream_commits() -> None:
 
 
 def test_supply_chain_workflow_pins_auditor_and_retains_commit_sbom() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "security.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github" / "workflows" / "security.yml").read_text(encoding="utf-8")
 
     assert "pip-audit==2.10.1" in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert "group: supply-chain-${{ github.workflow }}-${{ github.ref }}" in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert "timeout-minutes: 20" in workflow
     assert "jenai-sbom-${{ github.sha }}" in workflow
     assert 'assert d["bomFormat"] == "CycloneDX"' in workflow
     assert "if-no-files-found: error" in workflow
     assert "retention-days: 90" in workflow
-
 
 
 def _workflow_step_script(name: str) -> str:
@@ -190,9 +230,7 @@ def _workflow_step_script(name: str) -> str:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    completed = subprocess.run(
-        ["git", *args], cwd=cwd, check=True, text=True, capture_output=True
-    )
+    completed = subprocess.run(["git", *args], cwd=cwd, check=True, text=True, capture_output=True)
     return completed.stdout.strip()
 
 
@@ -247,9 +285,7 @@ def _run_release_step(
         "TAG": tag,
         **(extra_env or {}),
     }
-    return subprocess.run(
-        ["bash", "-c", script], cwd=repo, env=env, text=True, capture_output=True
-    )
+    return subprocess.run(["bash", "-c", script], cwd=repo, env=env, text=True, capture_output=True)
 
 
 _RELEASE_FILES = (
@@ -300,9 +336,7 @@ def test_release_integrity_mode_executes_private_skip_and_public_requirement(
         extra_env={"REPOSITORY_VISIBILITY": "private"},
     )
     assert private.returncode == 0, private.stderr + private.stdout
-    assert "attestations_enabled=false" in (repo / "github-output.txt").read_text(
-        encoding="utf-8"
-    )
+    assert "attestations_enabled=false" in (repo / "github-output.txt").read_text(encoding="utf-8")
     assert "without provenance claims" in private.stdout
 
     public = _run_release_step(
@@ -315,15 +349,11 @@ def test_release_integrity_mode_executes_private_skip_and_public_requirement(
         extra_env={"REPOSITORY_VISIBILITY": "public"},
     )
     assert public.returncode == 0, public.stderr + public.stdout
-    assert "attestations_enabled=true" in (repo / "github-output.txt").read_text(
-        encoding="utf-8"
-    )
+    assert "attestations_enabled=true" in (repo / "github-output.txt").read_text(encoding="utf-8")
 
 
 def test_checksum_bundle_executes_private_and_public_contracts(tmp_path: Path) -> None:
-    script = _workflow_step_script(
-        "Bundle optional public attestations and SHA-256 checksums"
-    )
+    script = _workflow_step_script("Bundle optional public attestations and SHA-256 checksums")
     provenance = tmp_path / "provenance.json"
     sbom_attestation = tmp_path / "sbom-attestation.json"
     provenance.write_text("provenance fixture\n", encoding="utf-8")
@@ -645,8 +675,7 @@ def test_release_upload_uses_exact_manifest_and_rejects_stale_draft(
     assert result.returncode != 0
     assert "contains stale asset stale.sigstore.json" in result.stdout
     assert not any(
-        call.startswith("release upload ")
-        for call in log.read_text(encoding="utf-8").splitlines()
+        call.startswith("release upload ") for call in log.read_text(encoding="utf-8").splitlines()
     )
 
     # A new manual release must remain a draft until the exact remote asset set

@@ -24,7 +24,7 @@ import statistics
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -83,7 +83,7 @@ def main() -> int:
     out = Path(
         args.out
         or Path("artifacts/experiments/soak")
-        / f"soak-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        / f"soak-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
     )
     out.mkdir(parents=True, exist_ok=True)
     log_file = (out / "daemon.log").open("w", encoding="utf-8")
@@ -95,9 +95,7 @@ def main() -> int:
     samples: list[tuple[float, int]] = []
     started = time.monotonic()
     deadline = started + args.minutes * 60
-    print(
-        f"soak: pid {proc.pid} · {args.minutes:g} min · every {args.interval:g}s → {out}"
-    )
+    print(f"soak: pid {proc.pid} · {args.minutes:g} min · every {args.interval:g}s → {out}")
     try:
         while time.monotonic() < deadline:
             if proc.poll() is not None:

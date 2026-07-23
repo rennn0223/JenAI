@@ -1,2 +1,1 @@
 """Tool implementations placeholder."""
-

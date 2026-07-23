@@ -29,9 +29,7 @@ def test_load_env_file_sets_variables(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("JENAI_TEST_TOKEN_B")
 
 
-def test_load_env_file_never_overrides_existing_environment(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_load_env_file_never_overrides_existing_environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JENAI_TEST_TOKEN_C", "from-shell")
     env_file = tmp_path / ".env"
     env_file.write_text("JENAI_TEST_TOKEN_C=from-file\n", encoding="utf-8")

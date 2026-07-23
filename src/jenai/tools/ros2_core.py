@@ -8,6 +8,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from typing import Any, Literal
 
 from jenai.adapters import ros2_adapter
 from jenai.config.models import AppConfig
@@ -25,7 +26,10 @@ from jenai.tools.summaries import summarize_ros_schema
 
 # Ordered: first match wins, so plumbing beats domain words (e.g.
 # /amcl/transition_event is infra, not nav).
-_KIND_HINTS = (
+TopicKind = Literal["sensor", "control", "nav", "tf", "infra", "debug", "unknown"]
+Payload = dict[str, Any]
+
+_KIND_HINTS: tuple[tuple[tuple[str, ...], TopicKind], ...] = (
     (
         (
             "transition_event",
@@ -87,7 +91,7 @@ _KIND_HINTS = (
 )
 
 
-def _kind_hint(topic: str) -> str:
+def _kind_hint(topic: str) -> TopicKind:
     lowered = topic.lower()
     for keywords, kind in _KIND_HINTS:
         if any(keyword in lowered for keyword in keywords):
@@ -148,7 +152,7 @@ async def ros_topic_info(config: AppConfig, topic: str) -> RosTopicInfoOutput:
 
 async def ros_state(
     config: AppConfig, *, odom_topic: str = "/odom", scan_topic: str = "/scan"
-) -> dict:
+) -> Payload:
     """Snapshot the robot's current state (localized pose, odometry, laser scan)
     so the agent can *observe* before deciding — the closed-loop primitive behind
     "drive until arrived" / "stop if there's an obstacle". Each field is the raw
@@ -186,7 +190,7 @@ async def ros_state(
     }
 
 
-async def ros_nav_status(config: AppConfig) -> dict:
+async def ros_nav_status(config: AppConfig) -> Payload:
     """Readiness snapshot for the high-level Nav2 path.
 
     This deliberately reports action-server availability rather than inventing
@@ -271,7 +275,7 @@ async def ros_echo(config: AppConfig, topic: str, *, limit: int = 1) -> RosEchoO
     return RosEchoOutput(topic=topic, mode="snapshot", messages=messages, summary=summary)
 
 
-def _primitive_default(field_type: str):
+def _primitive_default(field_type: str) -> Any:
     base = field_type.split("[")[0]  # strip array suffix, e.g. float64[3] -> float64
     if "float" in base or "double" in base:
         return 0.0
@@ -284,7 +288,7 @@ def _primitive_default(field_type: str):
     return {}
 
 
-def _naive_example_payload(raw_interface: str) -> dict:
+def _naive_example_payload(raw_interface: str) -> Payload:
     """Build an example payload from `ros2 interface show` output.
 
     Nested message types are expanded inline with tab/space indentation (e.g.
@@ -298,8 +302,8 @@ def _naive_example_payload(raw_interface: str) -> dict:
         for line in raw_interface.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    root: dict = {}
-    stack: list[tuple[int, dict]] = [(-1, root)]  # (indent, container)
+    root: Payload = {}
+    stack: list[tuple[int, Payload]] = [(-1, root)]  # (indent, container)
 
     for i, line in enumerate(lines):
         indent = len(line) - len(line.lstrip())
@@ -324,7 +328,7 @@ def _naive_example_payload(raw_interface: str) -> dict:
         is_array = field_type.rstrip().endswith("]")
         if next_indent > indent:
             # Complex type with expanded sub-fields: recurse into a child dict.
-            child: dict = {}
+            child: Payload = {}
             parent[name] = [child] if is_array else child
             stack.append((indent, child))
         else:
@@ -349,11 +353,11 @@ async def ros_schema(config: AppConfig, topic: str) -> RosSchemaOutput:
 class Ros2PubValidation:
     ok: bool
     message_type: str = ""
-    payload_preview: dict | None = None
+    payload_preview: Payload | None = None
     error: JenAIError | None = None
 
 
-async def ros_pub_validate(topic: str, payload: dict) -> Ros2PubValidation:
+async def ros_pub_validate(topic: str, payload: Payload) -> Ros2PubValidation:
     try:
         topics = await asyncio.to_thread(ros2_adapter.list_topics)
     except ros2_adapter.Ros2AdapterError as exc:
@@ -401,7 +405,7 @@ MAX_LINEAR = 1.0
 MAX_ANGULAR = 2.0
 
 
-def _clamp(value, limit):
+def _clamp(value: Any, limit: float) -> Any:
     # bool is a subclass of int, so guard it explicitly — a JSON `true` must not
     # be treated as the number 1 and clamped to full speed. Non-numeric values
     # pass through untouched so ros2 rejects them honestly rather than us faking
@@ -421,7 +425,7 @@ def _clamp(value, limit):
 
 
 def _clamp_velocities(
-    node, max_linear: float = MAX_LINEAR, max_angular: float = MAX_ANGULAR
+    node: Any, max_linear: float = MAX_LINEAR, max_angular: float = MAX_ANGULAR
 ) -> None:
     """Recursively clamp every ``linear``/``angular`` velocity dict found anywhere
     in the payload, mutating in place.
@@ -448,12 +452,12 @@ def _clamp_velocities(
 
 
 def _safety_clamp(
-    payload: dict,
+    payload: Payload,
     max_linear: float = MAX_LINEAR,
     max_angular: float = MAX_ANGULAR,
     *,
     message_type: str = "",
-) -> dict:
+) -> Payload:
     """Return a copy with supported Twist/Ackermann velocities safely clamped.
 
     Other payload fields pass through unchanged so ROS2 can validate them.
@@ -480,7 +484,7 @@ def _safety_clamp(
 async def ros_pub_execute(
     topic: str,
     message_type: str,
-    payload: dict,
+    payload: Payload,
     *,
     max_linear: float = MAX_LINEAR,
     max_angular: float = MAX_ANGULAR,
@@ -511,7 +515,7 @@ async def ros_pub_execute(
 async def ros_drive(
     topic: str,
     message_type: str,
-    payload: dict,
+    payload: Payload,
     *,
     duration_s: float = 1.0,
     rate_hz: float = 10.0,
@@ -614,7 +618,7 @@ async def ros_drive_verified(
     config: AppConfig,
     topic: str,
     message_type: str,
-    payload: dict,
+    payload: Payload,
     *,
     duration_s: float = 1.0,
     feedback_topic: str = "/odom",
@@ -622,7 +626,7 @@ async def ros_drive_verified(
     max_angular: float = MAX_ANGULAR,
     min_position_change: float = 0.005,
     min_yaw_change: float = 0.005,
-) -> dict:
+) -> Payload:
     """Atomically capture baseline, drive once, stop, and verify odometry.
 
     Missing baseline prevents actuation. Missing post-action feedback returns an
@@ -710,7 +714,7 @@ async def ros_drive_verified(
     }
 
 
-def _zero_like(value):
+def _zero_like(value: Any) -> Any:
     """Return the same structure with every number set to 0 (for a stop message)."""
     if isinstance(value, dict):
         return {key: _zero_like(inner) for key, inner in value.items()}
@@ -723,7 +727,7 @@ def _zero_like(value):
     return value
 
 
-def _payload_to_yaml(payload: dict) -> str:
+def _payload_to_yaml(payload: Payload) -> str:
     # ros2 topic pub accepts a YAML-flow-style mapping; a JSON object is valid
     # YAML flow syntax, so this avoids pulling in a YAML dependency.
     return json.dumps(payload)

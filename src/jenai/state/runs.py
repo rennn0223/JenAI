@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +17,27 @@ from jenai.schemas import (
     PlanStep,
     RunRecord,
     RunStatus,
+    TaskOutcome,
     ToolCallRecord,
 )
 from jenai.schemas.models import utc_now
 from jenai.secure_files import atomic_write_text
 from jenai.state.audit import AuditStore
+from jenai.state.task_receipts import TaskReceiptStore
 
 TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED}
+_MUTABLE_TOOL_FIELDS = frozenset(
+    {
+        "status",
+        "started_at",
+        "ended_at",
+        "output_summary",
+        "raw_output",
+        "error",
+    }
+)
+
+logger = logging.getLogger(__name__)
 
 
 class RunStore:
@@ -33,11 +48,13 @@ class RunStore:
         pending_dir: Path | None = None,
         *,
         audit_store: AuditStore | None = None,
+        receipt_store: TaskReceiptStore | None = None,
     ) -> None:
         self._runs: dict[str, RunRecord] = {}
         self._pending_state: dict[str, Any] = {}
         self._pending_dir = pending_dir
         self.audit_store = audit_store
+        self.receipt_store = receipt_store
         # Position-aligned approval ids for the paused state's interruptions, so
         # resume can map each interruption back to its unique ApprovalRequest id
         # (the SDK often gives no call_id, so index alone would collide).
@@ -60,9 +77,9 @@ class RunStore:
         return list(self._runs.values())
 
     def set_status(self, run: RunRecord, status: RunStatus) -> None:
-        previous = str(run.status)
-        run.status = RunStatus(status).value
-        if run.status in {s.value for s in TERMINAL_STATUSES}:
+        previous = run.status.value
+        run.status = RunStatus(status)
+        if run.status in TERMINAL_STATUSES:
             run.finished_at = utc_now()
         if run.status != previous:
             self.audit_event(
@@ -93,8 +110,18 @@ class RunStore:
     def update_tool_call(self, run: RunRecord, tool_call_id: str, **fields: Any) -> None:
         for call in run.tool_calls:
             if call.tool_call_id == tool_call_id:
-                for key, value in fields.items():
-                    setattr(call, key, value)
+                unknown = set(fields) - _MUTABLE_TOOL_FIELDS
+                if unknown:
+                    names = ", ".join(sorted(unknown))
+                    raise ValueError(f"Tool call fields are immutable or unknown: {names}")
+                # model_copy(update=...) does not validate in Pydantic v2.
+                # Re-validate the complete record, then copy only trusted
+                # values back so existing references retain their identity.
+                candidate = ToolCallRecord.model_validate(
+                    {**call.model_dump(mode="python"), **fields}
+                )
+                for key in fields:
+                    setattr(call, key, getattr(candidate, key))
                 self.audit_event(
                     run,
                     "tool_updated",
@@ -107,6 +134,7 @@ class RunStore:
                     },
                 )
                 return
+        raise KeyError(f"Unknown tool call {tool_call_id}")
 
     def add_interruption(self, run: RunRecord, approval: ApprovalRequest) -> None:
         run.interruptions.append(approval)
@@ -130,7 +158,7 @@ class RunStore:
     ) -> None:
         for approval in run.interruptions:
             if approval.tool_call_id == tool_call_id:
-                approval.status = ApprovalStatus(status).value
+                approval.status = ApprovalStatus(status)
                 approval.resolved_at = utc_now()
                 self.audit_event(
                     run,
@@ -146,10 +174,17 @@ class RunStore:
         run: RunRecord,
         *,
         status: RunStatus,
+        outcome: TaskOutcome | None = None,
         final_output: str | None = None,
         error: JenAIError | None = None,
     ) -> None:
         run.final_output = final_output
+        if outcome is not None:
+            run.outcome = outcome
+        elif run.outcome is None and status == RunStatus.BLOCKED:
+            run.outcome = TaskOutcome.BLOCKED
+        elif run.outcome is None and status == RunStatus.FAILED:
+            run.outcome = TaskOutcome.FAILED
         run.error = error
         self.set_status(run, status)
         self.audit_event(
@@ -158,9 +193,28 @@ class RunStore:
             status=run.status,
             details={
                 "has_output": bool(final_output),
+                "outcome": str(run.outcome) if run.outcome is not None else None,
                 "error_type": str(error.error_type) if error is not None else None,
             },
         )
+        if self.receipt_store is not None:
+            try:
+                self.receipt_store.save(run)
+            except Exception as exc:
+                # Reporting is best-effort and must never mask the task result
+                # or prevent an emergency/safety path from finishing.
+                self.audit_event(
+                    run,
+                    "task_receipt_failed",
+                    status="failed",
+                    summary="Task receipt could not be persisted.",
+                    details={"exception_type": type(exc).__name__},
+                )
+                logger.warning(
+                    "Task receipt persistence failed for run %s",
+                    run.run_id,
+                    exc_info=True,
+                )
 
     def audit_event(
         self,
@@ -186,7 +240,12 @@ class RunStore:
             )
         except Exception:
             # Audit failure must never block a stop, rejection, or robot action.
-            pass
+            logger.warning(
+                "Audit event %s could not be persisted for run %s",
+                event_type,
+                run.run_id,
+                exc_info=True,
+            )
 
     def stash_pending_state(
         self, run_id: str, state: Any, approval_ids: list[str] | None = None
@@ -251,12 +310,14 @@ class RunStore:
         return state, approval_ids
 
     def _pending_path(self, run_id: str) -> Path:
-        assert self._pending_dir is not None
+        if self._pending_dir is None:
+            raise RuntimeError("pending run storage is not configured")
         digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
         return self._pending_dir / f"{digest}.json"
 
     def _load_pending_run_records(self) -> None:
-        assert self._pending_dir is not None
+        if self._pending_dir is None:
+            raise RuntimeError("pending run storage is not configured")
         for path in sorted(self._pending_dir.glob("*.json")):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -264,6 +325,7 @@ class RunStore:
                     continue
                 run = RunRecord.model_validate(payload["run"])
             except (OSError, KeyError, TypeError, ValueError):
+                logger.warning("Ignoring invalid pending run state: %s", path, exc_info=True)
                 continue
             self._runs[run.run_id] = run
             self.audit_event(run, "run_restored", status=run.status)

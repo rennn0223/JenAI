@@ -8,6 +8,7 @@ error-finalisation paths.
 from __future__ import annotations
 
 import asyncio
+from typing import Any, cast
 
 from textual.css.query import NoMatches
 from textual.widgets import Input
@@ -16,11 +17,12 @@ from jenai.agent import orchestrator
 from jenai.agent.context import JenAIRunContext
 from jenai.schemas import ApprovalRequest, ApprovalStatus, RunStatus, ToolCallStatus
 from jenai.tui.approval_policy import can_remember_approval
+from jenai.tui.host_contract import TuiHostContract
 from jenai.tui.panels import TimelineItem
 from jenai.tui.widgets import ApprovalCard
 
 
-class ApprovalFlowMixin:
+class ApprovalFlowMixin(TuiHostContract):
     """Resolve approval cards without owning the actions they authorize."""
 
     async def on_approval_card_decision(self, message: ApprovalCard.Decision) -> None:
@@ -38,7 +40,7 @@ class ApprovalFlowMixin:
                 and approval is not None
                 and can_remember_approval(approval)
             ):
-                kind = pending.get("auto_key", pending["kind"])
+                kind = str(pending.get("auto_key", pending["kind"]))
                 self._auto_approved.add(kind)
                 await self._mount_event(
                     TimelineItem("muted", f"Auto-approving '{kind}' for the rest of this session.")
@@ -63,7 +65,8 @@ class ApprovalFlowMixin:
             await self._resolve_agent_approval(run_id, message.tool_call_id, message.approved)
 
     def _approval_by_call_id(self, tool_call_id: str) -> ApprovalRequest | None:
-        for card in self.query(ApprovalCard):
+        for candidate in cast(Any, self).query(ApprovalCard):
+            card = cast(ApprovalCard, candidate)
             if card.approval.tool_call_id == tool_call_id:
                 return card.approval
         return None
@@ -75,15 +78,16 @@ class ApprovalFlowMixin:
         return None
 
     async def _remove_approval_card(self, tool_call_id: str) -> None:
-        for card in self.query(ApprovalCard):
+        app = cast(Any, self)
+        for card in app.query(ApprovalCard):
             if card.approval.tool_call_id == tool_call_id:
                 await card.remove()
                 break
-        remaining = list(self.query(ApprovalCard))
+        remaining = list(app.query(ApprovalCard))
         if remaining:
             remaining[0].focus()
         else:
-            self.query_one("#composer", Input).focus()
+            app.query_one("#composer", Input).focus()
 
     async def _resolve_direct_approval(self, tool_call_id: str, approved: bool) -> None:
         pending = self._pending_direct_approvals.pop(tool_call_id)
@@ -112,7 +116,7 @@ class ApprovalFlowMixin:
             return
         self._active_task = asyncio.create_task(self._run_direct_task(pending))
 
-    async def _run_direct_task(self, pending: dict) -> None:
+    async def _run_direct_task(self, pending: dict[str, Any]) -> None:
         self._start_spinner("Executing")
         ctx: JenAIRunContext = pending["ctx"]
         try:

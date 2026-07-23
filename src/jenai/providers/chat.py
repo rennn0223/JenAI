@@ -8,7 +8,7 @@ import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from openai import (
     APIConnectionError,
@@ -16,8 +16,10 @@ from openai import (
     APIStatusError,
     APITimeoutError,
     AsyncOpenAI,
+    AsyncStream,
     OpenAIError,
 )
+from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam
 
 from jenai.config.models import AppConfig, ProviderProfile
 
@@ -48,11 +50,14 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-def _chat_messages(prompt: str, system_prompt: str | None) -> list[dict]:
-    return [
-        {"role": "system", "content": system_prompt or _DEFAULT_SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+def _chat_messages(prompt: str, system_prompt: str | None) -> list[ChatCompletionMessageParam]:
+    return cast(
+        list[ChatCompletionMessageParam],
+        [
+            {"role": "system", "content": system_prompt or _DEFAULT_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    )
 
 
 def _status_error(exc: APIStatusError, profile: ProviderProfile, model: str) -> ProviderChatError:
@@ -110,7 +115,7 @@ async def stream_provider(
 
     with _provider_errors(profile, model):
         async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
-            stream = await client.chat.completions.create(
+            stream: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
                 model=model,
                 messages=_chat_messages(prompt, system_prompt),
                 temperature=0.2,
@@ -238,9 +243,7 @@ def _api_key(profile: ProviderProfile) -> str:
 
     api_key = os.environ.get(profile.api_key_env)
     if not api_key:
-        raise ProviderChatError(
-            f"Environment variable {profile.api_key_env} is not set."
-        )
+        raise ProviderChatError(f"Environment variable {profile.api_key_env} is not set.")
 
     return api_key
 
@@ -263,15 +266,18 @@ async def ask_vision_json(
     except ProviderChatError:
         return None
 
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_data_url}},
-            ],
-        }
-    ]
+    messages = cast(
+        list[ChatCompletionMessageParam],
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }
+        ],
+    )
     try:
         async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
             response = await client.chat.completions.create(
@@ -328,7 +334,10 @@ async def ask_json(config: AppConfig, prompt: str, *, binding: str = "chat") -> 
         async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
             response = await client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=cast(
+                    list[ChatCompletionMessageParam],
+                    [{"role": "user", "content": prompt}],
+                ),
                 temperature=0.0,
             )
         content = response.choices[0].message.content if response.choices else None

@@ -66,7 +66,8 @@ def test_tui_runs_user_skill_as_mission_with_approval(monkeypatch, tmp_path: Pat
             await app.handle_user_text("/inspect")
             cards = list(app.query(ApprovalCard))
             assert len(cards) == 1  # skill still goes through the approval card
-            await pilot.press("enter")
+            # Robot-control approvals default to No; choose Yes explicitly.
+            await pilot.press("1")
             await pilot.pause()
             if app._active_task is not None:
                 await app._active_task

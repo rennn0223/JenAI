@@ -20,8 +20,9 @@ from jenai.adapters.locations import (
     rename_location,
     update_location_pose,
 )
-from jenai.bridge import BridgeError
+from jenai.bridge import BridgeError, PoseInfo
 from jenai.schemas import Location, Pose2D
+from jenai.tui.host_contract import TuiHostContract
 from jenai.tui.panels import MUTED, OutputPanel, TimelineItem
 
 
@@ -31,7 +32,7 @@ def _format_location_row(location: Location) -> str:
     return f"[bold #f2ede1]{location.name}[/]{suffix}"
 
 
-class LocationCommandsMixin:
+class LocationCommandsMixin(TuiHostContract):
     async def _show_loc_list(self, _: str = "") -> None:
         locations = self._load_locations()
         if not locations:
@@ -98,7 +99,7 @@ class LocationCommandsMixin:
             )
         )
 
-    async def _read_current_pose(self):
+    async def _read_current_pose(self) -> PoseInfo | None:
         """Robot pose fit for saving into locations, or None (a warn was shown)."""
         try:
             bridge = await self._get_bridge()

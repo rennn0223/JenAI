@@ -22,37 +22,41 @@ import asyncio
 import math
 from collections.abc import Callable
 from time import monotonic
+from typing import Any, Literal
 from uuid import uuid4
 
-from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.bridge import BridgeError, PoseInfo, RosBridgeClient
 from jenai.config.models import ForbiddenZone, TwinProfile
 from jenai.schemas import GateCriterion, GateReport
 
-_NAMES = {
+CriterionId = Literal["G1", "G2", "G3", "G4", "G5"]
+CriterionStatus = Literal["pass", "fail", "skipped"]
+GateVerdict = Literal["pass", "block", "refer"]
+CriterionStatuses = dict[CriterionId, tuple[CriterionStatus, str]]
+
+_NAMES: dict[CriterionId, str] = {
     "G1": "collision",
     "G2": "timeout",
     "G3": "forbidden zone",
     "G4": "endpoint deviation",
     "G5": "Nav2 failure",
 }
-_HARD = ("G1", "G3")  # failures that block outright; the rest refer
+_HARD: tuple[CriterionId, ...] = ("G1", "G3")
 
 
-def _criterion(cid: str, status: str, detail: str = "") -> GateCriterion:
+def _criterion(cid: CriterionId, status: CriterionStatus, detail: str = "") -> GateCriterion:
     return GateCriterion(criterion_id=cid, name=_NAMES[cid], status=status, detail=detail)
 
 
 def _report(
-    verdict: str,
+    verdict: GateVerdict,
     reason: str,
     elapsed: float,
-    statuses: dict[str, tuple[str, str]] | None = None,
+    statuses: CriterionStatuses | None = None,
 ) -> GateReport:
     """Build a report; criteria not mentioned in `statuses` are 'skipped'."""
     statuses = statuses or {}
-    criteria = [
-        _criterion(cid, *statuses.get(cid, ("skipped", ""))) for cid in _NAMES
-    ]
+    criteria = [_criterion(cid, *statuses.get(cid, ("skipped", ""))) for cid in _NAMES]
     return GateReport(
         verdict=verdict, reason=reason, criteria=criteria, twin_elapsed_s=round(elapsed, 2)
     )
@@ -70,7 +74,7 @@ class TwinGate:
 
     async def rehearse(
         self,
-        outgoing_action: dict,
+        outgoing_action: dict[str, Any],
         *,
         on_status: Callable[[str], None] | None = None,
     ) -> GateReport:
@@ -107,11 +111,13 @@ class TwinGate:
         elapsed = monotonic() - started
 
         report = self._judge(outcome, elapsed)
-        _say(f"twin gate: {report.verdict.upper()}"
-             + (f" — {report.reason}" if report.reason else f" (twin took {elapsed:.0f}s)"))
+        _say(
+            f"twin gate: {report.verdict.upper()}"
+            + (f" — {report.reason}" if report.reason else f" (twin took {elapsed:.0f}s)")
+        )
         return report
 
-    async def _run_rehearsal(self, goal: dict, gx: float, gy: float) -> dict:
+    async def _run_rehearsal(self, goal: dict[str, Any], gx: float, gy: float) -> dict[str, Any]:
         """Drive the twin's Nav2 and collect raw observations for judging."""
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[str] = loop.create_future()
@@ -120,11 +126,11 @@ class TwinGate:
         zone_hit: list[str] = []
         pose_samples = [0]
 
-        def _on_result(event: dict) -> None:
+        def _on_result(event: dict[str, Any]) -> None:
             if event.get("tag", "") in ("", tag) and not result_future.done():
                 result_future.set_result(str(event.get("status", "failed")))
 
-        def _on_contact(data: dict) -> None:
+        def _on_contact(data: dict[str, Any]) -> None:
             if data.get("data") and not collision:
                 collision.append(f"contact reported on {self._twin.collision_topic}")
 
@@ -203,10 +209,16 @@ class TwinGate:
             "watched_contact": watch_id is not None,
         }
 
-    def _judge(self, o: dict, elapsed: float) -> GateReport:
-        statuses: dict[str, tuple[str, str]] = {}
+    def _judge(self, o: dict[str, Any], elapsed: float) -> GateReport:
+        statuses: CriterionStatuses = {}
+        g1_inconclusive = bool(self._twin.require_collision_evidence and not o["watched_contact"])
         if o["watched_contact"]:
             statuses["G1"] = ("fail", o["collision"]) if o["collision"] else ("pass", "")
+        elif g1_inconclusive:
+            statuses["G1"] = (
+                "skipped",
+                "collision evidence unavailable; the configured contact topic was not observed",
+            )
         statuses["G2"] = (
             ("fail", f"twin exceeded {self._twin.nav_timeout_s:.0f}s")
             if o["timed_out"]
@@ -226,8 +238,11 @@ class TwinGate:
             statuses["G4"] = (
                 ("pass", "")
                 if ok
-                else ("fail", f"stopped {o['deviation']:.2f} m from the goal "
-                              f"(tolerance {self._twin.goal_tolerance_m:.2f} m)")
+                else (
+                    "fail",
+                    f"stopped {o['deviation']:.2f} m from the goal "
+                    f"(tolerance {self._twin.goal_tolerance_m:.2f} m)",
+                )
             )
         elif o["status"] == "succeeded":
             statuses["G4"] = ("fail", "twin final pose unavailable; endpoint not verified")
@@ -241,8 +256,8 @@ class TwinGate:
         failed = {cid for cid, (st, _) in statuses.items() if st == "fail"}
         hard_failed = failed & set(_HARD)
         if hard_failed:
-            verdict = "block"
-        elif g3_inconclusive:
+            verdict: GateVerdict = "block"
+        elif g1_inconclusive or g3_inconclusive:
             verdict = "refer"
         elif failed:
             verdict = "refer"
@@ -253,6 +268,8 @@ class TwinGate:
             if cid in hard_failed:
                 reason = statuses[cid][1]
                 break
+        if not reason and g1_inconclusive:
+            reason = statuses["G1"][1]
         if not reason and g3_inconclusive:
             reason = statuses["G3"][1]
         if not reason:
@@ -277,7 +294,9 @@ class TwinGate:
                     return
             await asyncio.sleep(self._twin.pose_sample_s)
 
-    def _record_pose_sample(self, pose, zone_hit: list[str], pose_samples: list[int]) -> None:
+    def _record_pose_sample(
+        self, pose: PoseInfo, zone_hit: list[str], pose_samples: list[int]
+    ) -> None:
         """Count finite G3 evidence and record the first forbidden-zone hit."""
         # NaN/inf never falls inside a zone, so counting it would falsely mark
         # a broken twin localization as checked.
@@ -286,9 +305,7 @@ class TwinGate:
         pose_samples[0] += 1
         zone = self._zone_at(pose.x, pose.y)
         if zone is not None and not zone_hit:
-            zone_hit.append(
-                f"twin entered '{zone.name}' at ({pose.x:.2f}, {pose.y:.2f})"
-            )
+            zone_hit.append(f"twin entered '{zone.name}' at ({pose.x:.2f}, {pose.y:.2f})")
 
     def _zone_at(self, x: float, y: float) -> ForbiddenZone | None:
         return next((z for z in self._twin.forbidden_zones if z.contains(x, y)), None)
@@ -302,7 +319,7 @@ class TwinGate:
 
 async def rehearse_goal(
     twin: TwinProfile,
-    outgoing_action: dict,
+    outgoing_action: dict[str, Any],
     *,
     on_status: Callable[[str], None] | None = None,
     bridge: RosBridgeClient | None = None,

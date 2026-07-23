@@ -16,6 +16,7 @@ from jenai.config import (
     default_env_file_path,
     load_config,
 )
+from jenai.doctor.site import check_site
 from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
 
 
@@ -63,6 +64,7 @@ def run_doctor(config_path: Path | None = None, *, include_nav: bool = True) -> 
     items.extend(_check_ros2())
     if include_nav:
         items.extend(_check_nav_stack(config))
+        items.extend(check_site(config))
         items.extend(_check_twin(config))
     items.extend(_check_provider(config))
     items.extend(_check_locations(config, config_path))
@@ -194,6 +196,79 @@ def _check_ros2() -> list[DoctorCheckItem]:
     ]
 
 
+def _nav_item(
+    name: str,
+    ok: bool,
+    ok_msg: str,
+    warn_msg: str,
+    fix: str,
+) -> DoctorCheckItem:
+    """Build one non-blocking navigation readiness result."""
+    return DoctorCheckItem(
+        section="nav",
+        check_name=name,
+        status=DoctorStatus.PASS if ok else DoctorStatus.WARN,
+        message=ok_msg if ok else warn_msg,
+        fix_suggestion=None if ok else fix,
+    )
+
+
+def _check_nav2_controller(actions: list[str]) -> DoctorCheckItem:
+    """Verify both the Nav2 action and controller's live odometry connection."""
+    from jenai.adapters import ros2_adapter
+
+    if "/navigate_to_pose" not in actions:
+        return _nav_item(
+            "nav2",
+            False,
+            "",
+            "Nav2 is not running — /route will honestly report unavailable.",
+            "Launch Nav2 (docs/ONBOARDING.md §5).",
+        )
+
+    try:
+        odom_topic = ros2_adapter.parameter_get("/controller_server", "odom_topic", timeout=5.0)
+        if not odom_topic.startswith("/"):
+            odom_topic = f"/{odom_topic}"
+        odom_info = ros2_adapter.topic_info(odom_topic, timeout=5.0)
+        controller_subscribed = any(
+            name.rstrip("/").rsplit("/", 1)[-1] == "controller_server"
+            for name in odom_info.subscribers
+        )
+        odom_ready = odom_info.publisher_count > 0 and controller_subscribed
+        return _nav_item(
+            "nav2",
+            odom_ready,
+            (
+                "Nav2 NavigateToPose is available and controller_server "
+                f"consumes live odometry from {odom_topic}."
+            ),
+            (
+                "Nav2 action is available, but controller_server's odometry "
+                f"topic {odom_topic} is not connected to both a publisher and "
+                "the controller subscriber."
+            ),
+            (
+                "Set controller_server.ros__parameters.odom_topic to the "
+                "vehicle's published odometry topic, then restart Nav2."
+            ),
+        )
+    except ros2_adapter.Ros2AdapterError as exc:
+        return _nav_item(
+            "nav2",
+            False,
+            "",
+            (
+                "Nav2 action is available, but its controller odometry "
+                f"connection could not be verified: {exc}"
+            ),
+            (
+                "Check /controller_server odom_topic and verify that the topic "
+                "has a publisher before navigating."
+            ),
+        )
+
+
 def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
     """Navigation-readiness checks: is there a map, localization, a laser,
     a listening velocity controller, and Nav2 itself?
@@ -221,31 +296,22 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
             )
         ]
 
-    def _item(name: str, ok: bool, ok_msg: str, warn_msg: str, fix: str) -> DoctorCheckItem:
-        return DoctorCheckItem(
-            section="nav",
-            check_name=name,
-            status=DoctorStatus.PASS if ok else DoctorStatus.WARN,
-            message=ok_msg if ok else warn_msg,
-            fix_suggestion=None if ok else fix,
-        )
-
     items = [
-        _item(
+        _nav_item(
             "map",
             "/map" in topics,
             "A map is being published (/map).",
             "No /map topic — no map server or SLAM running.",
             "Build a map first: docs/ONBOARDING.md §3 (slam_toolbox), then serve it.",
         ),
-        _item(
+        _nav_item(
             "localization",
             "/amcl_pose" in topics,
             "AMCL localization is up (/amcl_pose).",
             "No /amcl_pose — robot pose will fall back to raw odometry.",
             "Start Nav2 localization with your saved map: docs/ONBOARDING.md §4.",
         ),
-        _item(
+        _nav_item(
             "laser",
             "/scan" in topics,
             "Laser scan is publishing (/scan).",
@@ -261,15 +327,7 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
         actions = ros2_adapter.list_actions(timeout=5.0)
     except ros2_adapter.Ros2AdapterError:
         actions = []
-    items.append(
-        _item(
-            "nav2",
-            "/navigate_to_pose" in actions,
-            "Nav2 NavigateToPose action is available.",
-            "Nav2 is not running — /route will honestly report unavailable.",
-            "Launch Nav2 (docs/ONBOARDING.md §5).",
-        )
-    )
+    items.append(_check_nav2_controller(actions))
 
     # Someone must be listening on cmd_vel, or every motion command is a no-op.
     # The adapter's tolerant parser handles the count-label variations across
@@ -282,7 +340,7 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
         except ros2_adapter.Ros2AdapterError:
             subscribed = False
     items.append(
-        _item(
+        _nav_item(
             "cmd_vel",
             subscribed,
             f"A controller subscribes to {cmd_vel}.",
@@ -291,6 +349,79 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
         )
     )
     return items
+
+
+def _twin_disabled_item() -> DoctorCheckItem:
+    return DoctorCheckItem(
+        section="twin",
+        check_name="twin_gate",
+        status=DoctorStatus.WARN,
+        message=(
+            "Twin Gate is DISABLED ([twin] enabled = false) — navigation goals "
+            "go straight to the robot with no rehearsal or forbidden-zone check."
+        ),
+        fix_suggestion=(
+            "Enable with [twin] enabled = true once the twin scene is "
+            "running (docs/operations/TWIN_SETUP.md)."
+        ),
+    )
+
+
+def _twin_domain_context(config: AppConfig) -> tuple[str, str, str]:
+    """Return ambient domain, configured vehicle domain, and operator mode."""
+    ambient = os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0"
+    configured = config.vehicle.domain_id
+    vehicle_domain = ambient if configured is None else str(configured)
+    if ambient == str(config.twin.domain_id):
+        mode = "simulation target"
+    elif ambient == vehicle_domain:
+        mode = "physical-vehicle target"
+    else:
+        mode = "custom target"
+    return ambient, vehicle_domain, mode
+
+
+def _twin_isolation_item(config: AppConfig) -> DoctorCheckItem:
+    ambient, vehicle_domain, mode = _twin_domain_context(config)
+    twin_domain = str(config.twin.domain_id)
+    if twin_domain == vehicle_domain:
+        if config.deployment_mode == "simulation":
+            return DoctorCheckItem(
+                section="twin",
+                check_name="twin_isolation",
+                status=DoctorStatus.WARN,
+                message=(
+                    f"Simulation mode explicitly shares ROS_DOMAIN_ID={twin_domain} between "
+                    "Twin and target; this is one simulated graph, not isolation evidence."
+                ),
+                fix_suggestion=(
+                    "Use separate [twin] and [vehicle] domain_id values before changing "
+                    "deployment_mode to physical."
+                ),
+            )
+        return DoctorCheckItem(
+            section="twin",
+            check_name="twin_isolation",
+            status=DoctorStatus.FAIL,
+            message=(
+                f"[twin] domain_id={config.twin.domain_id} equals the configured physical "
+                f"vehicle domain ({vehicle_domain}) — rehearsal goals could reach the real robot."
+            ),
+            fix_suggestion=(
+                "Give [twin] and [vehicle] different domain_id values; launch JenAI on "
+                "the graph you intentionally want to control."
+            ),
+        )
+    return DoctorCheckItem(
+        section="twin",
+        check_name="twin_isolation",
+        status=DoctorStatus.PASS,
+        message=(
+            f"Twin domain {config.twin.domain_id} and physical vehicle domain {vehicle_domain} "
+            f"are configured separately; active JenAI domain is {ambient} ({mode}). "
+            "This verifies configuration, not live cross-domain traffic."
+        ),
+    )
 
 
 def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
@@ -305,63 +436,12 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
     if config is None:
         return []
     if not config.twin.enabled:
-        return [
-            DoctorCheckItem(
-                section="twin",
-                check_name="twin_gate",
-                status=DoctorStatus.WARN,
-                message=(
-                    "Twin Gate is DISABLED ([twin] enabled = false) — navigation goals "
-                    "go straight to the robot with no rehearsal or forbidden-zone check."
-                ),
-                fix_suggestion=(
-                    "Enable with [twin] enabled = true once the twin scene is "
-                    "running (docs/operations/TWIN_SETUP.md)."
-                ),
-            )
-        ]
+        return [_twin_disabled_item()]
 
     twin = config.twin
-    # Older configs inferred the physical vehicle from the ambient domain.
-    # New configs can state it explicitly while JenAI remains connected to a
-    # simulator. Actual command routing still follows the process environment.
-    ambient = os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0"
-    vehicle_domain = config.vehicle.domain_id
-    vehicle_domain_text = ambient if vehicle_domain is None else str(vehicle_domain)
-    if str(twin.domain_id) == vehicle_domain_text:
-        return [
-            DoctorCheckItem(
-                section="twin",
-                check_name="twin_isolation",
-                status=DoctorStatus.FAIL,
-                message=(
-                    f"[twin] domain_id={twin.domain_id} equals the configured physical "
-                    f"vehicle domain ({vehicle_domain_text}) — rehearsal goals could reach "
-                    "the real robot."
-                ),
-                fix_suggestion=(
-                    "Give [twin] and [vehicle] different domain_id values; launch JenAI on "
-                    "the graph you intentionally want to control."
-                ),
-            )
-        ]
-
-    if ambient == str(twin.domain_id):
-        mode = "simulation target"
-    elif ambient == vehicle_domain_text:
-        mode = "physical-vehicle target"
-    else:
-        mode = "custom target"
-    isolation_item = DoctorCheckItem(
-        section="twin",
-        check_name="twin_isolation",
-        status=DoctorStatus.PASS,
-        message=(
-            f"Twin domain {twin.domain_id} and physical vehicle domain {vehicle_domain_text} "
-            f"are configured separately; active JenAI domain is {ambient} ({mode}). "
-            "This verifies configuration, not live cross-domain traffic."
-        ),
-    )
+    isolation_item = _twin_isolation_item(config)
+    if isolation_item.status == DoctorStatus.FAIL:
+        return [isolation_item]
 
     if shutil.which("ros2") is None:
         return [isolation_item]  # ros2_cli already reports the root cause

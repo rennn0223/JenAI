@@ -33,7 +33,8 @@ def rebuild(legacy_dir: Path, out_dir: Path) -> dict:
     trials_path = legacy_dir / "trials.jsonl"
     targets = json.loads(targets_path.read_text(encoding="utf-8"))
     trials = [
-        json.loads(line) for line in trials_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line)
+        for line in trials_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     if len(targets) != len(trials):
@@ -46,7 +47,7 @@ def rebuild(legacy_dir: Path, out_dir: Path) -> dict:
     if any(row.get("verdict") not in {"pass", "block", "refer"} for row in trials):
         raise ValueError("legacy run contains an invalid verdict")
 
-    run_id = f"e2-paired-reanalysis-{datetime.now():%Y%m%dT%H%M%S}"
+    run_id = f"e2-paired-reanalysis-{datetime.now(UTC):%Y%m%dT%H%M%S}"
     rows = []
     for index, target in enumerate(targets, start=1):
         target_id = f"T{index:03d}"

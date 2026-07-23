@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v2.0.1(2026-07)。專案方向見 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](product/ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v2.2.0(2026-07)。專案方向見 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](product/ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -67,7 +67,8 @@ jenai doctor        # 每一項應為 pass/warn,不該有意外的 fail
 ```toml
 # ~/.config/jenai/config.toml
 active_provider = "local"          # /provider 可即時切換
-route_adapter = "nav2"             # "stub"(預設,不動真機)| "nav2"(送 NavigateToPose goal)| "odom"(無 Nav2 的 odom→cmd_vel 直驅,開闊地/ground plane 測試用)
+route_adapter = "nav2"             # "stub"（不動載具）| "nav2"（產品導航）；"odom" 僅供 bridge bring-up，產品任務會拒絕
+deployment_mode = "simulation"     # 接實體車前必須改為 "physical"；會強制 Twin ROS domain 隔離
 locations_path = "locations.toml"  # 相對於 config.toml 所在目錄
 
 [provider_profiles."local"]
@@ -87,7 +88,15 @@ cmd_vel_stamped = false            # true 時發 TwistStamped
 camera_topic = "/camera/image_raw" # /vision camera、patrol photo、MCP camera_look 預設
 max_linear = 1.0                   # 執行期硬限速(m/s)——LLM/使用者給再大都會被夾住
 max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherback:2.0/0.53)
+arrival_position_tolerance_m = 0.25 # Nav2 terminal pose 的 JenAI 二次核對上限
+arrival_yaw_tolerance_rad = 0.25    # Isaac 精準 profile:0.05 m / 0.15 rad
+odom_timeout_s = 1.0               # odom 逾時立即歸零；不沿用舊位姿繼續直驅
 ```
+
+NavigationGateway 不把 action status 當成幾何證據。bridge 會把 Nav2 feedback 的最後
+`current_pose` 放入 terminal event，`navigate_live` 再計算平面距離與 wrap-around yaw
+誤差；超過 Vehicle Profile 上限、frame 不一致、位姿缺失或非有限值都 fail closed 並
+送 halt。這讓「Nav2 的成功容差」與「產品對外宣告的到點精度」成為兩個明確邊界。
 
 ## 3. 日常使用
 
@@ -105,7 +114,7 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 | 地點 | `/loc list`、`/loc show <名>`、**`/loc add here <名>`** | add here 抓當下機器人位置存檔 |
 | 視覺 | `/vision image <路徑>`、**`/vision camera [topic]`** | camera 預設讀 `vehicle.camera_topic` |
 | 感知 | `/perception start|stop|status` | 相機→VLM 定頻結構化分析;只觀察不動作 |
-| 日報 | `/report`、`/report list` | 巡邏日報:確定性彙整 + LLM 摘要(離線誠實降級) |
+| 報告 | `/report`、`/report task [list]`、`/report event` | 巡邏日報；每次 TUI run 的結構化任務收據；daemon 事件→動作結果（後兩者不呼叫 LLM） |
 | 技能檔 | `/skills`(+ `skills/*.toml` 定義的自訂指令) | 檔案定義技能,走同一張批准卡;保留字拒載 |
 | Shell | `/shell <cmd>`(或 `!<cmd>`) | 需批准;風險評估進批准卡 |
 | 模型 | `/model`(列出+編號切換)、`/models`、`/provider <名>`、`/providers` | 即時生效並持久化 |
@@ -140,6 +149,7 @@ jenai daemon                                        # Ctrl-C 停止
 ```
 
 規則 = 監看一個 topic 欄位 + 門檻(below/above/equals)+ 冷卻時間。`action = "notify"` 只通報;`"goto <地點>"` 要**同時** `auto_approve = true` 且 `route_adapter = "nav2"` 才會真的移動,否則印出「本來會做什麼」;`"halt"`(緊急停止)**免批准**——停下來永遠是安全的,而且會先取消進行中的導航。
+觸發、動作開始與終端結果會寫入本機 audit（不保存原始 topic payload），可在 TUI 用 `/report event` 查看；這使 notify、被 gate 阻擋、busy、導航成功／失敗與 halt 結果都有終端狀態。
 
 ## 4. 架構
 
@@ -166,41 +176,43 @@ jenai daemon                                        # Ctrl-C 停止
 | 模組 | 行數 | 職責 |
 |---|---|---|
 | `cli/main.py` | 668 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、**`eval`**、**`onboard`**(重跑設定精靈,自動備份)、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
-| `tui/app.py` | 1,245 | App 殼:輸入分發、**權限三模式(Shift+Tab)與裸自然語言路由**、串流、spinner、Esc 中斷、`/stop` 搶佔與共用 UI 生命週期 |
+| `tui/app.py` | 1,311 | App 殼:輸入分發、**權限三模式(Shift+Tab)與裸自然語言路由**、串流、spinner、Esc 中斷、`/stop` 搶佔與共用 UI 生命週期 |
 | `tui/approval_flow.py` | 159 | 批准決策、remember、agent/direct interruption 恢復；與實際工具執行分離 |
-| `tui/direct_execution.py` | 237 | 已批准 direct action 的執行、audit/run 收尾與結果渲染 |
-| `tui/catalog.py` | 309 | Slash palette、standalone greeting 判斷與 Claude Code 風格 responsive CSS |
-| `tui/robot_commands.py` | 836 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/vision` + bridge 生命週期(含 watchdog 佈署) |
+| `tui/direct_execution.py` | 250 | 已批准 direct action 的 handler map、audit/run 收尾與結果渲染；不以巨型 if/elif 分派 |
+| `tui/catalog.py` | 403 | Slash palette、help 分組的單一資料來源、standalone greeting 判斷與 Claude Code 風格 responsive CSS |
+| `tui/robot_commands.py` | 940 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/vision` + bridge 生命週期(含 watchdog 佈署) |
 | `tui/location_commands.py` | 303 | Mixin:`/loc` persistence、AMCL/odom pose 與 GPS→map 儲存；不執行導航 |
 | `tui/info_commands.py` | 341 | Mixin:`/help` `/status` `/doctor` `/model` `/provider` 等資訊類 |
 | `tui/panels.py` | 442 | 純視覺:雙欄 WelcomePanel、TimelineItem、OutputPanel、CommandPalette |
-| `tui/widgets/` | ~200 | ApprovalCard(依風險顯示 2/3 個選項；HOST_COMMAND/P2 不可 remember，P2 預選 No)、Plan/Tool/Error blocks |
-| `bridge/ros_bridge.py` | 875 | **系統 Python** 下的 rclpy 常駐節點:pose、nav_send/feedback/cancel、**halt(急停)**、**watchdog(斷線自主停車)**、capture_frame、watch |
-| `bridge/_protocol.py` | 80 | stdlib-only JSON op dispatcher；request defaults/type conversion 可不靠 rclpy 單測 |
-| `bridge/client.py` | 366 | venv 側非同步 client:spawn、request futures、事件路由、halt/configure_safety |
+| `tui/widgets/` | ~200 | ApprovalCard(依風險顯示 2/3 個選項；HOST_COMMAND/P2 不可 remember；P2、host command 與 robot control 預選 No)、Plan/Tool/Error blocks |
+| `bridge/ros_bridge.py` | 999 | **系統 Python** 下的 rclpy I/O 節點:pose、nav_send/feedback/cancel、**halt(急停)**、**watchdog(斷線自主停車)**、capture_frame、watch；控制演算法與協定迴圈已拆至 stdlib-only 模組 |
+| `bridge/_protocol.py` | — | stdlib-only JSON op dispatcher；request defaults 與精確型別／finite／範圍驗證可不靠 rclpy 單測，無效請求不會進入 ROS node |
+| `bridge/_wire.py` / `_server.py` | — | newline-JSON frame 驗證與 stdin server；畸形 frame、callback 失敗與慢速唯讀操作皆有隔離測試 |
+| `bridge/_drive_control.py` | — | 純狀態機的 odom→cmd_vel 控制、深度 freshness、detour/replan；ROS I/O 只套用輸出 |
+| `bridge/client.py` | — | venv 側非同步 client:安全 argv spawn、request future 清理、reader 故障傳播、事件隔離；致動／watchdog 輸入與 pose/map/plan/cancel/halt 回應皆採嚴格 wire 驗證，拒絕 truthiness、非 finite 值、無效範圍與矛盾安全證據 |
 | `tools/*_core.py` | — | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
-| `tools/nav_live.py` | 194 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback`(nav2-vs-CLI 調度的唯一出處,TUI/MCP 共用)** |
+| `tools/nav_live.py` | 313 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback` 只接受受監督 bridge，bridge/watchdog 不可用即 fail-closed，絕不降級成 CLI goal** |
 | `tools/skills.py` | 145 | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
 | `tools/ros2_pkg_core.py` | 286 | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋;`--build` 生成即 colcon 驗證(失敗餵錯誤回 LLM 修一輪)。從 control agent 邁向 development copilot |
 | `tools/decision_core.py` | 104 | **M6 決策腦**(v0.21):`ContextSnapshot`(六欄位情境快照)→ 單次 `ask_json` 於封閉動作集單選 `Decision`;越界動作/幻覺目的地/解析失敗一律降級 refer_to_human,無自由文字可達致動 |
 | `tools/decision_eval.py` | 133 | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate;標註 `action:target` 綁定目標、gold 優先於 unsafe、未知動作名 fail-loud(論文工具鏈) |
 | `tools/user_skills.py` | 85 | **檔案定義技能**(v0.20):`skills/*.toml` → 新 slash 指令;與內建指令同一張批准卡;保留字拒載 |
 | `tools/safety.py` | 32 | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
-| `tools/navigation_gateway.py` | 125 | **NavigationGateway(v0.25)**:所有導航的唯一出口——CLI/TUI/WebUI/MCP/daemon/任務/agent 工具全部經此;Twin Gate 與 watchdog 政策無法被直呼 route 執行繞過 |
+| `tools/navigation_gateway.py` | 138 | **NavigationGateway(v0.25)**:所有導航的唯一出口——CLI/TUI/WebUI/MCP/daemon/任務/agent 工具全部經此;Twin Gate 與 watchdog 政策無法被直呼 route 執行繞過 |
 | `twin/gate.py` | 302 | **Twin Gate**:G1 碰撞/G2 逾時/G3 禁區/G4 終點偏差/G5 規劃失敗 → pass/block/refer;非有限 pose 不算有效樣本、缺孿生遙測回 refer(fail-closed) |
-| `state/`(runs/audit/reports/history/session) | ~700 | run 記錄、**SQLite audit store(v0.30)**:run/批准/工具/Gate verdict 跨重啟留痕,上限 10,000 筆、不落盤 prompt 與 raw payload,寫入失敗不阻塞安全動作;巡邏報告與輸入歷史 |
+| `state/`(runs/audit/reports/task_receipts/history/session) | — | run 記錄、SQLite audit（run/批准/工具/Gate/daemon event）、每個終止 TUI run 的原子 JSON task receipt（耗時、工具、批准、結果、標準失敗代碼）、巡邏報告與輸入歷史。audit 不落盤 prompt/raw payload；task receipt 是本機操作報告，依 data lifecycle 管理 |
 | `config/setup.py` | 223 | **Setup Wizard**:橘色主題三步設定;誤貼金鑰自動安全搬遷至 `.env`(0600) |
 | `tools/perception.py` | ~180 | **PerceptionLoop**:持續相機→VLM→結構化 `SceneAnalysis`(場景/物件/affordances/建議動作);TUI `/perception`、daemon `@perception` 規則共用;只觀察不動作 |
-| `mcp_server/server.py` | 183 | FastMCP stdio server:唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |
+| `mcp_server/server.py` | 208 | FastMCP stdio server:共享資源生命週期與 ROS／狀態／導航註冊器分離；唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |
 | `agent/orchestrator.py` 等 | ~700 | /run 代理:規劃、specialist 工具、批准中斷、guardrails、tracing；純唯讀 ROS 狀態要求走共用工具的確定性快速路徑，混合／動作要求保留完整 LLM 與批准流程；session 有項目與 UTF-8 位元組上限 |
 | `providers/chat.py` | 337 | OpenAI 相容呼叫:`ask_provider`、**`stream_provider`(串流)**、`ask_json`、`ask_vision_json`、`list_provider_models`;`_provider_errors` 共用例外映射;`parse_json_reply`(寬容解析,thinking 模型必備) |
 | `adapters/ros2_adapter.py` | 304 | `ros2` CLI subprocess 包裝(有 timeout、錯誤分類) |
 | `adapters/locations.py` | ~200 | locations.toml 載入/儲存/模糊搜尋;`load_locations_tolerant`(全介面共用的容錯載入) |
-| `adapters/route_adapter.py` | 91 | RouteAdapter 協定:`stub`(誠實拒絕)/`nav2`(CLI send_goal,bridge 不可用時的後備)/`odom`(直驅只走 live bridge,CLI 後備誠實拒絕) |
+| `adapters/route_adapter.py` | 91 | 舊 RouteAdapter 相容層與 stub；產品導航入口不得直接呼叫。`nav2` 的正式路徑只走 `NavigationGateway` + watchdog bridge；`odom` 只保留為 legacy bring-up 介面，gateway 會拒絕高階任務，失效時不送 goal |
 | `bridge` `drive_to_pose` | — | **(deprecated,bring-up fallback)無 Nav2 的點對點直驅**:閉環 /odom → /cmd_vel(目標視為 odom 座標,map≈odom 時成立);餵同一套 nav_feedback/nav_result,navigate_live 無縫共用 |
 | `bridge/_avoidance.py` + drive_loop | — | **(deprecated,maintenance mode)局部避障**:Isaac 實測單 depth 反應式避障不可行——只修 bug 不加能力,終局=對接載具原生 nav。原敘述::depth camera(32FC1)→ 偽雷射 → 目標方向走廊判定 → stop-and-go detour。反射層不經 LLM;深度畫面逾時立即歸零並回報 `sensor_unavailable`,不使用陳舊影像繼續移動。**局部反應,非全域規劃**——複雜地圖仍需 Nav2 |
 | `daemon/engine.py` | 165 | 規則引擎純邏輯:條件、冷卻、安全 gating;動作 notify/goto/**halt**(可單測) |
-| `daemon/runner.py` | 115 | bridge watch → queue → engine → (獲准才)navigate_live;halt 決策優先搶佔 |
+| `daemon/runner.py` | 307 | bridge watch → queue → engine → (獲准才)NavigationGateway；perception、decision audit、navigation worker 與 halt 各自封裝，halt 決策優先搶佔 |
 | `webui/server.py` | 717 | http.server:`/api/status` `/api/command` `/api/confirm` `/api/map` **`/api/stop`**;PoseCache(退避重試) |
 | `webui/render.py` | 699 | 純渲染:儀表板 HTML/CSS/JS(含 SVG 地圖、紅色 STOP 鈕) |
 | `webui/commands.py` | 303 | Web 版指令執行 + confirm 動作封存 |
@@ -215,7 +227,7 @@ jenai daemon                                        # Ctrl-C 停止
 
 **誠實回報原則。** 每條執行路徑必須能回 `unavailable` 並說明原因(「goal 沒有送出」),UI 用 warn 而非 success 呈現。寫新工具時遵守:不確定就說不確定。
 
-**批准模型。** 動作類指令建立 run + ApprovalCard;批准後的執行包成可取消的 active task(長導航要能 Esc)。WebUI 的 confirm 是伺服器端一次性 token —— 瀏覽器只拿到 id,動作本體不出伺服器。daemon 則是「規則明確 `auto_approve` 才動」。三個介面,同一哲學:**沒有明確授權,機器人不動**。
+**批准模型。** 動作類指令建立 run + ApprovalCard;批准後的執行包成可取消的 active task(長導航要能 Esc)。任意 `/shell`／`!` 一律是 P2、逐次批准且預選 No；不以關鍵字猜測「唯讀 shell」，避免 Python、子 shell、管線或重新導向繞過。WebUI 的 confirm 是伺服器端一次性 token —— 瀏覽器只拿到 id,動作本體不出伺服器。daemon 則是「規則明確 `auto_approve` 才動」。三個介面,同一哲學:**沒有明確授權,機器人不動**。
 
 **Provider 依能力分流。** 官方 OpenAI agent 路徑使用 Responses API;NVIDIA NIM、Ollama 與自訂 `base_url` 使用 Chat Completions 相容層。兩者仍共用同一個 OpenAI SDK client/config resolver;`parse_json_reply` 寬容處理 thinking 模型的 ```json 圍欄與前後綴文字。
 
@@ -223,18 +235,21 @@ jenai daemon                                        # Ctrl-C 停止
 
 **安全鏈是分層的(v0.7+)。** 依時間尺度由快到慢:①bridge watchdog(client 斷線/卡死 → 自主停車,不依賴任何上層)→ ②急停(四介面一鍵,免批准可搶佔,語意統一在 `tools/safety.py`)→ ③執行期硬限速(`[vehicle]`,LLM 給再大也夾住)→ ④HITL 批准卡(意圖層)→ ⑤daemon 明確授權。**LLM 永不進即時迴路**;載具差異只准活在 `[vehicle]`。
 
-**調度只寫一次。** 所有表面先進 `NavigationGateway`,再由 `navigate_with_fallback` 套用 Twin Gate、watchdog、live bridge/誠實後備策略;架構測試禁止其他模組直呼 `route_execute`。同理:急停 = `safety.py`,相機→VLM = `capture_and_analyze`,locations 容錯載入 = `load_locations_tolerant`。
+**調度只寫一次。** 所有表面先進 `NavigationGateway`,再由 `navigate_with_fallback` 套用 Twin Gate、watchdog 與 live bridge；Bridge 啟動、協定、wire request/response 驗證或 watchdog 任一失敗即拒絕 goal，不存在無監督 CLI 後備。client 與 system-Python sidecar 都驗證致動參數，避免直接 JSON 呼叫繞過上層設定模型。人工 HIL 任一 motion check 失敗後也會停止後續 goal，並把 final halt／bridge shutdown 寫入 artifact。架構測試禁止其他模組直呼 `route_execute`。同理:急停 = `safety.py`,相機→VLM = `capture_and_analyze`,locations 容錯載入 = `load_locations_tolerant`。
 
 ### 4.4 測試與 CI
 
 ```bash
-env -u PYTHONPATH uv run pytest     # 必須 unset PYTHONPATH(ROS 遮蔽問題)
-env -u PYTHONPATH uv run ruff check src tests
+uv lock --check
+uv run ruff format --check src tests
+uv run ruff check src tests
+uv run mypy                         # 全部 src/jenai production code 採 strict mode
+uv run pytest --cov=jenai --cov-branch
 ```
 
-- **目前基準**:v2.0.1/main@`79a295a` 的本機 strict 回歸為 597/597、0 warnings；[PR #106 CI](https://github.com/rennn0223/JenAI/actions/runs/29654345304)、[main CI](https://github.com/rennn0223/JenAI/actions/runs/29654418747) 與 [Release run](https://github.com/rennn0223/JenAI/actions/runs/29654500264) 均在相對應 revision 通過。
+- **目前工作樹基準**:全專案 branch coverage 77%（門檻 76%）、安全鏈 branch coverage 94%（門檻 90%）；Ruff format/lint 與全部 `src/jenai` production code 的 mypy strict 均通過。`ros_bridge.py` 的 rclpy 接線不假裝由無 ROS 的 hosted CI 覆蓋，另由人工 self-hosted Isaac HIL 驗收。精確測試數以當次 CI summary 為準；發布證據仍以該 tag 的 GitHub Actions run 為準，不能用本機結果冒充 release 證明。
 - **真實 TUI 驗收**:[TUI_LIVE_ACCEPTANCE_2026-07-17.md](validation/TUI_LIVE_ACCEPTANCE_2026-07-17.md) 記錄 Isaac Sim/Nav2 的 ROS introspection、有限時致動、stop、vision/perception、patrol、Slash/NL explore 與四角 inspect。該紀錄是描述性系統驗收，不代替實體安全或使用者效率實驗。
-- **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test` 以 Python 3.12／3.13／3.14 matrix 跑 ruff + pytest(coverage 寫入 job summary,**安全鏈覆蓋 fail-under=90 倒退閘**)、`build`(`uv build` + `uvx` 全新環境裝 wheel 跑 `jenai --help`,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護
+- **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test` 以 Python 3.12／3.13／3.14 matrix 跑 Ruff format/lint、mypy strict 與 pytest branch coverage（整體 `fail-under=76`、安全鏈 `fail-under=90`）、`build`(`uv build` + 全新 tool 環境裝 wheel 跑 lifecycle smoke,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護：所有導航必經 gateway，且任何函式超過 120 行都會失敗，目前無白名單。直接依賴同時有最低版與下一個未審核主版本上限，release 仍另輸出精確 constraints。
 - **Release**(`.github/workflows/release.yml`):兩個入口共用 tag／pyproject 一致、完整 lint／測試／安全 coverage、dependency audit、重現性 build、敏感檔掃描、constraints、SBOM、checksum 與隔離 wheel lifecycle 閘；public repository 另強制 build provenance 與 SBOM attestations。推 `vX.Y.Z` tag 只建立草稿；`workflow_dispatch` 建新 tag 時只接受 fetched `origin/main` 的精確 commit，並以 `docs/releases/<tag>.md` 發布。既有 tag recovery 必須從同一 tag ref 觸發，且只可覆寫尚未發布的 draft；published release 永不可變更，必須升版。
 - **TUI 測試**:Textual `app.run_test()` + `handle_user_text()`;導航測試 patch `NavigationGateway.execute`,以安全入口為邊界
 - **本機 E2E 手法**(開發時驗真鏈路):`scratchpad` 裡跑假節點 —— fake Nav2 action server、fake camera publisher、fake battery —— 全是真 rclpy、真協定,TUI/daemon 分不出真假。參考 git log 中各功能 commit 的驗證描述

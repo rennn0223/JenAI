@@ -6,7 +6,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from jenai.adapters import ros2_adapter
 
@@ -22,7 +22,7 @@ class RouteSendResult:
 class RouteAdapter(Protocol):
     """Anything that can take a resolved navigation action and (try to) send it."""
 
-    async def resolve(self, outgoing_action: dict) -> RouteSendResult: ...
+    async def resolve(self, outgoing_action: dict[str, Any]) -> RouteSendResult: ...
 
 
 class NullRouteAdapter:
@@ -32,7 +32,7 @@ class NullRouteAdapter:
     real adapter (e.g. Nav2 / a `/goal_pose` publisher) to actually navigate.
     """
 
-    async def resolve(self, outgoing_action: dict) -> RouteSendResult:
+    async def resolve(self, outgoing_action: dict[str, Any]) -> RouteSendResult:
         logger.info("NullRouteAdapter: no navigation backend; goal not sent: %s", outgoing_action)
         return RouteSendResult(
             execution_status="unavailable",
@@ -53,7 +53,7 @@ class Nav2RouteAdapter:
     ACTION = "/navigate_to_pose"
     ACTION_TYPE = "nav2_msgs/action/NavigateToPose"
 
-    async def resolve(self, outgoing_action: dict) -> RouteSendResult:
+    async def resolve(self, outgoing_action: dict[str, Any]) -> RouteSendResult:
         goal = outgoing_action.get("goal") or {}
         pose = goal.get("pose") or {}
         x, y = float(pose.get("x", 0.0)), float(pose.get("y", 0.0))

@@ -32,6 +32,7 @@ def _plan(**over) -> PackagePlan:
 def test_name_validation_normalizes_and_rejects() -> None:
     assert _plan(package_name="My-Pkg Name").package_name == "my_pkg_name"
     import pydantic
+
     with pytest.raises(pydantic.ValidationError):
         _plan(package_name="9bad")  # cannot start with a digit
 
@@ -46,9 +47,13 @@ def test_unknown_dependencies_dropped_rclpy_kept() -> None:
 def test_render_produces_buildable_layout() -> None:
     files = render_package(_plan())
     assert set(files) >= {
-        "package.xml", "setup.py", "setup.cfg",
-        "resource/obstacle_stop", "obstacle_stop/__init__.py",
-        "obstacle_stop/stopper.py", "README.md",
+        "package.xml",
+        "setup.py",
+        "setup.cfg",
+        "resource/obstacle_stop",
+        "obstacle_stop/__init__.py",
+        "obstacle_stop/stopper.py",
+        "README.md",
     }
     assert "<build_type>ament_python</build_type>" in files["package.xml"]
     assert "<exec_depend>sensor_msgs</exec_depend>" in files["package.xml"]
@@ -101,8 +106,11 @@ def test_generate_plan_parses_llm_and_degrades(monkeypatch) -> None:
 
     async def ok(config, prompt, *, binding="chat"):
         return {
-            "package_name": "demo", "description": "d", "node_name": "n",
-            "dependencies": ["rclpy"], "node_code": "def main():\n    pass\n",
+            "package_name": "demo",
+            "description": "d",
+            "node_name": "n",
+            "dependencies": ["rclpy"],
+            "node_code": "def main():\n    pass\n",
         }
 
     async def junk(config, prompt, *, binding="chat"):
@@ -129,9 +137,7 @@ def test_build_package_reports_ok_and_tail(monkeypatch, tmp_path: Path) -> None:
 
     build_package = mod.build_package
 
-    monkeypatch.setattr(
-        mod, "run_process", lambda *a, **k: _Proc(0, "Summary: 1 package finished")
-    )
+    monkeypatch.setattr(mod, "run_process", lambda *a, **k: _Proc(0, "Summary: 1 package finished"))
     ok, tail = build_package(tmp_path, "demo")
     assert ok is True and "finished" in tail
 

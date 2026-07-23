@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from rich.text import Text
+from textual.events import Key
 from textual.message import Message
 from textual.widgets import Static
 
 from jenai.schemas import ApprovalRequest
-from jenai.tui.approval_policy import can_remember_approval
+from jenai.tui.approval_policy import can_remember_approval, should_default_to_reject
 
 ACCENT = "#e8683f"
 GREEN = "#8fbf6f"
@@ -49,7 +50,8 @@ class ApprovalCard(Static):
     """Claude Code-style approval prompt with numbered options.
 
     Ordinary bounded capabilities can be remembered for the session. P2 and
-    host-command approvals are one-shot; P2 also defaults to No. Navigable
+    host-command approvals are one-shot; P2, host commands, and robot-control
+    prompts default to No. Navigable
     with ↑/↓ + Enter or a displayed number key; Esc always rejects.
     """
 
@@ -66,7 +68,7 @@ class ApprovalCard(Static):
         super().__init__(classes="approval-card")
         self.approval = approval
         self._options = _REMEMBER_OPTIONS if can_remember_approval(approval) else _ONCE_OPTIONS
-        self._selected = len(self._options) - 1 if str(approval.risk_level) == "p2" else 0
+        self._selected = len(self._options) - 1 if should_default_to_reject(approval) else 0
 
     def on_mount(self) -> None:
         self.focus()
@@ -98,7 +100,7 @@ class ApprovalCard(Static):
         _label, approved, remember = self._options[index]
         self.post_message(self.Decision(self.approval.tool_call_id, approved, remember))
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: Key) -> None:
         if event.key == "down":
             self._selected = (self._selected + 1) % len(self._options)
             self.refresh()

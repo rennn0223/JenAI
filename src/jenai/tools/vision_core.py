@@ -37,9 +37,7 @@ def _to_data_url(path: Path) -> str:
 
 
 def _build_prompt(task_context: str) -> str:
-    context_line = (
-        f"Current task context: {task_context}\n" if task_context.strip() else ""
-    )
+    context_line = f"Current task context: {task_context}\n" if task_context.strip() else ""
     return (
         "You are JenAI's vision analyst for a ROS2 robot. Analyze the image and respond "
         "with ONLY JSON matching: "
@@ -49,9 +47,7 @@ def _build_prompt(task_context: str) -> str:
     )
 
 
-async def analyze_image(
-    config: AppConfig, source: str, *, task_context: str = ""
-) -> VisionOutput:
+async def analyze_image(config: AppConfig, source: str, *, task_context: str = "") -> VisionOutput:
     """Analyze a local image with the configured vision model.
 
     Raises VisionError for a missing path or a non-image file. Degrades to a
@@ -62,8 +58,7 @@ async def analyze_image(
         raise VisionError(f"Image file not found: {source}")
     if path.suffix.lower() not in _IMAGE_SUFFIXES:
         raise VisionError(
-            f"'{path.name}' is not a supported image "
-            f"({', '.join(sorted(_IMAGE_SUFFIXES))})."
+            f"'{path.name}' is not a supported image ({', '.join(sorted(_IMAGE_SUFFIXES))})."
         )
 
     parsed = await ask_vision_json(config, _build_prompt(task_context), _to_data_url(path))

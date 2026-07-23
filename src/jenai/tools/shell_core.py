@@ -11,8 +11,10 @@ from pathlib import Path
 from jenai.schemas import EffectScope, RiskLevel, ShellOutput
 from jenai.subprocesses import run_process_async
 
-# Tokens that indicate a write / delete / install / privilege action. Their
-# presence bumps the command to P2 so the approval card warns more loudly.
+# Tokens that make the explanation more specific.  Every arbitrary host-shell
+# command is P2 regardless: shell syntax, interpreters, command substitution,
+# aliases and downloaded scripts make a reliable "read-only" classifier
+# impossible. Dedicated slash commands remain the bounded fast path.
 _HIGH_RISK_TOKENS = (
     "rm ",
     "rmdir",
@@ -82,18 +84,17 @@ def run_process(
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
     """Run a process with a timeout that also terminates its descendants."""
-    popen_kwargs = {
-        "shell": shell,
-        "cwd": cwd,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "text": True,
-    }
-    if os.name == "posix":
-        # Put the shell and every normal descendant in one group so a timeout
-        # cannot leave a background command running after JenAI reports exit 124.
-        popen_kwargs["start_new_session"] = True
-    process = subprocess.Popen(command, **popen_kwargs)
+    # Put the shell and every normal descendant in one group on POSIX so a
+    # timeout cannot leave a background command running after exit 124.
+    process = subprocess.Popen(
+        command,
+        shell=shell,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+    )
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except BaseException:
@@ -124,9 +125,12 @@ def assess_command(command: str) -> CommandRisk:
             ),
         )
     return CommandRisk(
-        risk_level=RiskLevel.P1,
+        risk_level=RiskLevel.P2,
         effect_scope=EffectScope.HOST_COMMAND,
-        risk_summary="Runs a host shell command; review before approving.",
+        risk_summary=(
+            "High risk: arbitrary host shell commands can read, write, delete, "
+            "or launch other programs; review the complete command before approving."
+        ),
     )
 
 

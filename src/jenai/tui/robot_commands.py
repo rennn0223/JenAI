@@ -10,24 +10,30 @@ from __future__ import annotations
 
 import json
 import math
+from typing import Any
 
 from rich.markup import escape
 
 from jenai.adapters.locations import (
     load_locations_tolerant,
 )
+from jenai.agent.context import JenAIRunContext
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.schemas import (
     ApprovalRequest,
     EffectScope,
     Location,
     RiskLevel,
+    RouteOutput,
     RunStatus,
+    SceneAnalysis,
     ToolCallCategory,
     ToolCallRecord,
+    VisionOutput,
 )
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.mission_core import MissionStep, parse_mission
+from jenai.tools.nav_live import NavProgress
 from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.perception import PerceptionLoop
 from jenai.tools.ros2_core import (
@@ -52,7 +58,7 @@ from jenai.tui.panels import MUTED, OutputPanel, TimelineItem, _is_number
 from jenai.tui.widgets import ApprovalCard
 
 
-def _navigation_progress_label(progress) -> str:
+def _navigation_progress_label(progress: NavProgress) -> str:
     """Format Nav2 feedback without presenting a recovery sentinel as arrival.
 
     Nav2 may report ``distance_remaining == 0`` while no valid path exists and
@@ -67,14 +73,19 @@ def _navigation_progress_label(progress) -> str:
         distance_text = "distance unavailable while recovering"
     else:
         distance_text = f"Nav2 estimate {max(distance, 0.0):.1f} m"
-    return (
-        f"Navigating · {distance_text} · {progress.elapsed:.0f}s"
-        + (f" · {recoveries} recoveries" if recoveries else "")
+    return f"Navigating · {distance_text} · {progress.elapsed:.0f}s" + (
+        f" · {recoveries} recoveries" if recoveries else ""
     )
 
 
 class RobotCommandsMixin(LocationCommandsMixin):
-    async def _request_direct_approval(self, ctx, tool_call, pending: dict, approval) -> None:
+    async def _request_direct_approval(
+        self,
+        ctx: JenAIRunContext,
+        tool_call: ToolCallRecord,
+        pending: dict[str, Any],
+        approval: ApprovalRequest,
+    ) -> None:
         """The one approval pipeline for direct (non-agent) actuating commands:
         record the tool call, honor session auto-approval (auto_key falls back
         to the execution kind), otherwise raise the card and park the action."""
@@ -89,9 +100,7 @@ class RobotCommandsMixin(LocationCommandsMixin):
         ):
             # Auto mode: execute without a card, but SAY so — an unlogged
             # auto-approval would make the transcript lie about consent.
-            source = (
-                "自動模式" if getattr(self, "_mode", "approve") == "auto" else "本次記住"
-            )
+            source = "自動模式" if getattr(self, "_mode", "approve") == "auto" else "本次記住"
             await self._mount_event(TimelineItem("warn", f"{source}:已批准 {approval.title}"))
             self.run_store.audit_event(
                 ctx.run,
@@ -141,9 +150,8 @@ class RobotCommandsMixin(LocationCommandsMixin):
         output = await ros_schema(self.config, arg)
         lines = [f"Message type: [bold #f2ede1]{output.message_type}[/]", ""]
         for field in output.field_summary:
-            lines.append(
-                f"[bold #f2ede1]{field.field_name}[/] ({field.field_type}): {field.description}"
-            )
+            description = f": {field.description}" if field.description else ""
+            lines.append(f"[bold #f2ede1]{field.field_name}[/] ({field.field_type}){description}")
         await self._mount_event(OutputPanel(f"Schema: {arg}", "\n".join(lines)))
 
     async def _show_ros_echo(self, arg: str) -> None:
@@ -485,6 +493,7 @@ class RobotCommandsMixin(LocationCommandsMixin):
         pending = {
             "kind": "route",
             "auto_key": "dock",
+            "success_outcome": "arrived_unverified",
             "ctx": ctx,
             "outgoing_action": {"goal": dock.model_dump(mode="json")},
         }
@@ -541,7 +550,16 @@ class RobotCommandsMixin(LocationCommandsMixin):
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
         )
-        pending = {"kind": "route", "ctx": ctx, "outgoing_action": output.outgoing_action}
+        pending = {
+            "kind": "route",
+            "ctx": ctx,
+            "outgoing_action": output.outgoing_action,
+            "success_outcome": (
+                "arrived_unverified"
+                if output.outgoing_action.get("capability_id") == "dock_approach"
+                else "succeeded"
+            ),
+        }
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
             tool_call_id=tool_call.tool_call_id,
@@ -573,7 +591,7 @@ class RobotCommandsMixin(LocationCommandsMixin):
         return True
 
     async def _start_ordered_route(
-        self, arg: str, start_name: str, goal_name: str, locations
+        self, arg: str, start_name: str, goal_name: str, locations: list[Location]
     ) -> None:
         """`/route 從 A 到 B` → mission [goto A, goto B]: go to A, then B."""
         steps = [MissionStep("goto", start_name), MissionStep("goto", goal_name)]
@@ -601,6 +619,70 @@ class RobotCommandsMixin(LocationCommandsMixin):
         await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_report(self, arg: str = "") -> None:
+        report_arg = arg.strip().lower()
+        if report_arg == "event" or report_arg == "events":
+            from jenai.state.audit import AuditStore
+
+            audit_store = AuditStore.best_effort(self.config_path.parent / "audit.sqlite3")
+            events = (
+                []
+                if audit_store is None
+                else [
+                    event
+                    for event in audit_store.list_events(limit=100)
+                    if event.event_type.startswith("event_")
+                ][:20]
+            )
+            if not events:
+                await self._mount_event(
+                    TimelineItem("warn", "No daemon event records yet — start JenAI daemon first.")
+                )
+                return
+            rows = [
+                f"{event.occurred_at} · {event.entity_id or '?'} · "
+                f"{event.event_type.removeprefix('event_')} · {event.status or '?'}"
+                + (f" — {escape(event.summary)}" if event.summary else "")
+                for event in events
+            ]
+            await self._mount_event(OutputPanel("Event records (newest first)", "\n".join(rows)))
+            return
+
+        if report_arg == "task" or report_arg.startswith("task "):
+            from jenai.state.task_receipts import TaskReceiptStore, render_task_receipt
+
+            receipt_store = TaskReceiptStore(self.config_path.parent / "reports" / "tasks")
+            paths = receipt_store.list_paths()
+            if not paths:
+                await self._mount_event(
+                    TimelineItem("warn", "No task receipts yet — finish a recorded task first.")
+                )
+                return
+            if report_arg == "task list":
+                rows = []
+                for index, path in enumerate(paths[:10], start=1):
+                    receipt = receipt_store.load(path)
+                    if receipt is None:
+                        continue
+                    failure = f" · {receipt.failure_code}" if receipt.failure_code else ""
+                    rows.append(
+                        f"{index}. {receipt.status}{failure} · "
+                        f"{receipt.duration_ms / 1000:.2f}s · {escape(receipt.request)}"
+                    )
+                body = "\n".join(rows) or "No readable task receipts."
+                await self._mount_event(OutputPanel("Task receipts (newest first)", body))
+                return
+            receipt = receipt_store.load(paths[0])
+            if receipt is None:
+                await self._mount_event(TimelineItem("error", f"Receipt unreadable: {paths[0]}"))
+                return
+            await self._mount_event(
+                OutputPanel(
+                    f"Task receipt · {receipt.run_id}",
+                    escape(render_task_receipt(receipt)),
+                )
+            )
+            return
+
         from jenai.state.reports import (
             list_patrol_logs,
             load_patrol_log,
@@ -690,7 +772,9 @@ class RobotCommandsMixin(LocationCommandsMixin):
             return
         await self._render_vision_output(output, source_label=source_label)
 
-    async def _render_vision_output(self, output, *, source_label: str | None = None) -> None:
+    async def _render_vision_output(
+        self, output: VisionOutput, *, source_label: str | None = None
+    ) -> None:
         lines = [output.summary]
         if output.objects:
             lines.append(f"[bold #f2ede1]Objects:[/] {', '.join(output.objects)}")
@@ -749,7 +833,7 @@ class RobotCommandsMixin(LocationCommandsMixin):
                 )
                 return
 
-            async def _on_analysis(analysis) -> None:
+            async def _on_analysis(analysis: SceneAnalysis) -> None:
                 parts = [escape(analysis.scene_context or "(no description)")]
                 if analysis.affordances:
                     tags = " ".join(f"#{escape(a)}" for a in analysis.affordances)
@@ -850,11 +934,11 @@ class RobotCommandsMixin(LocationCommandsMixin):
             return
         await self._mount_event(TimelineItem("success", message))
 
-    async def _execute_route_action(self, outgoing_action: dict):
+    async def _execute_route_action(self, outgoing_action: dict[str, Any]) -> RouteOutput:
         """Execute a navigation action: live bridge (feedback + Esc cancel) when
         Nav2 is configured and ROS is present, otherwise the honest CLI adapter."""
 
-        def _progress(p) -> None:
+        def _progress(p: NavProgress) -> None:
             self._spinner_label = _navigation_progress_label(p)
 
         def _gate(message: str) -> None:

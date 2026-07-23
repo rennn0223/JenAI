@@ -259,10 +259,7 @@ def purge_command(
             (include_locations, paths.locations),
             (include_config, paths.config),
             (include_credentials, paths.credentials),
-            *(
-                (include_config_backups, backup)
-                for backup in paths.config_backups
-            ),
+            *((include_config_backups, backup) for backup in paths.config_backups),
         )
         if not enabled
     )
@@ -301,8 +298,8 @@ def prune_command(
     table.add_column("Records", justify="right")
     table.add_column("Path", overflow="fold")
     for candidate in candidates:
-        records = str(candidate.stale_records) if candidate.stale_records else "file"
-        table.add_row(candidate.category, records, str(candidate.path))
+        record_label = str(candidate.stale_records) if candidate.stale_records else "file"
+        table.add_row(candidate.category, record_label, str(candidate.path))
     console.print(table)
     if dry_run:
         console.print("[yellow]Dry run: nothing was deleted.[/yellow]")

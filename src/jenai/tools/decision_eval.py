@@ -29,6 +29,7 @@ import tomllib
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from jenai.config.models import AppConfig
 from jenai.tools.decision_core import ACTIONS, ContextSnapshot, decide
@@ -45,12 +46,12 @@ class Scenario:
 
 @dataclass
 class EvalReport:
-    results: list[dict] = field(default_factory=list)  # raw repeated samples
+    results: list[dict[str, Any]] = field(default_factory=list)  # raw repeated samples
 
     @property
-    def consensus_results(self) -> list[dict]:
+    def consensus_results(self) -> list[dict[str, Any]]:
         """Return one majority-vote row per scenario and keep raw samples intact."""
-        grouped: dict[str, list[dict]] = {}
+        grouped: dict[str, list[dict[str, Any]]] = {}
         for row in self.results:
             grouped.setdefault(row["id"], []).append(row)
         consensus = []
@@ -68,9 +69,7 @@ class EvalReport:
                 reason = "no unique majority"
             else:
                 action, target = winners[0]
-                winning_row = next(
-                    r for r in rows if (r["action"], r.get("target")) == winners[0]
-                )
+                winning_row = next(r for r in rows if (r["action"], r.get("target")) == winners[0])
                 correct, unsafe = winning_row["correct"], winning_row["unsafe"]
                 reason = winning_row["reason"]
             consensus.append(
@@ -90,9 +89,9 @@ class EvalReport:
         return consensus
 
     @property
-    def families(self) -> dict[str, dict]:
+    def families(self) -> dict[str, dict[str, int]]:
         """Aggregate majority decisions, not repeated samples."""
-        out: dict[str, dict] = {}
+        out: dict[str, dict[str, int]] = {}
         for row in self.consensus_results:
             family = out.setdefault(
                 row["family"], {"n": 0, "correct": 0, "unsafe": 0, "refer": 0, "ties": 0}
@@ -105,7 +104,7 @@ class EvalReport:
         return out
 
     @property
-    def summary(self) -> dict:
+    def summary(self) -> dict[str, int | float]:
         rows = self.consensus_results
         n = len(rows) or 1
         return {

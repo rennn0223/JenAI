@@ -16,6 +16,7 @@ from jenai.adapters.locations import (
 from jenai.adapters.ros2_adapter import Ros2NotAvailableError
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
+from jenai.schemas import Location
 from jenai.state.audit import AuditStore
 from jenai.tools import ros2_core
 from jenai.tools.navigation_gateway import NavigationGateway
@@ -23,51 +24,39 @@ from jenai.tools.safety import arm_watchdog, halt_robot
 from jenai.tools.vision_core import VisionError, capture_and_analyze
 
 
-def build_mcp_server(
-    config: AppConfig,
-    config_path: Path,
-    *,
-    allow_actions: bool = False,
-) -> FastMCP:
-    """Expose JenAI's robot tools as an MCP server (stdio transport).
+class _ServerResources:
+    """Own the state shared by MCP tools for exactly one server instance."""
 
-    Read-only tools are always registered. `navigate_to` — the only tool that
-    moves the robot — is registered ONLY when allow_actions is True: an MCP
-    client's own permission prompt is the human gate, but the operator must
-    first opt this server into actions at all. Every tool keeps JenAI's honest
-    reporting: missing ROS/Nav2 reads as "unavailable", never fake success.
-    """
-    mcp = FastMCP(
-        "jenai",
-        instructions=(
-            "Tools for a ROS2 mobile robot managed by JenAI. Read-only inspection is "
-            "always available; navigation exists only when the operator started the "
-            "server with --allow-actions."
-        ),
-    )
-    # One lazily-started rclpy bridge shared by pose/camera/navigation tools.
-    bridge = RosBridgeClient()
-    safety_registered = False
+    def __init__(self, config: AppConfig, config_path: Path) -> None:
+        self.config = config
+        self.config_path = config_path
+        self._bridge = RosBridgeClient()
+        self._bridge_lock = asyncio.Lock()
+        self._safety_registered = False
+        self.navigation = NavigationGateway(
+            config,
+            get_bridge=self.bridge,
+            audit_store=AuditStore.best_effort(config_path.parent / "audit.sqlite3"),
+        )
 
-    async def _get_bridge() -> RosBridgeClient:
-        nonlocal safety_registered
-        if not safety_registered:
-            # Register once; start() arms the watchdog on every (re)spawn, so
-            # a killed MCP client can never leave the robot driving.
-            await arm_watchdog(config, bridge)
-            safety_registered = True
-        await bridge.start()  # idempotent; raises BridgeError when ROS is absent
-        return bridge
+    async def bridge(self) -> RosBridgeClient:
+        """Return the shared bridge after installing its fail-safe watchdog."""
+        async with self._bridge_lock:
+            if not self._safety_registered:
+                # Register once; start() arms the watchdog on every (re)spawn,
+                # so a killed MCP client can never leave the robot driving.
+                await arm_watchdog(self.config, self._bridge)
+                self._safety_registered = True
+            await self._bridge.start()
+        return self._bridge
 
-    audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
-    navigation = NavigationGateway(
-        config,
-        get_bridge=_get_bridge,
-        audit_store=audit_store,
-    )
+    def locations(self) -> tuple[list[Location], str | None]:
+        path = self.config.resolved_locations_path(self.config_path)
+        return load_locations_tolerant(path)
 
-    def _locations_or_error() -> tuple[list, str | None]:
-        return load_locations_tolerant(config.resolved_locations_path(config_path))
+
+def _register_ros_tools(mcp: FastMCP, resources: _ServerResources) -> None:
+    config = resources.config
 
     @mcp.tool()
     async def ros_topics() -> str:
@@ -106,7 +95,7 @@ def build_mcp_server(
     @mcp.tool()
     async def list_locations() -> str:
         """List the robot's saved named locations (for navigate_to)."""
-        locations, error = _locations_or_error()
+        locations, error = resources.locations()
         if error:
             return error
         if not locations:
@@ -117,6 +106,10 @@ def build_mcp_server(
             for loc in locations
         )
 
+
+def _register_robot_tools(mcp: FastMCP, resources: _ServerResources) -> None:
+    config = resources.config
+
     @mcp.tool()
     async def stop() -> str:
         """EMERGENCY STOP: cancel navigation and command zero velocity.
@@ -124,7 +117,7 @@ def build_mcp_server(
         Always available (even read-only servers) — stopping is always safe.
         """
         try:
-            client = await _get_bridge()
+            client = await resources.bridge()
             return await halt_robot(config, client)
         except BridgeError as exc:
             return f"unavailable: {exc}"
@@ -133,7 +126,7 @@ def build_mcp_server(
     async def robot_pose() -> str:
         """The robot's current position (x, y, yaw) from AMCL or odometry."""
         try:
-            client = await _get_bridge()
+            client = await resources.bridge()
             pose = await client.get_pose(timeout=3.0)
         except BridgeError as exc:
             return f"unavailable: {exc}"
@@ -147,7 +140,7 @@ def build_mcp_server(
         """Capture one camera frame and describe it with the vision model.
         Omit `topic` to use the vehicle's configured camera."""
         try:
-            client = await _get_bridge()
+            client = await resources.bridge()
             output = await capture_and_analyze(
                 config, client, topic or config.vehicle.camera_topic, timeout=5.0
             )
@@ -164,32 +157,54 @@ def build_mcp_server(
             parts.append("suggested next: " + "; ".join(output.next_action_suggestions))
         return "\n".join(parts)
 
+
+def _register_navigation_tool(mcp: FastMCP, resources: _ServerResources) -> None:
+    # One goal at a time: MCP clients retry after their own tool timeouts and
+    # can issue parallel calls. The lock prevents silent goal preemption.
+    nav_busy = asyncio.Lock()
+
+    @mcp.tool()
+    async def navigate_to(location: str) -> str:
+        """Navigate the robot to a saved location BY NAME (see list_locations).
+
+        This MOVES THE ROBOT. Only present because the operator started the
+        server with --allow-actions.
+        """
+        if nav_busy.locked():
+            return "busy: a navigation goal is already in progress — one goal at a time."
+        async with nav_busy:
+            locations, error = resources.locations()
+            if error:
+                return error
+            try:
+                target = find_location(locations, location)
+            except LocationNotFoundError as exc:
+                hint = ", ".join(c.name for c in exc.candidates) or "no close matches"
+                return f"Unknown location '{location}' (near: {hint})."
+            action = {"goal": target.model_dump(mode="json")}
+            output = await resources.navigation.execute(action)
+            return f"{output.execution_status}: {output.route_preview}"
+
+
+def build_mcp_server(
+    config: AppConfig,
+    config_path: Path,
+    *,
+    allow_actions: bool = False,
+) -> FastMCP:
+    """Build a read-only MCP server, optionally exposing guarded navigation."""
+    mcp = FastMCP(
+        "jenai",
+        instructions=(
+            "Tools for a ROS2 mobile robot managed by JenAI. Read-only inspection is "
+            "always available; navigation exists only when the operator started the "
+            "server with --allow-actions."
+        ),
+    )
+    resources = _ServerResources(config, config_path)
+    _register_ros_tools(mcp, resources)
+    _register_robot_tools(mcp, resources)
     if allow_actions:
-        # One goal at a time: MCP clients retry after their own tool timeouts
-        # and can issue parallel calls — without this guard a second call would
-        # silently preempt the first Nav2 goal and corrupt its cancel/result.
-        nav_busy = asyncio.Lock()
-
-        @mcp.tool()
-        async def navigate_to(location: str) -> str:
-            """Navigate the robot to a saved location BY NAME (see list_locations).
-
-            This MOVES THE ROBOT. Only present because the operator started the
-            server with --allow-actions.
-            """
-            if nav_busy.locked():
-                return "busy: a navigation goal is already in progress — one goal at a time."
-            async with nav_busy:
-                locations, error = _locations_or_error()
-                if error:
-                    return error
-                try:
-                    target = find_location(locations, location)
-                except LocationNotFoundError as exc:
-                    hint = ", ".join(c.name for c in exc.candidates) or "no close matches"
-                    return f"Unknown location '{location}' (near: {hint})."
-                action = {"goal": target.model_dump(mode="json")}
-                output = await navigation.execute(action)
-                return f"{output.execution_status}: {output.route_preview}"
+        _register_navigation_tool(mcp, resources)
 
     return mcp

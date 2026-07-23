@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from jenai.tools.route_action import normalize_route_action
 
@@ -19,7 +20,10 @@ class ApprovalCardFields:
     justification: str
 
 
-def _decode_json_arg(arguments: dict, key: str, *, max_layers: int = 1) -> object:
+ApprovalArguments = dict[str, Any]
+
+
+def _decode_json_arg(arguments: ApprovalArguments, key: str, *, max_layers: int = 1) -> object:
     """Return the decoded value for a `*_json` tool argument.
 
     Tool parameters carry structured payloads as JSON strings (e.g.
@@ -37,7 +41,7 @@ def _decode_json_arg(arguments: dict, key: str, *, max_layers: int = 1) -> objec
     return value if value is not None else {}
 
 
-def format_ros_pub_approval(arguments: dict) -> ApprovalCardFields:
+def format_ros_pub_approval(arguments: ApprovalArguments) -> ApprovalCardFields:
     topic = arguments.get("topic", "?")
     message_type = arguments.get("message_type", "?")
     payload = _decode_json_arg(arguments, "payload_json")
@@ -49,7 +53,7 @@ def format_ros_pub_approval(arguments: dict) -> ApprovalCardFields:
     )
 
 
-def format_ros_drive_approval(arguments: dict) -> ApprovalCardFields:
+def format_ros_drive_approval(arguments: ApprovalArguments) -> ApprovalCardFields:
     topic = arguments.get("topic", "?")
     message_type = arguments.get("message_type", "?")
     duration = arguments.get("duration_seconds", 1.0)
@@ -65,7 +69,7 @@ def format_ros_drive_approval(arguments: dict) -> ApprovalCardFields:
     )
 
 
-def format_route_approval(arguments: dict) -> ApprovalCardFields:
+def format_route_approval(arguments: ApprovalArguments) -> ApprovalCardFields:
     supplied = arguments.get("outgoing_action_json")
     try:
         action = normalize_route_action(supplied)
@@ -92,7 +96,7 @@ def format_route_approval(arguments: dict) -> ApprovalCardFields:
     )
 
 
-def format_explore_approval(arguments: dict) -> ApprovalCardFields:
+def format_explore_approval(arguments: ApprovalArguments) -> ApprovalCardFields:
     duration = arguments.get("duration_minutes", 5.0)
     goals = arguments.get("max_goals", 8)
     failures = arguments.get("max_failures", 2)
@@ -118,7 +122,7 @@ def format_explore_approval(arguments: dict) -> ApprovalCardFields:
     )
 
 
-def format_shell_approval(arguments: dict) -> ApprovalCardFields:
+def format_shell_approval(arguments: ApprovalArguments) -> ApprovalCardFields:
     command = arguments.get("command", "?")
     cwd = arguments.get("cwd") or "(current directory)"
     return ApprovalCardFields(
@@ -129,7 +133,7 @@ def format_shell_approval(arguments: dict) -> ApprovalCardFields:
     )
 
 
-def format_generic_approval(tool_name: str, arguments: dict) -> ApprovalCardFields:
+def format_generic_approval(tool_name: str, arguments: ApprovalArguments) -> ApprovalCardFields:
     return ApprovalCardFields(
         title=f"Run {tool_name}",
         summary=f"The agent wants to call {tool_name}.",
@@ -138,7 +142,7 @@ def format_generic_approval(tool_name: str, arguments: dict) -> ApprovalCardFiel
     )
 
 
-APPROVAL_FORMATTERS: dict[str, Callable[[dict], ApprovalCardFields]] = {
+APPROVAL_FORMATTERS: dict[str, Callable[[ApprovalArguments], ApprovalCardFields]] = {
     "ros_pub_execute_tool": format_ros_pub_approval,
     "ros_drive_execute_tool": format_ros_drive_approval,
     "ros_drive_verified_tool": format_ros_drive_approval,
@@ -148,7 +152,7 @@ APPROVAL_FORMATTERS: dict[str, Callable[[dict], ApprovalCardFields]] = {
 }
 
 
-def format_approval(tool_name: str, arguments: dict) -> ApprovalCardFields:
+def format_approval(tool_name: str, arguments: ApprovalArguments) -> ApprovalCardFields:
     formatter = APPROVAL_FORMATTERS.get(tool_name)
     if formatter is None:
         return format_generic_approval(tool_name, arguments)

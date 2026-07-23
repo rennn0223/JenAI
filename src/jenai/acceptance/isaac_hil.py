@@ -27,10 +27,11 @@ from uuid import uuid4
 
 from jenai import __version__
 from jenai.adapters.locations import find_location, load_locations
-from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.bridge import BridgeError, MapCellInfo, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.config.store import default_config_path, load_config
 from jenai.doctor import run_doctor
+from jenai.schemas import Location
 from jenai.tools.nav_live import NavigationCancelled
 from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.safety import arm_watchdog, halt_robot
@@ -60,6 +61,8 @@ SCAN_MAX_SCAN_TIME_S = 1.0
 PROGRESS_SAMPLE_INTERVAL_S = 0.5
 PROGRESS_DISTANCE_JUMP_M = 1.0
 PROGRESS_SAMPLE_LIMIT = 512
+
+Check = dict[str, Any]
 
 
 class _ProgressSampler:
@@ -219,7 +222,7 @@ def _source_state() -> tuple[str | None, bool | None]:
         return revision, None
 
 
-def _check(check_id: str, status: str, *, detail: str = "", **evidence: Any) -> dict:
+def _check(check_id: str, status: str, *, detail: str = "", **evidence: Any) -> Check:
     return {
         "id": check_id,
         "status": status,
@@ -228,8 +231,31 @@ def _check(check_id: str, status: str, *, detail: str = "", **evidence: Any) -> 
     }
 
 
-def _evaluate_start_pose(pose: Any, config: AppConfig, *, check_id: str = "start_pose") -> dict:
-    """Fail closed when the localized start cannot satisfy map-frame zones."""
+def _map_cell_evidence(cell: MapCellInfo) -> dict[str, Any]:
+    return {
+        "in_bounds": cell.in_bounds,
+        "free": cell.free,
+        "value": cell.value,
+        "cell_x": cell.cell_x,
+        "cell_y": cell.cell_y,
+        "width": cell.width,
+        "height": cell.height,
+        "resolution": cell.resolution,
+        "origin_x": cell.origin_x,
+        "origin_y": cell.origin_y,
+        "frame_id": cell.frame_id,
+        "source": cell.source,
+    }
+
+
+def _evaluate_start_pose(
+    pose: Any,
+    config: AppConfig,
+    *,
+    check_id: str = "start_pose",
+    map_cell: MapCellInfo | None = None,
+) -> Check:
+    """Fail closed on invalid localization, zones, or a non-free map cell."""
     coordinates = (pose.x, pose.y, pose.yaw)
     evidence = {
         "pose": {
@@ -241,6 +267,8 @@ def _evaluate_start_pose(pose: Any, config: AppConfig, *, check_id: str = "start
         },
         "configured_forbidden_zones": [zone.name for zone in config.twin.forbidden_zones],
     }
+    if map_cell is not None:
+        evidence["map_cell"] = _map_cell_evidence(map_cell)
     if not all(math.isfinite(value) for value in coordinates):
         return _check(
             check_id,
@@ -248,11 +276,32 @@ def _evaluate_start_pose(pose: Any, config: AppConfig, *, check_id: str = "start
             detail="The localized start pose contains a non-finite value.",
             **evidence,
         )
-    if config.twin.forbidden_zones and pose.frame_id != "map":
+    if pose.frame_id != "map":
         return _check(
             check_id,
             "fail",
-            detail=("Forbidden zones use the map frame, but the start pose is not map-localized."),
+            detail="HIL execution requires a map-localized start pose.",
+            **evidence,
+        )
+    if map_cell is not None and map_cell.frame_id != "map":
+        return _check(
+            check_id,
+            "fail",
+            detail="The occupancy snapshot is not expressed in the map frame.",
+            **evidence,
+        )
+    if map_cell is not None and not map_cell.in_bounds:
+        return _check(
+            check_id,
+            "fail",
+            detail="The localized start pose lies outside the static map bounds.",
+            **evidence,
+        )
+    if map_cell is not None and not map_cell.free:
+        return _check(
+            check_id,
+            "fail",
+            detail=f"The localized start pose occupies static-map value {map_cell.value!r}.",
             **evidence,
         )
     hit = next(
@@ -271,20 +320,28 @@ def _evaluate_start_pose(pose: Any, config: AppConfig, *, check_id: str = "start
         check_id,
         "pass",
         detail=(
-            f"Finite localized start is outside {len(config.twin.forbidden_zones)} "
-            "configured forbidden zone(s)."
+            "Finite map-localized start is free in the static map and outside "
+            f"{len(config.twin.forbidden_zones)} configured forbidden zone(s)."
+            if map_cell is not None
+            else (
+                f"Finite map-localized start is outside {len(config.twin.forbidden_zones)} "
+                "configured forbidden zone(s)."
+            )
         ),
         **evidence,
     )
 
 
-async def _inspect_start_pose(config: AppConfig) -> dict:
+async def _inspect_start_pose(config: AppConfig) -> Check:
     """Read one pose through the production bridge without sending commands."""
     bridge = RosBridgeClient()
     try:
         await bridge.start()
         pose = await bridge.get_pose(timeout=3.0)
-        return _evaluate_start_pose(pose, config)
+        if pose.frame_id != "map":
+            return _evaluate_start_pose(pose, config)
+        map_cell = await bridge.map_cell(pose.x, pose.y, timeout=3.0)
+        return _evaluate_start_pose(pose, config, map_cell=map_cell)
     except Exception as exc:
         return _check(
             "start_pose",
@@ -295,9 +352,90 @@ async def _inspect_start_pose(config: AppConfig) -> dict:
         await bridge.stop()
 
 
+async def _inspect_route_plans(
+    locations: list[Location],
+    options: IsaacHilOptions,
+    *,
+    timeout_s: float = 5.0,
+) -> list[Check]:
+    """Prove each requested target is plannable without commanding motion."""
+    requested_names = [*options.goals]
+    if options.cancel_goal:
+        requested_names.append(options.cancel_goal)
+    goals: list[Location] = []
+    seen: set[str] = set()
+    for name in requested_names:
+        goal = find_location(locations, name)
+        if goal.id not in seen:
+            seen.add(goal.id)
+            goals.append(goal)
+
+    bridge = RosBridgeClient()
+    checks: list[Check] = []
+    try:
+        await bridge.start()
+        for goal in goals:
+            try:
+                plan = await bridge.nav_plan(
+                    goal.pose.x,
+                    goal.pose.y,
+                    goal.pose.yaw,
+                    frame_id=goal.frame_id,
+                    timeout=timeout_s,
+                )
+            except Exception as exc:
+                checks.append(
+                    _check(
+                        f"plan:{goal.name}",
+                        "fail",
+                        detail=(
+                            f"Could not compute a read-only Nav2 path: {type(exc).__name__}: {exc}"
+                        ),
+                    )
+                )
+                continue
+            checks.append(
+                _check(
+                    f"plan:{goal.name}",
+                    "pass" if plan.feasible else "fail",
+                    detail=(
+                        f"Nav2 produced a {plan.path_length_m:.3f} m path."
+                        if plan.feasible
+                        else f"Nav2 reported {plan.error_name}: {plan.error_message or 'no path'}."
+                    ),
+                    goal={
+                        "x": goal.pose.x,
+                        "y": goal.pose.y,
+                        "yaw": goal.pose.yaw,
+                        "frame_id": goal.frame_id,
+                    },
+                    feasible=plan.feasible,
+                    pose_count=plan.pose_count,
+                    path_length_m=round(plan.path_length_m, 6),
+                    planning_time_s=round(plan.planning_time_s, 6),
+                    error_code=plan.error_code,
+                    error_name=plan.error_name,
+                    error_message=plan.error_message,
+                )
+            )
+    except Exception as exc:
+        checks.append(
+            _check(
+                "route_planning",
+                "fail",
+                detail=(
+                    f"Could not start the read-only planning bridge: {type(exc).__name__}: {exc}"
+                ),
+            )
+        )
+    finally:
+        await bridge.stop()
+    return checks
+
+
 def _scan_float(message: dict[str, Any], key: str) -> float | None:
     raw_value = message.get(key)
-    if isinstance(raw_value, bool):
+    if raw_value is None or isinstance(raw_value, bool):
         return None
     try:
         value = float(raw_value)
@@ -383,9 +521,273 @@ def _summarize_scan_message(message: Any) -> dict[str, Any]:
             summary[key] += 1
         else:
             summary["finite_bins"] += 1
-            if range_bounds_valid and not range_min <= value <= range_max:
+            if (
+                range_bounds_valid
+                and range_min is not None
+                and range_max is not None
+                and not range_min <= value <= range_max
+            ):
                 summary["out_of_range_bins"] += 1
     return summary
+
+
+@dataclass(frozen=True)
+class _ScanCounts:
+    bins: tuple[int, ...]
+    finite: int
+    positive_inf: int
+    nan: int
+    negative_inf: int
+    malformed: int
+    out_of_range: int
+    all_inf_samples: int
+
+    @classmethod
+    def collect(cls, samples: list[dict[str, Any]]) -> _ScanCounts:
+        bins = tuple(sample["bins"] for sample in samples)
+        return cls(
+            bins=bins,
+            finite=sum(sample["finite_bins"] for sample in samples),
+            positive_inf=sum(sample["positive_inf_bins"] for sample in samples),
+            nan=sum(sample["nan_bins"] for sample in samples),
+            negative_inf=sum(sample["negative_inf_bins"] for sample in samples),
+            malformed=sum(sample["malformed_bins"] for sample in samples),
+            out_of_range=sum(sample["out_of_range_bins"] for sample in samples),
+            all_inf_samples=sum(
+                sample["bins"] > 0 and sample["positive_inf_bins"] == sample["bins"]
+                for sample in samples
+            ),
+        )
+
+    @property
+    def total(self) -> int:
+        return sum(self.bins)
+
+    @property
+    def valid_finite(self) -> int:
+        return self.finite - self.out_of_range
+
+    def all_inf_ratio(self, sample_count: int) -> float:
+        return self.all_inf_samples / sample_count if sample_count else 1.0
+
+    @property
+    def finite_coverage(self) -> float:
+        return self.valid_finite / self.total if self.total else 0.0
+
+
+@dataclass(frozen=True)
+class _ScanMetadata:
+    angle_spans: tuple[float, ...]
+    increments: tuple[float, ...]
+    scan_times: tuple[float, ...]
+    geometry_errors: tuple[float, ...]
+    invalid_angles: int
+    invalid_increments: int
+    invalid_geometry: int
+    invalid_range_bounds: int
+    invalid_scan_times: int
+    frame_ids: tuple[str, ...]
+    missing_frames: int
+    stamps: tuple[int | None, ...]
+    missing_stamps: int
+    nonadvancing_stamp_pairs: int
+
+    @classmethod
+    def collect(cls, samples: list[dict[str, Any]]) -> _ScanMetadata:
+        stamps = tuple(sample["stamp_ns"] for sample in samples)
+        return cls(
+            angle_spans=tuple(
+                sample["angle_span"] for sample in samples if sample["angle_span"] is not None
+            ),
+            increments=tuple(
+                sample["angle_increment"]
+                for sample in samples
+                if sample["angle_increment"] is not None
+            ),
+            scan_times=tuple(
+                sample["scan_time"] for sample in samples if sample["scan_time"] is not None
+            ),
+            geometry_errors=tuple(
+                sample["geometry_error"]
+                for sample in samples
+                if sample["geometry_error"] is not None
+            ),
+            invalid_angles=sum(
+                sample["angle_span"] is None or sample["angle_span"] < SCAN_MIN_ANGULAR_SPAN_RAD
+                for sample in samples
+            ),
+            invalid_increments=sum(
+                sample["angle_increment"] is None or sample["angle_increment"] <= 0
+                for sample in samples
+            ),
+            invalid_geometry=sum(
+                sample["geometry_error"] is None
+                or sample["geometry_error"] > SCAN_GEOMETRY_TOLERANCE_RAD
+                for sample in samples
+            ),
+            invalid_range_bounds=sum(not sample["range_bounds_valid"] for sample in samples),
+            invalid_scan_times=sum(
+                sample["scan_time"] is None or not 0 < sample["scan_time"] <= SCAN_MAX_SCAN_TIME_S
+                for sample in samples
+            ),
+            frame_ids=tuple(
+                sorted({sample["frame_id"] for sample in samples if sample["frame_id"]})
+            ),
+            missing_frames=sum(not sample["frame_id"] for sample in samples),
+            stamps=stamps,
+            missing_stamps=sum(stamp is None for stamp in stamps),
+            nonadvancing_stamp_pairs=sum(
+                previous is not None and current is not None and current <= previous
+                for previous, current in zip(stamps, stamps[1:], strict=False)
+            ),
+        )
+
+    @property
+    def timestamp_span_s(self) -> float | None:
+        if not self.stamps or any(stamp is None for stamp in self.stamps):
+            return None
+        first, last = self.stamps[0], self.stamps[-1]
+        if first is None or last is None:
+            return None
+        return (last - first) / 1_000_000_000
+
+
+def _scan_quality_failures(
+    counts: _ScanCounts,
+    metadata: _ScanMetadata,
+    *,
+    sample_count: int,
+    sample_target: int,
+    topic_available: bool,
+    max_all_inf_sample_ratio: float,
+    min_finite_bin_coverage: float,
+) -> list[str]:
+    failures: list[str] = []
+    if not topic_available:
+        failures.append("The scan topic could not be subscribed to.")
+    if sample_count < sample_target:
+        failures.append(f"Received {sample_count}/{sample_target} required scan samples.")
+    empty_samples = sum(count == 0 for count in counts.bins)
+    undersized_samples = sum(count < SCAN_MIN_RANGE_BINS for count in counts.bins)
+    if empty_samples:
+        failures.append(f"{empty_samples} scan sample(s) had no range bins.")
+    if undersized_samples:
+        failures.append(
+            f"{undersized_samples} scan sample(s) had fewer than {SCAN_MIN_RANGE_BINS} bins."
+        )
+    if counts.nan or counts.negative_inf or counts.malformed or counts.out_of_range:
+        failures.append(
+            "Scan ranges contained invalid values "
+            f"(NaN={counts.nan}, -inf={counts.negative_inf}, malformed={counts.malformed}, "
+            f"out_of_range={counts.out_of_range})."
+        )
+    invalid_messages = (
+        (metadata.invalid_angles, f"did not cover at least {SCAN_MIN_ANGULAR_SPAN_RAD:.1f} rad"),
+        (metadata.invalid_increments, "lacked a positive finite angle increment"),
+        (metadata.invalid_geometry, "had inconsistent angle/bin geometry"),
+        (metadata.invalid_range_bounds, "had invalid range bounds"),
+        (metadata.invalid_scan_times, "had an unreasonable scan_time"),
+    )
+    failures.extend(
+        f"{count} scan sample(s) {message}." for count, message in invalid_messages if count
+    )
+    if metadata.missing_frames or len(metadata.frame_ids) != 1:
+        failures.append(
+            "Scan frame_id was missing or changed across samples "
+            f"(missing={metadata.missing_frames}, frames={list(metadata.frame_ids)})."
+        )
+    if metadata.missing_stamps or metadata.nonadvancing_stamp_pairs:
+        failures.append(
+            "Scan timestamps were missing or did not strictly advance "
+            f"(missing={metadata.missing_stamps}, "
+            f"nonadvancing={metadata.nonadvancing_stamp_pairs})."
+        )
+    all_inf_ratio = counts.all_inf_ratio(sample_count)
+    if all_inf_ratio > max_all_inf_sample_ratio:
+        failures.append(
+            f"All-infinite scan ratio {all_inf_ratio:.1%} exceeds {max_all_inf_sample_ratio:.1%}."
+        )
+    if counts.finite_coverage < min_finite_bin_coverage:
+        failures.append(
+            f"Finite-bin coverage {counts.finite_coverage:.1%} is below "
+            f"{min_finite_bin_coverage:.1%}."
+        )
+    return failures
+
+
+def _scan_quality_evidence(
+    counts: _ScanCounts,
+    metadata: _ScanMetadata,
+    *,
+    sample_target: int,
+    elapsed_s: float,
+    topic_available: bool,
+    error: str | None,
+    max_all_inf_sample_ratio: float,
+    min_finite_bin_coverage: float,
+) -> dict[str, Any]:
+    sample_count = len(counts.bins)
+    return {
+        "topic": SCAN_TOPIC,
+        "message_type": SCAN_MESSAGE_TYPE,
+        "topic_available": topic_available,
+        "error": error,
+        "elapsed_s": round(elapsed_s, 3),
+        "sample_target": sample_target,
+        "samples_received": sample_count,
+        "range_bins": {
+            "minimum_per_sample": min(counts.bins, default=0),
+            "maximum_per_sample": max(counts.bins, default=0),
+            "total": counts.total,
+        },
+        "finite_bins": counts.finite,
+        "valid_finite_bins": counts.valid_finite,
+        "positive_inf_bins": counts.positive_inf,
+        "nan_bins": counts.nan,
+        "negative_inf_bins": counts.negative_inf,
+        "malformed_bins": counts.malformed,
+        "out_of_range_bins": counts.out_of_range,
+        "empty_samples": sum(count == 0 for count in counts.bins),
+        "undersized_samples": sum(count < SCAN_MIN_RANGE_BINS for count in counts.bins),
+        "all_inf_samples": counts.all_inf_samples,
+        "all_inf_sample_ratio": round(counts.all_inf_ratio(sample_count), 6),
+        "finite_bin_coverage": round(counts.finite_coverage, 6),
+        "metadata": {
+            "frame_ids": list(metadata.frame_ids),
+            "missing_frame_samples": metadata.missing_frames,
+            "missing_stamp_samples": metadata.missing_stamps,
+            "nonadvancing_stamp_pairs": metadata.nonadvancing_stamp_pairs,
+            "timestamp_span_s": metadata.timestamp_span_s,
+            "angle_span_rad": {
+                "minimum": min(metadata.angle_spans, default=None),
+                "maximum": max(metadata.angle_spans, default=None),
+                "invalid_samples": metadata.invalid_angles,
+            },
+            "angle_increment_rad": {
+                "minimum": min(metadata.increments, default=None),
+                "maximum": max(metadata.increments, default=None),
+                "invalid_samples": metadata.invalid_increments,
+            },
+            "geometry_error_rad": {
+                "maximum": max(metadata.geometry_errors, default=None),
+                "invalid_samples": metadata.invalid_geometry,
+            },
+            "invalid_range_bound_samples": metadata.invalid_range_bounds,
+            "scan_time_s": {
+                "minimum": min(metadata.scan_times, default=None),
+                "maximum": max(metadata.scan_times, default=None),
+                "invalid_samples": metadata.invalid_scan_times,
+            },
+        },
+        "thresholds": {
+            "max_all_inf_sample_ratio": max_all_inf_sample_ratio,
+            "min_finite_bin_coverage": min_finite_bin_coverage,
+            "min_angular_span_rad": SCAN_MIN_ANGULAR_SPAN_RAD,
+            "min_range_bins": SCAN_MIN_RANGE_BINS,
+            "geometry_tolerance_rad": SCAN_GEOMETRY_TOLERANCE_RAD,
+            "max_scan_time_s": SCAN_MAX_SCAN_TIME_S,
+        },
+    }
 
 
 def _evaluate_scan_quality(
@@ -397,190 +799,34 @@ def _evaluate_scan_quality(
     error: str | None = None,
     max_all_inf_sample_ratio: float = SCAN_MAX_ALL_INF_SAMPLE_RATIO,
     min_finite_bin_coverage: float = SCAN_MIN_FINITE_BIN_COVERAGE,
-) -> dict:
+) -> Check:
     """Build an artifact-safe verdict from per-message metadata and counters."""
-    sample_count = len(samples)
-    bins = [sample["bins"] for sample in samples]
-    total_bins = sum(bins)
-    finite_bins = sum(sample["finite_bins"] for sample in samples)
-    positive_inf_bins = sum(sample["positive_inf_bins"] for sample in samples)
-    nan_bins = sum(sample["nan_bins"] for sample in samples)
-    negative_inf_bins = sum(sample["negative_inf_bins"] for sample in samples)
-    malformed_bins = sum(sample["malformed_bins"] for sample in samples)
-    out_of_range_bins = sum(sample["out_of_range_bins"] for sample in samples)
-    valid_finite_bins = finite_bins - out_of_range_bins
-    empty_samples = sum(count == 0 for count in bins)
-    undersized_samples = sum(count < SCAN_MIN_RANGE_BINS for count in bins)
-    all_inf_samples = sum(
-        sample["bins"] > 0 and sample["positive_inf_bins"] == sample["bins"] for sample in samples
+    counts = _ScanCounts.collect(samples)
+    metadata = _ScanMetadata.collect(samples)
+    failures = _scan_quality_failures(
+        counts,
+        metadata,
+        sample_count=len(samples),
+        sample_target=sample_target,
+        topic_available=topic_available,
+        max_all_inf_sample_ratio=max_all_inf_sample_ratio,
+        min_finite_bin_coverage=min_finite_bin_coverage,
     )
-    all_inf_sample_ratio = all_inf_samples / sample_count if sample_count else 1.0
-    finite_bin_coverage = valid_finite_bins / total_bins if total_bins else 0.0
-
-    angle_spans = [sample["angle_span"] for sample in samples if sample["angle_span"] is not None]
-    increments = [
-        sample["angle_increment"] for sample in samples if sample["angle_increment"] is not None
-    ]
-    scan_times = [sample["scan_time"] for sample in samples if sample["scan_time"] is not None]
-    geometry_errors = [
-        sample["geometry_error"] for sample in samples if sample["geometry_error"] is not None
-    ]
-    invalid_angle_samples = sum(
-        sample["angle_span"] is None or sample["angle_span"] < SCAN_MIN_ANGULAR_SPAN_RAD
-        for sample in samples
+    detail = " ".join(failures) or (
+        f"Received {len(samples)} usable wide-field LaserScan samples with "
+        f"{counts.finite_coverage:.1%} finite-bin coverage."
     )
-    invalid_increment_samples = sum(
-        sample["angle_increment"] is None or sample["angle_increment"] <= 0 for sample in samples
-    )
-    invalid_geometry_samples = sum(
-        sample["geometry_error"] is None or sample["geometry_error"] > SCAN_GEOMETRY_TOLERANCE_RAD
-        for sample in samples
-    )
-    invalid_range_bound_samples = sum(not sample["range_bounds_valid"] for sample in samples)
-    invalid_scan_time_samples = sum(
-        sample["scan_time"] is None or not 0 < sample["scan_time"] <= SCAN_MAX_SCAN_TIME_S
-        for sample in samples
-    )
-    frame_ids = sorted({sample["frame_id"] for sample in samples if sample["frame_id"]})
-    missing_frame_samples = sum(not sample["frame_id"] for sample in samples)
-    stamps = [sample["stamp_ns"] for sample in samples]
-    missing_stamp_samples = sum(stamp is None for stamp in stamps)
-    nonadvancing_stamp_pairs = sum(
-        previous is not None and current is not None and current <= previous
-        for previous, current in zip(stamps, stamps[1:], strict=False)
-    )
-
-    failures: list[str] = []
-    if not topic_available:
-        failures.append("The scan topic could not be subscribed to.")
-    if sample_count < sample_target:
-        failures.append(f"Received {sample_count}/{sample_target} required scan samples.")
-    if empty_samples:
-        failures.append(f"{empty_samples} scan sample(s) had no range bins.")
-    if undersized_samples:
-        failures.append(
-            f"{undersized_samples} scan sample(s) had fewer than {SCAN_MIN_RANGE_BINS} bins."
-        )
-    if nan_bins or negative_inf_bins or malformed_bins or out_of_range_bins:
-        failures.append(
-            "Scan ranges contained invalid values "
-            f"(NaN={nan_bins}, -inf={negative_inf_bins}, malformed={malformed_bins}, "
-            f"out_of_range={out_of_range_bins})."
-        )
-    if invalid_angle_samples:
-        failures.append(
-            f"{invalid_angle_samples} scan sample(s) did not cover at least "
-            f"{SCAN_MIN_ANGULAR_SPAN_RAD:.1f} rad."
-        )
-    if invalid_increment_samples:
-        failures.append(
-            f"{invalid_increment_samples} scan sample(s) lacked a positive finite angle increment."
-        )
-    if invalid_geometry_samples:
-        failures.append(
-            f"{invalid_geometry_samples} scan sample(s) had inconsistent angle/bin geometry."
-        )
-    if invalid_range_bound_samples:
-        failures.append(f"{invalid_range_bound_samples} scan sample(s) had invalid range bounds.")
-    if invalid_scan_time_samples:
-        failures.append(
-            f"{invalid_scan_time_samples} scan sample(s) had an unreasonable scan_time."
-        )
-    if missing_frame_samples or len(frame_ids) != 1:
-        failures.append(
-            "Scan frame_id was missing or changed across samples "
-            f"(missing={missing_frame_samples}, frames={frame_ids})."
-        )
-    if missing_stamp_samples or nonadvancing_stamp_pairs:
-        failures.append(
-            "Scan timestamps were missing or did not strictly advance "
-            f"(missing={missing_stamp_samples}, nonadvancing={nonadvancing_stamp_pairs})."
-        )
-    if all_inf_sample_ratio > max_all_inf_sample_ratio:
-        failures.append(
-            f"All-infinite scan ratio {all_inf_sample_ratio:.1%} exceeds "
-            f"{max_all_inf_sample_ratio:.1%}."
-        )
-    if finite_bin_coverage < min_finite_bin_coverage:
-        failures.append(
-            f"Finite-bin coverage {finite_bin_coverage:.1%} is below {min_finite_bin_coverage:.1%}."
-        )
-
-    timestamp_span_s = None
-    if stamps and all(stamp is not None for stamp in stamps):
-        timestamp_span_s = (stamps[-1] - stamps[0]) / 1_000_000_000
-
-    return _check(
-        "scan_quality",
-        "fail" if failures else "pass",
-        detail=(
-            " ".join(failures)
-            if failures
-            else (
-                f"Received {sample_count} usable wide-field LaserScan samples with "
-                f"{finite_bin_coverage:.1%} finite-bin coverage."
-            )
-        ),
-        topic=SCAN_TOPIC,
-        message_type=SCAN_MESSAGE_TYPE,
+    evidence = _scan_quality_evidence(
+        counts,
+        metadata,
+        sample_target=sample_target,
+        elapsed_s=elapsed_s,
         topic_available=topic_available,
         error=error,
-        elapsed_s=round(elapsed_s, 3),
-        sample_target=sample_target,
-        samples_received=sample_count,
-        range_bins={
-            "minimum_per_sample": min(bins, default=0),
-            "maximum_per_sample": max(bins, default=0),
-            "total": total_bins,
-        },
-        finite_bins=finite_bins,
-        valid_finite_bins=valid_finite_bins,
-        positive_inf_bins=positive_inf_bins,
-        nan_bins=nan_bins,
-        negative_inf_bins=negative_inf_bins,
-        malformed_bins=malformed_bins,
-        out_of_range_bins=out_of_range_bins,
-        empty_samples=empty_samples,
-        undersized_samples=undersized_samples,
-        all_inf_samples=all_inf_samples,
-        all_inf_sample_ratio=round(all_inf_sample_ratio, 6),
-        finite_bin_coverage=round(finite_bin_coverage, 6),
-        metadata={
-            "frame_ids": frame_ids,
-            "missing_frame_samples": missing_frame_samples,
-            "missing_stamp_samples": missing_stamp_samples,
-            "nonadvancing_stamp_pairs": nonadvancing_stamp_pairs,
-            "timestamp_span_s": timestamp_span_s,
-            "angle_span_rad": {
-                "minimum": min(angle_spans, default=None),
-                "maximum": max(angle_spans, default=None),
-                "invalid_samples": invalid_angle_samples,
-            },
-            "angle_increment_rad": {
-                "minimum": min(increments, default=None),
-                "maximum": max(increments, default=None),
-                "invalid_samples": invalid_increment_samples,
-            },
-            "geometry_error_rad": {
-                "maximum": max(geometry_errors, default=None),
-                "invalid_samples": invalid_geometry_samples,
-            },
-            "invalid_range_bound_samples": invalid_range_bound_samples,
-            "scan_time_s": {
-                "minimum": min(scan_times, default=None),
-                "maximum": max(scan_times, default=None),
-                "invalid_samples": invalid_scan_time_samples,
-            },
-        },
-        thresholds={
-            "max_all_inf_sample_ratio": max_all_inf_sample_ratio,
-            "min_finite_bin_coverage": min_finite_bin_coverage,
-            "min_angular_span_rad": SCAN_MIN_ANGULAR_SPAN_RAD,
-            "min_range_bins": SCAN_MIN_RANGE_BINS,
-            "geometry_tolerance_rad": SCAN_GEOMETRY_TOLERANCE_RAD,
-            "max_scan_time_s": SCAN_MAX_SCAN_TIME_S,
-        },
+        max_all_inf_sample_ratio=max_all_inf_sample_ratio,
+        min_finite_bin_coverage=min_finite_bin_coverage,
     )
+    return _check("scan_quality", "fail" if failures else "pass", detail=detail, **evidence)
 
 
 async def _inspect_scan_quality(
@@ -589,7 +835,7 @@ async def _inspect_scan_quality(
     timeout_s: float = SCAN_SAMPLE_TIMEOUT_S,
     max_all_inf_sample_ratio: float = SCAN_MAX_ALL_INF_SAMPLE_RATIO,
     min_finite_bin_coverage: float = SCAN_MIN_FINITE_BIN_COVERAGE,
-) -> dict:
+) -> Check:
     """Sample the live LaserScan before any navigation goal can be sent."""
     bridge = RosBridgeClient()
     samples: list[dict[str, Any]] = []
@@ -599,7 +845,7 @@ async def _inspect_scan_quality(
     error: str | None = None
     started = time.perf_counter()
 
-    def on_scan(message: dict) -> None:
+    def on_scan(message: dict[str, Any]) -> None:
         if len(samples) >= sample_count:
             return
         samples.append(_summarize_scan_message(message))
@@ -638,7 +884,7 @@ async def _inspect_scan_quality(
     )
 
 
-def _overall(checks: list[dict], *, executed: bool) -> str:
+def _overall(checks: list[Check], *, executed: bool) -> str:
     if any(item["status"] == "fail" for item in checks):
         return "fail"
     if not executed:
@@ -671,20 +917,25 @@ def _doctor_checks(
     *,
     attempts: int = 3,
     retry_delay_s: float = 0.5,
-) -> tuple[list[dict], bool, dict]:
-    history: list[dict] = []
-    items: list[dict] = []
+) -> tuple[list[Check], bool, dict[str, Any]]:
+    history: list[Check] = []
+    items: list[Check] = []
     doctor = None
-    failed: list[dict] = []
+    failed: list[Check] = []
     missing: list[str] = []
     passed = False
+    required_checks = set(REQUIRED_NAV_CHECKS)
     for attempt in range(1, max(1, attempts) + 1):
         doctor = run_doctor(config_path)
         items = [item.model_dump(mode="json") for item in doctor.items]
+        if any(
+            item["section"] == "site" and item["check_name"] == "map_identity" for item in items
+        ):
+            required_checks.add("map_identity")
         by_name = {
-            item["check_name"]: item for item in items if item["check_name"] in REQUIRED_NAV_CHECKS
+            item["check_name"]: item for item in items if item["check_name"] in required_checks
         }
-        missing = sorted(REQUIRED_NAV_CHECKS - set(by_name))
+        missing = sorted(required_checks - set(by_name))
         failed = [item for item in by_name.values() if item["status"] != "pass"]
         passed = not failed and not missing
         history.append(
@@ -698,13 +949,14 @@ def _doctor_checks(
         if passed or attempt >= max(1, attempts):
             break
         time.sleep(max(0.0, retry_delay_s))
-    assert doctor is not None
+    if doctor is None:
+        raise RuntimeError("doctor preflight loop completed without producing a result")
     return (
         items,
         passed,
         {
             "doctor_overall": doctor.overall,
-            "required_checks": sorted(REQUIRED_NAV_CHECKS),
+            "required_checks": sorted(required_checks),
             "non_passing_required": failed,
             "missing_required": missing,
             "attempts": history,
@@ -712,150 +964,203 @@ def _doctor_checks(
     )
 
 
+def _live_bridge_check(pose: Any) -> Check:
+    return _check(
+        "live_bridge",
+        "pass",
+        detail="ROS bridge started with watchdog armed.",
+        pose={
+            "x": pose.x,
+            "y": pose.y,
+            "yaw": pose.yaw,
+            "frame_id": pose.frame_id,
+            "source": pose.source,
+        },
+    )
+
+
+def _twin_isolation_check(
+    config: AppConfig,
+    options: IsaacHilOptions,
+    ambient_domain: str,
+) -> Check:
+    if not config.twin.enabled:
+        return _check(
+            "twin_isolation",
+            "fail" if options.require_twin else "skip",
+            detail="Twin Gate is disabled; no live Twin verdict was produced.",
+        )
+    if str(config.twin.domain_id) != ambient_domain:
+        return _check(
+            "twin_isolation",
+            "pass",
+            detail="Twin and target ROS domains are distinct.",
+            target_domain=ambient_domain,
+            twin_domain=config.twin.domain_id,
+        )
+    return _check(
+        "twin_isolation",
+        "fail" if options.require_twin else "skip",
+        detail=(
+            "Pure-simulation target shares the configured Twin domain; "
+            "this run does not claim deployment isolation or a Twin verdict."
+        ),
+        target_domain=ambient_domain,
+        twin_domain=config.twin.domain_id,
+    )
+
+
+async def _run_route_goal(
+    gateway: NavigationGateway,
+    execution_config: AppConfig,
+    goal: Location,
+) -> list[Check]:
+    progress = _ProgressSampler()
+    gate_reports: list[Check] = []
+    started = time.perf_counter()
+    result = await gateway.execute(
+        {"goal": goal.model_dump(mode="json")},
+        on_progress=progress.record,
+        on_gate_report=lambda report: gate_reports.append(report.model_dump(mode="json")),
+    )
+    checks = [
+        _check(
+            f"route:{goal.name}",
+            "pass" if result.execution_status == "succeeded" else "fail",
+            detail=result.route_preview,
+            execution_status=result.execution_status,
+            elapsed_s=round(time.perf_counter() - started, 3),
+            progress_samples=progress.finish(status=result.execution_status),
+            gate_reports=gate_reports,
+        )
+    ]
+    if execution_config.twin.enabled:
+        report = gate_reports[-1] if gate_reports else None
+        checks.append(
+            _check(
+                f"twin_verdict:{goal.name}",
+                "pass" if report and report["verdict"] == "pass" else "fail",
+                detail=(
+                    f"Twin Gate returned {report['verdict']}."
+                    if report
+                    else "Twin Gate did not return a structured verdict."
+                ),
+                report=report,
+            )
+        )
+    return checks
+
+
+async def _run_cancel_goal(
+    execution_config: AppConfig,
+    bridge: RosBridgeClient,
+    goal: Location,
+    options: IsaacHilOptions,
+) -> Check:
+    # Cancellation must exercise the target Nav2 goal, not merely stop an
+    # in-progress rehearsal in a separate Twin domain.
+    cancel_config = execution_config.model_copy(
+        update={"twin": execution_config.twin.model_copy(update={"enabled": False})}
+    )
+    gateway = NavigationGateway(cancel_config, get_bridge=lambda: _ready_bridge(bridge))
+    return await _run_cancel_and_stop(gateway, bridge, cancel_config, goal, options)
+
+
 async def _run_live(
     config: AppConfig,
-    locations,
+    locations: list[Location],
     options: IsaacHilOptions,
-) -> list[dict]:
-    checks: list[dict] = []
+) -> list[Check]:
+    checks: list[Check] = []
     bridge = RosBridgeClient()
     ambient_domain = os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0"
     execution_config = _execution_config(config, options.target, ambient_domain)
     gateway = NavigationGateway(execution_config, get_bridge=lambda: _ready_bridge(bridge))
-
     try:
         await arm_watchdog(execution_config, bridge)
         await bridge.start()
         pose = await bridge.get_pose(timeout=3.0)
-        checks.append(
-            _check(
-                "live_bridge",
-                "pass",
-                detail="ROS bridge started with watchdog armed.",
-                pose={
-                    "x": pose.x,
-                    "y": pose.y,
-                    "yaw": pose.yaw,
-                    "frame_id": pose.frame_id,
-                    "source": pose.source,
-                },
-            )
+        checks.append(_live_bridge_check(pose))
+        map_cell = (
+            await bridge.map_cell(pose.x, pose.y, timeout=3.0) if pose.frame_id == "map" else None
         )
-
-        start_pose_check = _evaluate_start_pose(pose, config, check_id="start_pose_recheck")
+        start_pose_check = _evaluate_start_pose(
+            pose,
+            config,
+            check_id="start_pose_recheck",
+            map_cell=map_cell,
+        )
         checks.append(start_pose_check)
         if start_pose_check["status"] != "pass":
             return checks
 
-        if config.twin.enabled:
-            isolated = str(config.twin.domain_id) != ambient_domain
-            if isolated:
+        checks.append(_twin_isolation_check(config, options, ambient_domain))
+        if options.require_twin and not execution_config.twin.enabled:
+            return checks
+        abort_reason: str | None = None
+        for goal_name in options.goals:
+            if abort_reason is not None:
                 checks.append(
                     _check(
-                        "twin_isolation",
-                        "pass",
-                        detail="Twin and target ROS domains are distinct.",
-                        target_domain=ambient_domain,
-                        twin_domain=config.twin.domain_id,
+                        f"route:{goal_name}",
+                        "skip",
+                        detail=(
+                            f"Live goal withheld after an earlier motion failure: {abort_reason}"
+                        ),
+                    )
+                )
+                continue
+            goal = find_location(locations, goal_name)
+            goal_checks = await _run_route_goal(gateway, execution_config, goal)
+            checks.extend(goal_checks)
+            failed = next((check for check in goal_checks if check["status"] == "fail"), None)
+            if failed is not None:
+                abort_reason = f"{failed['id']}: {failed['detail']}"
+        if options.cancel_goal:
+            if abort_reason is not None:
+                checks.append(
+                    _check(
+                        f"cancel_stop:{options.cancel_goal}",
+                        "skip",
+                        detail=(
+                            "Cancel exercise withheld after an earlier motion failure: "
+                            f"{abort_reason}"
+                        ),
                     )
                 )
             else:
-                status = "fail" if options.require_twin else "skip"
-                checks.append(
-                    _check(
-                        "twin_isolation",
-                        status,
-                        detail=(
-                            "Pure-simulation target shares the configured Twin domain; "
-                            "this run does not claim deployment isolation or a Twin verdict."
-                        ),
-                        target_domain=ambient_domain,
-                        twin_domain=config.twin.domain_id,
-                    )
-                )
-        else:
-            status = "fail" if options.require_twin else "skip"
-            checks.append(
-                _check(
-                    "twin_isolation",
-                    status,
-                    detail="Twin Gate is disabled; no live Twin verdict was produced.",
-                )
-            )
-        if options.require_twin and not execution_config.twin.enabled:
-            return checks
-
-        for goal_name in options.goals:
-            goal = find_location(locations, goal_name)
-            action = {"goal": goal.model_dump(mode="json")}
-            progress = _ProgressSampler()
-            gate_reports: list[dict] = []
-            started = time.perf_counter()
-            result = await gateway.execute(
-                action,
-                on_progress=progress.record,
-                on_gate_report=lambda report, reports=gate_reports: reports.append(
-                    report.model_dump(mode="json")
-                ),
-            )
-            checks.append(
-                _check(
-                    f"route:{goal_name}",
-                    "pass" if result.execution_status == "succeeded" else "fail",
-                    detail=result.route_preview,
-                    execution_status=result.execution_status,
-                    elapsed_s=round(time.perf_counter() - started, 3),
-                    progress_samples=progress.finish(status=result.execution_status),
-                    gate_reports=gate_reports,
-                )
-            )
-            if execution_config.twin.enabled:
-                report = gate_reports[-1] if gate_reports else None
-                checks.append(
-                    _check(
-                        f"twin_verdict:{goal_name}",
-                        "pass" if report and report["verdict"] == "pass" else "fail",
-                        detail=(
-                            f"Twin Gate returned {report['verdict']}."
-                            if report
-                            else "Twin Gate did not return a structured verdict."
-                        ),
-                        report=report,
-                    )
-                )
-
-        if options.cancel_goal:
-            # Cancellation must exercise the target Nav2 goal, not merely stop
-            # an in-progress rehearsal in a separate Twin domain.
-            cancel_config = execution_config.model_copy(
-                update={"twin": execution_config.twin.model_copy(update={"enabled": False})}
-            )
-            cancel_gateway = NavigationGateway(
-                cancel_config, get_bridge=lambda: _ready_bridge(bridge)
-            )
-            checks.append(
-                await _run_cancel_and_stop(
-                    cancel_gateway,
-                    bridge,
-                    cancel_config,
-                    find_location(locations, options.cancel_goal),
-                    options,
-                )
-            )
+                goal = find_location(locations, options.cancel_goal)
+                checks.append(await _run_cancel_goal(execution_config, bridge, goal, options))
     except Exception as exc:
-        # The broad catch is intentional at this evidence boundary: unexpected
-        # failures must be serialized into the artifact before the process exits.
-        checks.append(
-            _check(
-                "live_exception",
-                "fail",
-                detail=f"{type(exc).__name__}: {exc}",
-            )
-        )
+        # This evidence boundary must serialize unexpected failures before exit.
+        checks.append(_check("live_exception", "fail", detail=f"{type(exc).__name__}: {exc}"))
     finally:
-        with contextlib.suppress(BridgeError):
-            await halt_robot(execution_config, bridge)
-        await bridge.stop()
+        try:
+            halt_message = await halt_robot(execution_config, bridge)
+        except Exception as exc:
+            checks.append(
+                _check(
+                    "final_halt",
+                    "fail",
+                    detail=f"Final emergency halt was not confirmed: {type(exc).__name__}: {exc}",
+                )
+            )
+        else:
+            checks.append(_check("final_halt", "pass", detail=halt_message))
+        try:
+            await bridge.stop()
+        except Exception as exc:
+            checks.append(
+                _check(
+                    "bridge_shutdown",
+                    "fail",
+                    detail=f"ROS bridge shutdown failed: {type(exc).__name__}: {exc}",
+                )
+            )
+        else:
+            checks.append(
+                _check("bridge_shutdown", "pass", detail="ROS bridge process stopped cleanly.")
+            )
     return checks
 
 
@@ -869,9 +1174,9 @@ async def _run_cancel_and_stop(
     gateway: NavigationGateway,
     bridge: RosBridgeClient,
     config: AppConfig,
-    goal,
+    goal: Location,
     options: IsaacHilOptions,
-) -> dict:
+) -> Check:
     progress = _ProgressSampler()
 
     action = {"goal": goal.model_dump(mode="json")}
@@ -950,16 +1255,16 @@ async def _run_cancel_and_stop(
                 await task
 
 
-async def run_isaac_hil(options: IsaacHilOptions) -> dict:
+async def run_isaac_hil(options: IsaacHilOptions) -> Check:
     """Run preflight or live acceptance and always persist one JSON artifact."""
     options.validate()
     config_path = options.config_path or default_config_path()
     started_at = _utc_now()
     source_revision, source_dirty = _source_state()
-    checks: list[dict] = []
+    checks: list[Check] = []
     artifact: dict[str, Any] = {
         "schema_version": 1,
-        "run_id": f"isaac-hil-{datetime.now():%Y%m%dT%H%M%S}-{uuid4().hex[:6]}",
+        "run_id": f"isaac-hil-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:6]}",
         "started_at": started_at,
         "target": options.target,
         "execution_requested": options.execute,
@@ -1015,6 +1320,7 @@ async def run_isaac_hil(options: IsaacHilOptions) -> dict:
         )
         scan_quality_ok = False
         start_pose_ok = False
+        route_plans_ok = False
         if doctor_ok:
             scan_quality_check = await _inspect_scan_quality()
             checks.append(scan_quality_check)
@@ -1023,7 +1329,13 @@ async def run_isaac_hil(options: IsaacHilOptions) -> dict:
                 start_pose_check = await _inspect_start_pose(config)
                 checks.append(start_pose_check)
                 start_pose_ok = start_pose_check["status"] == "pass"
-        if options.execute and doctor_ok and scan_quality_ok and start_pose_ok:
+                if start_pose_ok:
+                    route_plan_checks = await _inspect_route_plans(locations, options)
+                    checks.extend(route_plan_checks)
+                    route_plans_ok = bool(route_plan_checks) and all(
+                        check["status"] == "pass" for check in route_plan_checks
+                    )
+        if options.execute and doctor_ok and scan_quality_ok and start_pose_ok and route_plans_ok:
             checks.extend(await _run_live(config, locations, options))
         elif options.execute:
             checks.append(

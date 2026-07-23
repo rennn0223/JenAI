@@ -17,6 +17,7 @@ from jenai.agent.instructions import (
 )
 from jenai.agent.orchestrator import is_read_only_state_request
 from jenai.agent.runtime import build_model
+from jenai.capabilities import capability_prompt
 from jenai.config.models import AppConfig
 from jenai.providers.agent_model import make_agent_client
 from jenai.tools.ros2_agent_tools import (
@@ -164,7 +165,7 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
     client = make_agent_client(config)
     return Agent[JenAIRunContext](
         name="JenAI",
-        instructions=SUPERVISOR_INSTRUCTIONS,
+        instructions=f"{SUPERVISOR_INSTRUCTIONS}\n\n{capability_prompt(config)}",
         model=build_model(config, binding="chat", client=client),
         tool_use_behavior=_finish_read_only_state,
         # Mirror the complete bounded navigation workflow on the supervisor.

@@ -12,7 +12,7 @@ is configured.
 | Sessions | `~/.config/jenai/sessions/` | Cross-restart `/run` conversation memory | directory `0700`, files/locks `0600` |
 | Pending runs | `<config dir>/pending-runs/` | Paused Agent SDK state and approval IDs | directory `0700`, files `0600` |
 | Locations | `<config dir>/locations.toml` | Named map-frame poses and aliases | file `0600`; newly created parent directories `0700` |
-| Reports | `<config dir>/reports/` | Patrol result JSON | directory `0700`, files `0600` |
+| Reports | `<config dir>/reports/` | Patrol result JSON and `tasks/task-*.json` receipts (request, duration, approvals, tools, result, failure code) | directories `0700`, files `0600` |
 | Traces | `~/.config/jenai/traces/` | Local agent trace JSONL | directory `0700`, files `0600` |
 | Audit | `<config dir>/audit.sqlite3` | Bounded run/approval/tool/gate metadata; SQLite sidecars are also inventoried | file `0600` |
 | Config backups | `<config dir>/config.toml.bak-*` | Timestamped pre-onboard configuration | file `0600`; retained and excluded from routine export/default purge |
@@ -41,7 +41,7 @@ JenAI data harden --yes           # apply the displayed plan
 ```
 
 Hardening only considers the operational allow-list: locations, session and pending-run JSON,
-patrol-report JSON, trace JSONL/lock files, audit database/sidecars, timestamped config backups, and
+report JSON (patrol and task receipts), trace JSONL/lock files, audit database/sidecars, timestamped config backups, and
 the directories that contain matched generated files. It never selects `config.toml` or `.env`.
 Every chmod is revalidated through a no-follow file descriptor against
 the planned device/inode and expected file type. Symlinks, files with multiple
@@ -58,7 +58,7 @@ JenAI data export backup.tar.gz --force
 ```
 
 The export is an atomic `tar.gz` with mode `0600`. It allow-lists locations, session and
-pending-run JSON, patrol-report JSON, trace JSONL, and the audit SQLite database; symlinks,
+pending-run JSON, report JSON (including task receipts), trace JSONL, and the audit SQLite database; symlinks,
 hardlinks, and non-regular files are skipped. It never includes `config.toml`, `.env`, or
 `config.toml.bak-*`. Values found in the credential file/environment and common credential
 assignments are replaced with `[REDACTED]` inside exported **text**. SQLite audit bytes are not
@@ -80,7 +80,7 @@ JenAI data prune --older-than-days 30
 JenAI data prune --older-than-days 30 --yes
 ```
 
-Pruning removes session, pending-run, and patrol-report files whose modification time is older
+Pruning removes session, pending-run, patrol-report, and task-receipt files whose modification time is older
 than the requested age. For trace JSONL and audit SQLite it removes only records with an older
 parseable timestamp; recent and malformed records are retained rather than guessed away. Saved
 locations, config, credentials, config backups, skills, and rules are never age-pruned.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_json
@@ -34,7 +35,7 @@ class DriveIntent:
     duration_s: float
     description: str
 
-    def to_payload(self) -> dict:
+    def to_payload(self) -> dict[str, Any]:
         return {
             "linear": {"x": self.linear_x, "y": 0.0, "z": 0.0},
             "angular": {"x": 0.0, "y": 0.0, "z": self.angular_z},
@@ -42,8 +43,19 @@ class DriveIntent:
 
 
 _ZH_DIGITS = {
-    "零": 0, "〇": 0, "一": 1, "二": 2, "兩": 2, "两": 2,
-    "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "兩": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
 }
 
 
@@ -69,7 +81,7 @@ def _normalize_zh_numbers(text: str) -> str:
     and a matched direction never falls back to the LLM, so without this a
     Chinese numeral silently became the 2 s default."""
 
-    def _sub(match: re.Match) -> str:
+    def _sub(match: re.Match[str]) -> str:
         value = _zh_numeral_to_int(match.group(0))
         return match.group(0) if value is None else str(value)
 
