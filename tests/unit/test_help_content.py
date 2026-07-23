@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from jenai.tui.catalog import COMMAND_GROUPS, SLASH_COMMANDS
 from jenai.tui.help_content import build_help_output
 
 
@@ -20,3 +21,15 @@ def test_help_section_filter_narrows_groups() -> None:
 def test_help_vision_filter() -> None:
     output = build_help_output("vision")
     assert [g.name for g in output.command_groups] == ["Vision"]
+
+
+def test_palette_and_help_are_generated_from_the_same_catalog() -> None:
+    grouped = [command for _name, commands in COMMAND_GROUPS for command in commands]
+    output = build_help_output()
+
+    assert len(grouped) == len(SLASH_COMMANDS)
+    assert {command.name for command in grouped} == {command.name for command in SLASH_COMMANDS}
+    assert [group.name for group in output.command_groups] == [name for name, _ in COMMAND_GROUPS]
+    assert [usage for group in output.command_groups for usage in group.commands] == [
+        command.completion for command in grouped
+    ]

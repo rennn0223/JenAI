@@ -39,6 +39,17 @@ def is_available() -> bool:
     return shutil.which("ros2") is not None
 
 
+def _ros_env(domain_id: int | None) -> dict[str, str]:
+    """Pin every CLI call to one canonical ROS domain.
+
+    Explicit ``0`` and an unset ``ROS_DOMAIN_ID`` are semantically identical
+    to DDS, but ROS CLI daemon discovery can otherwise treat them as separate
+    cached graphs. Canonicalizing the environment keeps all probes consistent.
+    """
+    resolved = str(domain_id) if domain_id is not None else os.environ.get("ROS_DOMAIN_ID", "0")
+    return {**os.environ, "ROS_DOMAIN_ID": resolved}
+
+
 def _run(
     args: list[str], *, timeout: float, domain_id: int | None = None
 ) -> subprocess.CompletedProcess[str]:
@@ -48,7 +59,7 @@ def _run(
         )
     # A domain override talks to that domain's own ros2 daemon (the CLI keeps
     # one per ROS_DOMAIN_ID), so probing the twin never disturbs the robot's.
-    env = {**os.environ, "ROS_DOMAIN_ID": str(domain_id)} if domain_id is not None else None
+    env = _ros_env(domain_id)
     try:
         return subprocess.run(
             ["ros2", *args],
@@ -71,7 +82,7 @@ async def _run_async(
         raise Ros2NotAvailableError(
             "ros2 command was not found on PATH. Install ROS2 Jazzy and source its setup script."
         )
-    env = {**os.environ, "ROS_DOMAIN_ID": str(domain_id)} if domain_id is not None else None
+    env = _ros_env(domain_id)
     try:
         return await run_process_async(["ros2", *args], timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -99,13 +110,37 @@ def list_actions(*, timeout: float = 5.0, domain_id: int | None = None) -> list[
     completed = _run(["action", "list"], timeout=timeout, domain_id=domain_id)
     if completed.returncode != 0:
         raise Ros2CommandError(
-            f"ros2 action list exited with code {completed.returncode}: "
-            f"{completed.stderr.strip()}",
+            f"ros2 action list exited with code {completed.returncode}: {completed.stderr.strip()}",
             stdout=completed.stdout,
             stderr=completed.stderr,
             returncode=completed.returncode,
         )
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+
+def parameter_get(node: str, parameter: str, *, timeout: float = 5.0) -> str:
+    """Read one ROS parameter value without its type annotation.
+
+    The raw CLI wrapper is intentionally narrow: diagnostics only need a
+    trustworthy string value and non-zero/empty responses are errors rather
+    than values that callers could accidentally treat as configuration.
+    """
+    completed = _run(
+        ["param", "get", node, parameter, "--hide-type"],
+        timeout=timeout,
+    )
+    value = completed.stdout.strip()
+    if completed.returncode != 0 or not value:
+        detail = completed.stderr.strip() or "empty parameter value"
+        raise Ros2CommandError(
+            f"ros2 param get {node} {parameter} failed: {detail}",
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            returncode=completed.returncode,
+        )
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1]
+    return value
 
 
 @dataclass
@@ -165,9 +200,7 @@ def _parse_topic_info(topic: str, raw: str) -> TopicInfo:
         elif stripped.startswith("Publisher count:"):
             publisher_count = _safe_int(stripped.split(":", 1)[1])
             section = "publishers"
-        elif stripped.startswith("Subscription count:") or stripped.startswith(
-            "Subscriber count:"
-        ):
+        elif stripped.startswith(("Subscription count:", "Subscriber count:")):
             subscriber_count = _safe_int(stripped.split(":", 1)[1])
             section = "subscribers"
         elif stripped.startswith("Node name:"):
@@ -245,8 +278,7 @@ async def action_available_async(name: str, *, timeout: float = 6.0) -> bool:
     completed = await _run_async(["action", "list"], timeout=timeout)
     if completed.returncode != 0:
         raise Ros2CommandError(
-            f"ros2 action list exited with code {completed.returncode}: "
-            f"{completed.stderr.strip()}",
+            f"ros2 action list exited with code {completed.returncode}: {completed.stderr.strip()}",
             stdout=completed.stdout,
             stderr=completed.stderr,
             returncode=completed.returncode,

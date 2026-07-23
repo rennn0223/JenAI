@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from agents import RunContextWrapper, function_tool
 
 from jenai.agent.context import JenAIRunContext
@@ -21,16 +23,12 @@ _SHELL_RUN_INFO = ToolRiskInfo(
 @function_tool(needs_approval=True)
 async def shell_run_tool(
     ctx: RunContextWrapper[JenAIRunContext], command: str, cwd: str = ""
-) -> dict:
+) -> dict[str, Any]:
     """Run a shell command on the host. Requires human approval. Use only when a task cannot
     be completed with the dedicated ROS2 / route tools."""
-    call = record_tool_call(
-        ctx, "shell_run_tool", ToolCallCategory.SHELL, command, _SHELL_RUN_INFO
-    )
+    call = record_tool_call(ctx, "shell_run_tool", ToolCallCategory.SHELL, command, _SHELL_RUN_INFO)
     output = await shell_core.run_shell(command, cwd=cwd or None)
-    finish_tool_call(
-        ctx, call, ok=output.exit_code == 0, summary=f"exit {output.exit_code}"
-    )
+    finish_tool_call(ctx, call, ok=output.exit_code == 0, summary=f"exit {output.exit_code}")
     return output.model_dump()
 
 

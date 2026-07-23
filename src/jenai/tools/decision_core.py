@@ -25,7 +25,22 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_json
 
-ACTIONS = ("navigate_to", "patrol", "dock", "wait", "capture_and_report", "refer_to_human")
+ActionName = Literal[
+    "navigate_to",
+    "patrol",
+    "dock",
+    "wait",
+    "capture_and_report",
+    "refer_to_human",
+]
+ACTIONS: tuple[ActionName, ...] = (
+    "navigate_to",
+    "patrol",
+    "dock",
+    "wait",
+    "capture_and_report",
+    "refer_to_human",
+)
 
 
 class ContextSnapshot(BaseModel):
@@ -57,7 +72,7 @@ class Decision(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    action: Literal[*ACTIONS]
+    action: ActionName
     target: str | None = None  # location name for navigate_to/patrol
     reason: str = ""
 

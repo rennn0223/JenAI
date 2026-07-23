@@ -57,9 +57,7 @@ def test_explicit_route_goal_rejects_unsafe_or_ambiguous_wording(text: str) -> N
 
 def test_route_preview_resolves_via_regex_chinese() -> None:
     output = asyncio.run(
-        route_core.route_preview(
-            _config(), _locations(), "從Engineering Building到Mechanical Hall"
-        )
+        route_core.route_preview(_config(), _locations(), "從Engineering Building到Mechanical Hall")
     )
     assert output.resolved_start.name == "Engineering Building"
     assert output.resolved_goal.name == "Mechanical Hall"
@@ -148,6 +146,19 @@ def test_route_preview_bare_location_name_is_the_goal() -> None:
     assert output.resolved_goal.name == "Mechanical Hall"
     assert "start" not in output.outgoing_action
 
+
+def test_natural_language_dock_route_carries_unverified_dock_contract() -> None:
+    dock = Location(
+        name="charging_approach",
+        aliases=["dock"],
+        tags=["dock"],
+        frame_id="map",
+        pose=Pose2D(x=1, y=2, yaw=0),
+    )
+
+    output = asyncio.run(route_core.route_preview(_config(), [dock], "回到 dock"))
+
+    assert output.outgoing_action["capability_id"] == "dock_approach"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-specific")

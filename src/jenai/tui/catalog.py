@@ -69,7 +69,11 @@ SLASH_COMMANDS = [
         "/explore 5m goals=8 tag=room photo",
     ),
     SlashCommand("/dock", "Return to the charging dock (needs approval)"),
-    SlashCommand("/report", "Show the latest patrol report (+LLM digest)", "/report [list]"),
+    SlashCommand(
+        "/report",
+        "Show patrol reports or structured task receipts",
+        "/report [list|task [list]|event]",
+    ),
     SlashCommand("/skills", "List file-defined user skills (skills/*.toml)"),
     SlashCommand("/route", "Resolve and send a navigation route (needs approval)", "/route <text>"),
     SlashCommand("/loc list", "List known locations"),
@@ -103,6 +107,78 @@ SLASH_COMMANDS = [
     SlashCommand("/clear", "Clear the output area"),
     SlashCommand("/quit", "Exit JenAI"),
 ]
+
+# One command catalog feeds both completion and /help.  Group membership keeps
+# only stable command names; descriptions and usages live exactly once above.
+# Import-time validation turns omissions/duplicates into an immediate developer
+# error instead of letting the operator discover a phantom or undocumented row.
+_COMMAND_GROUP_MEMBERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Safety", ("/stop",)),
+    ("Session", ("/help", "/status", "/doctor", "/queue", "/clear", "/quit")),
+    ("Planning", ("/plan", "/run", "/why", "/review", "/abort")),
+    (
+        "ROS2",
+        (
+            "/ros topics",
+            "/ros topic-info",
+            "/ros schema",
+            "/ros echo",
+            "/ros pub",
+            "/ros drive",
+        ),
+    ),
+    (
+        "Route",
+        (
+            "/route",
+            "/loc list",
+            "/loc add",
+            "/loc show",
+            "/loc move",
+            "/loc rename",
+            "/loc rm",
+        ),
+    ),
+    (
+        "Robot tasks",
+        ("/drive", "/mission", "/patrol", "/explore", "/dock", "/report", "/skills"),
+    ),
+    (
+        "Vision",
+        ("/vision image", "/vision camera", "/perception start", "/perception stop"),
+    ),
+    ("System", ("/shell", "/mode", "/config")),
+    (
+        "Provider / Model",
+        ("/providers", "/model", "/models", "/provider", "/permissions"),
+    ),
+)
+
+
+def _grouped_commands() -> tuple[tuple[str, tuple[SlashCommand, ...]], ...]:
+    by_name = {command.name: command for command in SLASH_COMMANDS}
+    if len(by_name) != len(SLASH_COMMANDS):
+        raise RuntimeError("duplicate names in the TUI command catalog")
+
+    grouped: list[tuple[str, tuple[SlashCommand, ...]]] = []
+    seen: set[str] = set()
+    for group_name, names in _COMMAND_GROUP_MEMBERS:
+        duplicates = seen.intersection(names)
+        if duplicates:
+            raise RuntimeError(f"commands assigned to multiple help groups: {sorted(duplicates)}")
+        missing = set(names).difference(by_name)
+        if missing:
+            raise RuntimeError(f"unknown commands in help groups: {sorted(missing)}")
+        seen.update(names)
+        grouped.append((group_name, tuple(by_name[name] for name in names)))
+
+    ungrouped = set(by_name).difference(seen)
+    if ungrouped:
+        raise RuntimeError(f"commands missing a help group: {sorted(ungrouped)}")
+    return tuple(grouped)
+
+
+COMMAND_GROUPS = _grouped_commands()
 
 TUI_CSS = """
 Screen {

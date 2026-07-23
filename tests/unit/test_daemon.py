@@ -131,9 +131,7 @@ def test_daemon_navigate_failure_is_reported_not_silent(tmp_path: Path, monkeypa
     from jenai.config.store import build_minimal_config
     from jenai.daemon.runner import run_daemon
 
-    monkeypatch.setattr(
-        client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py"
-    )
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py")
     monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
     monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
 
@@ -201,14 +199,63 @@ def test_halt_action_fires_without_auto_approve() -> None:
 
 def test_action_validator_accepts_halt_rejects_junk() -> None:
     Rule(
-        name="ok", topic="/t", msg_type="std_msgs/msg/Bool", fld="data",
-        equals=True, action="halt",
+        name="ok",
+        topic="/t",
+        msg_type="std_msgs/msg/Bool",
+        fld="data",
+        equals=True,
+        action="halt",
     )
     with pytest.raises(ValueError):
         Rule(
-            name="bad", topic="/t", msg_type="std_msgs/msg/Bool", fld="data",
-            equals=True, action="explode",
+            name="bad",
+            topic="/t",
+            msg_type="std_msgs/msg/Bool",
+            fld="data",
+            equals=True,
+            action="explode",
         )
+
+
+def test_daemon_watch_registration_failure_still_closes_bridge(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    from jenai.bridge import BridgeError
+    from jenai.config.store import build_minimal_config
+    from jenai.daemon.runner import run_daemon
+
+    class FailingWatchBridge:
+        stopped = False
+
+        async def configure_safety(self, **_kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def watch(self, *_args, **_kwargs) -> int:
+            raise BridgeError("watch registration failed")
+
+        async def stop(self) -> None:
+            type(self).stopped = True
+
+    monkeypatch.setattr("jenai.daemon.runner.RosBridgeClient", FailingWatchBridge)
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config_path = tmp_path / "config.toml"
+
+    with pytest.raises(BridgeError, match="watch registration failed"):
+        asyncio.run(
+            run_daemon(
+                config,
+                config_path,
+                [_goto_rule()],
+                on_decision=lambda _decision: None,
+            )
+        )
+
+    assert FailingWatchBridge.stopped
 
 
 # --- fault injection: the autonomous goto path (A3/A4) ----------------------
@@ -252,9 +299,7 @@ def _run_daemon_until(
     from jenai.config.store import build_minimal_config
     from jenai.daemon.runner import run_daemon
 
-    monkeypatch.setattr(
-        client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py"
-    )
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py")
     monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
     monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
 
@@ -311,6 +356,10 @@ def test_daemon_twin_refer_blocks_autonomous_goto(tmp_path: Path, monkeypatch) -
 
     def enable_twin(cfg) -> None:
         cfg.twin.enabled = True
+        cfg.site.active = True
+        cfg.site.validated = True
+        cfg.site.map_sha256 = "a" * 64
+        cfg.site.locations_path = "locations.toml"
 
     statuses = _run_daemon_until(
         tmp_path,
@@ -319,7 +368,7 @@ def test_daemon_twin_refer_blocks_autonomous_goto(tmp_path: Path, monkeypatch) -
         locations=_DOCK_LOCATIONS,
         mutate_config=enable_twin,
     )
-    assert any("NOT moved" in s for s in statuses)
+    assert any("NOT moved" in s for s in statuses), statuses
     assert moved == []  # the gate held: navigate_live was never reached
 
 
@@ -336,6 +385,64 @@ def test_daemon_goto_unknown_location_is_reported(tmp_path: Path, monkeypatch) -
 def test_daemon_goto_without_locations_file_is_reported(tmp_path: Path, monkeypatch) -> None:
     statuses = _run_daemon_until(tmp_path, monkeypatch, marker="no locations file", locations=None)
     assert any("no locations file" in s for s in statuses)
+
+
+def test_daemon_shutdown_closes_started_navigation_event(tmp_path: Path, monkeypatch) -> None:
+    """Cancelling the daemon must close an in-flight event action receipt."""
+    import asyncio
+    import contextlib
+    import sys
+
+    from jenai.bridge import RosBridgeClient
+    from jenai.bridge import client as client_module
+    from jenai.config.store import build_minimal_config
+    from jenai.daemon.runner import run_daemon
+    from jenai.state.audit import AuditStore
+
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py")
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    execution_started: asyncio.Event
+
+    async def never_finishes(_gateway, _action, *, on_gate=None):
+        execution_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("jenai.daemon.runner.NavigationGateway.execute", never_finishes)
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "nav2"
+    config_path = tmp_path / "config.toml"
+    (tmp_path / "locations.toml").write_text(_DOCK_LOCATIONS, encoding="utf-8")
+
+    async def run() -> None:
+        nonlocal execution_started
+        execution_started = asyncio.Event()
+        task = asyncio.create_task(
+            run_daemon(
+                config,
+                config_path,
+                [_goto_rule()],
+                on_decision=lambda _decision: None,
+            )
+        )
+        await asyncio.wait_for(execution_started.wait(), timeout=5.0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    events = list(reversed(AuditStore(tmp_path / "audit.sqlite3").list_events()))
+    action_events = [event for event in events if event.event_type.startswith("event_action_")]
+    assert [event.event_type for event in action_events] == [
+        "event_action_started",
+        "event_action_finished",
+    ]
+    assert action_events[-1].status == "cancelled"
+    assert action_events[-1].summary == "daemon shutdown"
 
 
 def test_load_rules_missing_file_and_bad_toml_raise_rule_error(tmp_path: Path) -> None:
@@ -389,9 +496,7 @@ def test_daemon_halt_rule_halts_and_reports(tmp_path: Path, monkeypatch) -> None
     from jenai.config.store import build_minimal_config
     from jenai.daemon.runner import run_daemon
 
-    monkeypatch.setattr(
-        client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py"
-    )
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py")
     monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
     monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
 
@@ -441,9 +546,7 @@ def test_daemon_halt_failure_is_reported_not_silent(tmp_path: Path, monkeypatch)
     from jenai.config.store import build_minimal_config
     from jenai.daemon.runner import run_daemon
 
-    monkeypatch.setattr(
-        client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py"
-    )
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py")
     monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
     monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
 
@@ -472,3 +575,67 @@ def test_daemon_halt_failure_is_reported_not_silent(tmp_path: Path, monkeypatch)
 
     asyncio.run(run())
     assert any("halt failed" in s for s in statuses)
+
+
+def test_daemon_persists_event_trigger_and_outcome(tmp_path: Path, monkeypatch) -> None:
+    """A matched notify rule leaves a trigger and terminal outcome without raw payloads."""
+    import asyncio
+    import contextlib
+    import sys
+
+    from jenai.bridge import RosBridgeClient
+    from jenai.bridge import client as client_module
+    from jenai.config.store import build_minimal_config
+    from jenai.daemon.runner import run_daemon
+    from jenai.state.audit import AuditStore
+
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py")
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config_path = tmp_path / "config.toml"
+    rule = Rule(
+        name="battery-notify",
+        topic="/battery",
+        msg_type="sensor_msgs/msg/BatteryState",
+        fld="percentage",
+        below=0.5,
+        action="notify",
+        cooldown_s=0.0,
+    )
+
+    async def run() -> None:
+        decisions = []
+        task = asyncio.create_task(
+            run_daemon(
+                config,
+                config_path,
+                [rule],
+                on_decision=decisions.append,
+            )
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if decisions:
+                break
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    events = list(reversed(AuditStore(tmp_path / "audit.sqlite3").list_events()))
+    assert [event.event_type for event in events] == [
+        "event_triggered",
+        "event_action_finished",
+    ]
+    assert events[-1].status == "notified"
+    assert events[-1].details == {
+        "source": "/battery",
+        "field": "percentage",
+        "configured_action": "notify",
+        "reason": "notify",
+    }
+    assert "0.42" not in str(events)

@@ -10,13 +10,16 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from jenai.config.models import MapDatum
 from jenai.schemas import Location, Pose2D
 from jenai.secure_files import PRIVATE_FILE_MODE, atomic_write_text
 
 _EARTH_RADIUS_M = 6378137.0  # WGS-84 equatorial
+_DOCK_TAG = "dock"
+_DOCK_NAMES = frozenset({"dock", "充電站", "充电站", "charging station"})
 
 
-def gps_to_map_xy(datum, lat: float, lon: float) -> tuple[float, float]:
+def gps_to_map_xy(datum: MapDatum, lat: float, lon: float) -> tuple[float, float]:
     """lat/lon → map-frame metres via a local ENU tangent plane at the datum.
 
     Equirectangular approximation — centimetre-class error at campus scale
@@ -24,6 +27,8 @@ def gps_to_map_xy(datum, lat: float, lon: float) -> tuple[float, float]:
     bearing of map +x measured CCW from east, so a SLAM map that wasn't
     built axis-aligned to ENU still lands correctly.
     """
+    if datum.lat is None or datum.lon is None:
+        raise ValueError("map datum requires both lat and lon")
     east = math.radians(lon - datum.lon) * _EARTH_RADIUS_M * math.cos(math.radians(datum.lat))
     north = math.radians(lat - datum.lat) * _EARTH_RADIUS_M
     theta = math.radians(datum.yaw_deg)
@@ -143,9 +148,7 @@ def _find_index(locations: list[Location], name: str) -> int:
         if location.name.strip().lower() == normalized:
             return index
     known = ", ".join(location.name for location in locations)
-    raise LocationsFileError(
-        f"No location named '{name}'." + (f" Known: {known}" if known else "")
-    )
+    raise LocationsFileError(f"No location named '{name}'." + (f" Known: {known}" if known else ""))
 
 
 def remove_location(name: str, path: Path) -> Location:
@@ -208,6 +211,18 @@ def find_location(locations: list[Location], query: str, *, limit: int = 5) -> L
 
     fuzzy_query = lookup_forms[-1]
     raise LocationNotFoundError(query, _fuzzy_candidates(locations, fuzzy_query, limit=limit))
+
+
+def find_dock(locations: list[Location]) -> Location | None:
+    """Return the location registered as the site's Dock approach."""
+    for location in locations:
+        if any(tag.strip().lower() == _DOCK_TAG for tag in location.tags):
+            return location
+    for location in locations:
+        names = (location.name, *location.aliases)
+        if any(name.strip().lower() in _DOCK_NAMES for name in names):
+            return location
+    return None
 
 
 def _fuzzy_candidates(

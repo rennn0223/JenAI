@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import stat
 import tarfile
+from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -278,7 +279,6 @@ def find_prune_candidates(
     for category, directory, pattern in (
         ("sessions", paths.sessions, "*.json"),
         ("pending_runs", paths.pending_runs, "*.json"),
-        ("reports", paths.reports, "patrol-*.json"),
     ):
         for path in _safe_glob(directory, pattern):
             if path.absolute() in protected:
@@ -289,6 +289,15 @@ def find_prune_candidates(
                 continue
             if modified < cutoff:
                 candidates.append(PruneCandidate(category, path))
+    for path in _managed_report_files(paths.reports):
+        if path.absolute() in protected:
+            continue
+        try:
+            modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+        except OSError:
+            continue
+        if modified < cutoff:
+            candidates.append(PruneCandidate("reports", path))
 
     for path in _safe_glob(paths.traces, "*.jsonl"):
         if path.absolute() in protected:
@@ -300,9 +309,7 @@ def find_prune_candidates(
     if paths.audit.absolute() not in protected:
         stale_audit = _count_stale_audit_records(paths.audit, cutoff)
         if stale_audit:
-            candidates.append(
-                PruneCandidate("audit", paths.audit, stale_records=stale_audit)
-            )
+            candidates.append(PruneCandidate("audit", paths.audit, stale_records=stale_audit))
     return candidates
 
 
@@ -339,7 +346,7 @@ def prune_data(
     return removed_files, removed_records
 
 
-def _export_files(paths: DataPaths):
+def _export_files(paths: DataPaths) -> Iterator[tuple[str, Path, Path]]:
     protected = {
         paths.config.absolute(),
         paths.credentials.absolute(),
@@ -354,18 +361,40 @@ def _export_files(paths: DataPaths):
     for category, directory, pattern in (
         ("sessions", paths.sessions, "*.json"),
         ("pending_runs", paths.pending_runs, "*.json"),
-        ("reports", paths.reports, "patrol-*.json"),
         ("traces", paths.traces, "*.jsonl"),
     ):
         for source in _safe_glob(directory, pattern):
             if source.absolute() not in protected:
                 yield category, source, source.relative_to(directory)
+    for source in _managed_report_files(paths.reports):
+        if source.absolute() not in protected:
+            yield "reports", source, source.relative_to(paths.reports)
 
 
-def _safe_glob(directory: Path, pattern: str):
+def _safe_glob(directory: Path, pattern: str) -> Iterator[Path]:
     if not directory.is_dir() or directory.is_symlink():
         return
     for path in sorted(directory.rglob(pattern)):
+        if path.is_file() and not path.is_symlink():
+            yield path
+
+
+def _managed_report_files(directory: Path) -> Iterator[Path]:
+    """Yield only report formats owned by JenAI.
+
+    The reports directory is user-visible and may contain manually curated
+    JSON. Keep the lifecycle allow-list deliberately narrower than ``*.json``
+    so export/prune can never adopt unrelated files by accident.
+    """
+    if not directory.is_dir() or directory.is_symlink():
+        return
+    for path in sorted(directory.glob("patrol-*.json")):
+        if path.is_file() and not path.is_symlink():
+            yield path
+    tasks = directory / "tasks"
+    if not tasks.is_dir() or tasks.is_symlink():
+        return
+    for path in sorted(tasks.glob("task-*.json")):
         if path.is_file() and not path.is_symlink():
             yield path
 
@@ -458,14 +487,13 @@ def _count_stale_audit_records(path: Path, cutoff: datetime) -> int:
     if identity is None:
         return 0
     try:
-        with closing(
-            sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True)
-        ) as connection, connection:
+        with (
+            closing(sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True)) as connection,
+            connection,
+        ):
             if _single_link_regular_identity(path) != identity:
                 return 0
-            rows = connection.execute(
-                "SELECT occurred_at FROM audit_events"
-            ).fetchall()
+            rows = connection.execute("SELECT occurred_at FROM audit_events").fetchall()
     except (OSError, sqlite3.Error):
         return 0
     return sum(
@@ -483,14 +511,11 @@ def _prune_audit_records(path: Path, cutoff: datetime) -> int:
         with closing(sqlite3.connect(path)) as connection, connection:
             if _single_link_regular_identity(path) != identity:
                 return 0
-            rows = connection.execute(
-                "SELECT event_id, occurred_at FROM audit_events"
-            ).fetchall()
+            rows = connection.execute("SELECT event_id, occurred_at FROM audit_events").fetchall()
             stale_ids = [
                 int(event_id)
                 for event_id, value in rows
-                if (timestamp := _parse_timestamp(value)) is not None
-                and timestamp < cutoff
+                if (timestamp := _parse_timestamp(value)) is not None and timestamp < cutoff
             ]
             if stale_ids:
                 connection.executemany(

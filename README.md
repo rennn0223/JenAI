@@ -4,6 +4,9 @@
 
 JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人開發者設計。它整合大型語言模型、ROS2 工具鏈、視覺理解能力與 human-in-the-loop 批准機制，讓你能以自然語言規劃、執行、監控機器人任務。
 
+產品文件（目前為 owner-only 私有站）：
+[JenAI Documentation](https://jenai-docs.ren910223.chatgpt.site)
+
 ---
 
 ## 核心能力
@@ -11,20 +14,21 @@ JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人
 - **自然語言任務規劃與執行**：以 `/plan` 與 `/run` 驅動 agent 完成多步驟任務
 - **可見但不洩露私密思維的執行進度**：TUI 即時顯示理解、工具執行、驗證與完成階段；狀態查詢的量測數字由工具確定性產生，LLM 不得改寫
 - **ROS2 整合**：topics 探索、schema 解析、echo 監看、pub 控制
-- **即時導航**：`/route`、`/mission` 走 Nav2，剩餘距離即時顯示、Esc 真的取消 goal（rclpy bridge）
+- **即時導航**：`/route`、`/mission` 走 Nav2，剩餘距離即時顯示；Esc 會取消 goal 並補送零速度（rclpy bridge）
 - **有界自主巡遊**：`/explore` 在已儲存安全點位間低重複率隨機導航，具時間、目標數與連續失敗上限；自然語言 `/run` 亦可觸發同一能力
 - **地點管理**：`/loc add here <名字>` 抓機器人當下位置存檔，邊走邊建地圖點位
 - **視覺理解**：`/vision image <路徑>` 分析圖片；`/vision camera` 直接抓相機畫面問「你看到什麼」
 - **持續感知**：`/perception start` 相機→VLM 定頻迴圈，輸出結構化場景分析（affordances 可觸發 daemon 規則；只觀察，動作一律走批准）
 - **模型雲地隨切**：`/provider`、`/model` 即時切換 NVIDIA 雲端／本機 Ollama，含編號快選
-- **緊急停止**：TUI `/stop`、WebUI 紅色 STOP 鈕、MCP `stop` 工具——取消導航 + 送零速度,不需批准、忙碌中也能搶佔；bridge 端 watchdog 在 client 斷線時自動停車
-- **Human-in-the-loop 批准機制**：敏感操作一律暫停等待人工核准，Enter 批准、Esc 拒絕
+- **緊急停止**：TUI `/stop`、WebUI 紅色 STOP 鈕、MCP `stop` 工具——取消導航 + 送零速度,不需批准、忙碌中也能搶佔；bridge 端 watchdog 在 client 斷線時自動停車；halt/cancel 必須收到精確回執，缺失或畸形資料不會被誤報成功
+- **Human-in-the-loop 批准機制**：敏感操作一律暫停等待人工核准；選單明示 Yes／No，P2、主機命令與機器人控制皆預設 No，Esc 永遠拒絕
 - **TUI + WebUI 雙介面**：terminal 優先；WebUI 有對話 console、即時地圖、手機批准
 - **daemon 常駐模式**：`jenai daemon` 規則觸發（如電量低回充），預設只通報、明確授權才動作
 - **MCP server**：`jenai mcp` 把機器人工具開放給 Claude Code／Desktop 等 MCP client（預設唯讀，`--allow-actions` 才開放導航）
 - **權限三模式**：TUI Shift+Tab 循環切換「審批／規劃／自動」——裸自然語言依模式路由（規劃模式只產計畫不執行；自動模式只自動批准有界、非 host 的 P0/P1 動作並明示，HOST_COMMAND/P2 仍逐次詢問），急停與硬限速在任何模式都不放鬆
 - **Development copilot**：`JenAI scaffold "<描述>"` 自然語言生成 ROS2 套件（boilerplate 確定性生成 + LLM 寫 node 主體 + 送出前審閱；`--build` 生成即 colcon 驗證）；`skills/*.toml` 檔案定義技能擴充 slash 指令
 - **決策核心與評測**：`decision_core` 有界動作集單選決策（越界一律降級 refer）+ `JenAI eval` E1 場景評測（accuracy／unsafe rate／refer rate）
+- **可追溯任務閉環**：所有 TUI run 完成時自動保存結構化 task receipt（耗時、工具、批准、結果與標準失敗代碼）；`/report task`／`task list` 查詢。daemon 的規則觸發與動作結果寫入同一稽核庫，以 `/report event` 查看
 - **巡邏日報**：`/report` 確定性日報 + LLM 摘要（離線誠實降級），`/report list` 回看歷次
 
 ---
@@ -209,7 +213,18 @@ camera_topic = "/camera/image_raw"   # /vision camera 與 MCP camera_look 預設
 max_linear = 1.0            # m/s — 執行期硬限速(LLM/使用者給再大都會被夾住)。
 max_angular = 2.0           # rad/s — 以上為安全預設;依你的車實測後再調
                             # (例:Leatherback 用 2.0 / 0.53)
+arrival_position_tolerance_m = 0.25 # Nav2 success 後 JenAI 獨立核對的最大位置誤差
+arrival_yaw_tolerance_rad = 0.25    # 最大朝向誤差；Isaac 精準 profile 用 0.05 / 0.15
+odom_timeout_s = 1.0        # odom 超過此秒數未更新，直驅立即歸零並失敗
 ```
+
+`Nav2 SUCCEEDED` 只代表進入 Nav2 自己的 goal-checker 容差。JenAI 會再以終端
+feedback 位姿核對上述兩個上限；超出時即使 Nav2 回報成功，JenAI 仍會停止並誠實回報
+失敗。模擬器可使用較嚴格的 `0.05 m / 0.15 rad`；實車應依定位雜訊與機構能力校準。
+
+純 Isaac Sim 使用預設 `deployment_mode = "simulation"`；任何實體車可能上線前，將頂層
+設定改為 `deployment_mode = "physical"`。physical 模式若 `[twin].domain_id` 與目前
+`ROS_DOMAIN_ID` 相同，JenAI 會在取得控制 bridge 前直接擋下導航。
 
 ### 使用本地 Ollama
 
@@ -248,11 +263,11 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v2.1.0，2026-07）
+## 狀態（v2.2.0，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
-> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、忙碌時 FIFO 指令排隊（`/queue` 管理）、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（Nav2／odom 直驅雙路徑，剩餘距離+Esc 真取消）、depth stop-and-go 局部繞障（資料逾時即停）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/explore`（已知點位有界隨機巡遊）／`/dock`、`/loc add here|gps` 現場建點與 GPS 註冊、`/vision image|camera`、`/perception` 持續感知、`/report` 巡邏日報、`/model`／`/provider` 雲地即時切換。
+> ✅ **操作面**：串流聊天、`/plan`／`/run` 多-agent、忙碌時 FIFO 指令排隊（`/queue` 管理）、ROS2 工具全套、`/drive` 自然語言控車、`/route` 即時導航（產品路徑只走受監督 Nav2，剩餘距離+Esc 真取消；legacy odom 只供 bridge bring-up）、`/mission`／`/patrol`（循環巡邏+每點 VLM 拍照回報）／`/explore`（已知點位有界隨機巡遊）／`/dock`、`/loc add here|gps` 現場建點與 GPS 註冊、`/vision image|camera`、`/perception` 持續感知、`/report` 巡邏日報、`/model`／`/provider` 雲地即時切換。
 >
 > ✅ **介面**：Claude 風格 TUI（會動的吉祥物+權限三模式 Shift+Tab）、多頁 WebUI（Console／Camera／Status／API，token 認證+手機批准+即時地圖+STOP）、MCP server、daemon 常駐、`skills/*.toml` 檔案定義技能。全部走同一套共用原語（導航調度、急停、相機分析、地點載入各只有一份）。
 >

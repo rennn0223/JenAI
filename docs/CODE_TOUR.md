@@ -111,7 +111,7 @@
 - **為什麼**:
   - 事件配對靠 tag(見 bridge);`_heartbeat` 每 2 秒 ping 餵 watchdog ——
     client 活著就不觸發自主停車,client 死了 watchdog 才接手。
-  - `asyncio.CancelledError`(TUI Esc)→ `_cancel_quietly` 真的取消 Nav2 goal
+  - `asyncio.CancelledError`(TUI Esc)→ `_halt_quietly` 取消 Nav2 並補送零速度；缺 acknowledgement 不偽裝成功
     再往上拋:UI 放棄等待≠機器人停,必須顯式取消。
   - Twin Gate 掛在這裡:所有導航入口(TUI/MCP/mission/patrol/daemon)都經過
     這個函數,所以閘門不可能被繞過 —— 這就是「調度只寫一次」的安全意義。
@@ -242,7 +242,7 @@
   資訊查詢拆分 slash handler;
   `_request_direct_approval` 是**非 agent 動作的唯一批准管線**(v0.8 把 7 份
   複製收成 1 份);`auto_key` 讓 /dock 與 /route 的「記住批准」不互相洩漏。
-- **widgets/**:ApprovalCard(依風險顯示 2/3 個數字選項、P2 預選 No、Esc 拒絕)、Plan/Tool/Error blocks。
+- **widgets/**:ApprovalCard(依風險顯示 2/3 個數字選項；P2、host command、robot control 預選 No；Esc 拒絕)、Plan/Tool/Error blocks。
 - **help_content.py**:/help 的分組資料。
 
 ### `webui/`(server 492 / render 617 / commands 305)

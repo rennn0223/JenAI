@@ -41,11 +41,12 @@ jobs:
       HIL_CANCEL_GOAL: ${{ inputs.cancel_goal }}
       HIL_CONFIRMATION: ${{ inputs.confirmation }}
       HIL_REQUIRE_TWIN: ${{ inputs.require_twin }}
+      HIL_ROS_SETUP: ${{ vars.ROS_SETUP_PATH }}
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
           python-version: "3.12"
@@ -57,7 +58,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source /opt/ros/jazzy/setup.bash
+          ros_setup="${HIL_ROS_SETUP:-/home/nvidia/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash}"
+          if [[ ! -f "$ros_setup" ]]; then
+            echo "::error::ROS setup not found: $ros_setup"
+            exit 1
+          fi
+          source "$ros_setup"
+          export ROS_SETUP="$ros_setup"
           mkdir -p artifacts
           args=(
             --execute
@@ -90,7 +97,7 @@ jobs:
 
       - name: Upload immutable HIL evidence
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: isaac-hil-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/isaac-hil.json

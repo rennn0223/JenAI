@@ -99,6 +99,35 @@ def test_topic_info_parses_verbose_output(monkeypatch) -> None:
     assert info.subscribers == ["controller", "logger"]
 
 
+def test_parameter_get_returns_unquoted_value(monkeypatch) -> None:
+    monkeypatch.setattr(ros2_adapter.shutil, "which", lambda name: "/usr/bin/ros2")
+    monkeypatch.setattr(
+        ros2_adapter.subprocess,
+        "run",
+        lambda *a, **kw: _completed(stdout="'/chassis/odom'\n"),
+    )
+
+    assert ros2_adapter.parameter_get("/controller_server", "odom_topic") == "/chassis/odom"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr"),
+    [(1, "", "parameter not set"), (0, "\n", "")],
+)
+def test_parameter_get_rejects_failed_or_empty_response(
+    monkeypatch, returncode: int, stdout: str, stderr: str
+) -> None:
+    monkeypatch.setattr(ros2_adapter.shutil, "which", lambda name: "/usr/bin/ros2")
+    monkeypatch.setattr(
+        ros2_adapter.subprocess,
+        "run",
+        lambda *a, **kw: _completed(returncode=returncode, stdout=stdout, stderr=stderr),
+    )
+
+    with pytest.raises(ros2_adapter.Ros2CommandError):
+        ros2_adapter.parameter_get("/controller_server", "odom_topic")
+
+
 def test_interface_show_returns_raw_text(monkeypatch) -> None:
     monkeypatch.setattr(ros2_adapter.shutil, "which", lambda name: "/usr/bin/ros2")
     monkeypatch.setattr(

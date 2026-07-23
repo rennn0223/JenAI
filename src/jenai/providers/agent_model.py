@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import aclosing
 from typing import Any, Literal
 
-from agents import Model, OpenAIChatCompletionsModel, OpenAIResponsesModel
+from agents import (
+    Model,
+    ModelRetryAdvice,
+    ModelRetryAdviceRequest,
+    OpenAIChatCompletionsModel,
+    OpenAIResponsesModel,
+)
 from openai import AsyncOpenAI
 
 from jenai.config.models import AppConfig
@@ -39,7 +44,7 @@ class GenerationTimeoutModel(Model):
         self.delegate = delegate
         self.timeout_seconds = timeout_seconds
 
-    def get_retry_advice(self, request):
+    def get_retry_advice(self, request: ModelRetryAdviceRequest) -> ModelRetryAdvice | None:
         return self.delegate.get_retry_advice(request)
 
     async def get_response(self, *args: Any, **kwargs: Any) -> Any:
@@ -52,15 +57,19 @@ class GenerationTimeoutModel(Model):
             ) from exc
 
     async def stream_response(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        stream = self.delegate.stream_response(*args, **kwargs)
         try:
-            async with aclosing(self.delegate.stream_response(*args, **kwargs)) as stream:
-                async with asyncio.timeout(self.timeout_seconds):
-                    async for event in stream:
-                        yield event
+            async with asyncio.timeout(self.timeout_seconds):
+                async for event in stream:
+                    yield event
         except TimeoutError as exc:
             raise ModelGenerationTimeoutError(
                 f"Model generation exceeded {self.timeout_seconds:g} seconds."
             ) from exc
+        finally:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                await close()
 
 
 def make_agent_client(config: AppConfig) -> AsyncOpenAI:
@@ -96,7 +105,7 @@ def build_agent_model(
     model_name = resolved_model(config, profile, binding)
     client = client or make_agent_client(config)
     if profile.provider.lower() == "openai" and not profile.base_url:
-        delegate = OpenAIResponsesModel(model=model_name, openai_client=client)
+        delegate: Model = OpenAIResponsesModel(model=model_name, openai_client=client)
     else:
         delegate = OpenAIChatCompletionsModel(model=model_name, openai_client=client)
     return GenerationTimeoutModel(delegate, AGENT_REQUEST_TIMEOUT_SECONDS)

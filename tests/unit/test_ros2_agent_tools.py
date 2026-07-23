@@ -5,6 +5,20 @@ from jenai.tools import ros2_agent_tools
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 
 
+def test_agent_payload_parser_accepts_only_json_objects() -> None:
+    assert ros2_agent_tools._parse_payload_object('{"linear": {"x": 0.2}}') == {
+        "linear": {"x": 0.2}
+    }
+
+    for invalid in ("[]", '"forward"', "1", "null"):
+        try:
+            ros2_agent_tools._parse_payload_object(invalid)
+        except ValueError as exc:
+            assert "JSON object" in str(exc)
+        else:  # pragma: no cover - makes the failure message explicit
+            raise AssertionError(f"accepted non-object payload: {invalid}")
+
+
 def test_ros_pub_execute_requires_approval() -> None:
     assert ros2_agent_tools.ros_pub_execute_tool.needs_approval is True
 

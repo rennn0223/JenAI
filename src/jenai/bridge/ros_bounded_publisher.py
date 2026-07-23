@@ -13,6 +13,8 @@ import argparse
 import json
 import signal
 import time
+from types import FrameType
+from typing import Any
 
 import rclpy
 from rclpy.node import Node
@@ -20,7 +22,7 @@ from rosidl_runtime_py.set_message import set_message_fields
 from rosidl_runtime_py.utilities import get_message
 
 
-def _message(message_class, payload: str):
+def _message(message_class: Any, payload: str) -> Any:
     value = json.loads(payload)
     if not isinstance(value, dict):
         raise ValueError("message payload must be a JSON object")
@@ -42,7 +44,7 @@ def main() -> None:
 
     stop_requested = False
 
-    def request_stop(_signum, _frame) -> None:
+    def request_stop(_signum: int, _frame: FrameType | None) -> None:
         nonlocal stop_requested
         stop_requested = True
 
@@ -68,8 +70,7 @@ def main() -> None:
                 return
             if time.monotonic() >= match_deadline:
                 raise TimeoutError(
-                    f"no matching subscription on {args.topic} within "
-                    f"{args.match_timeout_s:g}s"
+                    f"no matching subscription on {args.topic} within {args.match_timeout_s:g}s"
                 )
             rclpy.spin_once(node, timeout_sec=0.05)
 

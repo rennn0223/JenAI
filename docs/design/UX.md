@@ -128,7 +128,7 @@ Approval card 出現時取得鍵盤焦點，採 Claude Code 風格的**編號選
   3. No
 ```
 
-`HOST_COMMAND` 或 P2 僅顯示一次性的 `Yes`／`No`；P2 預選 `No`。`↑/↓` 移動、`Enter` 選定，
+`HOST_COMMAND` 或 P2 僅顯示一次性的 `Yes`／`No`；P2、`HOST_COMMAND` 與機器人控制預選 `No`。`↑/↓` 移動、`Enter` 選定，
 或直接按畫面上存在的數字鍵；`Esc` 永遠拒絕。auto mode 與 session remember 都不可跳過
 HOST_COMMAND／P2，因此自然語言 agent 與直接 `/shell` 走相同邊界。
 
@@ -229,4 +229,3 @@ WebUI 是監控中心，不是主要操作介面。
 | 查看 tool call 細節 | 折疊 | 展開視覺化 |
 | Vision 結果 | 文字摘要 | 圖文並排 |
 | Settings | 基本 | 完整 |
-

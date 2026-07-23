@@ -57,14 +57,10 @@ def test_run_setup_wizard_local_preset_and_bad_choice_retry(tmp_path, monkeypatc
     assert not loaded.provider_profiles["local"].api_key_env
 
 
-def test_setup_moves_accidentally_pasted_nvidia_key_to_env(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_setup_moves_accidentally_pasted_nvidia_key_to_env(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "config.toml"
     secret = "nvapi-example-secret"
-    (tmp_path / ".env").write_text(
-        "export NVIDIA_API_KEY=old\nKEEP_ME=yes\n", encoding="utf-8"
-    )
+    (tmp_path / ".env").write_text("export NVIDIA_API_KEY=old\nKEEP_ME=yes\n", encoding="utf-8")
     _drive(
         monkeypatch,
         [

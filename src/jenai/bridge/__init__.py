@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
-from jenai.bridge.client import BridgeError, PoseInfo, RosBridgeClient
+from jenai.bridge.client import (
+    BridgeError,
+    MapCellInfo,
+    MapIdentityInfo,
+    NavPlanInfo,
+    PoseInfo,
+    RosBridgeClient,
+)
 
-__all__ = ["BridgeError", "PoseInfo", "RosBridgeClient"]
+__all__ = [
+    "BridgeError",
+    "MapCellInfo",
+    "MapIdentityInfo",
+    "NavPlanInfo",
+    "PoseInfo",
+    "RosBridgeClient",
+]

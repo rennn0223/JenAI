@@ -43,7 +43,7 @@ def test_detour_rounds_obstacle_dead_ahead() -> None:
 def test_detour_picks_the_open_side() -> None:
     ranges = [INF] * 15
     ranges[6] = ranges[7] = ranges[8] = 2.0
-    for blocked_side, sign in ((range(9, 15), 1.0), (range(0, 6), -1.0)):
+    for blocked_side, sign in ((range(9, 15), 1.0), (range(6), -1.0)):
         r = list(ranges)
         for i in blocked_side:
             r[i] = 1.8
@@ -107,6 +107,4 @@ def test_corridor_rotates_with_target_heading() -> None:
 
     assert corridor_nearest(ranges, angles, heading_err=0.0, half_width=0.2) == 1.0
     assert corridor_nearest(ranges, angles, heading_err=0.8, half_width=0.2) == 1.0
-    assert math.isinf(
-        corridor_nearest([1.0], [0.0], heading_err=0.8, half_width=0.2)
-    )
+    assert math.isinf(corridor_nearest([1.0], [0.0], heading_err=0.8, half_width=0.2))

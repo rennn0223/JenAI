@@ -29,6 +29,19 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
+class TaskOutcome(StrEnum):
+    """Operator-facing completion state, independent from run lifecycle."""
+
+    SUCCEEDED = "succeeded"
+    ARRIVED_UNVERIFIED = "arrived_unverified"
+    PARTIAL = "partial"
+    ENDPOINT_MISMATCH = "endpoint_mismatch"
+    BLOCKED = "blocked"
+    UNAVAILABLE = "unavailable"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class SessionMode(StrEnum):
     CHAT = "chat"
     ASSIST = "assist"
@@ -94,6 +107,28 @@ class ErrorType(StrEnum):
     TOOL_ERROR = "tool_error"
     APPROVAL_REJECTED = "approval_rejected"
     MODEL_ERROR = "model_error"
+
+
+class FailureCode(StrEnum):
+    """Stable, operator-facing reason for a non-successful task.
+
+    ``JenAIError`` retains implementation detail. This smaller vocabulary is
+    intended for reports, dashboards, experiments, and support metrics.
+    """
+
+    APPROVAL_REJECTED = "approval_rejected"
+    INTERRUPTED = "interrupted"
+    SAFETY_BLOCKED = "safety_blocked"
+    CONFIGURATION = "configuration"
+    ENVIRONMENT = "environment"
+    VALIDATION = "validation"
+    PROVIDER = "provider"
+    TOOL = "tool"
+    NAVIGATION = "navigation"
+    UNAVAILABLE = "unavailable"
+    BUSY = "busy"
+    TIMEOUT = "timeout"
+    UNKNOWN = "unknown"
 
 
 class DoctorStatus(StrEnum):
@@ -208,6 +243,7 @@ class RunRecord(JenAIModel):
     session_id: str
     user_input: str
     status: RunStatus = RunStatus.IDLE
+    outcome: TaskOutcome | None = None
     task_summary: str | None = None
     plan_steps: list[PlanStep] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
@@ -216,6 +252,34 @@ class RunRecord(JenAIModel):
     error: JenAIError | None = None
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
+
+
+class TaskActionReceipt(JenAIModel):
+    tool_name: str
+    status: ToolCallStatus
+    risk_level: RiskLevel
+    effect_scope: EffectScope
+    summary: str | None = None
+
+
+class TaskReceipt(JenAIModel):
+    """Durable, deterministic outcome for one terminal ``RunRecord``."""
+
+    schema_version: int = 2
+    run_id: str
+    session_id: str
+    request: str
+    status: RunStatus
+    outcome: TaskOutcome
+    failure_code: FailureCode | None = None
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int = Field(ge=0)
+    approval_requested: int = Field(ge=0)
+    approval_approved: int = Field(ge=0)
+    approval_rejected: int = Field(ge=0)
+    actions: list[TaskActionReceipt] = Field(default_factory=list)
+    result: str | None = None
 
 
 class SessionState(JenAIModel):

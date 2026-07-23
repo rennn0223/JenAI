@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from agents import (
@@ -25,17 +26,22 @@ from jenai.schemas import (
     ApprovalStatus,
     EffectScope,
     ErrorType,
+    FailureCode,
     JenAIError,
     RiskLevel,
     RunRecord,
     RunStatus,
+    TaskOutcome,
+    ToolCallStatus,
 )
 from jenai.schemas.models import new_id
+from jenai.state.task_receipts import classify_failure
 from jenai.tools.approval_formatters import format_approval
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tools.ros2_agent_tools import inspect_robot_state
 
 _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
+logger = logging.getLogger(__name__)
 
 # A discover → validate → execute → verify workflow commonly needs more than six
 # turns once an approval pause is included. Duplicate side-effect requests are
@@ -61,7 +67,7 @@ async def _append_failed_turn_memory(session_id: str) -> None:
         await session.add_items([{"role": "assistant", "content": _FAILED_TURN_MEMORY}])
     except Exception:
         # Conversation memory is best-effort; never hide the original run error.
-        pass
+        logger.warning("Failed to append recovery memory for session %s", session_id, exc_info=True)
 
 
 async def start_run(
@@ -112,7 +118,12 @@ async def start_read_only_state_run(ctx: JenAIRunContext) -> RunRecord:
         return run
 
     final_output = _deterministic_state_report(run) or _tool_result_summary(run)
-    run_store.finish(run, status=RunStatus.COMPLETED, final_output=final_output)
+    run_store.finish(
+        run,
+        status=RunStatus.COMPLETED,
+        outcome=TaskOutcome.SUCCEEDED,
+        final_output=final_output,
+    )
     return run
 
 
@@ -194,7 +205,12 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
         final_output = (
             _deterministic_state_report(run) or _final_text(result) or _tool_result_summary(run)
         )
-        run_store.finish(run, status=RunStatus.COMPLETED, final_output=final_output)
+        run_store.finish(
+            run,
+            status=RunStatus.COMPLETED,
+            outcome=_completed_agent_outcome(run),
+            final_output=final_output,
+        )
         return run
 
     # Build the approval request for each raised interruption. A weak model (or
@@ -249,6 +265,19 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
     run_store.set_status(run, RunStatus.AWAITING_APPROVAL)
     run_store.stash_pending_state(run.run_id, state, approval_ids)
     return run
+
+
+def _completed_agent_outcome(run: RunRecord) -> TaskOutcome:
+    """Derive completion only from recorded tools, preserving domain-specific outcomes."""
+
+    if run.outcome is not None:
+        return TaskOutcome(run.outcome)
+    if any(call.status == ToolCallStatus.FAILED for call in run.tool_calls):
+        failure_code = classify_failure(run)
+        if failure_code == FailureCode.UNAVAILABLE:
+            return TaskOutcome.UNAVAILABLE
+        return TaskOutcome.FAILED
+    return TaskOutcome.SUCCEEDED
 
 
 def _final_text(result: Any) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 from contextlib import closing
@@ -10,6 +11,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,7 @@ class AuditStore:
         try:
             return cls(path, max_events=max_events)
         except (OSError, sqlite3.Error):
+            logger.warning("Audit store could not be opened at %s", path, exc_info=True)
             return None
 
     def _connect(self) -> sqlite3.Connection:
@@ -79,9 +83,7 @@ class AuditStore:
         details: dict[str, Any] | None = None,
     ) -> int:
         occurred_at = datetime.now(UTC).isoformat()
-        details_json = json.dumps(
-            details or {}, ensure_ascii=False, allow_nan=False, default=str
-        )
+        details_json = json.dumps(details or {}, ensure_ascii=False, allow_nan=False, default=str)
         with closing(self._connect()) as connection, connection:
             cursor = connection.execute(
                 """

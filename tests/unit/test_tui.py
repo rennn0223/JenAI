@@ -85,7 +85,8 @@ def test_tui_uses_claude_transcript_markers_and_flat_approval_copy() -> None:
     assert "May move the connected robot or simulator." in rendered
     assert "1. Yes" in rendered
     assert "2. Yes, and remember this tool for this session" in rendered
-    assert "3. No" in rendered
+    assert "❯ 3. No" in rendered
+    assert card._selected == 2
     assert "Esc to cancel" in rendered
 
 
@@ -442,7 +443,7 @@ def test_tui_drive_natural_language_shows_card_and_executes(monkeypatch) -> None
             assert len(cards) == 1
             assert "forward" in cards[0].approval.title
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             assert executed["duration"] == 2.0
             assert executed["payload"]["linear"]["x"] > 0
@@ -479,7 +480,7 @@ def test_tui_ros_drive_shows_card_and_executes_on_approve(monkeypatch) -> None:
             assert len(cards) == 1
             assert "for 2" in cards[0].approval.title
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             assert executed == {"topic": "/cmd_vel", "duration": 2.0}
             assert list(app.query(ApprovalCard)) == []
@@ -665,7 +666,7 @@ def test_tui_mission_shows_card_and_runs(monkeypatch) -> None:
             assert len(cards) == 1
             assert "2 steps" in cards[0].approval.title
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             # Approved actions now run as the cancellable active task.
             if app._active_task is not None:
@@ -806,8 +807,9 @@ def test_tui_shell_shows_card_and_executes_on_approve(monkeypatch) -> None:
             cards = list(app.query(ApprovalCard))
             assert len(cards) == 1
             assert cards[0].approval.effect_scope == "host_command"
+            assert cards[0]._selected == 1  # P2 defaults to No
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             assert executed == ["echo hi"]
 
@@ -862,7 +864,7 @@ def test_tui_ros_pub_shows_card_and_resolves_on_approve(monkeypatch) -> None:
             assert len(cards) == 1
             assert cards[0].approval.risk_level == "p1"
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             assert list(app.query(ApprovalCard)) == []
 
@@ -942,7 +944,7 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
             cards = list(app.query(ApprovalCard))
             assert len(cards) == 1
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             assert list(app.query(ApprovalCard)) == []
 
@@ -1054,7 +1056,7 @@ def test_tui_permissions_and_provider_commands() -> None:
             panels = [w for w in app.query_one("#events").children if hasattr(w, "title")]
             permissions = next(p for p in panels if p.title == "Permissions")
             assert "HOST_COMMAND and P2 always require a fresh decision" in permissions.body
-            assert "P2 prompts default to No" in permissions.body
+            assert "P2, host-command, and robot-control prompts default to No" in permissions.body
             assert any(p.title == "Provider" for p in panels)
 
     asyncio.run(run())
@@ -1139,7 +1141,7 @@ def test_tui_run_command_full_approval_cycle(monkeypatch) -> None:
             cards = list(app.query(ApprovalCard))
             assert len(cards) == 1
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             assert list(app.query(ApprovalCard)) == []
             assert call_count["n"] == 2
@@ -1307,7 +1309,7 @@ signal.signal(signal.SIGTERM, stop)
 pid_file.write_text(str(os.getpid()))
 with events.open("a") as stream:
     stream.write("publisher-started\\n")
-deadline = time.monotonic() + 0.4
+deadline = time.monotonic() + 3.0
 while running and time.monotonic() < deadline:
     time.sleep(0.01)
 with events.open("a") as stream:
@@ -1408,7 +1410,7 @@ def test_tui_patrol_shows_card_and_runs(monkeypatch) -> None:
             assert len(cards) == 1
             assert "4 waypoints" in cards[0].approval.title  # 2 points × 2 loops
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             if app._active_task is not None:
                 await app._active_task
@@ -1461,7 +1463,7 @@ def test_tui_explore_shows_bounded_card_and_runs(monkeypatch) -> None:
             assert "A, B" in cards[0].approval.summary
             assert "same seed repeats" in cards[0].approval.summary
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             if app._active_task is not None:
                 await app._active_task
@@ -1520,11 +1522,12 @@ def test_tui_dock_routes_to_tagged_location(monkeypatch, tmp_path) -> None:
             assert len(cards) == 1
             assert "Charger" in cards[0].approval.title
 
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             if app._active_task is not None:
                 await app._active_task
             assert sent["goal"] == "Charger"
+            assert app._current_run().outcome == "arrived_unverified"
 
     asyncio.run(run())
 
@@ -1848,7 +1851,7 @@ def test_tui_perception_start_and_stop(monkeypatch, tmp_path) -> None:
 def test_tui_report_command_no_logs_then_latest(monkeypatch, tmp_path: Path) -> None:
     """/report warns when no patrol ran yet; with a log it renders the
     deterministic body and degrades honestly when the LLM digest fails."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from jenai.state.reports import save_patrol_log
     from jenai.tools.skills import PatrolReport, PatrolSpec, PatrolStepResult
@@ -1862,7 +1865,11 @@ def test_tui_report_command_no_logs_then_latest(monkeypatch, tmp_path: Path) -> 
 
             report = PatrolReport(spec=PatrolSpec(points=["A"]))
             report.results = [PatrolStepResult(1, "A", "succeeded", "reached")]
-            save_patrol_log(report, app.config_path, now=datetime(2026, 7, 4, 12, 0))
+            save_patrol_log(
+                report,
+                app.config_path,
+                now=datetime(2026, 7, 4, 12, 0, tzinfo=UTC),
+            )
 
             async def no_digest(config, log):
                 return None
@@ -1910,7 +1917,7 @@ def test_tui_route_from_a_to_b_runs_ordered_two_stop(monkeypatch, tmp_path) -> N
             cards = list(app.query(ApprovalCard))
             assert len(cards) == 1
             assert "應科大樓 → 機械系館" in cards[0].approval.title
-            await pilot.press("enter")
+            await pilot.press("1")
             await pilot.pause()
             if app._active_task is not None:
                 await app._active_task
@@ -2011,9 +2018,7 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
         app = _app()
         async with app.run_test():
             await app.handle_user_text("帶我去機械系館")  # approve → agent
-            await app.handle_user_text(
-                "檢查位置、雷射與 Nav2 狀態，不要移動機器人。"
-            )
+            await app.handle_user_text("檢查位置、雷射與 Nav2 狀態，不要移動機器人。")
             await app.handle_user_text("檢查 Nav2 狀態，然後回到 dock。")
             app._mode = "plan"
             await app.handle_user_text("帶我去機械系館")  # plan → planner
@@ -2156,5 +2161,38 @@ def test_ctrl_c_quits_while_composer_focused() -> None:
             await pilot.press("ctrl+c")
         # exit() stamps return_code; a plain test-harness shutdown leaves it None.
         assert app.return_code is not None
+
+    asyncio.run(run())
+
+
+def test_tui_report_task_and_event_records(tmp_path: Path) -> None:
+    """Structured receipts and daemon events are readable without an LLM."""
+    import asyncio
+
+    from jenai.schemas import RunStatus
+    from jenai.state.audit import AuditStore
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        async with app.run_test():
+            task = app.run_store.create_run(app.session.session_id, "inspect the robot")
+            app.run_store.finish(task, status=RunStatus.COMPLETED, final_output="robot ready")
+            await app.handle_user_text("/report task")
+            panels = [item for item in app.query_one("#events").children if hasattr(item, "title")]
+            assert any("Task receipt" in item.title for item in panels)
+            assert any("inspect the robot" in item.body for item in panels)
+
+            audit = AuditStore(tmp_path / "audit.sqlite3")
+            audit.record(
+                "event_triggered",
+                entity_id="battery-low",
+                status="fired",
+                summary="notify",
+                details={"source": "/battery"},
+            )
+            await app.handle_user_text("/report event")
+            panels = [item for item in app.query_one("#events").children if hasattr(item, "title")]
+            assert any("Event records" in item.title for item in panels)
+            assert any("battery-low" in item.body for item in panels)
 
     asyncio.run(run())

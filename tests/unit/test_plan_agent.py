@@ -83,6 +83,7 @@ def test_run_plan_flags_steps_that_use_approval_gated_tools(monkeypatch) -> None
         description="publish to a ROS2 topic",
     )
     try:
+
         async def fake_run(agent, task_input, *, context=None, **kwargs):
             plan_output = PlanOutput(
                 task_summary="Move forward",
@@ -129,7 +130,6 @@ def test_review_plan_replaces_plan_steps(monkeypatch) -> None:
     assert result.plan_steps[0].title == "Better step"
     assert result.status == "completed"
     assert result.final_output == "revised"
-
 
 
 def test_plan_and_review_install_local_tracing_before_runner(monkeypatch) -> None:

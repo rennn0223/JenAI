@@ -46,9 +46,7 @@ def test_analyze_image_maps_vlm_json(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(vision_core, "ask_vision_json", fake_vision_json)
 
-    output = asyncio.run(
-        vision_core.analyze_image(_config(), str(image), task_context="patrol")
-    )
+    output = asyncio.run(vision_core.analyze_image(_config(), str(image), task_context="patrol"))
     assert output.summary == "A robot in a hallway."
     assert output.objects == ["robot", "door"]
     assert output.anomalies == ["spill"]

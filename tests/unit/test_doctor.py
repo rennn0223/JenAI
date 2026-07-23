@@ -106,7 +106,13 @@ def test_nav_stack_checks_read_the_graph(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.list_topics",
-        lambda *, timeout=5.0: ["/map", "/amcl_pose", "/scan", "/cmd_vel"],
+        lambda *, timeout=5.0: [
+            "/map",
+            "/amcl_pose",
+            "/scan",
+            "/cmd_vel",
+            "/chassis/odom",
+        ],
     )
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.list_actions",
@@ -116,14 +122,67 @@ def test_nav_stack_checks_read_the_graph(monkeypatch, tmp_path) -> None:
     from jenai.adapters.ros2_adapter import TopicInfo
 
     monkeypatch.setattr(
+        "jenai.adapters.ros2_adapter.parameter_get",
+        lambda node, parameter, *, timeout=5.0: "/chassis/odom",
+    )
+
+    def topic_info(topic: str, *, timeout: float = 5.0) -> TopicInfo:
+        if topic == "/chassis/odom":
+            return TopicInfo(
+                name=topic,
+                publisher_count=1,
+                subscriber_count=1,
+                publishers=["carter"],
+                subscribers=["controller_server"],
+            )
+        return TopicInfo(name=topic, subscriber_count=2)
+
+    monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.topic_info",
-        lambda topic, *, timeout=5.0: TopicInfo(name=topic, subscriber_count=2),
+        topic_info,
     )
 
     items = _check_nav_stack(None)
 
     assert [i.check_name for i in items] == ["map", "localization", "laser", "nav2", "cmd_vel"]
     assert all(str(i.status) == "pass" for i in items)
+
+
+def test_nav_stack_warns_when_controller_odom_has_no_publisher(monkeypatch) -> None:
+    from jenai.adapters.ros2_adapter import TopicInfo
+    from jenai.doctor.checks import _check_nav_stack
+
+    monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
+    monkeypatch.setattr(
+        "jenai.adapters.ros2_adapter.list_topics",
+        lambda *, timeout=5.0: ["/map", "/amcl_pose", "/scan", "/cmd_vel", "/odom"],
+    )
+    monkeypatch.setattr(
+        "jenai.adapters.ros2_adapter.list_actions",
+        lambda *, timeout=5.0: ["/navigate_to_pose"],
+    )
+    monkeypatch.setattr(
+        "jenai.adapters.ros2_adapter.parameter_get",
+        lambda node, parameter, *, timeout=5.0: "/odom",
+    )
+
+    def topic_info(topic: str, *, timeout: float = 5.0) -> TopicInfo:
+        if topic == "/odom":
+            return TopicInfo(
+                name=topic,
+                publisher_count=0,
+                subscriber_count=1,
+                subscribers=["controller_server"],
+            )
+        return TopicInfo(name=topic, subscriber_count=1)
+
+    monkeypatch.setattr("jenai.adapters.ros2_adapter.topic_info", topic_info)
+
+    nav2 = next(item for item in _check_nav_stack(None) if item.check_name == "nav2")
+
+    assert nav2.status == "warn"
+    assert "/odom" in nav2.message
+    assert "odom_topic" in (nav2.fix_suggestion or "")
 
 
 def test_nav_stack_warns_and_points_at_onboarding(monkeypatch) -> None:
@@ -173,6 +232,7 @@ def test_twin_isolation_fails_when_domains_collide(monkeypatch) -> None:
     )
     config.twin.enabled = True
     config.twin.domain_id = 7
+    config.deployment_mode = "physical"
     monkeypatch.setenv("ROS_DOMAIN_ID", "7")
     items = _check_twin(config)
     assert [i.check_name for i in items] == ["twin_isolation"]

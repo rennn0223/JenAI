@@ -15,6 +15,13 @@ def emit(payload: dict) -> None:
 
 def main() -> None:
     emit({"event": "ready"})
+    pose = {
+        "x": 1.5,
+        "y": -2.0,
+        "yaw": 0.5,
+        "frame_id": "map",
+        "source": "/amcl_pose",
+    }
     for line in sys.stdin:
         req = json.loads(line)
         req_id, op = req.get("id"), req.get("op")
@@ -28,16 +35,60 @@ def main() -> None:
         elif op == "watchdog":
             emit({"id": req_id, "ok": True, "result": {"watchdog_s": req.get("timeout", 0.0)}})
         elif op == "pose":
+            emit({"id": req_id, "ok": True, "result": dict(pose)})
+        elif op == "map_identity":
             emit(
                 {
                     "id": req_id,
                     "ok": True,
                     "result": {
-                        "x": 1.5,
-                        "y": -2.0,
-                        "yaw": 0.5,
+                        "algorithm": "sha256-occupancy-grid-v1",
+                        "digest": "a" * 64,
+                        "width": 20,
+                        "height": 30,
+                        "resolution": 0.05,
+                        "origin_x": -1.0,
+                        "origin_y": -2.0,
+                        "origin_yaw": 0.0,
                         "frame_id": "map",
-                        "source": "/amcl_pose",
+                        "source": "/map",
+                    },
+                }
+            )
+        elif op == "map_cell":
+            emit(
+                {
+                    "id": req_id,
+                    "ok": True,
+                    "result": {
+                        "in_bounds": True,
+                        "free": True,
+                        "value": 0,
+                        "cell_x": 4,
+                        "cell_y": 6,
+                        "width": 20,
+                        "height": 30,
+                        "resolution": 0.05,
+                        "origin_x": -1.0,
+                        "origin_y": -2.0,
+                        "frame_id": "map",
+                        "source": "/map",
+                    },
+                }
+            )
+        elif op == "nav_plan":
+            emit(
+                {
+                    "id": req_id,
+                    "ok": True,
+                    "result": {
+                        "feasible": True,
+                        "pose_count": 12,
+                        "path_length_m": 4.25,
+                        "planning_time_s": 0.02,
+                        "error_code": 0,
+                        "error_name": "NONE",
+                        "error_message": "",
                     },
                 }
             )
@@ -58,13 +109,34 @@ def main() -> None:
             emit({"id": req_id, "ok": True, "result": {"watch_id": req["watch_id"]}})
         elif op == "nav_send":
             tag = req.get("tag", "")
+            pose.update(
+                x=req["x"],
+                y=req["y"],
+                yaw=req.get("yaw", 0.0),
+                frame_id=req.get("frame_id", "map"),
+                source="nav2_feedback",
+            )
             # A stale event from a "previous goal" first — clients must ignore it.
             emit({"event": "nav_result", "tag": "stale-goal", "status": "canceled"})
             emit({"event": "nav_feedback", "tag": tag, "distance_remaining": 3.2, "elapsed": 1.0})
             emit({"id": req_id, "ok": True, "result": {"sent": True}})
-            emit({"event": "nav_result", "tag": tag, "status": "succeeded"})
+            emit(
+                {
+                    "event": "nav_result",
+                    "tag": tag,
+                    "status": "succeeded",
+                    "final_pose": dict(pose),
+                }
+            )
         elif op == "drive_to_pose":
             tag = req.get("tag", "")
+            pose.update(
+                x=req["x"],
+                y=req["y"],
+                yaw=req.get("yaw", 0.0),
+                frame_id="odom",
+                source="/odom",
+            )
             emit({"event": "nav_feedback", "tag": tag, "distance_remaining": 1.5, "elapsed": 0.5})
             emit({"id": req_id, "ok": True, "result": {"sent": True}})
             emit({"event": "nav_result", "tag": tag, "status": "succeeded"})

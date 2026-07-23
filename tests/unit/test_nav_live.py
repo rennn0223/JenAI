@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.bridge import BridgeError, NavPlanInfo, RosBridgeClient
 from jenai.bridge import client as client_module
+from jenai.config.models import VehicleProfile
 from jenai.schemas import GateReport, Location, Pose2D, RouteOutput
 from jenai.tools.mission_core import parse_mission, run_mission
 from jenai.tools.nav_live import NavigationCancelled, navigate_live
@@ -25,6 +26,18 @@ def fake_bridge(monkeypatch):
 ACTION = {"goal": {"name": "Kitchen", "frame_id": "map", "pose": {"x": 2.0, "y": 1.5, "yaw": 0.0}}}
 
 
+def _feasible_plan() -> NavPlanInfo:
+    return NavPlanInfo(
+        feasible=True,
+        pose_count=10,
+        path_length_m=3.0,
+        planning_time_s=0.01,
+        error_code=0,
+        error_name="NONE",
+        error_message="",
+    )
+
+
 def test_navigate_live_success_with_progress(fake_bridge) -> None:
     async def run() -> None:
         client = RosBridgeClient()
@@ -32,8 +45,63 @@ def test_navigate_live_success_with_progress(fake_bridge) -> None:
         output = await navigate_live(client, ACTION, on_progress=progress.append)
         assert output.execution_status == "succeeded"
         assert "Arrived" in output.route_preview
+        assert "position error 0.000 m" in output.route_preview
         assert progress and progress[0].distance_remaining == 3.2
         await client.stop()
+
+    asyncio.run(run())
+
+
+def test_navigate_live_rejects_nav2_success_outside_endpoint_tolerance() -> None:
+    class InexactBridge:
+        def __init__(self) -> None:
+            self.handlers: dict[str, list] = {}
+            self.halted = 0
+
+        def on_event(self, event: str, handler) -> None:
+            self.handlers.setdefault(event, []).append(handler)
+
+        def off_event(self, event: str, handler) -> None:
+            self.handlers[event].remove(handler)
+
+        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+            return _feasible_plan()
+
+        async def nav_send(self, **kwargs) -> None:
+            event = {
+                "event": "nav_result",
+                "tag": kwargs["tag"],
+                "status": "succeeded",
+                "final_pose": {
+                    "x": 2.08,
+                    "y": 1.5,
+                    "yaw": 0.0,
+                    "frame_id": "map",
+                    "source": "nav2_feedback",
+                },
+            }
+            for handler in self.handlers["nav_result"]:
+                handler(event)
+
+        async def halt(self) -> bool:
+            self.halted += 1
+            return True
+
+        async def ping(self) -> bool:
+            return True
+
+    async def run() -> None:
+        bridge = InexactBridge()
+        vehicle = VehicleProfile(
+            arrival_position_tolerance_m=0.05,
+            arrival_yaw_tolerance_rad=0.15,
+        )
+        output = await navigate_live(bridge, ACTION, vehicle=vehicle)
+
+        assert output.execution_status == "endpoint_mismatch"
+        assert "Nav2 reported success" in output.route_preview
+        assert "position error 0.080 m (limit 0.050 m)" in output.route_preview
+        assert bridge.halted == 1
 
     asyncio.run(run())
 
@@ -41,14 +109,61 @@ def test_navigate_live_success_with_progress(fake_bridge) -> None:
 def test_navigate_live_reports_unavailable_when_bridge_fails(fake_bridge, monkeypatch) -> None:
     async def run() -> None:
         client = RosBridgeClient()
+        halted = 0
 
         async def failing_send(**_kw) -> None:
             raise BridgeError("Nav2 (/navigate_to_pose) action server is not running.")
 
+        async def emergency_halt(**_kw) -> bool:
+            nonlocal halted
+            halted += 1
+            return True
+
         monkeypatch.setattr(client, "nav_send", failing_send)
+        monkeypatch.setattr(client, "halt", emergency_halt)
+        try:
+            output = await navigate_live(client, ACTION)
+            assert output.execution_status == "unavailable"
+            assert "goal acceptance is unknown" in output.route_preview
+            assert "Do not assume that no movement occurred" in output.route_preview
+            assert "halt was delivered" in output.route_preview
+            assert halted == 1
+        finally:
+            # navigate_live borrows its bridge; the owner must always close it.
+            await client.stop()
+
+    asyncio.run(run())
+
+
+def test_navigate_live_refuses_unplannable_goal_without_sending_it(
+    fake_bridge, monkeypatch
+) -> None:
+    async def run() -> None:
+        client = RosBridgeClient()
+
+        async def blocked_plan(**_kwargs) -> NavPlanInfo:
+            return NavPlanInfo(
+                feasible=False,
+                pose_count=0,
+                path_length_m=0.0,
+                planning_time_s=0.0,
+                error_code=208,
+                error_name="NO_VALID_PATH",
+                error_message="",
+            )
+
+        async def must_not_send(**_kwargs) -> None:
+            raise AssertionError("nav_send ran after an unplannable preflight")
+
+        monkeypatch.setattr(client, "nav_plan", blocked_plan)
+        monkeypatch.setattr(client, "nav_send", must_not_send)
+
         output = await navigate_live(client, ACTION)
-        assert output.execution_status == "unavailable"
+
+        assert output.execution_status == "failed"
+        assert "NO_VALID_PATH" in output.route_preview
         assert "NOT sent" in output.route_preview
+        await client.stop()
 
     asyncio.run(run())
 
@@ -80,7 +195,10 @@ def test_navigate_live_cancellation_preserves_nav2_acknowledgement(acknowledged:
         async def nav_send(self, **_kwargs) -> None:
             self.sent.set()
 
-        async def nav_cancel(self) -> bool:
+        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+            return _feasible_plan()
+
+        async def halt(self) -> bool:
             return acknowledged
 
         async def ping(self) -> bool:
@@ -118,7 +236,10 @@ def test_navigate_live_timeout_reports_cancel_acknowledgement(acknowledged: bool
         async def nav_send(self, **_kwargs) -> None:
             return None
 
-        async def nav_cancel(self) -> bool:
+        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+            return _feasible_plan()
+
+        async def halt(self) -> bool:
             return acknowledged
 
         async def ping(self) -> bool:
@@ -129,13 +250,43 @@ def test_navigate_live_timeout_reports_cancel_acknowledgement(acknowledged: bool
 
         assert output.execution_status == "failed"
         expected = (
-            "Nav2 cancellation acknowledged."
+            "halt was delivered and Nav2 cancellation acknowledged."
             if acknowledged
-            else "Nav2 cancellation was not acknowledged."
+            else "halt was delivered, but active Nav2 cancellation was not acknowledged."
         )
         assert expected in output.route_preview
 
     asyncio.run(run())
+
+
+def test_navigate_live_reports_when_ambiguous_dispatch_cannot_be_halted() -> None:
+    class BrokenBridge:
+        def __init__(self) -> None:
+            self.handlers: dict[str, list] = {}
+
+        def on_event(self, event: str, handler) -> None:
+            self.handlers.setdefault(event, []).append(handler)
+
+        def off_event(self, event: str, handler) -> None:
+            self.handlers[event].remove(handler)
+
+        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+            return _feasible_plan()
+
+        async def nav_send(self, **_kwargs) -> None:
+            raise BridgeError("response channel closed")
+
+        async def halt(self) -> bool:
+            raise BridgeError("halt channel unavailable")
+
+        async def ping(self) -> bool:
+            return True
+
+    output = asyncio.run(navigate_live(BrokenBridge(), ACTION))
+
+    assert output.execution_status == "unavailable"
+    assert "goal acceptance is unknown" in output.route_preview
+    assert "Emergency halt could not be delivered or confirmed" in output.route_preview
 
 
 def test_run_mission_uses_injected_navigator() -> None:
@@ -176,6 +327,7 @@ def test_navigate_live_direct_mode_uses_drive_to_pose(fake_bridge) -> None:
         cmd_vel_stamped = False
         max_linear = 1.5
         max_angular = 0.53
+        odom_timeout_s = 0.75
 
     async def run() -> None:
         client = RosBridgeClient()
@@ -224,9 +376,30 @@ def test_navigate_with_fallback_odom_dispatches_direct(fake_bridge, monkeypatch)
         out = await navigate_with_fallback(config, get_bridge, ACTION)
         assert out.execution_status == "succeeded"
         assert seen["x"] == 2.0 and seen["y"] == 1.5  # goal reached drive_to_pose
+        assert seen["odom_timeout_s"] == 1.0
         await client.stop()
 
     asyncio.run(run())
+
+
+def test_navigate_with_fallback_fails_closed_when_bridge_cannot_start(monkeypatch) -> None:
+    from jenai.config.store import build_minimal_config
+    from jenai.tools.nav_live import navigate_with_fallback
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "nav2"
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    async def broken_bridge() -> RosBridgeClient:
+        raise BridgeError("watchdog could not be armed")
+
+    output = asyncio.run(navigate_with_fallback(config, broken_bridge, ACTION))
+
+    assert output.execution_status == "unavailable"
+    assert "NOT sent" in output.route_preview
+    assert "no unsafe fallback" in output.route_preview
 
 
 def test_navigate_with_fallback_surfaces_structured_gate_report(monkeypatch) -> None:
@@ -389,6 +562,9 @@ def test_navigate_live_surfaces_localization_jump_reason(terminal_status: str) -
                         ),
                     }
                 )
+
+        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+            return _feasible_plan()
 
         async def ping(self) -> bool:
             return True

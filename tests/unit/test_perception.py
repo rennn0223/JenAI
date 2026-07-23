@@ -170,9 +170,7 @@ def test_perception_loop_ticks_and_stops(monkeypatch, tmp_path: Path) -> None:
         async def on_analysis(analysis: SceneAnalysis) -> None:
             seen.append(analysis)
 
-        loop = PerceptionLoop(
-            _config(), bridge, topic="/rgb", hz=20.0, on_analysis=on_analysis
-        )
+        loop = PerceptionLoop(_config(), bridge, topic="/rgb", hz=20.0, on_analysis=on_analysis)
         await loop.start()
         assert loop.running
         for _ in range(100):

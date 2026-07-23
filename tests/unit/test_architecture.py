@@ -64,9 +64,11 @@ def test_reflex_layer_never_imports_the_llm_stack() -> None:
     for rel in _REFLEX_MODULES:
         path = SRC / rel
         assert path.is_file(), f"iron-rule module moved? {rel}"
-        for name in _imports_of(path):
-            if name.startswith(_LLM_IMPORT_PREFIXES):
-                violations.append(f"{rel} imports {name}")
+        violations.extend(
+            f"{rel} imports {name}"
+            for name in _imports_of(path)
+            if name.startswith(_LLM_IMPORT_PREFIXES)
+        )
     assert not violations, (
         "Reflex/safety layer must survive a dead LLM — remove these imports:\n"
         + "\n".join(violations)
@@ -89,7 +91,7 @@ def test_layers_above_vehicle_profile_stay_vehicle_agnostic() -> None:
 
 
 def test_navigation_surfaces_cannot_bypass_the_gateway() -> None:
-    allowed = {"tools/nav_live.py", "tools/navigation_gateway.py", "tools/route_core.py"}
+    allowed = {"tools/navigation_gateway.py", "tools/route_core.py"}
     violations: list[str] = []
     for path in SRC.rglob("*.py"):
         rel = str(path.relative_to(SRC))
@@ -102,6 +104,55 @@ def test_navigation_surfaces_cannot_bypass_the_gateway() -> None:
             if isinstance(node, ast.Name) and node.id == "navigate_with_fallback":
                 violations.append(f"{rel}:{node.lineno} bypasses NavigationGateway")
     assert not violations, "Navigation must go through NavigationGateway:\n" + "\n".join(violations)
+
+
+# Functions over this teaching-code ceiling are prohibited. Keeping this map
+# empty makes any future exception an explicit, reviewable source change.
+_OVERSIZED_FUNCTION_BUDGETS: dict[tuple[str, str], int] = {}
+
+
+def test_function_size_debt_can_only_shrink() -> None:
+    found_oversized: dict[tuple[str, str], int] = {}
+    violations: list[str] = []
+    for path in SRC.rglob("*.py"):
+        relative = path.relative_to(SRC).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.end_lineno is None:
+                continue
+            lines = node.end_lineno - node.lineno + 1
+            if lines <= 120:
+                continue
+            key = (relative, node.name)
+            found_oversized[key] = lines
+            budget = _OVERSIZED_FUNCTION_BUDGETS.get(key)
+            if budget is None:
+                violations.append(f"{relative}:{node.lineno} {node.name} grew to {lines} lines")
+            elif lines > budget:
+                violations.append(
+                    f"{relative}:{node.lineno} {node.name}: {lines} > budget {budget}"
+                )
+
+    stale = set(_OVERSIZED_FUNCTION_BUDGETS).difference(found_oversized)
+    assert not stale, f"Remove refactored functions from the size-debt allowlist: {sorted(stale)}"
+    assert not violations, "Split oversized functions before merging:\n" + "\n".join(violations)
+
+
+def test_production_code_uses_runtime_guards_not_assertions() -> None:
+    """`python -O` must not erase production validation or safety branches."""
+    violations: list[str] = []
+    for path in SRC.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        violations.extend(
+            f"{path.relative_to(SRC)}:{node.lineno}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assert)
+        )
+    assert not violations, (
+        "Replace production assert with an explicit runtime guard:\n" + "\n".join(violations)
+    )
 
 
 def test_litellm_gateway_remains_server_side_not_a_client_dependency() -> None:

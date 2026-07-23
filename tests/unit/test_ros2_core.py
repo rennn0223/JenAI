@@ -703,14 +703,7 @@ def test_safety_clamp_fails_closed_for_invalid_limits() -> None:
     assert invalid_values == {"linear": {"x": 0}, "angular": {"z": 0}}
 
 
-def test_schema_summary_timeout_falls_back_to_deterministic_fields(monkeypatch) -> None:
-    async def slow_ask_json(config, prompt):
-        await asyncio.sleep(1)
-        return []
-
-    monkeypatch.setattr(summaries, "ask_json", slow_ask_json)
-    monkeypatch.setattr(summaries, "SCHEMA_SUMMARY_TIMEOUT_SECONDS", 0.001)
-
+def test_schema_summary_is_deterministic_without_a_provider() -> None:
     result = asyncio.run(
         summaries.summarize_ros_schema(
             _config(),

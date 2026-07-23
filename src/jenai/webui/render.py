@@ -52,14 +52,16 @@ _CHECK_LABELS = {
 }
 
 
-def _health_summary(doctor: dict) -> str:
+def _health_summary(doctor: dict[str, Any]) -> str:
     items = doctor.get("items", [])
     fails = sum(1 for i in items if str(i["status"]).lower() == "fail")
     warns = sum(1 for i in items if str(i["status"]).lower() == "warn")
     if not items:
         return "Getting your setup ready…"
     if fails:
-        return f"{fails} thing{'s' if fails != 1 else ''} need{'' if fails == 1 else 's'} attention."
+        return (
+            f"{fails} thing{'s' if fails != 1 else ''} need{'' if fails == 1 else 's'} attention."
+        )
     if warns:
         return f"Running fine — {warns} minor note{'s' if warns != 1 else ''}."
     return "Everything looks healthy."
@@ -82,7 +84,7 @@ def render_main(status: dict[str, Any]) -> str:
     # Defaults keep the renderer robust against a partial status dict (e.g. the
     # doctor WebUI smoke check renders with a minimal payload).
     doctor = status.get("doctor") or {"overall": "unknown", "items": []}
-    groups: dict[str, list[dict]] = {}
+    groups: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
     for item in doctor["items"]:
         section = item["section"]
@@ -95,9 +97,7 @@ def render_main(status: dict[str, Any]) -> str:
     for section in order:
         check_rows.append(f'<div class="group">{html.escape(section.capitalize())}</div>')
         for item in groups[section]:
-            fix = (
-                f'<div class="fix">↳ {html.escape(item["fix"])}</div>' if item.get("fix") else ""
-            )
+            fix = f'<div class="fix">↳ {html.escape(item["fix"])}</div>' if item.get("fix") else ""
             name = _CHECK_LABELS.get(item["check"], item["check"].replace("_", " ").capitalize())
             check_rows.append(
                 '<div class="check">'
@@ -105,7 +105,7 @@ def render_main(status: dict[str, Any]) -> str:
                 f'<span class="check-name">{html.escape(name)}</span>'
                 f'<span class="check-msg">{html.escape(item["message"])}</span>{fix}'
                 "</div>"
-                f'{_pill(item["status"])}'
+                f"{_pill(item['status'])}"
                 "</div>"
             )
     doctor_html = "".join(check_rows)
@@ -123,7 +123,7 @@ def render_main(status: dict[str, Any]) -> str:
     else:
         # Domain topics up front; the Nav2/lifecycle plumbing folds away so a
         # 110-topic graph reads as the ~20 that matter.
-        def _chip(t: dict) -> str:
+        def _chip(t: dict[str, Any]) -> str:
             return (
                 '<div class="chip">'
                 f'<span class="k-dot" style="background:{_KIND_DOT.get(t["kind"], "var(--muted)")}">'
@@ -143,7 +143,7 @@ def render_main(status: dict[str, Any]) -> str:
                 f'<div class="chips">{"".join(_chip(t) for t in infra_topics)}</div></details>'
             )
 
-    updated = datetime.now().strftime("%H:%M:%S")
+    updated = datetime.now().astimezone().strftime("%H:%M:%S")
     return (
         f'<p class="summary">{html.escape(_health_summary(doctor))}</p>'
         f'<div class="stats">{stats_html}</div>'

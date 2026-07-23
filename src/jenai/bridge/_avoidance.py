@@ -29,8 +29,7 @@ def corridor_nearest(
     candidates = (
         distance
         for distance, angle in zip(ranges, angles, strict=False)
-        if math.isfinite(distance)
-        and abs(distance * math.sin(angle - heading_err)) <= half_width
+        if math.isfinite(distance) and abs(distance * math.sin(angle - heading_err)) <= half_width
     )
     return min(candidates, default=math.inf)
 
@@ -103,7 +102,7 @@ def plan_detour(
     # Detour side (+1 = robot-left): whichever flank of the cluster has more
     # room. A cluster reaching a scan edge leaves no flank there — go the
     # other way; a full tie breaks away from the cluster's centre bearing.
-    left = min((ranges[i] for i in range(0, lo)), default=None)
+    left = min((ranges[i] for i in range(lo)), default=None)
     right = min((ranges[i] for i in range(hi + 1, n)), default=None)
     if left is None and right is None:
         side = 1.0 if ang_c <= 0 else -1.0

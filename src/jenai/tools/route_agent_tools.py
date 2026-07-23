@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from agents import RunContextWrapper, function_tool
 
 from jenai.adapters.locations import (
@@ -11,20 +14,31 @@ from jenai.adapters.locations import (
     load_locations,
 )
 from jenai.agent.context import JenAIRunContext
-from jenai.schemas import EffectScope, RiskLevel, ToolCallCategory, ToolCallRecord, ToolCallStatus
+from jenai.schemas import (
+    EffectScope,
+    Location,
+    RiskLevel,
+    RouteOutput,
+    TaskOutcome,
+    ToolCallCategory,
+    ToolCallRecord,
+    ToolCallStatus,
+)
 from jenai.tools import route_core
 from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.registry import ToolRiskInfo, register_tool
 from jenai.tools.route_action import normalize_route_action, unwrap_route_action
 from jenai.tools.skills import ExploreSpec, exploration_candidates, run_explore
 
+ToolOutput = dict[str, Any]
 
-def _locations_path(ctx: RunContextWrapper[JenAIRunContext]):
+
+def _locations_path(ctx: RunContextWrapper[JenAIRunContext]) -> Path | None:
     run_ctx = ctx.context
     return run_ctx.config.resolved_locations_path(run_ctx.config_path)
 
 
-def _load_locations(ctx: RunContextWrapper[JenAIRunContext]) -> list:
+def _load_locations(ctx: RunContextWrapper[JenAIRunContext]) -> list[Location]:
     path = _locations_path(ctx)
     if path is None:
         return []
@@ -68,7 +82,7 @@ def _finish_call(
 
 
 @function_tool
-async def route_preview_tool(ctx: RunContextWrapper[JenAIRunContext], text: str) -> dict:
+async def route_preview_tool(ctx: RunContextWrapper[JenAIRunContext], text: str) -> ToolOutput:
     """Resolve a natural-language route request (start/goal) against known locations and
     produce a preview. Always call this before route_execute_tool."""
     call = _record_call(ctx, "route_preview_tool", text)
@@ -78,12 +92,12 @@ async def route_preview_tool(ctx: RunContextWrapper[JenAIRunContext], text: str)
     return output.model_dump(mode="json")
 
 
-def _unwrap_outgoing_action(parsed: dict) -> dict:
+def _unwrap_outgoing_action(parsed: ToolOutput) -> ToolOutput:
     """Backward-compatible alias for the canonical route normalizer helper."""
     return unwrap_route_action(parsed)
 
 
-def _parse_outgoing_action(value: object) -> dict:
+def _parse_outgoing_action(value: object) -> ToolOutput:
     """Backward-compatible alias used by route execution and focused tests."""
     return normalize_route_action(value)
 
@@ -92,7 +106,7 @@ def _parse_outgoing_action(value: object) -> dict:
 async def route_execute_tool(
     ctx: RunContextWrapper[JenAIRunContext],
     outgoing_action_json: str,
-) -> dict:
+) -> ToolOutput:
     """Send a previewed route action. Requires human approval. Only call this after
     route_preview_tool has produced a resolved outgoing_action. `outgoing_action_json` is
     the outgoing_action dict from route_preview_tool's response, JSON-encoded."""
@@ -117,6 +131,20 @@ async def route_execute_tool(
         session_id=run_ctx.run.session_id,
     )
     ok = output.execution_status == "succeeded"
+    if ok:
+        run_ctx.run.outcome = (
+            TaskOutcome.ARRIVED_UNVERIFIED
+            if outgoing_action.get("capability_id") == "dock_approach"
+            else TaskOutcome.SUCCEEDED
+        )
+    elif output.execution_status == "endpoint_mismatch":
+        run_ctx.run.outcome = TaskOutcome.ENDPOINT_MISMATCH
+    elif output.execution_status == "unavailable":
+        run_ctx.run.outcome = TaskOutcome.UNAVAILABLE
+    elif output.execution_status == "blocked":
+        run_ctx.run.outcome = TaskOutcome.BLOCKED
+    else:
+        run_ctx.run.outcome = TaskOutcome.FAILED
     _finish_call(ctx, call, ok=ok, summary=output.execution_status if ok else output.route_preview)
     return output.model_dump(mode="json")
 
@@ -129,7 +157,7 @@ async def explore_area_tool(
     max_failures: int = 2,
     tag: str = "",
     seed: int = -1,
-) -> dict:
+) -> ToolOutput:
     """Run one bounded, low-repeat exploration over eligible saved locations.
 
     This is known-location exploration, not frontier SLAM: the deterministic
@@ -172,7 +200,7 @@ async def explore_area_tool(
 
     run_ctx = ctx.context
 
-    async def _navigate(action: dict):
+    async def _navigate(action: ToolOutput) -> RouteOutput:
         return await execute_navigation(
             run_ctx.config,
             action,
@@ -209,7 +237,7 @@ async def explore_area_tool(
 
 
 @function_tool
-async def loc_lookup_tool(ctx: RunContextWrapper[JenAIRunContext], name: str) -> dict:
+async def loc_lookup_tool(ctx: RunContextWrapper[JenAIRunContext], name: str) -> ToolOutput:
     """Look up a known location by name or alias (fuzzy-matched)."""
     call = _record_call(ctx, "loc_lookup_tool", name)
     locations = _load_locations(ctx)

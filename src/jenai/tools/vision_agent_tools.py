@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from agents import RunContextWrapper, function_tool
 
 from jenai.agent.context import JenAIRunContext
@@ -21,7 +23,7 @@ _VISION_IMAGE_INFO = ToolRiskInfo(
 @function_tool
 async def vision_image_tool(
     ctx: RunContextWrapper[JenAIRunContext], path: str, task_context: str = ""
-) -> dict:
+) -> dict[str, Any]:
     """Analyze a local image file with the vision model and return a structured summary
     (objects, anomalies, relevance to the current task, suggested next actions)."""
     call = record_tool_call(

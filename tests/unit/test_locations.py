@@ -106,9 +106,7 @@ def test_find_location_ignores_model_supplied_english_article() -> None:
 
 def test_find_location_prefers_literal_name_before_stripping_article() -> None:
     locations = _sample_locations()
-    locations.append(
-        Location(name="The Engineering Building", pose=Pose2D(x=9.0, y=9.0, yaw=0.0))
-    )
+    locations.append(Location(name="The Engineering Building", pose=Pose2D(x=9.0, y=9.0, yaw=0.0)))
 
     assert find_location(locations, "The Engineering Building").pose.x == 9.0
 

@@ -1,47 +1,24 @@
-"""Tool output summarization for the timeline."""
+"""Deterministic tool-output summaries for the timeline."""
 
 from __future__ import annotations
 
-import asyncio
-
 from jenai.config.models import AppConfig
-from jenai.providers.chat import ask_json
 from jenai.schemas import FieldSummary
-
-# Schema lookup is an interactive developer aid. A slow local model must not
-# hold the entire TUI (and its FIFO command queue) indefinitely.
-SCHEMA_SUMMARY_TIMEOUT_SECONDS = 8.0
 
 
 async def summarize_ros_schema(
-    config: AppConfig,
-    message_type: str,
+    _config: AppConfig,
+    _message_type: str,
     raw_interface: str,
 ) -> list[FieldSummary]:
-    """Summarize a `ros2 interface show` output into plain-language field descriptions.
+    """Parse ``ros2 interface show`` without a second, probabilistic LLM call.
 
-    Falls back to a naive line-based summary if the model call fails or returns
-    something unparseable, so `/ros schema` degrades gracefully instead of raising.
+    Schema lookup is a reflex-like developer command: its latency and result
+    must not depend on provider availability.  The caller already exposes the
+    authoritative type and raw interface, so deterministic field extraction is
+    both faster and more honest than model-generated descriptions.
     """
-    prompt = (
-        f"Summarize the fields of this ROS2 message type '{message_type}'. "
-        "Respond with ONLY a JSON array of objects, each with keys "
-        '"field_name", "field_type", "description". No prose, no markdown fences.\n\n'
-        f"{raw_interface}"
-    )
-
-    try:
-        async with asyncio.timeout(SCHEMA_SUMMARY_TIMEOUT_SECONDS):
-            parsed = await ask_json(config, prompt)
-    except TimeoutError:
-        parsed = None
-    if parsed is None:
-        return _naive_field_summary(raw_interface)
-
-    try:
-        return [FieldSummary.model_validate(item) for item in parsed]
-    except (TypeError, ValueError):
-        return _naive_field_summary(raw_interface)
+    return _naive_field_summary(raw_interface)
 
 
 def _naive_field_summary(raw_interface: str) -> list[FieldSummary]:

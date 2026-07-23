@@ -15,9 +15,7 @@ def test_credentials_require_their_own_purge_flag(tmp_path: Path, monkeypatch) -
         pending_runs=tmp_path / "pending-runs",
         reports=tmp_path / "reports",
         traces=tmp_path / "traces",
-
         audit=tmp_path / "audit.sqlite3",
-
         config_backups=(),
     )
     paths.config.write_text("keep config", encoding="utf-8")

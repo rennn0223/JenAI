@@ -73,6 +73,8 @@ cmd_vel_topic = "/cmd_vel"    # 以 `ros2 topic list` 實際看到的為準
 camera_topic = "/front_stereo_camera/left/image_raw"   # 同上,以實際 topic 為準
 max_linear = 0.8              # 倉庫內保守值
 max_angular = 1.0
+arrival_position_tolerance_m = 0.05 # 模擬驗收:5 cm
+arrival_yaw_tolerance_rad = 0.15    # 模擬驗收:約8.6°
 
 route_adapter = "nav2"
 ```
@@ -82,6 +84,32 @@ B2–B4。**代價要知道**:Carter 是差速車,阿克曼運動學(Smac Hybrid
 最小轉彎半徑)的 sim 數據不會從這裡產生——論文若要阿克曼章節的模擬證據,
 之後仍需路線 B 的 Leatherback 場景;架構層(決策/Gate/安全鏈)的驗證數據
 則載具無關,Carter 收的完全算數。
+
+### Carter 精準到點 profile（2026-07-24 實測）
+
+RViz2 與 JenAI 最終都呼叫同一個 `/navigate_to_pose`；兩者看起來精度不同，通常不是
+傳輸介面造成，而是 Nav2 controller 的 goal tolerance 與上層是否複核終點不同。Nova
+Carter 發布輪速里程計在 `/chassis/odom`，且 DWB 有兩個必須同步的 xy 容差：
+
+```yaml
+controller_server:
+  ros__parameters:
+    odom_topic: "/chassis/odom"
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      stateful: true
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.15
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      xy_goal_tolerance: 0.05
+```
+
+`general_goal_checker.xy_goal_tolerance` 與 `FollowPath.xy_goal_tolerance` 必須相同。若前者
+為 0.05、後者仍為 0.25，DWB 會在 25 cm 內停止平移並只修朝向，goal checker 卻仍等
+車進入 5 cm，形成 recovery／原地打轉。修改 plugin 參數後要完整重啟 Nav2；只做
+lifecycle transition 或 runtime `param set` 不保證 plugin 重新載入。`JenAI doctor` 會
+額外確認 controller_server 的 `odom_topic` 有 publisher 且 controller 已訂閱。
 
 ## 路線 B|你的 Leatherback 場景(接 JenAI 的正式路線)
 
@@ -160,6 +188,8 @@ LaserScan message 都是同一值。
 | 車不動、RViz 能規劃 | `/cmd_vel` 沒接到車(Isaac 端 topic 名對齊;或 controller 輸出 remap) |
 | AMCL 不收斂 | 先 2D Pose Estimate;雷射高度帶與佔位圖 Z 帶不一致也會 |
 | `/scan` 有頻率但 AMCL 跳位／資料忽空忽有 | RTX Helper 仍在逐幀發布旋轉 wedge；頻率不能代表視野完整 | 設 `Publish Full Scan=True`，10 Hz full cloud 時令 converter `scan_time=0.1`，再跑 HIL scan-quality preflight |
+| Nav2 可規劃但 JenAI 到點誤差約 0.2–0.25 m | Nav2 goal checker／DWB 仍採寬鬆預設，且只看 action `SUCCEEDED` | 同步設定兩個 xy tolerance，完整重啟 Nav2；`[vehicle]` 設 0.05 m／0.15 rad，讓 JenAI 二次核對 terminal pose |
+| `/doctor` 顯示 Nav2 action 存在但里程計警告 | Carter 發 `/chassis/odom`，controller 卻仍聽預設 `/odom` | 設 `controller_server.ros__parameters.odom_topic: /chassis/odom` 後重啟 Nav2 |
 | topics 看不到 | Isaac 沒按 Play;或兩邊 ROS_DOMAIN_ID 不同 |
 | Isaac 用了內建 ROS 庫 | 開 Isaac 前忘了 source(24.04 沒 source 會自動載內建 Jazzy 庫,通常也能通,但版本混用問題難查) |
 

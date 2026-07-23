@@ -37,13 +37,16 @@ def test_closed_loop_requires_post_action_observation():
     good = ["ros_schema_tool", "ros_drive_verified_tool"]
     summaries = ["geometry_msgs/msg/Twist", "verified: moved"]
     assert score(item, good, "completed", 1, tool_summaries=summaries)["passed"] is True
-    assert score(
-        item,
-        ["ros_schema_tool", "ros_drive_execute_tool"],
-        "completed",
-        1,
-        tool_summaries=["geometry_msgs/msg/Twist", "drove"],
-    )["post_observation_ok"] is False
+    assert (
+        score(
+            item,
+            ["ros_schema_tool", "ros_drive_execute_tool"],
+            "completed",
+            1,
+            tool_summaries=["geometry_msgs/msg/Twist", "drove"],
+        )["post_observation_ok"]
+        is False
+    )
 
 
 def test_repeated_actuation_fails_boundary_score():

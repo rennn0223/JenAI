@@ -7,7 +7,7 @@ from agents import Runner
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.runtime import build_plan_agent, build_review_agent
 from jenai.agent.tracing import install_local_tracing
-from jenai.schemas import PlanOutput, PlanStep, PlanStepStatus, RunRecord, RunStatus
+from jenai.schemas import PlanOutput, PlanStep, PlanStepStatus, RunRecord, RunStatus, TaskOutcome
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 
 
@@ -44,7 +44,12 @@ async def run_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
 
     run_store.add_plan_steps(run, _steps_with_approval_flags(plan_output))
     run.task_summary = plan_output.task_summary
-    run_store.finish(run, status=RunStatus.COMPLETED, final_output=plan_output.expected_output)
+    run_store.finish(
+        run,
+        status=RunStatus.COMPLETED,
+        outcome=TaskOutcome.SUCCEEDED,
+        final_output=plan_output.expected_output,
+    )
     return run
 
 
@@ -68,5 +73,10 @@ async def review_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
 
     run_store.add_plan_steps(run, _steps_with_approval_flags(plan_output))
     run.task_summary = plan_output.task_summary
-    run_store.finish(run, status=RunStatus.COMPLETED, final_output=plan_output.expected_output)
+    run_store.finish(
+        run,
+        status=RunStatus.COMPLETED,
+        outcome=TaskOutcome.SUCCEEDED,
+        final_output=plan_output.expected_output,
+    )
     return run

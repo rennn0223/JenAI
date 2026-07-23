@@ -15,6 +15,32 @@ def nav_result_status(status_code: int) -> str:
     return {4: "succeeded", 5: "canceled", 6: "aborted"}.get(status_code, "failed")
 
 
+@dataclass(frozen=True, slots=True)
+class NavigationTerminal:
+    """Validated terminal result, or the reason it could not be trusted."""
+
+    status: str | None
+    error: str | None
+
+
+def resolve_navigation_terminal(future: Any) -> NavigationTerminal:
+    """Decode one ROS action result future without leaking callback exceptions."""
+    try:
+        response = future.result()
+    except Exception as exc:
+        return NavigationTerminal(
+            status=None,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    status_code = getattr(response, "status", None)
+    if isinstance(status_code, bool) or not isinstance(status_code, int):
+        return NavigationTerminal(
+            status=None,
+            error="Nav2 result did not contain an integer status code",
+        )
+    return NavigationTerminal(status=nav_result_status(status_code), error=None)
+
+
 def navigation_active(*, has_goal_handle: bool, nav_pending: bool, drive_active: bool) -> bool:
     """A not-yet-accepted goal is active too, so emergency stop cannot miss it."""
     return has_goal_handle or nav_pending or drive_active

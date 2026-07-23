@@ -13,19 +13,17 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
+from jenai.adapters.locations import find_dock as find_dock
 from jenai.config.models import AppConfig
 from jenai.schemas import Location, RouteOutput
 from jenai.tools.mission_core import resolve_and_navigate
 
 _LOOPS_TOKEN = re.compile(r"^[x×](\d{1,3})$", re.IGNORECASE)
 _PHOTO_TOKENS = {"photo", "photos", "拍照"}
-_EXPLORE_DURATION_TOKEN = re.compile(
-    r"^(\d+(?:\.\d+)?)(s|sec|secs|m|min|mins)$", re.IGNORECASE
-)
-_BLOCKED_EXPLORE_TAGS = frozenset(
-    {"no-explore", "no_explore", "restricted", "forbidden", "hazard"}
-)
+_EXPLORE_DURATION_TOKEN = re.compile(r"^(\d+(?:\.\d+)?)(s|sec|secs|m|min|mins)$", re.IGNORECASE)
+_BLOCKED_EXPLORE_TAGS = frozenset({"no-explore", "no_explore", "restricted", "forbidden", "hazard"})
 
 
 @dataclass(frozen=True)
@@ -48,7 +46,7 @@ class PatrolSpec:
 class PatrolStepResult:
     loop: int  # 1-based
     point: str
-    status: str  # succeeded | failed | unavailable
+    status: str  # succeeded | partial | failed | unavailable
     detail: str
     observation: str | None = None  # camera + VLM summary, when photo is on
 
@@ -60,8 +58,14 @@ class PatrolReport:
 
     @property
     def summary(self) -> str:
-        ok = sum(r.status == "succeeded" for r in self.results)
-        return f"Patrol finished: {ok}/{len(self.results)} waypoints reached."
+        reached = sum(r.status in {"succeeded", "partial"} for r in self.results)
+        missing_evidence = sum(r.status == "partial" for r in self.results)
+        suffix = (
+            f" {missing_evidence} reached without required photo evidence."
+            if missing_evidence
+            else ""
+        )
+        return f"Patrol finished: {reached}/{len(self.results)} waypoints reached.{suffix}"
 
 
 def parse_patrol(text: str) -> PatrolSpec | None:
@@ -101,7 +105,7 @@ async def run_patrol(
     locations: list[Location],
     spec: PatrolSpec,
     *,
-    navigate: Callable[[dict], Awaitable[RouteOutput]],
+    navigate: Callable[[dict[str, Any]], Awaitable[RouteOutput]],
     on_step: Callable[[PatrolStepResult], Awaitable[None]] | None = None,
     observe: Callable[[], Awaitable[str | None]] | None = None,
 ) -> PatrolReport:
@@ -121,15 +125,8 @@ async def run_patrol(
                 result = PatrolStepResult(loop, name, status, detail)
             except Exception as exc:  # noqa: BLE001 — record and continue
                 result = PatrolStepResult(loop, point, "failed", f"error: {exc}")
-            if (
-                spec.photo
-                and observe is not None
-                and result.status == "succeeded"
-            ):
-                try:
-                    result.observation = await observe()
-                except Exception as exc:  # noqa: BLE001 — observation is best-effort
-                    result.observation = f"(camera unavailable: {exc})"
+            if spec.photo and result.status == "succeeded":
+                await _capture_required_observation(result, observe)
             report.results.append(result)
             if on_step is not None:
                 await on_step(result)
@@ -183,7 +180,7 @@ class ExploreSpec:
 class ExploreStepResult:
     attempt: int
     point: str
-    status: str  # succeeded | failed | unavailable | blocked | referred
+    status: str  # succeeded | partial | failed | unavailable | blocked | referred
     detail: str
     observation: str | None = None
 
@@ -197,7 +194,7 @@ class ExploreReport:
 
     @property
     def success_count(self) -> int:
-        return sum(result.status == "succeeded" for result in self.results)
+        return sum(result.status in {"succeeded", "partial"} for result in self.results)
 
     @property
     def completed_normally(self) -> bool:
@@ -215,6 +212,7 @@ class ExploreReport:
         suffix = f" Route: {route}." if route else ""
         outcomes: list[str] = []
         for status, label in (
+            ("partial", "reached without required photo evidence"),
             ("referred", "referred for review"),
             ("blocked", "blocked by the safety boundary"),
             ("failed", "navigation failed"),
@@ -276,9 +274,7 @@ def parse_explore(text: str) -> ExploreSpec | None:
         return None
 
 
-def exploration_candidates(
-    locations: list[Location], tag: str | None = None
-) -> list[Location]:
+def exploration_candidates(locations: list[Location], tag: str | None = None) -> list[Location]:
     """Return saved locations eligible for bounded exploration.
 
     Docking points and locations tagged as restricted/no-explore/hazard are
@@ -303,7 +299,7 @@ async def run_explore(
     locations: list[Location],
     spec: ExploreSpec,
     *,
-    navigate: Callable[[dict], Awaitable[RouteOutput]],
+    navigate: Callable[[dict[str, Any]], Awaitable[RouteOutput]],
     on_step: Callable[[ExploreStepResult], Awaitable[None]] | None = None,
     observe: Callable[[], Awaitable[str | None]] | None = None,
     rng: random.Random | None = None,
@@ -365,19 +361,14 @@ async def run_explore(
             report.stop_reason = "duration"
             break
         except Exception as exc:  # noqa: BLE001 — record and stop by policy
-            result = ExploreStepResult(
-                attempt, location.name, "failed", f"error: {exc}"
-            )
+            result = ExploreStepResult(attempt, location.name, "failed", f"error: {exc}")
 
         if result.status == "succeeded":
             visits[location.id] += 1
             consecutive_failures = 0
             previous_id = location.id
-            if spec.photo and observe is not None:
-                try:
-                    result.observation = await observe()
-                except Exception as exc:  # noqa: BLE001 — best-effort camera
-                    result.observation = f"(camera unavailable: {exc})"
+            if spec.photo:
+                await _capture_required_observation(result, observe)
         else:
             failed.add(location.id)
             consecutive_failures += 1
@@ -394,17 +385,24 @@ async def run_explore(
     return report
 
 
-_DOCK_TAG = "dock"
-_DOCK_NAMES = ("dock", "充電站", "充电站", "charging station")
+async def _capture_required_observation(
+    result: PatrolStepResult | ExploreStepResult,
+    observe: Callable[[], Awaitable[str | None]] | None,
+) -> None:
+    """Attach requested evidence or downgrade an otherwise reached step to partial."""
 
-
-def find_dock(locations: list[Location]) -> Location | None:
-    """The docking location: tagged 'dock', or named/aliased like one."""
-    for location in locations:
-        if any(tag.strip().lower() == _DOCK_TAG for tag in location.tags):
-            return location
-    for location in locations:
-        names = (location.name, *location.aliases)
-        if any(name.strip().lower() in _DOCK_NAMES for name in names):
-            return location
-    return None
+    if observe is None:
+        result.status = "partial"
+        result.observation = "(photo evidence unavailable: no camera observer configured)"
+        return
+    try:
+        observation = await observe()
+    except Exception as exc:  # noqa: BLE001 — navigation remains reached
+        result.status = "partial"
+        result.observation = f"(photo evidence unavailable: {exc})"
+        return
+    if observation is None or not observation.strip():
+        result.status = "partial"
+        result.observation = "(photo evidence unavailable: camera returned no observation)"
+        return
+    result.observation = observation.strip()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from jenai.adapters.locations import LocationNotFoundError, find_location
 from jenai.config.models import AppConfig
@@ -65,7 +66,7 @@ async def run_mission(
     steps: list[MissionStep],
     *,
     on_step: Callable[[StepResult], Awaitable[None]] | None = None,
-    navigate: Callable[[dict], Awaitable[RouteOutput]] | None = None,
+    navigate: Callable[[dict[str, Any]], Awaitable[RouteOutput]] | None = None,
 ) -> MissionReport:
     """Run a mission as a deterministic sequence (no LLM loop, so it is reliable
     and testable). Each step reuses the existing, safety-clamped tools; results
@@ -98,7 +99,7 @@ async def resolve_and_navigate(
     locations: list[Location],
     target: str,
     *,
-    navigate: Callable[[dict], Awaitable[RouteOutput]] | None = None,
+    navigate: Callable[[dict[str, Any]], Awaitable[RouteOutput]] | None = None,
 ) -> tuple[str, str, str]:
     """Resolve a location name and navigate to it: (name, status, detail).
 
@@ -113,9 +114,7 @@ async def resolve_and_navigate(
         return target, "failed", detail
     action = {"goal": location.model_dump(mode="json")}
     out = (
-        await navigate(action)
-        if navigate is not None
-        else await execute_navigation(config, action)
+        await navigate(action) if navigate is not None else await execute_navigation(config, action)
     )
     return location.name, out.execution_status, out.route_preview
 
@@ -125,11 +124,9 @@ async def _goto(
     locations: list[Location],
     target: str,
     *,
-    navigate: Callable[[dict], Awaitable[RouteOutput]] | None = None,
+    navigate: Callable[[dict[str, Any]], Awaitable[RouteOutput]] | None = None,
 ) -> StepResult:
-    name, status, detail = await resolve_and_navigate(
-        config, locations, target, navigate=navigate
-    )
+    name, status, detail = await resolve_and_navigate(config, locations, target, navigate=navigate)
     return StepResult("goto", name, status, detail)
 
 

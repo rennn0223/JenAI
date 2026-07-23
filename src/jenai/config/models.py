@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -52,6 +53,11 @@ class VehicleProfile(BaseModel):
     # Literal so a typo ("ackerman") fails at config load, not months later
     # when the first type-aware consumer appears.
     type: Literal["ackermann", "diff", "quadruped"] = "ackermann"
+    robot_id: str = "reference-ackermann"
+    display_name: str = "JenAI Ackermann UGV"
+    description: str = "Simulation-first unmanned ground vehicle controlled through JenAI."
+    capabilities: list[str] | None = None
+    limitations: list[str] = Field(default_factory=list)
     # Physical deployment graph. None preserves the historical behavior: the
     # process's ambient ROS_DOMAIN_ID is treated as the vehicle domain. This
     # documents isolation only; command routing still follows the environment
@@ -64,6 +70,16 @@ class VehicleProfile(BaseModel):
     # model or user asked. Defaults match the historical built-in limits.
     max_linear: float = Field(default=1.0, gt=0, allow_inf_nan=False)  # m/s
     max_angular: float = Field(default=2.0, gt=0, allow_inf_nan=False)  # rad/s
+    # Nav2's action status only means "inside Nav2's configured goal checker".
+    # JenAI independently verifies the terminal pose against these limits
+    # before reporting success.  The conservative defaults preserve existing
+    # physical-robot behavior; simulation profiles can use 0.05 m / 0.15 rad.
+    arrival_position_tolerance_m: float = Field(default=0.25, gt=0, allow_inf_nan=False)
+    arrival_yaw_tolerance_rad: float = Field(default=0.25, gt=0, le=math.pi, allow_inf_nan=False)
+    # The deprecated odom direct-drive fallback must stop when localization
+    # feedback freezes after its first sample; a global route timeout is far too
+    # slow for that failure mode.
+    odom_timeout_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     # Fail-closed AMCL discontinuity guard for Nav2 goals. A displacement over
     # this threshold between two samples no more than `pose_jump_window_s`
     # apart cancels navigation and pulses zero velocity. Five metres in two
@@ -71,6 +87,14 @@ class VehicleProfile(BaseModel):
     # still catching simulator/localization resets measured in tens of metres.
     pose_jump_threshold_m: float = Field(default=5.0, gt=0, allow_inf_nan=False)
     pose_jump_window_s: float = Field(default=2.0, gt=0, allow_inf_nan=False)
+
+    @field_validator("robot_id", "display_name", "description")
+    @classmethod
+    def identity_text_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("robot identity text must not be blank")
+        return stripped
 
 
 class AvoidanceProfile(BaseModel):
@@ -128,7 +152,7 @@ class AvoidanceProfile(BaseModel):
             raise ValueError("band_lo must be less than band_hi")
         return self
 
-    def as_params(self) -> dict:
+    def as_params(self) -> dict[str, Any]:
         return self.model_dump()
 
 
@@ -149,6 +173,64 @@ class MapDatum(BaseModel):
     @property
     def configured(self) -> bool:
         return self.lat is not None and self.lon is not None
+
+
+class SiteProfile(BaseModel):
+    """Versioned operating-site binding for saved map-frame assets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    site_id: str = "unbound"
+    display_name: str = "Unbound site"
+    version: str = "0"
+    active: bool = False
+    validated: bool = False
+    map_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    map_frame: str = "map"
+    reference_scene: str | None = None
+    locations_path: str | None = None
+    validated_routes: list[str] = Field(default_factory=list)
+    dock_location: str | None = None
+    validation_evidence: list[str] = Field(default_factory=list)
+
+    @field_validator("site_id", "display_name", "version", "map_frame")
+    @classmethod
+    def required_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("site identity text must not be blank")
+        return stripped
+
+    @field_validator("map_sha256")
+    @classmethod
+    def normalize_map_digest(cls, value: str | None) -> str | None:
+        return value.lower() if value is not None else None
+
+    @field_validator("reference_scene", "locations_path", "dock_location")
+    @classmethod
+    def optional_asset_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("validated_routes", "validation_evidence")
+    @classmethod
+    def asset_reference_list(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("site asset references must not be blank")
+            if stripped not in normalized:
+                normalized.append(stripped)
+        return normalized
+
+    @model_validator(mode="after")
+    def active_site_is_verified(self) -> SiteProfile:
+        if self.active and (not self.validated or self.map_sha256 is None):
+            raise ValueError("an active site must be validated and include map_sha256")
+        return self
 
 
 class ForbiddenZone(BaseModel):
@@ -189,6 +271,10 @@ class TwinProfile(BaseModel):
     nav_timeout_s: float = Field(default=180.0, gt=0, allow_inf_nan=False)
     goal_tolerance_m: float = Field(default=0.5, gt=0, allow_inf_nan=False)
     collision_topic: str = "/twin/collision"  # G1: std_msgs/Bool from a contact sensor
+    # A safety gate cannot claim success without observing its collision
+    # criterion. Research scenes that genuinely have no contact sensor may opt
+    # out explicitly, and their reports will continue to show G1 as skipped.
+    require_collision_evidence: bool = True
     pose_sample_s: float = Field(default=0.5, gt=0, allow_inf_nan=False)
     forbidden_zones: list[ForbiddenZone] = Field(default_factory=list)
 
@@ -202,9 +288,14 @@ class AppConfig(BaseModel):
     model_bindings: ModelBindings | None = None
     locations_path: str | None = None
     route_adapter: str = "stub"
+    # Existing JenAI deployments are simulation-first. Physical deployments
+    # must opt in explicitly; that mode turns configuration warnings such as a
+    # shared target/Twin ROS domain into hard execution blocks.
+    deployment_mode: Literal["simulation", "physical"] = "simulation"
     ros2_ws: str | None = None  # workspace root for `JenAI scaffold` (default ~/ros2_ws)
     vehicle: VehicleProfile = Field(default_factory=VehicleProfile)
     twin: TwinProfile = Field(default_factory=TwinProfile)
+    site: SiteProfile = Field(default_factory=SiteProfile)
     map_datum: MapDatum = Field(default_factory=MapDatum)
     avoidance: AvoidanceProfile = Field(default_factory=AvoidanceProfile)
     created_by_setup: bool = False
@@ -216,15 +307,36 @@ class AppConfig(BaseModel):
             and self.model_bindings is not None
         )
 
+    @model_validator(mode="after")
+    def active_site_binds_locations(self) -> AppConfig:
+        """Migrate the legacy global path into the active versioned Site Profile."""
+        if not self.site.active:
+            return self
+        site_path = self.site.locations_path
+        legacy_path = self.locations_path
+        if site_path is None:
+            if legacy_path is None:
+                raise ValueError("an active site must bind a locations_path")
+            self.site.locations_path = legacy_path
+        elif (
+            legacy_path is not None
+            and Path(site_path).expanduser() != Path(legacy_path).expanduser()
+        ):
+            raise ValueError(
+                "active site locations_path conflicts with the legacy global locations_path"
+            )
+        return self
+
     def active_profile(self) -> ProviderProfile | None:
         if self.active_provider is None:
             return None
         return self.provider_profiles.get(self.active_provider)
 
     def resolved_locations_path(self, config_path: Path) -> Path | None:
-        if self.locations_path is None:
+        configured = self.site.locations_path if self.site.active else self.locations_path
+        if configured is None:
             return None
-        path = Path(self.locations_path).expanduser()
+        path = Path(configured).expanduser()
         if path.is_absolute():
             return path
         return config_path.parent / path

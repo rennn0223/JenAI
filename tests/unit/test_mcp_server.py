@@ -56,15 +56,16 @@ def test_navigate_to_unknown_location_is_refused(tmp_path: Path) -> None:
     assert "Unknown location" in text
 
 
-def test_navigate_to_stub_adapter_reports_unavailable(tmp_path: Path) -> None:
-    # route_adapter defaults to "stub": honest unavailable, robot does not move.
+def test_navigate_to_without_active_site_reports_blocked(tmp_path: Path) -> None:
+    # Saved coordinates are not valid until an operator activates a validated site.
     config, config_path = _setup(tmp_path)
     server = build_mcp_server(config, config_path, allow_actions=True)
 
     result = asyncio.run(server.call_tool("navigate_to", {"location": "Dock"}))
 
     text = result[0][0].text if isinstance(result, tuple) else result[0].text
-    assert "unavailable" in text
+    assert "blocked" in text
+    assert "Site Profile" in text
 
 
 def _text(result) -> str:
@@ -136,9 +137,7 @@ def test_stop_tool_is_always_available(tmp_path: Path) -> None:
     ro_names = {t.name for t in asyncio.run(build_mcp_server(config, config_path).list_tools())}
     act_names = {
         t.name
-        for t in asyncio.run(
-            build_mcp_server(config, config_path, allow_actions=True).list_tools()
-        )
+        for t in asyncio.run(build_mcp_server(config, config_path, allow_actions=True).list_tools())
     }
 
     assert "stop" in ro_names

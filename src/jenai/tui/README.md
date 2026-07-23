@@ -1,7 +1,7 @@
 # tui — Textual 終端介面(主介面)
 
 Claude Code 風格的 TUI:時間軸 bullet、slash palette(Tab 補完)、
-風險感知編號批准卡(HOST_COMMAND/P2 不可 auto/remember)、Esc 真取消 subprocess/Nav2、`/stop` 任何時刻搶佔且先 reap publisher、
+風險感知編號批准卡(HOST_COMMAND/P2 不可 auto/remember；robot control 預選 No)、Esc 取消 subprocess/Nav2 並補送 zero、`/stop` 任何時刻搶佔且先 reap publisher、
 **權限三模式(Shift+Tab:審批/規劃/自動,`/mode` 為鍵盤備援)**——裸自然語言依模式路由。
 Agent 執行時即時更新階段與 ToolBlock，但只呈現可驗證的過程摘要，不顯示模型私密 chain-of-thought；
 純狀態查詢的最終數字由工具紀錄確定性渲染。

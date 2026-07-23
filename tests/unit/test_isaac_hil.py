@@ -14,12 +14,15 @@ from jenai.acceptance.isaac_hil import (
     _doctor_checks,
     _evaluate_start_pose,
     _execution_config,
+    _inspect_route_plans,
     _inspect_scan_quality,
     _ProgressSampler,
     _run_cancel_and_stop,
+    _run_live,
     _source_state,
     run_isaac_hil,
 )
+from jenai.bridge import MapCellInfo, NavPlanInfo
 from jenai.config.models import AppConfig, ForbiddenZone, TwinProfile
 from jenai.schemas import Location, Pose2D
 from jenai.tools.nav_live import NavigationCancelled
@@ -98,6 +101,23 @@ def _pose(x: float, y: float, *, frame_id: str = "map"):
     return SimpleNamespace(x=x, y=y, yaw=0.0, frame_id=frame_id, source="/amcl_pose")
 
 
+def _cell(*, value: int | None = 0, in_bounds: bool = True) -> MapCellInfo:
+    return MapCellInfo(
+        in_bounds=in_bounds,
+        free=in_bounds and value == 0,
+        value=value,
+        cell_x=4,
+        cell_y=6,
+        width=20,
+        height=30,
+        resolution=0.05,
+        origin_x=-1.0,
+        origin_y=-2.0,
+        frame_id="map",
+        source="/map",
+    )
+
+
 def test_start_pose_fails_inside_configured_forbidden_zone() -> None:
     config = AppConfig(
         twin=TwinProfile(
@@ -120,10 +140,28 @@ def test_start_pose_passes_outside_zones_with_finite_map_pose() -> None:
         )
     )
 
-    result = _evaluate_start_pose(_pose(0.0, 0.0), config)
+    result = _evaluate_start_pose(_pose(0.0, 0.0), config, map_cell=_cell())
 
     assert result["status"] == "pass"
     assert result["evidence"]["configured_forbidden_zones"] == ["wall"]
+    assert result["evidence"]["map_cell"]["value"] == 0
+
+
+@pytest.mark.parametrize(
+    ("cell", "detail"),
+    [
+        (_cell(value=100), "occupies static-map value 100"),
+        (_cell(value=-1), "occupies static-map value -1"),
+        (_cell(value=None, in_bounds=False), "outside the static map bounds"),
+    ],
+)
+def test_start_pose_fails_closed_on_nonfree_or_out_of_bounds_map_cell(
+    cell: MapCellInfo, detail: str
+) -> None:
+    result = _evaluate_start_pose(_pose(0.0, 0.0), AppConfig(), map_cell=cell)
+
+    assert result["status"] == "fail"
+    assert detail in result["detail"]
 
 
 def test_start_pose_cannot_compare_map_zones_to_odom_pose() -> None:
@@ -136,7 +174,7 @@ def test_start_pose_cannot_compare_map_zones_to_odom_pose() -> None:
     result = _evaluate_start_pose(_pose(0.0, 0.0, frame_id="odom"), config)
 
     assert result["status"] == "fail"
-    assert "not map-localized" in result["detail"]
+    assert "requires a map-localized start pose" in result["detail"]
 
 
 def test_start_pose_rejects_non_finite_coordinates() -> None:
@@ -221,6 +259,138 @@ def test_cancel_and_stop_requires_nav2_acknowledgement_even_with_zero_drift(
     assert result["evidence"]["drift_m"] == 0.0
     assert result["evidence"]["progress_samples"]
     assert result["evidence"]["progress_samples"][-1]["status"] == expected_progress_status
+
+
+def test_live_hil_aborts_remaining_motion_after_first_failed_goal(monkeypatch, tmp_path) -> None:
+    class FakeBridge:
+        running = True
+
+        def __init__(self) -> None:
+            self.halted = False
+            self.stopped = False
+
+        async def configure_safety(self, **_kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def get_pose(self, timeout=3.0):
+            return _pose(0.0, 0.0)
+
+        async def map_cell(self, _x, _y, *, timeout=3.0):
+            return _cell()
+
+        async def halt(self, **_kwargs):
+            self.halted = True
+            return False
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    bridge = FakeBridge()
+    monkeypatch.setattr(isaac_hil, "RosBridgeClient", lambda: bridge)
+    route_calls: list[str] = []
+
+    async def failed_first_route(_gateway, _config, goal):
+        route_calls.append(goal.name)
+        return [
+            {
+                "id": f"route:{goal.name}",
+                "status": "fail",
+                "detail": "Nav2 aborted",
+                "evidence": {},
+            }
+        ]
+
+    async def must_not_cancel(*_args, **_kwargs):
+        raise AssertionError("cancel motion ran after an earlier live failure")
+
+    monkeypatch.setattr(isaac_hil, "_run_route_goal", failed_first_route)
+    monkeypatch.setattr(isaac_hil, "_run_cancel_goal", must_not_cancel)
+    locations = [
+        Location(name="first", pose=Pose2D(x=1.0, y=0.0, yaw=0.0)),
+        Location(name="second", pose=Pose2D(x=2.0, y=0.0, yaw=0.0)),
+    ]
+
+    checks = asyncio.run(
+        _run_live(
+            AppConfig(twin=TwinProfile(enabled=False)),
+            locations,
+            _options(
+                tmp_path,
+                goals=("first", "second"),
+                cancel_goal="first",
+                execute=True,
+                confirmation=EXECUTION_CONFIRMATION,
+            ),
+        )
+    )
+
+    by_id = {check["id"]: check for check in checks}
+    assert route_calls == ["first"]
+    assert by_id["route:first"]["status"] == "fail"
+    assert by_id["route:second"]["status"] == "skip"
+    assert by_id["cancel_stop:first"]["status"] == "skip"
+    assert by_id["final_halt"]["status"] == "pass"
+    assert by_id["bridge_shutdown"]["status"] == "pass"
+    assert bridge.halted and bridge.stopped
+
+
+def test_live_hil_records_unconfirmed_final_halt_as_failure(monkeypatch, tmp_path) -> None:
+    class FakeBridge:
+        running = True
+
+        async def configure_safety(self, **_kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def get_pose(self, timeout=3.0):
+            return _pose(0.0, 0.0)
+
+        async def map_cell(self, _x, _y, *, timeout=3.0):
+            return _cell()
+
+        async def halt(self, **_kwargs):
+            raise RuntimeError("zero velocity not confirmed")
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(isaac_hil, "RosBridgeClient", FakeBridge)
+
+    async def passing_route(_gateway, _config, goal):
+        return [
+            {
+                "id": f"route:{goal.name}",
+                "status": "pass",
+                "detail": "Arrived",
+                "evidence": {},
+            }
+        ]
+
+    monkeypatch.setattr(isaac_hil, "_run_route_goal", passing_route)
+    location = Location(name="corner", pose=Pose2D(x=1.0, y=0.0, yaw=0.0))
+
+    checks = asyncio.run(
+        _run_live(
+            AppConfig(twin=TwinProfile(enabled=False)),
+            [location],
+            _options(
+                tmp_path,
+                execute=True,
+                confirmation=EXECUTION_CONFIRMATION,
+            ),
+        )
+    )
+
+    by_id = {check["id"]: check for check in checks}
+    assert by_id["route:corner"]["status"] == "pass"
+    assert by_id["final_halt"]["status"] == "fail"
+    assert "zero velocity not confirmed" in by_id["final_halt"]["detail"]
+    assert by_id["bridge_shutdown"]["status"] == "pass"
 
 
 class _ManualClock:
@@ -319,6 +489,104 @@ def test_preflight_overall_fails_when_start_pose_gate_fails(monkeypatch, tmp_pat
         "preflight",
         "scan_quality",
         "start_pose",
+    ]
+
+
+def test_route_plan_preflight_reports_each_unique_goal_without_motion(
+    monkeypatch, tmp_path
+) -> None:
+    class FakePlanBridge:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def nav_plan(self, x, y, yaw, *, frame_id, timeout):
+            assert frame_id == "map"
+            assert timeout == 5.0
+            feasible = x > 0
+            return NavPlanInfo(
+                feasible=feasible,
+                pose_count=8 if feasible else 0,
+                path_length_m=2.5 if feasible else 0.0,
+                planning_time_s=0.01,
+                error_code=0 if feasible else 205,
+                error_name="NONE" if feasible else "START_OCCUPIED",
+                error_message="" if feasible else "start occupied",
+            )
+
+    locations = [
+        Location(name="clear", pose=Pose2D(x=1.0, y=0.0, yaw=0.0)),
+        Location(name="blocked", pose=Pose2D(x=-1.0, y=0.0, yaw=0.0)),
+    ]
+    monkeypatch.setattr(isaac_hil, "RosBridgeClient", FakePlanBridge)
+
+    checks = asyncio.run(
+        _inspect_route_plans(
+            locations,
+            _options(tmp_path, goals=("clear", "blocked"), cancel_goal="clear"),
+        )
+    )
+
+    assert [check["id"] for check in checks] == ["plan:clear", "plan:blocked"]
+    assert [check["status"] for check in checks] == ["pass", "fail"]
+    assert checks[1]["evidence"]["error_name"] == "START_OCCUPIED"
+
+
+def test_failed_route_plan_withholds_live_goals(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("test", encoding="utf-8")
+    config = AppConfig(locations_path="locations.toml")
+    location = Location(name="corner", pose=Pose2D(x=4.0, y=5.0, yaw=0.0))
+
+    monkeypatch.setattr(isaac_hil, "load_config", lambda _path: config)
+    monkeypatch.setattr(isaac_hil, "load_locations", lambda _path: [location])
+    monkeypatch.setattr(
+        isaac_hil,
+        "_doctor_checks",
+        lambda _path: ([], True, {"required_checks": [], "attempts": []}),
+    )
+
+    async def passing(check_id):
+        return {"id": check_id, "status": "pass", "detail": "ok", "evidence": {}}
+
+    async def failed_plans(_locations, _options):
+        return [
+            {
+                "id": "plan:corner",
+                "status": "fail",
+                "detail": "START_OCCUPIED",
+                "evidence": {},
+            }
+        ]
+
+    async def must_not_run(*_args, **_kwargs):
+        raise AssertionError("live navigation ran after a failed route-plan gate")
+
+    monkeypatch.setattr(isaac_hil, "_inspect_scan_quality", lambda: passing("scan_quality"))
+    monkeypatch.setattr(isaac_hil, "_inspect_start_pose", lambda _config: passing("start_pose"))
+    monkeypatch.setattr(isaac_hil, "_inspect_route_plans", failed_plans)
+    monkeypatch.setattr(isaac_hil, "_run_live", must_not_run)
+
+    artifact = asyncio.run(
+        run_isaac_hil(
+            _options(
+                tmp_path,
+                config_path=config_path,
+                execute=True,
+                confirmation=EXECUTION_CONFIRMATION,
+            )
+        )
+    )
+
+    assert artifact["overall"] == "fail"
+    assert [check["id"] for check in artifact["checks"]] == [
+        "preflight",
+        "scan_quality",
+        "start_pose",
+        "plan:corner",
+        "live_execution",
     ]
 
 

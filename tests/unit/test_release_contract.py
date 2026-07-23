@@ -1,4 +1,4 @@
-"""Living release documents must agree with the package version."""
+"""Living release documents must distinguish candidate and published versions."""
 
 from __future__ import annotations
 
@@ -41,7 +41,14 @@ def test_release_version_is_consistent_across_package_lock_and_living_docs() -> 
     assert f"## 狀態（v{version}" in readme
     handoff_title = handoff.splitlines()[0]
     assert f"目前版本 v{version}" in handoff_title
-    assert f"最近發布 v{version}" in handoff_title
+
+    published_match = re.search(r"最近發布 v(\d+\.\d+\.\d+)", handoff_title)
+    assert published_match is not None, "HANDOFF title must identify the latest published version"
+    published_version = published_match.group(1)
+    version_key = tuple(int(part) for part in version.split("."))
+    published_key = tuple(int(part) for part in published_version.split("."))
+    assert published_key <= version_key
+    assert (ROOT / "docs" / "releases" / f"v{published_version}.md").is_file()
 
     test_manual = (ROOT / "docs" / "validation" / "TEST.md").read_text(encoding="utf-8")
     assert f"`JenAI {version}`" in test_manual

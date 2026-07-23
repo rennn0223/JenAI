@@ -55,12 +55,20 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     assert config.vehicle.cmd_vel_stamped is False
     assert config.vehicle.pose_jump_threshold_m == 5.0
     assert config.vehicle.pose_jump_window_s == 2.0
+    assert config.vehicle.odom_timeout_s == 1.0
+    assert config.vehicle.arrival_position_tolerance_m == 0.25
+    assert config.vehicle.arrival_yaw_tolerance_rad == 0.25
+    assert config.deployment_mode == "simulation"
 
     config.vehicle.cmd_vel_topic = "/leatherback/cmd_vel"
     config.vehicle.domain_id = 20
     config.vehicle.max_linear = 1.2
     config.vehicle.pose_jump_threshold_m = 6.5
     config.vehicle.pose_jump_window_s = 1.5
+    config.vehicle.odom_timeout_s = 0.8
+    config.vehicle.arrival_position_tolerance_m = 0.05
+    config.vehicle.arrival_yaw_tolerance_rad = 0.15
+    config.deployment_mode = "physical"
     path = tmp_path / "config.toml"
     save_config(config, path)
     loaded = load_config(path)
@@ -70,6 +78,10 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     assert loaded.vehicle.max_linear == 1.2
     assert loaded.vehicle.pose_jump_threshold_m == 6.5
     assert loaded.vehicle.pose_jump_window_s == 1.5
+    assert loaded.vehicle.odom_timeout_s == 0.8
+    assert loaded.vehicle.arrival_position_tolerance_m == 0.05
+    assert loaded.vehicle.arrival_yaw_tolerance_rad == 0.15
+    assert loaded.deployment_mode == "physical"
     assert loaded.vehicle.type == "ackermann"
 
 
@@ -79,6 +91,7 @@ def test_config_round_trip_preserves_every_nested_safety_section(tmp_path: Path)
     )
     config.route_adapter = "odom"
     config.twin.enabled = True
+    config.twin.require_collision_evidence = False
     config.twin.forbidden_zones = [
         ForbiddenZone(name="stairs", x_min=1.0, y_min=2.0, x_max=3.0, y_max=4.0)
     ]
@@ -101,6 +114,9 @@ def test_config_round_trip_preserves_every_nested_safety_section(tmp_path: Path)
         ("vehicle", "max_linear = -1.0"),
         ("vehicle", "pose_jump_threshold_m = 0.0"),
         ("vehicle", "pose_jump_window_s = -1.0"),
+        ("vehicle", "odom_timeout_s = 0.0"),
+        ("vehicle", "arrival_position_tolerance_m = 0.0"),
+        ("vehicle", "arrival_yaw_tolerance_rad = 3.2"),
         ("vehicle", "max_angular = 0.0"),
         ("vehicle", "domain_id = 233"),
         ("avoidance", "stop_distance = 2.0\nslow_distance = 1.0"),
@@ -148,6 +164,8 @@ def test_incomplete_config_can_be_saved_and_loaded(tmp_path: Path) -> None:
     [
         {"vehicle": {"max_linear": -1}},
         {"vehicle": {"max_linear": float("inf")}},
+        {"vehicle": {"odom_timeout_s": float("nan")}},
+        {"deployment_mode": "possibly-physical"},
         {"twin": {"nav_timeout_s": -1}},
         {"twin": {"forbidden_zones": [{"x_min": 2, "x_max": 1, "y_min": 0, "y_max": 1}]}},
         {"avoidance": {"band_lo": 0.9, "band_hi": 0.1}},

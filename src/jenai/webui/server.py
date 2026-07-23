@@ -10,26 +10,28 @@ import secrets
 import socket
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import parse_qs, urlsplit
 
 from jenai.adapters import ros2_adapter
 from jenai.adapters.locations import LocationsFileError, load_locations
-from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.bridge import BridgeError, PoseInfo, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
 from jenai.providers.chat import chat_model_name
+from jenai.schemas import DoctorResult
 from jenai.state.runs import RunStore
 from jenai.tools.ros2_core import _kind_hint
 from jenai.tools.safety import halt_robot
-from jenai.webui.commands import run_web_command, run_web_confirm
+from jenai.webui.commands import WebAction, run_web_command, run_web_confirm
 from jenai.webui.render import render_dashboard_html, render_main
 
 _MAX_JSON_BODY = 64 * 1024
+_SubmitResult = TypeVar("_SubmitResult")
 
 
 class StatusCache:
@@ -46,12 +48,12 @@ class StatusCache:
         self._ros_ttl_s = max(0.0, ros_ttl_s)
         self._clock = clock
         self._lock = threading.Lock()
-        self._doctor: Any = None
+        self._doctor: DoctorResult | None = None
         self._doctor_at: float | None = None
         self._ros: dict[str, Any] | None = None
         self._ros_at: float | None = None
 
-    def doctor(self, config_path: Path):
+    def doctor(self, config_path: Path) -> DoctorResult:
         """Run the subprocess-backed doctor at most once per TTL."""
         with self._lock:
             now = self._clock()
@@ -68,11 +70,7 @@ class StatusCache:
         """List the ROS graph at most once per TTL across all browser tabs."""
         with self._lock:
             now = self._clock()
-            if (
-                self._ros is None
-                or self._ros_at is None
-                or now - self._ros_at >= self._ros_ttl_s
-            ):
+            if self._ros is None or self._ros_at is None or now - self._ros_at >= self._ros_ttl_s:
                 self._ros = _ros_snapshot()
                 self._ros_at = now
             return self._ros
@@ -106,20 +104,19 @@ class _PendingConfirms:
     """
 
     def __init__(self, max_entries: int = 32, ttl_s: float = 120.0) -> None:
-        self._items: dict[str, tuple[float, dict]] = {}
+        self._items: dict[str, tuple[float, WebAction]] = {}
         self._lock = threading.Lock()
         self._max = max_entries
         self._ttl_s = max(0.0, ttl_s)
 
     def _purge_expired(self, now: float) -> None:
         expired = [
-            token for token, (created, _) in self._items.items()
-            if now - created >= self._ttl_s
+            token for token, (created, _) in self._items.items() if now - created >= self._ttl_s
         ]
         for token in expired:
             self._items.pop(token, None)
 
-    def put(self, action: dict) -> str:
+    def put(self, action: WebAction) -> str:
         token = secrets.token_urlsafe(16)
         with self._lock:
             now = time.monotonic()
@@ -129,7 +126,7 @@ class _PendingConfirms:
                 self._items.pop(next(iter(self._items)), None)
         return token
 
-    def pop(self, token: str) -> dict | None:
+    def pop(self, token: str) -> WebAction | None:
         if not token:
             return None
         with self._lock:
@@ -168,7 +165,11 @@ class PoseCache:
         self._loop_ref: asyncio.AbstractEventLoop | None = None
         self._client_ref: RosBridgeClient | None = None
 
-    def submit(self, coro_factory, timeout: float = 10.0):
+    def submit(
+        self,
+        coro_factory: Callable[[RosBridgeClient], Coroutine[Any, Any, _SubmitResult]],
+        timeout: float = 10.0,
+    ) -> _SubmitResult | None:
         """Run `coro_factory(client)` on the cache's live bridge loop.
 
         Returns the result, or None when no live bridge is available (caller
@@ -200,7 +201,7 @@ class PoseCache:
             self._started = True
         threading.Thread(target=self._run_loop, daemon=True).start()
 
-    def _record_pose(self, pose: Any) -> None:
+    def _record_pose(self, pose: PoseInfo) -> None:
         """Publish one finite pose, or invalidate the cache explicitly."""
         if all(math.isfinite(value) for value in (pose.x, pose.y, pose.yaw)):
             self.latest = {
@@ -334,9 +335,7 @@ def build_status_payload(
     """
     # 5s-polled path: skip the nav-stack probes (seconds of ros2 CLI each).
     doctor = (
-        doctor_result
-        if doctor_result is not None
-        else run_doctor(config_path, include_nav=False)
+        doctor_result if doctor_result is not None else run_doctor(config_path, include_nav=False)
     )
     profile = config.active_profile()
     runs = list(run_store.list_runs()) if run_store is not None else []
@@ -403,6 +402,7 @@ def _do_stop(config: AppConfig, pose_cache: PoseCache | None = None) -> dict[str
 
 
 # -- HTML rendering -----------------------------------------------------------
+
 
 class _Handler(BaseHTTPRequestHandler):
     config: AppConfig
@@ -473,8 +473,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _reject(self) -> None:
         # Same minimal body for missing and wrong tokens — nothing to enumerate.
         if self._route().startswith("/api/"):
-            self._send('{"kind": "error", "html": "<p>Unauthorized.</p>"}',
-                       "application/json; charset=utf-8", status=401)
+            self._send(
+                '{"kind": "error", "html": "<p>Unauthorized.</p>"}',
+                "application/json; charset=utf-8",
+                status=401,
+            )
         else:
             self._send(
                 "<h1>401</h1><p>Open the tokened URL printed by <code>JenAI web</code>.</p>",
@@ -493,7 +496,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve_frame(self) -> None:
         """One camera frame as JPEG for the dashboard's ~1 fps snapshot stream."""
         query = parse_qs(urlsplit(self.path).query)
-        topic = (query.get("topic") or [None])[0] or self.config.vehicle.camera_topic
+        topic_values = query.get("topic")
+        topic = (
+            topic_values[0]
+            if topic_values and topic_values[0]
+            else self.config.vehicle.camera_topic
+        )
         frame_path = None
         if self.pose_cache is not None:
             self.pose_cache.ensure_started()
@@ -628,7 +636,9 @@ class _Handler(BaseHTTPRequestHandler):
         if body is None:
             return
         if path == "/api/command":
-            result = asyncio.run(run_web_command(self.config, self.config_path, body.get("text", "")))
+            result = asyncio.run(
+                run_web_command(self.config, self.config_path, body.get("text", ""))
+            )
             # A previewed actuation is held server-side under a one-time id; the
             # browser never gets (or gets to alter) the raw action it confirms.
             if result.get("kind") == "confirm" and self.pending is not None:
@@ -645,9 +655,7 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             else:
                 try:
-                    action = (
-                        self.pending.pop(body.get("confirm_id", "")) if self.pending else None
-                    )
+                    action = self.pending.pop(body.get("confirm_id", "")) if self.pending else None
                     if action is None:
                         result = {
                             "kind": "error",
@@ -687,7 +695,7 @@ def lan_addresses() -> list[str]:
         pass
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
+            ip = str(info[4][0])
             if not ip.startswith("127."):
                 addresses.add(ip)
     except OSError:

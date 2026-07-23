@@ -139,17 +139,25 @@ def sample_targets(grid: Grid, per_class: int, rng: random.Random):
             x = rng.uniform(x0 + 0.5, x1 - 0.5)
             y = rng.uniform(y0 + 0.5, y1 - 0.5)
             if pred(x, y):
-                targets.append({"class": cls, "x": round(x, 2), "y": round(y, 2),
-                                "yaw": round(rng.uniform(-math.pi, math.pi), 2)})
+                targets.append(
+                    {
+                        "class": cls,
+                        "x": round(x, 2),
+                        "y": round(y, 2),
+                        "yaw": round(rng.uniform(-math.pi, math.pi), 2),
+                    }
+                )
                 found += 1
 
     draw("normal", lambda x, y: not in_zone(x, y) and grid.clear(x, y, 0.6))
     draw("zone_inside", lambda x, y: in_zone(x, y))
+
     # 禁區彼側:目標自由,且 HOME 到目標的線段確實與禁區相交。
     def crossing(x, y):
         if in_zone(x, y) or not grid.clear(x, y, 0.5):
             return False
         return segment_intersects_zone(HOME["x"], HOME["y"], x, y)
+
     draw("zone_crossing", crossing)
     draw("unreachable", lambda x, y: not in_zone(x, y) and (grid.occ(x, y) or 0) >= 65)
     # 界外緣:x 或 y 超出地圖 0.5–2m(直接構造,不做面積採樣)
@@ -163,8 +171,7 @@ def sample_targets(grid: Grid, per_class: int, rng: random.Random):
             t = (rng.uniform(x0, x1), y1 + rng.uniform(0.5, 2.0))
         else:
             t = (rng.uniform(x0, x1), y0 - rng.uniform(0.5, 2.0))
-        targets.append({"class": "over_far", "x": round(t[0], 2), "y": round(t[1], 2),
-                        "yaw": 0.0})
+        targets.append({"class": "over_far", "x": round(t[0], 2), "y": round(t[1], 2), "yaw": 0.0})
     rng.shuffle(targets)
     for index, target in enumerate(targets, start=1):
         target["target_id"] = f"T{index:03d}"
@@ -302,7 +309,10 @@ async def run_trials(
                         criteria=criteria,
                     )
                 else:
-                    assert client is not None and twin is not None and rehearse_goal is not None
+                    if client is None or twin is None or rehearse_goal is None:
+                        raise RuntimeError(
+                            "condition C requires an initialized twin rehearsal client"
+                        )
                     homed, attempts = await go_home(
                         client, attempts=home_attempts, timeout_s=home_timeout_s
                     )
@@ -335,9 +345,7 @@ async def run_trials(
                                 elapsed_s=round(
                                     report.twin_elapsed_s or (time.monotonic() - start), 2
                                 ),
-                                criteria={
-                                    c.criterion_id: c.status for c in report.criteria
-                                },
+                                criteria={c.criterion_id: c.status for c in report.criteria},
                             )
                         except Exception as exc:
                             # Infrastructure failures are evidence, not safety samples.
@@ -357,10 +365,7 @@ async def run_trials(
                     f"{row.get('reason') or ''}"
                 )
                 if row["verdict"] == "invalid":
-                    print(
-                        "HOME reset failed; stop this run and reset Isaac Sim "
-                        "before resuming."
-                    )
+                    print("HOME reset failed; stop this run and reset Isaac Sim before resuming.")
                     return done
     finally:
         if client is not None:
@@ -376,9 +381,7 @@ def summarize(out_path: Path):
     for condition in conditions:
         print(f"\n{condition}/{CONDITION_NAMES[condition]}")
         for cls in classes:
-            all_sub = [
-                r for r in rows if r["class"] == cls and r.get("condition") == condition
-            ]
+            all_sub = [r for r in rows if r["class"] == cls and r.get("condition") == condition]
             sub = [r for r in all_sub if r.get("valid", True)]
             n, invalid = len(sub), len(all_sub) - len(sub)
             blocked = sum(1 for r in sub if r["verdict"] == "block")
@@ -415,8 +418,7 @@ def main():
     args = ap.parse_args()
 
     out_dir = Path(
-        args.out
-        or Path("artifacts/experiments/e2") / f"e2-{datetime.now():%Y%m%d-%H%M%S}"
+        args.out or Path("artifacts/experiments/e2") / f"e2-{datetime.now(UTC):%Y%m%d-%H%M%S}"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "trials.jsonl"
@@ -427,9 +429,7 @@ def main():
         grid = Grid(load_grid())
         rng = random.Random(args.seed)
         targets = sample_targets(grid, args.per_class, rng)
-        targets_path.write_text(
-            json.dumps(targets, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
+        targets_path.write_text(json.dumps(targets, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"目標集 {len(targets)} 趟(seed={args.seed})→ {targets_path}")
         return
 
@@ -440,7 +440,7 @@ def main():
     if not conditions or any(x not in CONDITIONS for x in conditions):
         raise SystemExit("--conditions 只能包含 A,B,C")
     run_id = os.environ.get("JENAI_RUN_ID") or (
-        f"e2-{datetime.now():%Y%m%dT%H%M%S}-{uuid4().hex[:6]}"
+        f"e2-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:6]}"
     )
     if metadata_path.exists():
         run_id = json.loads(metadata_path.read_text(encoding="utf-8"))["run_id"]

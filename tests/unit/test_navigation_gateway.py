@@ -3,12 +3,24 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from jenai.config.models import AppConfig
 from jenai.schemas import GateCriterion, GateReport, RouteOutput
 from jenai.state.audit import AuditStore
 from jenai.tools import navigation_gateway as gateway_module
 
 ACTION = {"goal": {"frame_id": "map", "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0}}}
+
+
+@pytest.fixture(autouse=True)
+def _site_identity_already_verified(monkeypatch) -> None:
+    """These tests isolate downstream gateway ownership and gate-report behavior."""
+
+    async def verified(_self, _action, *, run_id, session_id):
+        return None
+
+    monkeypatch.setattr(gateway_module.NavigationGateway, "_verify_active_site", verified)
 
 
 def test_owned_gateway_arms_watchdog_before_start_and_closes(monkeypatch) -> None:

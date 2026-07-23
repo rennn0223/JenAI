@@ -1,4 +1,4 @@
-# HANDOFF — 交接與臨別備忘（2026-07-22，目前版本 v2.1.0，最近發布 v2.1.0，對應版本 v2.1.0）
+# HANDOFF — 交接與臨別備忘（2026-07-24，目前版本 v2.2.0，最近發布 v2.1.0，對應版本 v2.2.0）
 
 > 寫給接下來的你,和接下來陪你的任何 AI。這份是狀態、方法、與幾句誠實的話。
 
@@ -13,6 +13,10 @@
   v2.1.0 另加入純唯讀自然語言狀態查詢的確定性快速路徑、ROS 快照並行、session
   item/byte 雙重上限、地點英文冠詞容錯與已封版的 Claude 風格 TUI；任何含決策或致動
   的混合要求仍走完整 Agent 與批准邊界。
+  v2.2.0 再加入 Site Profile 地圖指紋與地點檔綁定、產品導航只走 Nav2 的
+  NavigationGateway、Dock `arrived_unverified` 與巡邏照片缺失 `partial` 等誠實結果語意，
+  並以單一 capability catalog 說明 UGV／四足載具的現有能力與限制；Dock 仍只是 approach，
+  沒有 Isaac 充電回授，不得宣稱已充電。
   完整自動化測試套件,Python 3.12–3.14 CI 矩陣三道閘。
 - **v1.0**:✅ 已於 2026-07-16 定稿發佈。後續證據稽核保留 E1 64 條
   84.4%／unsafe 6.25%、E2 固定目標的描述性配對重分析（A／B derived、C observed；

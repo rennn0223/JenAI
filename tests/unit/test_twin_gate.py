@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from jenai.bridge import BridgeError
+from jenai.bridge import BridgeError, NavPlanInfo
 from jenai.config.models import AppConfig, ForbiddenZone, TwinProfile
 from jenai.schemas import GateReport
 from jenai.tools.nav_live import navigate_with_fallback
@@ -35,6 +35,7 @@ class FakeTwinBridge:
         self.stopped = False
         self.canceled = False
         self.unwatched = False
+        self.sent_goals: list[dict] = []
 
     async def start(self, timeout: float = 10.0) -> None:
         if self._start_error is not None:
@@ -61,12 +62,24 @@ class FakeTwinBridge:
         self.unwatched = True
 
     async def nav_send(self, x, y, yaw=0.0, frame_id="map", tag="") -> None:
+        self.sent_goals.append({"x": x, "y": y, "yaw": yaw, "frame_id": frame_id})
         if self._collide and self._contact_handler is not None:
             self._contact_handler({"data": True})
             return
         if self._nav_status is not None:
             for handler in self._handlers.get("nav_result", []):
                 handler({"tag": tag, "status": self._nav_status})
+
+    async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+        return NavPlanInfo(
+            feasible=True,
+            pose_count=2,
+            path_length_m=1.0,
+            planning_time_s=0.01,
+            error_code=0,
+            error_name="NONE",
+            error_message="",
+        )
 
     async def nav_cancel(self) -> bool:
         self.canceled = True
@@ -180,8 +193,19 @@ def test_unreachable_twin_refers_never_passes() -> None:
     assert all(c.status == "skipped" for c in report.criteria)
 
 
-def test_missing_contact_sensor_skips_g1_but_can_still_pass() -> None:
+def test_missing_required_contact_sensor_refers_instead_of_passing() -> None:
     report = _rehearse(_twin(), FakeTwinBridge(no_contact_topic=True))
+
+    assert report.verdict == "refer"
+    assert _status(report, "G1") == "skipped"
+    assert "collision evidence unavailable" in report.reason
+
+
+def test_research_scene_can_explicitly_make_contact_evidence_optional() -> None:
+    report = _rehearse(
+        _twin(require_collision_evidence=False),
+        FakeTwinBridge(no_contact_topic=True),
+    )
 
     assert report.verdict == "pass"
     assert _status(report, "G1") == "skipped"
@@ -199,7 +223,7 @@ def test_rehearse_goal_releases_the_bridge_it_created() -> None:
 
 
 def test_navigate_with_fallback_blocks_before_the_robot(monkeypatch) -> None:
-    config = AppConfig(twin=TwinProfile(enabled=True))
+    config = AppConfig(route_adapter="nav2", twin=TwinProfile(enabled=True))
     seen: list[str] = []
 
     async def fake_rehearse(twin, action, *, on_status=None, bridge=None):
@@ -233,64 +257,83 @@ def test_navigate_with_fallback_preserves_refer_verdict(monkeypatch) -> None:
 
 
 def test_navigate_with_fallback_pass_proceeds_to_execution(monkeypatch) -> None:
-    config = AppConfig(twin=TwinProfile(enabled=True))
-    executed: list[dict] = []
+    config = AppConfig(route_adapter="nav2", twin=TwinProfile(enabled=True))
+    target = FakeTwinBridge()
 
     async def fake_rehearse(twin, action, *, on_status=None, bridge=None):
         return GateReport(verdict="pass")
 
-    async def fake_route_execute(cfg, action):
-        executed.append(action)
-        return SimpleNamespace(execution_status="succeeded", route_preview="ok")
+    async def get_bridge():
+        return target
 
     monkeypatch.setattr("jenai.twin.rehearse_goal", fake_rehearse)
-    monkeypatch.setattr("jenai.tools.route_core.route_execute", fake_route_execute)
+    monkeypatch.setattr("jenai.tools.nav_live.RosBridgeClient.available", lambda: True)
 
-    out = asyncio.run(navigate_with_fallback(config, None, _goal()))
-    assert executed  # the goal reached the execution layer
+    out = asyncio.run(navigate_with_fallback(config, get_bridge, _goal()))
+    assert target.sent_goals  # the goal reached the supervised execution layer
     assert out.execution_status == "succeeded"
 
 
 def test_navigate_with_fallback_same_domain_skips_duplicate_rehearsal(monkeypatch) -> None:
-    config = AppConfig(twin=TwinProfile(enabled=True, domain_id=0))
+    config = AppConfig(route_adapter="nav2", twin=TwinProfile(enabled=True, domain_id=0))
     monkeypatch.setenv("ROS_DOMAIN_ID", "00")
-    executed: list[dict] = []
+    target = FakeTwinBridge()
     statuses: list[str] = []
 
     async def explode(*args, **kwargs):
         raise AssertionError("same-domain rehearsal would command the target twice")
 
-    async def fake_route_execute(cfg, action):
-        executed.append(action)
-        return SimpleNamespace(execution_status="succeeded", route_preview="ok")
+    async def get_bridge():
+        return target
 
     monkeypatch.setattr("jenai.twin.rehearse_goal", explode)
-    monkeypatch.setattr("jenai.tools.route_core.route_execute", fake_route_execute)
+    monkeypatch.setattr("jenai.tools.nav_live.RosBridgeClient.available", lambda: True)
 
-    out = asyncio.run(navigate_with_fallback(config, None, _goal(), on_gate=statuses.append))
+    out = asyncio.run(navigate_with_fallback(config, get_bridge, _goal(), on_gate=statuses.append))
 
-    assert executed == [_goal()]
+    assert target.sent_goals == [{"x": 2.0, "y": 3.0, "yaw": 0.0, "frame_id": "map"}]
     assert out.execution_status == "succeeded"
     assert statuses == [
-        "Twin rehearsal skipped because Twin and target share "
-        "ROS_DOMAIN_ID=0; sending one target goal."
+        "Simulation-only Twin rehearsal skipped because Twin and target share "
+        "ROS_DOMAIN_ID=0; sending one simulated target goal."
     ]
 
 
+def test_physical_deployment_blocks_shared_twin_domain(monkeypatch) -> None:
+    config = AppConfig(
+        route_adapter="nav2",
+        deployment_mode="physical",
+        twin=TwinProfile(enabled=True, domain_id=0),
+    )
+    monkeypatch.setenv("ROS_DOMAIN_ID", "0")
+    target = FakeTwinBridge()
+
+    async def get_bridge():
+        raise AssertionError("an isolation failure must block before bridge acquisition")
+
+    out = asyncio.run(navigate_with_fallback(config, get_bridge, _goal()))
+
+    assert not target.sent_goals
+    assert out.execution_status == "blocked"
+    assert "goal was NOT sent" in out.route_preview
+
+
 def test_gate_disabled_never_touches_the_twin(monkeypatch) -> None:
-    config = AppConfig()  # twin.enabled defaults to False
+    config = AppConfig(route_adapter="nav2")  # twin.enabled defaults to False
+    target = FakeTwinBridge()
 
     async def explode(*args, **kwargs):
         raise AssertionError("gate must not run when disabled")
 
-    async def fake_route_execute(cfg, action):
-        return SimpleNamespace(execution_status="succeeded", route_preview="ok")
+    async def get_bridge():
+        return target
 
     monkeypatch.setattr("jenai.twin.rehearse_goal", explode)
-    monkeypatch.setattr("jenai.tools.route_core.route_execute", fake_route_execute)
+    monkeypatch.setattr("jenai.tools.nav_live.RosBridgeClient.available", lambda: True)
 
-    out = asyncio.run(navigate_with_fallback(config, None, _goal()))
+    out = asyncio.run(navigate_with_fallback(config, get_bridge, _goal()))
     assert out.execution_status == "succeeded"
+    assert target.sent_goals
 
 
 def test_doctor_twin_checks_probe_the_twin_domain(monkeypatch) -> None:
@@ -318,6 +361,20 @@ def test_doctor_twin_checks_probe_the_twin_domain(monkeypatch) -> None:
         "twin_nav2": "pass",
         "twin_contact_sensor": "pass",
     }
+
+
+def test_doctor_shared_domain_warns_for_simulation_and_fails_for_physical(monkeypatch) -> None:
+    from jenai.doctor.checks import _twin_isolation_item
+
+    monkeypatch.setenv("ROS_DOMAIN_ID", "0")
+    simulated = AppConfig(twin=TwinProfile(enabled=True, domain_id=0))
+    physical = AppConfig(
+        deployment_mode="physical",
+        twin=TwinProfile(enabled=True, domain_id=0),
+    )
+
+    assert _twin_isolation_item(simulated).status == "warn"
+    assert _twin_isolation_item(physical).status == "fail"
 
 
 def test_doctor_twin_disabled_reported_and_warns_when_unreachable(monkeypatch) -> None:

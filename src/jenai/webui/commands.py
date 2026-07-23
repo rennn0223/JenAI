@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html as _html
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +17,28 @@ from jenai.adapters.locations import (
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
 from jenai.providers.chat import ProviderChatError, ask_provider, chat_model_name
+from jenai.schemas import Location
 from jenai.state.audit import AuditStore
 from jenai.tools import ros2_core
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.route_core import route_preview
 
+logger = logging.getLogger(__name__)
+
 TWIST = "geometry_msgs/msg/Twist"
+WebAction = dict[str, Any]
+WebResponse = dict[str, Any]
+
+
+def _parse_payload_object(payload_json: str) -> dict[str, Any]:
+    """Decode a ROS payload without allowing scalar or array-shaped messages."""
+
+    payload = json.loads(payload_json)
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a JSON object")
+    return payload
+
 
 # Console palette data — MUST mirror what _slash()/_ros()/_loc() actually
 # handle. Extend both together (the palette is the promise, _slash is the
@@ -52,15 +68,15 @@ def _p(text: str) -> str:
     return "<p>" + _esc(text).replace("\n", "<br>") + "</p>"
 
 
-def _result(html: str) -> dict:
+def _result(html: str) -> WebResponse:
     return {"kind": "result", "html": html}
 
 
-def _error(text: str) -> dict:
+def _error(text: str) -> WebResponse:
     return {"kind": "error", "html": _p(text)}
 
 
-def _confirm(html: str, action: dict, danger: str) -> dict:
+def _confirm(html: str, action: WebAction, danger: str) -> WebResponse:
     return {"kind": "confirm", "html": html, "action": action, "danger": danger}
 
 
@@ -72,12 +88,12 @@ def _isnum(text: str) -> bool:
         return False
 
 
-def _load_locations(config: AppConfig, config_path: Path):
+def _load_locations(config: AppConfig, config_path: Path) -> list[Location]:
     locations, _error = load_locations_tolerant(config.resolved_locations_path(config_path))
     return locations
 
 
-async def run_web_command(config: AppConfig, config_path: Path, text: str) -> dict:
+async def run_web_command(config: AppConfig, config_path: Path, text: str) -> WebResponse:
     """Execute a WebUI command. Read/chat commands return a result; commands that
     actuate the robot return a `confirm` block the client must approve first.
     """
@@ -97,7 +113,7 @@ async def run_web_command(config: AppConfig, config_path: Path, text: str) -> di
         return _error(f"Error: {exc}")
 
 
-async def _slash(config: AppConfig, config_path: Path, text: str) -> dict:
+async def _slash(config: AppConfig, config_path: Path, text: str) -> WebResponse:
     cmd, _, rest = text.partition(" ")
     rest = rest.strip()
     if cmd == "/help":
@@ -139,56 +155,57 @@ async def _slash(config: AppConfig, config_path: Path, text: str) -> dict:
     return _error(f"Unknown command: {cmd}. Try /help.")
 
 
-async def _ros(config: AppConfig, rest: str) -> dict:
+async def _ros(config: AppConfig, rest: str) -> WebResponse:
     op, _, arg = rest.partition(" ")
     arg = arg.strip()
     if op == "topics":
-        out = await ros2_core.ros_topics(config)
-        if not out.topics:
+        topics_out = await ros2_core.ros_topics(config)
+        if not topics_out.topics:
             return _result(_p("No topics on the graph."))
         items = "".join(
             f"<li><b>{_esc(t.name)}</b> <span class='dim'>{_esc(t.kind_hint)}</span></li>"
-            for t in out.topics
+            for t in topics_out.topics
         )
         return _result(f"<ul class='cmd-list'>{items}</ul>")
     if op == "topic-info":
-        out = await ros2_core.ros_topic_info(config, arg)
-        if not out.message_type:
-            return _result(_p(out.summary))
+        info_out = await ros2_core.ros_topic_info(config, arg)
+        if not info_out.message_type:
+            return _result(_p(info_out.summary))
         return _result(
             _p(
-                f"{out.name}\n{out.message_type}\n"
-                f"{out.publisher_count} publisher(s) · {out.subscriber_count} subscriber(s)"
+                f"{info_out.name}\n{info_out.message_type}\n"
+                f"{info_out.publisher_count} publisher(s) · "
+                f"{info_out.subscriber_count} subscriber(s)"
             )
         )
     if op == "schema":
-        out = await ros2_core.ros_schema(config, arg)
+        schema_out = await ros2_core.ros_schema(config, arg)
         rows = "".join(
             f"<li><b>{_esc(f.field_name)}</b> <span class='dim'>{_esc(f.field_type)}</span> "
             f"— {_esc(f.description)}</li>"
-            for f in out.field_summary
+            for f in schema_out.field_summary
         )
-        example = _esc(json.dumps(out.example_payload, ensure_ascii=False))
+        example = _esc(json.dumps(schema_out.example_payload, ensure_ascii=False))
         return _result(
-            f"<p><b>{_esc(out.message_type)}</b></p><ul class='cmd-list'>{rows}</ul>"
+            f"<p><b>{_esc(schema_out.message_type)}</b></p><ul class='cmd-list'>{rows}</ul>"
             f"<p class='dim'>example: <code>{example}</code></p>"
         )
     if op == "echo":
         parts = arg.split()
         topic = parts[0] if parts else ""
         limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-        out = await ros2_core.ros_echo(config, topic, limit=limit)
-        if not out.messages:
-            return _result(_p(out.summary))
-        return _result("".join(f"<pre>{_esc(m.get('raw', ''))}</pre>" for m in out.messages))
+        echo_out = await ros2_core.ros_echo(config, topic, limit=limit)
+        if not echo_out.messages:
+            return _result(_p(echo_out.summary))
+        return _result("".join(f"<pre>{_esc(m.get('raw', ''))}</pre>" for m in echo_out.messages))
     if op == "pub":
         topic, _, payload_json = arg.partition(" ")
         if not payload_json.strip():
             return _error("Usage: /ros pub &lt;topic&gt; &lt;json&gt;")
         try:
-            payload = json.loads(payload_json)
-        except json.JSONDecodeError as exc:
-            return _error(f"Invalid JSON: {exc}")
+            payload = _parse_payload_object(payload_json)
+        except ValueError as exc:
+            return _error(f"Invalid payload: {exc}")
         validation = await ros2_core.ros_pub_validate(topic, payload)
         if not validation.ok:
             return _error(validation.error.message if validation.error else "Validation failed.")
@@ -214,9 +231,9 @@ async def _ros(config: AppConfig, rest: str) -> dict:
             payload_json = " ".join(parts[1:])
         topic = parts[0]
         try:
-            payload = json.loads(payload_json)
-        except json.JSONDecodeError as exc:
-            return _error(f"Invalid JSON: {exc}")
+            payload = _parse_payload_object(payload_json)
+        except ValueError as exc:
+            return _error(f"Invalid payload: {exc}")
         return _confirm(
             _p(f"Drive {topic} for {duration:g}s\n{json.dumps(payload, ensure_ascii=False)}"),
             {
@@ -231,7 +248,7 @@ async def _ros(config: AppConfig, rest: str) -> dict:
     return _error(f"Unknown: /ros {op}")
 
 
-async def _drive_nl(config: AppConfig, rest: str) -> dict:
+async def _drive_nl(config: AppConfig, rest: str) -> WebResponse:
     if not rest:
         return _error("Usage: /drive 前進兩秒")
     intent = await extract_drive_command(config, rest)
@@ -254,7 +271,7 @@ async def _drive_nl(config: AppConfig, rest: str) -> dict:
     )
 
 
-async def _route(config: AppConfig, config_path: Path, rest: str) -> dict:
+async def _route(config: AppConfig, config_path: Path, rest: str) -> WebResponse:
     if not rest:
         return _error("Usage: /route from A to B")
     locations = _load_locations(config, config_path)
@@ -268,7 +285,7 @@ async def _route(config: AppConfig, config_path: Path, rest: str) -> dict:
     )
 
 
-def _loc(config: AppConfig, config_path: Path, rest: str) -> dict:
+def _loc(config: AppConfig, config_path: Path, rest: str) -> WebResponse:
     op, _, arg = rest.partition(" ")
     locations = _load_locations(config, config_path)
     if op == "list":
@@ -285,7 +302,9 @@ def _loc(config: AppConfig, config_path: Path, rest: str) -> dict:
             loc = find_location(locations, arg.strip())
         except LocationNotFoundError as exc:
             names = ", ".join(c.name for c in exc.candidates)
-            return _result(_p(f"'{arg}' not found." + (f" Did you mean: {names}?" if names else "")))
+            return _result(
+                _p(f"'{arg}' not found." + (f" Did you mean: {names}?" if names else ""))
+            )
         return _result(
             _p(
                 f"{loc.name}\naliases: {', '.join(loc.aliases) or '(none)'}\n"
@@ -297,10 +316,10 @@ def _loc(config: AppConfig, config_path: Path, rest: str) -> dict:
 
 async def run_web_confirm(
     config: AppConfig,
-    action: dict,
+    action: WebAction,
     *,
     config_path: Path | None = None,
-) -> dict:
+) -> WebResponse:
     """Execute a previously-previewed actuation after the user confirmed it."""
     audit_store = (
         AuditStore.best_effort(config_path.parent / "audit.sqlite3")
@@ -319,12 +338,12 @@ async def run_web_confirm(
                 details={"source": "webui", "action_type": str(kind or "unknown")},
             )
         except Exception:
-            pass
+            logger.warning("WebUI action audit failed", exc_info=True)
 
     _audit("approval_resolved", "approved")
     try:
         if kind == "drive":
-            out = await ros2_core.ros_drive(
+            drive_out = await ros2_core.ros_drive(
                 action["topic"],
                 action["message_type"],
                 action["payload"],
@@ -332,26 +351,26 @@ async def run_web_confirm(
                 max_linear=config.vehicle.max_linear,
                 max_angular=config.vehicle.max_angular,
             )
-            _audit("tool_updated", out.execution_status)
-            return _result(_p(out.result_message or "done"))
+            _audit("tool_updated", drive_out.execution_status)
+            return _result(_p(drive_out.result_message or "done"))
         if kind == "pub":
-            out = await ros2_core.ros_pub_execute(
+            pub_out = await ros2_core.ros_pub_execute(
                 action["topic"],
                 action["message_type"],
                 action["payload"],
                 max_linear=config.vehicle.max_linear,
                 max_angular=config.vehicle.max_angular,
             )
-            _audit("tool_updated", out.execution_status)
-            return _result(_p(out.result_message or "done"))
+            _audit("tool_updated", pub_out.execution_status)
+            return _result(_p(pub_out.result_message or "done"))
         if kind == "route":
-            out = await execute_navigation(
+            route_out = await execute_navigation(
                 config,
                 action["outgoing_action"],
                 audit_store=audit_store,
             )
-            _audit("tool_updated", out.execution_status)
-            return _result(_p(out.route_preview))
+            _audit("tool_updated", route_out.execution_status)
+            return _result(_p(route_out.route_preview))
         _audit("tool_updated", "failed")
         return _error("Unknown action.")
     except Exception as exc:

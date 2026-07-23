@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,7 +76,7 @@ def test_report_directory_and_file_are_private(tmp_path: Path) -> None:
     path = save_patrol_log(
         report,
         tmp_path / "config.toml",
-        now=datetime(2026, 7, 18, 12, 0),
+        now=datetime(2026, 7, 18, 12, 0, tzinfo=UTC),
     )
     assert _mode(path.parent) == 0o700
     assert _mode(path) == 0o600

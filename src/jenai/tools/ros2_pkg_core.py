@@ -34,9 +34,18 @@ _PKG_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 # Only these rosdep keys are allowed into package.xml unreviewed — an
 # LLM-hallucinated dependency would make `rosdep`/`colcon` fail confusingly.
 _KNOWN_DEPS = {
-    "rclpy", "std_msgs", "sensor_msgs", "geometry_msgs", "nav_msgs",
-    "nav2_msgs", "action_msgs", "tf2_ros", "tf2_geometry_msgs",
-    "visualization_msgs", "std_srvs", "builtin_interfaces",
+    "rclpy",
+    "std_msgs",
+    "sensor_msgs",
+    "geometry_msgs",
+    "nav_msgs",
+    "nav2_msgs",
+    "action_msgs",
+    "tf2_ros",
+    "tf2_geometry_msgs",
+    "visualization_msgs",
+    "std_srvs",
+    "builtin_interfaces",
 }
 
 
@@ -145,7 +154,7 @@ def render_package(plan: PackagePlan) -> dict[str, str]:
             f"  <name>{pkg}</name>\n"
             "  <version>0.0.0</version>\n"
             f"  <description>{xml_escape(plan.description)}</description>\n"
-            "  <maintainer email=\"you@example.com\">you</maintainer>\n"
+            '  <maintainer email="you@example.com">you</maintainer>\n'
             "  <license>Apache-2.0</license>\n\n"
             "  <buildtool_depend>ament_python</buildtool_depend>\n"
             f"{exec_depends}\n\n"
@@ -185,10 +194,7 @@ def render_package(plan: PackagePlan) -> dict[str, str]:
             ")\n"
         ),
         "setup.cfg": (
-            "[develop]\n"
-            f"script_dir=$base/lib/{pkg}\n"
-            "[install]\n"
-            f"install_scripts=$base/lib/{pkg}\n"
+            f"[develop]\nscript_dir=$base/lib/{pkg}\n[install]\ninstall_scripts=$base/lib/{pkg}\n"
         ),
         f"resource/{pkg}": "",
         f"{pkg}/__init__.py": "",
@@ -223,10 +229,7 @@ def build_package(ws_root: Path, package_name: str, *, timeout: float = 300.0) -
     are absent: (False, reason), never a fake success.
     """
     ros_setup = os.environ.get("ROS_SETUP", "/opt/ros/jazzy/setup.bash")
-    command = (
-        f'source "{ros_setup}" 2>/dev/null; '
-        f"colcon build --packages-select {package_name}"
-    )
+    command = f'source "{ros_setup}" 2>/dev/null; colcon build --packages-select {package_name}'
     try:
         proc = run_process(
             ["bash", "-c", command],
