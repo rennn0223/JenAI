@@ -11,25 +11,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-PRIVATE_RELEASE_TRUTH = (
-    "新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；"
-    "只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path "
-    "不會產生或宣稱 GitHub artifact attestations。"
+PUBLIC_RELEASE_TRUTH = (
+    "目前 repository 是 public；v2.2.0 Release 公開提供 wheel、matching constraints、"
+    "CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。"
+    "只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。"
 )
-PRIVATE_RELEASE_DOCS = (
+CURRENT_RELEASE_DOCS = (
     ROOT / "README.md",
     ROOT / "docs" / "QUICKSTART.md",
     ROOT / "docs" / "operations" / "ROLLBACK.md",
     ROOT / ".github" / "workflows" / "README.md",
     ROOT / "docs" / "product" / "PRODUCT_READINESS.md",
-    ROOT / "docs" / "releases" / "v2.0.1.md",
 )
 
 
-def test_current_release_docs_do_not_claim_private_github_attestations() -> None:
-    for path in PRIVATE_RELEASE_DOCS:
+def test_current_release_docs_match_public_release_evidence() -> None:
+    for path in CURRENT_RELEASE_DOCS:
         text = path.read_text(encoding="utf-8")
-        assert PRIVATE_RELEASE_TRUTH in text, path
+        assert PUBLIC_RELEASE_TRUTH in text, path
+        assert "目前 repository 是 private" not in text, path
 
 
 def test_release_workflow_binds_assets_to_one_verified_tag_commit() -> None:

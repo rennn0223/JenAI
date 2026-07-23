@@ -11,8 +11,8 @@
 
 ## Release wheel：安裝、升級與回滾的共同流程
 
-目前 repository 是 private；只有已取得 `rennn0223/JenAI` 權限、且 GitHub CLI 已登入的
-協作者能執行此流程。未獲權限者沒有公開 release 下載通道。新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path 不會產生或宣稱 GitHub artifact attestations。
+目前 repository 是 public；v2.2.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+
 wheel、constraints 與
 `SHA256SUMS` 必須來自**同一個 release**，且 asset 清單必須實際包含它們；例如既有
 `v1.1.4` 缺少後兩項，不可宣稱已通過這套驗證。流程以 Linux／Ubuntu 為目標；macOS
@@ -22,12 +22,15 @@ wheel、constraints 與
 ```bash
 read -r -p "Target JenAI version (without v): " VERSION
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid version"; exit 2; }
-command -v gh >/dev/null || { echo "GitHub CLI (gh) is required"; exit 2; }
-gh auth status
 INSTALL_DIR="$HOME/Downloads/jenai-$VERSION"
 mkdir -p "$INSTALL_DIR"
-gh release download "v${VERSION}" --repo rennn0223/JenAI --dir "$INSTALL_DIR" --pattern "jenai-${VERSION}-py3-none-any.whl" --pattern "jenai-${VERSION}-constraints.txt" --pattern "SHA256SUMS"
 cd "$INSTALL_DIR"
+BASE_URL="https://github.com/rennn0223/JenAI/releases/download/v${VERSION}"
+curl --fail --location --remote-name \
+  "$BASE_URL/jenai-${VERSION}-py3-none-any.whl"
+curl --fail --location --remote-name \
+  "$BASE_URL/jenai-${VERSION}-constraints.txt"
+curl --fail --location --remote-name "$BASE_URL/SHA256SUMS"
 grep -Fq " *jenai-${VERSION}-py3-none-any.whl" SHA256SUMS
 grep -Fq " *jenai-${VERSION}-constraints.txt" SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS

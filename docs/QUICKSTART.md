@@ -30,24 +30,27 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## 2. 取得並安裝 JenAI
 
-目前 repository 是 private。下列流程只適用已取得 `rennn0223/JenAI` 權限、並已用
-GitHub CLI 登入的協作者；未獲權限者目前沒有公開 release 下載通道，匿名 `curl` 會失敗。
-新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path 不會產生或宣稱 GitHub artifact attestations。
+目前 repository 是 public；v2.2.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+
 選定正式版本後，命令會下載該版 wheel、matching constraints 和 checksum，先驗證兩個
 安裝檔再交給 `uv`。只有 asset 清單確實含 wheel、同版 constraints、`SHA256SUMS` 的
-release 才適用；例如歷史 `v1.1.4` 缺少後兩項，不代表供應鏈檢查已通過；目前請使用已驗證此流程的 `v2.0.1` 或後續資產完整版本。
+release 才適用；例如歷史 `v1.1.4` 缺少後兩項，不代表供應鏈檢查已通過；目前請使用
+`v2.2.0` 或後續資產完整版本。
 這段流程以 Linux／Ubuntu 為目標；macOS 仍是 Experimental，須自行安裝 GNU coreutils
 並將 `sha256sum` 換成 `gsha256sum`，且不因此取得相同驗證等級。
 
 ```bash
 read -r -p "JenAI release version (without v): " VERSION
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid version"; exit 2; }
-command -v gh >/dev/null || { echo "GitHub CLI (gh) is required"; exit 2; }
-gh auth status
 INSTALL_DIR="$HOME/Downloads/jenai-$VERSION"
 mkdir -p "$INSTALL_DIR"
-gh release download "v${VERSION}" --repo rennn0223/JenAI --dir "$INSTALL_DIR" --pattern "jenai-${VERSION}-py3-none-any.whl" --pattern "jenai-${VERSION}-constraints.txt" --pattern "SHA256SUMS"
 cd "$INSTALL_DIR"
+BASE_URL="https://github.com/rennn0223/JenAI/releases/download/v${VERSION}"
+curl --fail --location --remote-name \
+  "$BASE_URL/jenai-${VERSION}-py3-none-any.whl"
+curl --fail --location --remote-name \
+  "$BASE_URL/jenai-${VERSION}-constraints.txt"
+curl --fail --location --remote-name "$BASE_URL/SHA256SUMS"
 grep -Fq " *jenai-${VERSION}-py3-none-any.whl" SHA256SUMS
 grep -Fq " *jenai-${VERSION}-constraints.txt" SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
@@ -59,7 +62,7 @@ uv tool update-shell
 
 只有 repository 在該版發布時為 public、release 說明明確標示 attestation 已發布、
 且 assets 實際包含 `.sigstore.json` bundles 時，checksum 通過後才可選配第二層驗證；
-這項證據不適用 private release（並須使用支援 `gh attestation` 的已登入 GitHub CLI）：
+這一步須使用支援 `gh attestation` 的已登入 GitHub CLI：
 
 ```bash
 gh attestation verify "jenai-${VERSION}-py3-none-any.whl" \

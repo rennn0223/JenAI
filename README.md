@@ -55,18 +55,13 @@ uv run JenAI web
 
 ### 在新機器上安裝（建議：不可變 Release wheel）
 
-目前 `rennn0223/JenAI` 是 **private repository**。只有已獲授權、且已用 GitHub CLI
-登入的協作者能從 Releases 安裝；未獲 repository 權限的使用者目前沒有公開下載通道，
-不能把匿名 `curl` 當成可交付的安裝方式。若未來改為公開發行，才另提供公開下載流程。
+目前 repository 是 public；v2.2.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
 
-新版 workflow 會為 private release 產生 CycloneDX SBOM 與 `SHA256SUMS`；只有這些 assets 實際出現在該 GitHub Release 時才視為已發布，且 private path 不會產生或宣稱 GitHub artifact attestations。
-
-已授權協作者請選定正式版本，同時下載該版本的 wheel、constraints 與 `SHA256SUMS`。
+請選定正式版本，同時下載該版本的 wheel、constraints 與 `SHA256SUMS`。
 三者必須是**同一個 release**；constraints 固定該版通過發布閘的依賴解析，checksum 用來
-確認下載資產與同一份 manifest 一致。private path 缺少簽署的 provenance，不能據此證明
-來源真實性或抵禦 manifest 與資產一同遭替換。只有 asset 清單實際包含這三項的 release
-才適用此流程；例如既有
-`v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證；目前請使用已通過此流程的 `v2.0.1` 或後續資產完整版本。
+確認下載資產與同一份 manifest 一致。只有 asset 清單實際包含這三項的 release 才適用；
+例如既有 `v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證；
+目前請使用 `v2.2.0` 或後續資產完整版本。
 
 下列已驗證的 copy-paste 流程以 Linux／Ubuntu 為目標，使用系統提供的 GNU
 `sha256sum`。macOS 在 [SUPPORT_MATRIX](docs/operations/SUPPORT_MATRIX.md) 仍是 Experimental；可自行
@@ -76,12 +71,15 @@ uv run JenAI web
 ```bash
 read -r -p "JenAI release version (without v): " VERSION
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid version"; exit 2; }
-command -v gh >/dev/null || { echo "GitHub CLI (gh) is required"; exit 2; }
-gh auth status
 INSTALL_DIR="$HOME/Downloads/jenai-$VERSION"
 mkdir -p "$INSTALL_DIR"
-gh release download "v${VERSION}" --repo rennn0223/JenAI --dir "$INSTALL_DIR" --pattern "jenai-${VERSION}-py3-none-any.whl" --pattern "jenai-${VERSION}-constraints.txt" --pattern "SHA256SUMS"
 cd "$INSTALL_DIR"
+BASE_URL="https://github.com/rennn0223/JenAI/releases/download/v${VERSION}"
+curl --fail --location --remote-name \
+  "$BASE_URL/jenai-${VERSION}-py3-none-any.whl"
+curl --fail --location --remote-name \
+  "$BASE_URL/jenai-${VERSION}-constraints.txt"
+curl --fail --location --remote-name "$BASE_URL/SHA256SUMS"
 grep -Fq " *jenai-${VERSION}-py3-none-any.whl" SHA256SUMS
 grep -Fq " *jenai-${VERSION}-constraints.txt" SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
