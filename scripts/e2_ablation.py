@@ -126,8 +126,28 @@ def segment_intersects_zone(x0: float, y0: float, x1: float, y1: float) -> bool:
     return leave >= 0.0 and enter <= 1.0
 
 
+def _sample_over_far_target(bounds, rng: random.Random) -> dict:
+    x0, y0, x1, y1 = bounds
+    side = rng.choice(["E", "W", "N", "S"])
+    if side == "E":
+        target = (x1 + rng.uniform(0.5, 2.0), rng.uniform(y0, y1))
+    elif side == "W":
+        target = (x0 - rng.uniform(0.5, 2.0), rng.uniform(y0, y1))
+    elif side == "N":
+        target = (rng.uniform(x0, x1), y1 + rng.uniform(0.5, 2.0))
+    else:
+        target = (rng.uniform(x0, x1), y0 - rng.uniform(0.5, 2.0))
+    return {
+        "class": "over_far",
+        "x": round(target[0], 2),
+        "y": round(target[1], 2),
+        "yaw": 0.0,
+    }
+
+
 def sample_targets(grid: Grid, per_class: int, rng: random.Random):
-    x0, y0, x1, y1 = grid.bounds()
+    bounds = grid.bounds()
+    x0, y0, x1, y1 = bounds
     targets = []
 
     def draw(cls, pred, tries=20000):
@@ -161,17 +181,7 @@ def sample_targets(grid: Grid, per_class: int, rng: random.Random):
     draw("zone_crossing", crossing)
     draw("unreachable", lambda x, y: not in_zone(x, y) and (grid.occ(x, y) or 0) >= 65)
     # 界外緣:x 或 y 超出地圖 0.5–2m(直接構造,不做面積採樣)
-    for _ in range(per_class):
-        side = rng.choice(["E", "W", "N", "S"])
-        if side == "E":
-            t = (x1 + rng.uniform(0.5, 2.0), rng.uniform(y0, y1))
-        elif side == "W":
-            t = (x0 - rng.uniform(0.5, 2.0), rng.uniform(y0, y1))
-        elif side == "N":
-            t = (rng.uniform(x0, x1), y1 + rng.uniform(0.5, 2.0))
-        else:
-            t = (rng.uniform(x0, x1), y0 - rng.uniform(0.5, 2.0))
-        targets.append({"class": "over_far", "x": round(t[0], 2), "y": round(t[1], 2), "yaw": 0.0})
+    targets.extend(_sample_over_far_target(bounds, rng) for _ in range(per_class))
     rng.shuffle(targets)
     for index, target in enumerate(targets, start=1):
         target["target_id"] = f"T{index:03d}"
@@ -240,6 +250,128 @@ def _base_row(run_id: str, target: dict, condition: str) -> dict:
     }
 
 
+async def _initialize_twin(conditions):
+    if "C" not in conditions:
+        return None, None, None
+
+    from jenai.bridge import RosBridgeClient
+    from jenai.config.store import load_config
+    from jenai.twin import rehearse_goal
+
+    config = load_config()
+    twin = config.twin.model_copy(update={"enabled": True, "domain_id": 0})
+    client = RosBridgeClient(domain_id=0)
+    await client.start()
+    return client, twin, rehearse_goal
+
+
+def _completed_trials(out_path: Path, conditions) -> set:
+    completed = set()
+    if not out_path.exists():
+        return completed
+
+    for line in out_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if (
+            row.get("condition") in conditions
+            and row.get("valid") is True
+            and row.get("verdict") not in {"error", "invalid"}
+        ):
+            completed.add((row.get("target_id"), row.get("condition")))
+    return completed
+
+
+def _ordered_jobs(targets, conditions):
+    risk_order = {
+        "zone_inside": 0,
+        "over_far": 1,
+        "normal": 2,
+        "zone_crossing": 3,
+        "unreachable": 4,
+    }
+    jobs = []
+    for condition in conditions:
+        condition_targets = (
+            sorted(targets, key=lambda target: risk_order[target["class"]])
+            if condition == "C"
+            else targets
+        )
+        jobs.extend((target, condition) for target in condition_targets)
+    return jobs
+
+
+async def _populate_trial_row(
+    row,
+    target,
+    condition,
+    *,
+    run_id,
+    start,
+    client,
+    twin,
+    rehearse_goal,
+    home_attempts,
+    home_timeout_s,
+):
+    if condition == "A":
+        row.update(verdict="pass", reason="", elapsed_s=0.0, criteria={})
+        return
+    if condition == "B":
+        verdict, reason, criteria = static_verdict(target)
+        row.update(
+            verdict=verdict,
+            reason=reason,
+            elapsed_s=0.0,
+            criteria=criteria,
+        )
+        return
+    if client is None or twin is None or rehearse_goal is None:
+        raise RuntimeError("condition C requires an initialized twin rehearsal client")
+
+    homed, attempts = await go_home(client, attempts=home_attempts, timeout_s=home_timeout_s)
+    row.update(homed=homed, home_attempts=attempts)
+    if not homed:
+        row.update(
+            valid=False,
+            verdict="invalid",
+            reason="failed to reset twin to HOME",
+            elapsed_s=round(time.monotonic() - start, 2),
+            criteria={},
+        )
+        return
+
+    action = {
+        "goal": {
+            "name": f"e2_{run_id}_{target['target_id']}",
+            "frame_id": "map",
+            "pose": {
+                "x": target["x"],
+                "y": target["y"],
+                "yaw": target["yaw"],
+            },
+        }
+    }
+    try:
+        report = await rehearse_goal(twin, action)
+        row.update(
+            verdict=report.verdict,
+            reason=report.reason,
+            elapsed_s=round(report.twin_elapsed_s or (time.monotonic() - start), 2),
+            criteria={c.criterion_id: c.status for c in report.criteria},
+        )
+    except Exception as exc:
+        # Infrastructure failures are evidence, not safety samples.
+        row.update(
+            valid=False,
+            verdict="error",
+            reason=str(exc)[:200],
+            elapsed_s=round(time.monotonic() - start, 2),
+            criteria={},
+        )
+
+
 async def run_trials(
     targets,
     out_path: Path,
@@ -249,113 +381,30 @@ async def run_trials(
     home_attempts: int = 3,
     home_timeout_s: float = 180.0,
 ):
-    client = None
-    twin = None
-    rehearse_goal = None
-    if "C" in conditions:
-        from jenai.bridge import RosBridgeClient
-        from jenai.config.store import load_config
-        from jenai.twin import rehearse_goal as _rehearse_goal
-
-        config = load_config()
-        twin = config.twin.model_copy(update={"enabled": True, "domain_id": 0})
-        client = RosBridgeClient(domain_id=0)
-        await client.start()
-        rehearse_goal = _rehearse_goal
-    completed = set()
-    if out_path.exists():
-        for line in out_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if (
-                row.get("condition") in conditions
-                and row.get("valid") is True
-                and row.get("verdict") not in {"error", "invalid"}
-            ):
-                completed.add((row.get("target_id"), row.get("condition")))
+    client, twin, rehearse_goal = await _initialize_twin(conditions)
+    completed = _completed_trials(out_path, conditions)
     total = len(targets) * len(conditions)
     done = len(completed)
     try:
         with out_path.open("a", encoding="utf-8") as fh:
-            risk_order = {
-                "zone_inside": 0,
-                "over_far": 1,
-                "normal": 2,
-                "zone_crossing": 3,
-                "unreachable": 4,
-            }
-            jobs = []
-            for condition in conditions:
-                condition_targets = (
-                    sorted(targets, key=lambda t: risk_order[t["class"]])
-                    if condition == "C"
-                    else targets
-                )
-                jobs.extend((target, condition) for target in condition_targets)
+            jobs = _ordered_jobs(targets, conditions)
             for target, condition in jobs:
                 if (target["target_id"], condition) in completed:
                     continue
                 row = _base_row(run_id, target, condition)
                 start = time.monotonic()
-                if condition == "A":
-                    row.update(verdict="pass", reason="", elapsed_s=0.0, criteria={})
-                elif condition == "B":
-                    verdict, reason, criteria = static_verdict(target)
-                    row.update(
-                        verdict=verdict,
-                        reason=reason,
-                        elapsed_s=0.0,
-                        criteria=criteria,
-                    )
-                else:
-                    if client is None or twin is None or rehearse_goal is None:
-                        raise RuntimeError(
-                            "condition C requires an initialized twin rehearsal client"
-                        )
-                    homed, attempts = await go_home(
-                        client, attempts=home_attempts, timeout_s=home_timeout_s
-                    )
-                    row.update(homed=homed, home_attempts=attempts)
-                    if not homed:
-                        row.update(
-                            valid=False,
-                            verdict="invalid",
-                            reason="failed to reset twin to HOME",
-                            elapsed_s=round(time.monotonic() - start, 2),
-                            criteria={},
-                        )
-                    else:
-                        action = {
-                            "goal": {
-                                "name": f"e2_{run_id}_{target['target_id']}",
-                                "frame_id": "map",
-                                "pose": {
-                                    "x": target["x"],
-                                    "y": target["y"],
-                                    "yaw": target["yaw"],
-                                },
-                            }
-                        }
-                        try:
-                            report = await rehearse_goal(twin, action)
-                            row.update(
-                                verdict=report.verdict,
-                                reason=report.reason,
-                                elapsed_s=round(
-                                    report.twin_elapsed_s or (time.monotonic() - start), 2
-                                ),
-                                criteria={c.criterion_id: c.status for c in report.criteria},
-                            )
-                        except Exception as exc:
-                            # Infrastructure failures are evidence, not safety samples.
-                            row.update(
-                                valid=False,
-                                verdict="error",
-                                reason=str(exc)[:200],
-                                elapsed_s=round(time.monotonic() - start, 2),
-                                criteria={},
-                            )
+                await _populate_trial_row(
+                    row,
+                    target,
+                    condition,
+                    run_id=run_id,
+                    start=start,
+                    client=client,
+                    twin=twin,
+                    rehearse_goal=rehearse_goal,
+                    home_attempts=home_attempts,
+                    home_timeout_s=home_timeout_s,
+                )
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                 fh.flush()
                 done += 1

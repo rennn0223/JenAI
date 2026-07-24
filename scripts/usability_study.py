@@ -250,6 +250,16 @@ def finish_trial(
     return trial
 
 
+def _validate_failure_reason(trial: dict[str, Any], prefix: str) -> None:
+    reason = trial.get("failure_reason")
+    if reason is None:
+        return
+    if trial["success"] and reason != "none":
+        raise ValueError(f"{prefix}successful trial failure_reason must be none")
+    if not trial["success"] and reason not in FAILURE_REASONS:
+        raise ValueError(f"{prefix}invalid failure_reason: {reason}")
+
+
 def validate_trial(trial: dict[str, Any], *, line_number: int | None = None) -> dict[str, Any]:
     missing = REQUIRED_TRIAL_FIELDS - trial.keys()
     prefix = f"line {line_number}: " if line_number is not None else ""
@@ -260,12 +270,7 @@ def validate_trial(trial: dict[str, Any], *, line_number: int | None = None) -> 
     _validate_experience(str(trial["experience"]))
     if not isinstance(trial["success"], bool):
         raise ValueError(f"{prefix}success must be a boolean")
-    reason = trial.get("failure_reason")
-    if reason is not None:
-        if trial["success"] and reason != "none":
-            raise ValueError(f"{prefix}successful trial failure_reason must be none")
-        if not trial["success"] and reason not in FAILURE_REASONS:
-            raise ValueError(f"{prefix}invalid failure_reason: {reason}")
+    _validate_failure_reason(trial, prefix)
     if isinstance(trial["elapsed_s"], bool) or not isinstance(trial["elapsed_s"], (int, float)):
         raise ValueError(f"{prefix}elapsed_s must be a number")
     if trial["elapsed_s"] < 0:
@@ -298,40 +303,82 @@ def _p95(values: list[float]) -> float:
     return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
 
 
+def _condition_summary(group: list[dict[str, Any]]) -> dict[str, Any]:
+    elapsed = [float(trial["elapsed_s"]) for trial in group]
+    successful = [trial for trial in group if bool(trial["success"])]
+    successful_elapsed = [float(trial["elapsed_s"]) for trial in successful]
+    failure_reasons: dict[str, int] = {}
+    for trial in group:
+        if trial["success"]:
+            continue
+        reason = str(trial.get("failure_reason") or "unclassified_legacy")
+        failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+    return {
+        "trials": len(group),
+        "participants": len({trial["participant"] for trial in group}),
+        "successes": len(successful),
+        "success_rate": len(successful) / len(group),
+        "failure_reasons": dict(sorted(failure_reasons.items())),
+        "median_time_s": statistics.median(elapsed),
+        "p95_time_s": _p95(elapsed),
+        "median_success_time_s": (
+            statistics.median(successful_elapsed) if successful_elapsed else None
+        ),
+        "p95_success_time_s": _p95(successful_elapsed) if successful_elapsed else None,
+        "mean_errors": statistics.mean(int(trial["errors"]) for trial in group),
+        "mean_lookups": statistics.mean(int(trial["lookups"]) for trial in group),
+        "mean_interventions": statistics.mean(int(trial["interventions"]) for trial in group),
+        "mean_commands": statistics.mean(int(trial["commands"]) for trial in group),
+    }
+
+
+def _paired_speed_summary(
+    indexed: dict[tuple[str, str, str], list[dict[str, Any]]],
+    participant_tasks: set[tuple[str, str]],
+    condition: str,
+) -> dict[str, int | float | None]:
+    ratios: list[float] = []
+    ambiguous_repeated_pairs = 0
+    missing_pairs = 0
+    failed_pairs = 0
+    zero_duration_pairs = 0
+    for participant, task in participant_tasks:
+        manual_group = indexed.get((participant, task, "manual"), [])
+        candidate_group = indexed.get((participant, task, condition), [])
+        if len(manual_group) > 1 or len(candidate_group) > 1:
+            ambiguous_repeated_pairs += 1
+            continue
+        if len(manual_group) != 1 or len(candidate_group) != 1:
+            missing_pairs += 1
+            continue
+        manual, candidate = manual_group[0], candidate_group[0]
+        if not manual["success"] or not candidate["success"]:
+            failed_pairs += 1
+            continue
+        candidate_time = float(candidate["elapsed_s"])
+        manual_time = float(manual["elapsed_s"])
+        if candidate_time <= 0 or manual_time <= 0:
+            zero_duration_pairs += 1
+            continue
+        ratios.append(manual_time / candidate_time)
+    return {
+        "pairs": len(ratios),
+        "median_speed_ratio": statistics.median(ratios) if ratios else None,
+        "ambiguous_repeated_pairs": ambiguous_repeated_pairs,
+        "missing_pairs": missing_pairs,
+        "failed_pairs": failed_pairs,
+        "zero_duration_pairs": zero_duration_pairs,
+    }
+
+
 def summarize_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
     """Summarize conditions and paired successful-task speed ratios without hiding failures."""
 
     summary: dict[str, Any] = {"conditions": {}, "paired": {}}
     for condition in CONDITIONS:
         group = [trial for trial in trials if trial["condition"] == condition]
-        elapsed = [float(trial["elapsed_s"]) for trial in group]
-        if not group:
-            continue
-        successful = [trial for trial in group if bool(trial["success"])]
-        failure_reasons: dict[str, int] = {}
-        for trial in group:
-            if trial["success"]:
-                continue
-            reason = str(trial.get("failure_reason") or "unclassified_legacy")
-            failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
-        successful_elapsed = [float(trial["elapsed_s"]) for trial in successful]
-        summary["conditions"][condition] = {
-            "trials": len(group),
-            "participants": len({trial["participant"] for trial in group}),
-            "successes": len(successful),
-            "success_rate": len(successful) / len(group),
-            "failure_reasons": dict(sorted(failure_reasons.items())),
-            "median_time_s": statistics.median(elapsed),
-            "p95_time_s": _p95(elapsed),
-            "median_success_time_s": statistics.median(successful_elapsed)
-            if successful_elapsed
-            else None,
-            "p95_success_time_s": _p95(successful_elapsed) if successful_elapsed else None,
-            "mean_errors": statistics.mean(int(trial["errors"]) for trial in group),
-            "mean_lookups": statistics.mean(int(trial["lookups"]) for trial in group),
-            "mean_interventions": statistics.mean(int(trial["interventions"]) for trial in group),
-            "mean_commands": statistics.mean(int(trial["commands"]) for trial in group),
-        }
+        if group:
+            summary["conditions"][condition] = _condition_summary(group)
 
     indexed: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for trial in trials:
@@ -339,38 +386,9 @@ def summarize_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
         indexed.setdefault(key, []).append(trial)
     participant_tasks = {(trial["participant"], trial["task"]) for trial in trials}
     for condition in ("slash", "natural"):
-        ratios: list[float] = []
-        ambiguous_repeated_pairs = 0
-        missing_pairs = 0
-        failed_pairs = 0
-        zero_duration_pairs = 0
-        for participant, task in participant_tasks:
-            manual_group = indexed.get((participant, task, "manual"), [])
-            candidate_group = indexed.get((participant, task, condition), [])
-            if len(manual_group) > 1 or len(candidate_group) > 1:
-                ambiguous_repeated_pairs += 1
-                continue
-            if len(manual_group) != 1 or len(candidate_group) != 1:
-                missing_pairs += 1
-                continue
-            manual, candidate = manual_group[0], candidate_group[0]
-            if not manual["success"] or not candidate["success"]:
-                failed_pairs += 1
-                continue
-            candidate_time = float(candidate["elapsed_s"])
-            manual_time = float(manual["elapsed_s"])
-            if candidate_time <= 0 or manual_time <= 0:
-                zero_duration_pairs += 1
-                continue
-            ratios.append(manual_time / candidate_time)
-        summary["paired"][f"manual_vs_{condition}"] = {
-            "pairs": len(ratios),
-            "median_speed_ratio": statistics.median(ratios) if ratios else None,
-            "ambiguous_repeated_pairs": ambiguous_repeated_pairs,
-            "missing_pairs": missing_pairs,
-            "failed_pairs": failed_pairs,
-            "zero_duration_pairs": zero_duration_pairs,
-        }
+        summary["paired"][f"manual_vs_{condition}"] = _paired_speed_summary(
+            indexed, participant_tasks, condition
+        )
     return summary
 
 

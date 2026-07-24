@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jenai.schemas import TaskOutcome
-from jenai.tools.area_patrol_agent_tools import _report_outcome
+from jenai.tools.area_patrol_service import _report_outcome
 from jenai.workflows.area_patrol import PatrolMissionStatus
 
 

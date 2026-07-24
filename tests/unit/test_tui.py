@@ -229,9 +229,22 @@ def test_output_panel_uses_uniform_line_spacing() -> None:
 def test_output_panel_plain_body_neutralizes_rich_markup() -> None:
     body = "{'unresolved': ['map-left-up'], 'summary': '[bold]unsafe[/]'}"
 
-    rendered = str(OutputPanel("Result [unsafe]", body, body_markup=False).render())
+    rendered = str(OutputPanel("Result [unsafe]", body).render())
 
     assert "Result [unsafe]" in rendered
+    assert body in rendered
+
+
+def test_output_panel_renders_structured_patrol_result_without_markup_parsing() -> None:
+    """Nested result data must never be interpreted as Rich markup."""
+    body = (
+        "{'areas': [], 'events': [{'sequence': 15, 'status': 'success', "
+        "'detail': 'required-area coverage=1.000'}], 'outcome': 'succeeded', "
+        "'summary': 'Area patrol success: required observation coverage 100.0%'}"
+    )
+
+    rendered = str(OutputPanel("Result", body).render())
+
     assert body in rendered
 
 
@@ -991,6 +1004,41 @@ yaw = 0.785
             assert "map_left_down" in cards[0].approval.summary
             assert "natural-language route reflex" in cards[0].approval.justification
             assert called["agent"] is False
+
+    asyncio.run(run())
+
+
+def test_tui_area_patrol_with_return_to_dock_bypasses_single_route_reflex(
+    monkeypatch, tmp_path
+) -> None:
+    locations_path = tmp_path / "locations.toml"
+    locations_path.write_text(
+        """[[locations]]
+name = "dock"
+frame_id = "map"
+[locations.pose]
+x = -6.0
+y = -1.0
+yaw = 3.142
+""",
+        encoding="utf-8",
+    )
+    called = {"agent": False, "text": ""}
+
+    async def fake_show_run(self, arg):
+        called["agent"] = True
+        called["text"] = arg
+
+    monkeypatch.setattr(JenAITuiApp, "_show_run", fake_show_run)
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.locations_path = "locations.toml"
+        async with app.run_test():
+            text = "巡檢目前場域的所有必要區域，每個區域保存影像證據，完成後回到 dock。"
+            await app.handle_user_text(text)
+            assert list(app.query(ApprovalCard)) == []
+            assert called == {"agent": True, "text": text}
 
     asyncio.run(run())
 

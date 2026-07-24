@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -236,7 +237,16 @@ class AreaPatrolWorkflow:
             if self._cancel_requested:
                 return self._aborted_report(request, areas, events, tuple(results))
 
-        returned_home, home_detail = await self._return_home(request, events)
+        try:
+            returned_home, home_detail = await self._return_home(request, events)
+        except asyncio.CancelledError:
+            self.cancel()
+            events.add(
+                "return_home_interrupted",
+                status=StepVerdict.CANCELLED.value,
+                detail="return-home navigation was cancelled",
+            )
+            return self._aborted_report(request, areas, events, tuple(results))
         status = self._mission_status(request, tuple(results), returned_home)
         coverage_ratio = self._coverage_ratio(tuple(results))
         events.add(
@@ -279,7 +289,17 @@ class AreaPatrolWorkflow:
         for point in area.inspection_points:
             if self._cancel_requested:
                 break
-            result = await self._run_point(request, point)
+            try:
+                result = await self._run_point(request, point)
+            except asyncio.CancelledError:
+                self.cancel()
+                events.add(
+                    "inspection_point_interrupted",
+                    area_id=area.area_id,
+                    status=StepVerdict.CANCELLED.value,
+                    detail=f"{point.location}: execution was cancelled",
+                )
+                break
             points.append(result)
             events.add(
                 "inspection_point_finished",

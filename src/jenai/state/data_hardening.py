@@ -292,6 +292,88 @@ def _inspect_location(
     return ([entry] if entry else []), ([refusal] if refusal else [])
 
 
+class _DirectoryInspector:
+    """Safely enumerate one managed directory and its required parent chain."""
+
+    def __init__(
+        self,
+        category: str,
+        root: Path,
+        patterns: tuple[str, ...],
+        *,
+        protected_paths: set[Path],
+        protected_identities: frozenset[tuple[int, int]],
+        recursive: bool,
+    ) -> None:
+        self._category = category
+        self._root = root
+        self._patterns = patterns
+        self._protected_paths = protected_paths
+        self._protected_identities = protected_identities
+        self._recursive = recursive
+        self._entries: dict[Path, _Entry] = {}
+        self._refusals: list[HardenRefusal] = []
+
+    def inspect(self) -> tuple[list[_Entry], list[HardenRefusal]]:
+        if not self._root.exists() and not self._root.is_symlink():
+            return [], []
+        if self._root.absolute() in self._protected_paths:
+            return [], [self._refusal("protected config/credential path")]
+        root_entry, refusal = _inspect_directory_entry(self._category, self._root)
+        if refusal is not None:
+            return [], [refusal]
+        if root_entry is None:  # pragma: no cover - defensive completeness
+            return [], []
+        self._entries[self._root] = root_entry
+        matched = self._enumerate()
+        if matched is not None:
+            for path in sorted(matched):
+                self._inspect_path(path)
+        return list(self._entries.values()), self._refusals
+
+    def _enumerate(self) -> set[Path] | None:
+        matched: set[Path] = set()
+        try:
+            for pattern in self._patterns:
+                iterator = (
+                    self._root.rglob(pattern) if self._recursive else self._root.glob(pattern)
+                )
+                matched.update(iterator)
+        except OSError:
+            self._refusals.append(self._refusal("could not enumerate directory"))
+            return None
+        return matched
+
+    def _inspect_path(self, path: Path) -> None:
+        entry, refusal = _inspect_file(
+            self._category,
+            path,
+            protected_paths=self._protected_paths,
+            protected_identities=self._protected_identities,
+        )
+        if refusal is not None:
+            self._refusals.append(refusal)
+            return
+        if entry is None:
+            return
+        self._entries[path] = entry
+        self._add_parent_entries(path.parent)
+
+    def _add_parent_entries(self, path: Path) -> None:
+        for parent in _parents_within(path, self._root):
+            if parent in self._entries:
+                continue
+            entry, refusal = _inspect_directory_entry(self._category, parent)
+            if refusal is not None:
+                self._refusals.append(refusal)
+                break
+            if entry is not None:
+                self._entries[parent] = entry
+
+    def _refusal(self, reason: str) -> HardenRefusal:
+        return HardenRefusal(self._category, self._root, reason)
+
+
 def _inspect_directory(
     category: str,
     root: Path,
@@ -301,48 +383,14 @@ def _inspect_directory(
     protected_identities: frozenset[tuple[int, int]],
     recursive: bool = True,
 ) -> tuple[list[_Entry], list[HardenRefusal]]:
-    if not root.exists() and not root.is_symlink():
-        return [], []
-    if root.absolute() in protected_paths:
-        return [], [HardenRefusal(category, root, "protected config/credential path")]
-    root_entry, root_refusal = _inspect_directory_entry(category, root)
-    if root_refusal:
-        return [], [root_refusal]
-    if root_entry is None:  # pragma: no cover - defensive completeness
-        return [], []
-
-    entries: dict[Path, _Entry] = {root: root_entry}
-    refusals: list[HardenRefusal] = []
-    matched: set[Path] = set()
-    for pattern in patterns:
-        try:
-            matched.update(root.rglob(pattern) if recursive else root.glob(pattern))
-        except OSError:
-            refusals.append(HardenRefusal(category, root, "could not enumerate directory"))
-            return list(entries.values()), refusals
-
-    for path in sorted(matched):
-        entry, refusal = _inspect_file(
-            category,
-            path,
-            protected_paths=protected_paths,
-            protected_identities=protected_identities,
-        )
-        if refusal:
-            refusals.append(refusal)
-            continue
-        if entry:
-            entries[path] = entry
-            for parent in _parents_within(path.parent, root):
-                if parent in entries:
-                    continue
-                parent_entry, parent_refusal = _inspect_directory_entry(category, parent)
-                if parent_refusal:
-                    refusals.append(parent_refusal)
-                    break
-                if parent_entry:
-                    entries[parent] = parent_entry
-    return list(entries.values()), refusals
+    return _DirectoryInspector(
+        category,
+        root,
+        patterns,
+        protected_paths=protected_paths,
+        protected_identities=protected_identities,
+        recursive=recursive,
+    ).inspect()
 
 
 def _inspect_file(

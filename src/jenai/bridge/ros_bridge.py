@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 import rclpy
@@ -31,6 +32,7 @@ import rclpy
 if TYPE_CHECKING:
     # Relative imports give mypy the real helper signatures. Runtime uses the
     # bare siblings below because this file is launched as a system-Python script.
+    from ._nav_plan import path_plan_payload
     from ._navigation_state import (
         NavigationGenerations,
         NavigationGoalToken,
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
     from ._server import serve_requests
     from ._watchdog import WatchdogState
 else:
+    from _nav_plan import path_plan_payload
     from _navigation_state import (
         NavigationGenerations,
         NavigationGoalToken,
@@ -87,6 +90,39 @@ def _yaw_from_quaternion(q: Any) -> float:
     siny = 2.0 * (q.w * q.z + q.x * q.y)
     cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
     return math.atan2(siny, cosy)
+
+
+@dataclass(slots=True)
+class _NavigationFeedbackRecorder:
+    """Translate Nav2 feedback while retaining endpoint-verification evidence."""
+
+    frame_id: str
+    tag: str
+    started: float
+    final_pose: WirePayload | None = None
+
+    def __call__(self, feedback: Any) -> None:
+        details = feedback.feedback
+        current = details.current_pose
+        self.final_pose = {
+            "x": float(current.pose.position.x),
+            "y": float(current.pose.position.y),
+            "yaw": _yaw_from_quaternion(current.pose.orientation),
+            "frame_id": current.header.frame_id or self.frame_id,
+            "source": "nav2_feedback",
+        }
+        _emit(
+            {
+                "event": "nav_feedback",
+                "tag": self.tag,
+                "distance_remaining": round(details.distance_remaining, 2),
+                "recoveries": details.number_of_recoveries,
+                "elapsed": round(time.monotonic() - self.started, 1),
+            }
+        )
+
+    def snapshot(self) -> WirePayload | None:
+        return dict(self.final_pose) if self.final_pose is not None else None
 
 
 class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
@@ -352,6 +388,42 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
 
     # -- Nav2 ---------------------------------------------------------------
 
+    def _record_path_plan_result(
+        self, future: Any, state: dict[str, Any], finished: threading.Event
+    ) -> None:
+        """Record one asynchronous planner result and always release its waiter."""
+        try:
+            state["result"] = path_plan_payload(future.result())
+        except Exception as exc:
+            state["error"] = f"Nav2 planning result failed: {exc}"
+        finally:
+            finished.set()
+
+    def _accept_path_plan(
+        self,
+        future: Any,
+        state: dict[str, Any],
+        finished: threading.Event,
+        timed_out: threading.Event,
+    ) -> None:
+        """Attach result handling to an accepted goal or record rejection."""
+        try:
+            handle = future.result()
+            if not handle.accepted:
+                state["error"] = "Nav2 rejected the path-planning request."
+                finished.set()
+                return
+            state["handle"] = handle
+            if timed_out.is_set():
+                handle.cancel_goal_async()
+                return
+            handle.get_result_async().add_done_callback(
+                lambda result: self._record_path_plan_result(result, state, finished)
+            )
+        except Exception as exc:
+            state["error"] = f"Nav2 path-planning request failed: {exc}"
+            finished.set()
+
     def nav_plan(
         self,
         x: float,
@@ -379,65 +451,9 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         finished = threading.Event()
         timed_out = threading.Event()
         state: dict[str, Any] = {}
-
-        def _on_result(future: Any) -> None:
-            try:
-                wrapped = future.result()
-                result = wrapped.result
-                poses = result.path.poses
-                path_length = sum(
-                    math.hypot(
-                        current.pose.position.x - previous.pose.position.x,
-                        current.pose.position.y - previous.pose.position.y,
-                    )
-                    for previous, current in zip(poses, poses[1:], strict=False)
-                )
-                error_code = int(result.error_code)
-                error_names = {
-                    0: "NONE",
-                    200: "UNKNOWN",
-                    201: "INVALID_PLANNER",
-                    202: "TF_ERROR",
-                    203: "START_OUTSIDE_MAP",
-                    204: "GOAL_OUTSIDE_MAP",
-                    205: "START_OCCUPIED",
-                    206: "GOAL_OCCUPIED",
-                    207: "TIMEOUT",
-                    208: "NO_VALID_PATH",
-                }
-                state["result"] = {
-                    "feasible": error_code == 0 and bool(poses),
-                    "pose_count": len(poses),
-                    "path_length_m": path_length,
-                    "planning_time_s": (
-                        result.planning_time.sec + result.planning_time.nanosec / 1_000_000_000
-                    ),
-                    "error_code": error_code,
-                    "error_name": error_names.get(error_code, f"ERROR_{error_code}"),
-                    "error_message": str(result.error_msg),
-                }
-            except Exception as exc:
-                state["error"] = f"Nav2 planning result failed: {exc}"
-            finally:
-                finished.set()
-
-        def _on_accepted(future: Any) -> None:
-            try:
-                handle = future.result()
-                if not handle.accepted:
-                    state["error"] = "Nav2 rejected the path-planning request."
-                    finished.set()
-                    return
-                state["handle"] = handle
-                if timed_out.is_set():
-                    handle.cancel_goal_async()
-                    return
-                handle.get_result_async().add_done_callback(_on_result)
-            except Exception as exc:
-                state["error"] = f"Nav2 path-planning request failed: {exc}"
-                finished.set()
-
-        self._plan_client.send_goal_async(goal).add_done_callback(_on_accepted)
+        self._plan_client.send_goal_async(goal).add_done_callback(
+            lambda future: self._accept_path_plan(future, state, finished, timed_out)
+        )
         if not finished.wait(timeout):
             timed_out.set()
             handle = state.get("handle")
@@ -451,22 +467,18 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
     def nav_send(
         self, x: float, y: float, yaw: float, frame_id: str = "map", tag: str = ""
     ) -> WirePayload:
-        """Send a NavigateToPose goal; feedback/result events carry `tag`.
+        """Send a tagged NavigateToPose goal and retain endpoint evidence.
 
-        The tag lets the client match events to the goal it sent — without it,
-        a late result from a cancelled goal could be misread as the outcome of
-        the next one.
+        The tag prevents a late result from a cancelled generation from being
+        mistaken for the outcome of the next goal.
         """
         from nav2_msgs.action import NavigateToPose
 
         self._ensure_pose_jump_subscription()
         if self._nav_client is None:
             self._nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
-        # A freshly spawned bridge needs DDS discovery to find the action
-        # server; 2 s intermittently loses that race on a busy graph (measured
-        # ~45% of cold rehearsals on a 111-topic sim), producing avoidable
-        # "Nav2 not running" refers. 10 s only delays the honest failure when
-        # Nav2 is truly absent — when present, discovery returns early.
+        # Cold DDS discovery on the warehouse graph can exceed two seconds.
+        # Ten seconds still returns early when Nav2 is present and fails honestly otherwise.
         if not self._nav_client.wait_for_server(timeout_sec=10.0):
             raise RuntimeError("Nav2 (/navigate_to_pose) action server is not running.")
 
@@ -476,96 +488,73 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         goal.pose.pose.position.y = float(y)
         goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
         goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
-
-        started = time.monotonic()
-        # NavigateToPose.Result does not contain the terminal robot pose.  Keep
-        # the latest pose carried by Nav2 feedback so the client can verify the
-        # endpoint instead of treating the action status as proof of accuracy.
-        last_pose: WirePayload | None = None
-
-        def _feedback(fb: Any) -> None:
-            nonlocal last_pose
-            f = fb.feedback
-            current = f.current_pose
-            last_pose = {
-                "x": float(current.pose.position.x),
-                "y": float(current.pose.position.y),
-                "yaw": _yaw_from_quaternion(current.pose.orientation),
-                "frame_id": current.header.frame_id or frame_id,
-                "source": "nav2_feedback",
-            }
-            _emit(
-                {
-                    "event": "nav_feedback",
-                    "tag": tag,
-                    "distance_remaining": round(f.distance_remaining, 2),
-                    "recoveries": f.number_of_recoveries,
-                    "elapsed": round(time.monotonic() - started, 1),
-                }
-            )
+        feedback = _NavigationFeedbackRecorder(frame_id, tag, time.monotonic())
 
         token = self._nav_generations.begin(tag)
         self._pose_jump_guard.arm(token)
         self._nav_pending = True
         self._cancel_on_accept_token = None
         try:
-            send_future = self._nav_client.send_goal_async(goal, feedback_callback=_feedback)
+            send_future = self._nav_client.send_goal_async(goal, feedback_callback=feedback)
         except Exception:
-            if self._nav_generations.finish(token):
-                self._nav_pending = False
-                self._pose_jump_guard.disarm(token)
+            self._finish_unaccepted_navigation(token)
             raise
-
-        def _on_accepted(fut: Any) -> None:
-            try:
-                handle = fut.result()
-            except Exception as exc:
-                if self._nav_generations.finish(token):
-                    self._nav_pending = False
-                    self._pose_jump_guard.disarm(token)
-                _emit(
-                    {
-                        "event": "nav_result",
-                        "tag": tag,
-                        "status": "failed",
-                        "reason": f"Nav2 goal request failed: {exc}",
-                    }
-                )
-                return
-            if not handle.accepted:
-                if self._nav_generations.finish(token):
-                    self._nav_pending = False
-                    self._pose_jump_guard.disarm(token)
-                _emit({"event": "nav_result", "tag": tag, "status": "rejected"})
-                return
-
-            is_current = self._nav_generations.is_current(token)
-            if is_current:
-                self._nav_goal_handle = handle
-                self._nav_goal_handle_token = token
-                self._nav_pending = False
-            cancel_requested = self._cancel_on_accept_token == token
-            if cancel_requested:
-                self._cancel_on_accept_token = None
-            if not is_current or cancel_requested:
-                # A superseded goal, or one halted while acceptance was in
-                # flight, must be canceled as soon as its handle exists.
-                handle.cancel_goal_async()
-            result_future = handle.get_result_async()
-
-            def _on_result(rfut: Any) -> None:
-                self._handle_navigation_result(
-                    rfut,
-                    handle=handle,
-                    token=token,
-                    tag=tag,
-                    final_pose=dict(last_pose) if last_pose is not None else None,
-                )
-
-            result_future.add_done_callback(_on_result)
-
-        send_future.add_done_callback(_on_accepted)
+        send_future.add_done_callback(
+            lambda future: self._accept_navigation_goal(future, token, tag, feedback)
+        )
         return {"sent": True}
+
+    def _finish_unaccepted_navigation(self, token: NavigationGoalToken) -> None:
+        """Release pending state only when the rejected generation is current."""
+        if self._nav_generations.finish(token):
+            self._nav_pending = False
+            self._pose_jump_guard.disarm(token)
+
+    def _accept_navigation_goal(
+        self,
+        future: Any,
+        token: NavigationGoalToken,
+        tag: str,
+        feedback: _NavigationFeedbackRecorder,
+    ) -> None:
+        """Bind an accepted handle to its generation and cancellation state."""
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self._finish_unaccepted_navigation(token)
+            _emit(
+                {
+                    "event": "nav_result",
+                    "tag": tag,
+                    "status": "failed",
+                    "reason": f"Nav2 goal request failed: {exc}",
+                }
+            )
+            return
+        if not handle.accepted:
+            self._finish_unaccepted_navigation(token)
+            _emit({"event": "nav_result", "tag": tag, "status": "rejected"})
+            return
+
+        is_current = self._nav_generations.is_current(token)
+        if is_current:
+            self._nav_goal_handle = handle
+            self._nav_goal_handle_token = token
+            self._nav_pending = False
+        cancel_requested = self._cancel_on_accept_token == token
+        if cancel_requested:
+            self._cancel_on_accept_token = None
+        if not is_current or cancel_requested:
+            handle.cancel_goal_async()
+        handle.get_result_async().add_done_callback(
+            lambda result: self._handle_navigation_result(
+                result,
+                handle=handle,
+                token=token,
+                tag=tag,
+                final_pose=feedback.snapshot(),
+            )
+        )
 
     def _finish_navigation_goal(self, handle: Any, token: NavigationGoalToken) -> None:
         """Release only the goal named by ``token``; stale callbacks are harmless."""
@@ -708,7 +697,7 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         self,
         gx: float,
         gy: float,
-        gyaw: float,  # goal heading — position-only seeker ignores it (see docstring)
+        gyaw: float,  # Position-only seeker intentionally ignores goal heading.
         tag: str,
         cmd_vel_topic: str,
         stamped: bool,
@@ -720,27 +709,25 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         timeout: float,
         avoidance: dict[str, Any] | None = None,
     ) -> None:
-        # Sibling module (stdlib-only): ROS I/O stays here; all control branch
-        # decisions live in a dependency-free unit tested without rclpy.
-        from _drive_control import DirectDriveController
+        # The stdlib-only sibling owns decisions; this method owns ROS sampling/publishing.
+        from _drive_control import DirectDriveController, direct_drive_terminal_status
         from nav_msgs.msg import Odometry
 
         latest: dict[str, Any] = {}
-        depth: dict[str, Any] = {}  # "ranges"/"angles": depth pseudo-laserscan
+        depth: dict[str, Any] = {}
         sub = None
         depth_sub = None
-        status = "failed"  # "timed_out" on the deadline path (not Nav2 "aborted")
+        status = "failed"  # Setup failures remain explicit terminal failures.
         avoid = avoidance if (avoidance and avoidance.get("enabled")) else None
-        # Setup lives INSIDE the try so any rclpy failure still resets
-        # _drive_active and emits nav_result — otherwise navigate_live hangs to
-        # its timeout and every later drive rejects with "already running".
+        # Setup remains inside the try so partial rclpy failure still performs
+        # fail-safe cleanup, clears the drive state, and emits one terminal result.
         try:
 
             def _odom_cb(msg: Any) -> None:
-                p = msg.pose.pose
-                latest["x"] = p.position.x
-                latest["y"] = p.position.y
-                latest["yaw"] = _yaw_from_quaternion(p.orientation)
+                pose = msg.pose.pose
+                latest["x"] = pose.position.x
+                latest["y"] = pose.position.y
+                latest["yaw"] = _yaw_from_quaternion(pose.orientation)
                 latest["updated_at"] = time.monotonic()
 
             sub = self.create_subscription(
@@ -748,10 +735,11 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
             )
             if avoid is not None:
                 depth_sub = self._start_depth_scan(avoid, depth)
-            with self._halt_lock:  # serialize rclpy entity creation vs halt()
-                pub = self.ensure_halt_publisher(cmd_vel_topic, stamped)
+            # Entity creation shares the halt lock with emergency-stop callers.
+            with self._halt_lock:
+                publisher = self.ensure_halt_publisher(cmd_vel_topic, stamped)
             started = time.monotonic()
-            last_fb = 0.0
+            last_feedback = 0.0
             controller = DirectDriveController(
                 gx,
                 gy,
@@ -763,19 +751,20 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
             )
 
             while True:
-                if self._drive_cancel.is_set():
-                    status = "canceled"
-                    break
                 now = time.monotonic()
                 elapsed = now - started
-                if elapsed > timeout:
-                    status = "timed_out"
+                terminal = direct_drive_terminal_status(
+                    cancelled=self._drive_cancel.is_set(),
+                    elapsed=elapsed,
+                    timeout=timeout,
+                    odom_ready="x" in latest,
+                    odom_timeout=odom_timeout_s,
+                )
+                if terminal is not None:
+                    status = terminal
                     break
                 if "x" not in latest:
-                    if elapsed > odom_timeout_s:
-                        status = "odom_unavailable"
-                        break
-                    time.sleep(0.05)  # wait for the first /odom sample
+                    time.sleep(0.05)
                     continue
                 tick = controller.step(
                     now=now,
@@ -788,29 +777,17 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
                     angles=depth.get("angles"),
                     scan_updated_at=depth.get("updated_at"),
                 )
-                if tick.zero_first:
-                    self._pulse_zero(pub, stamped, interval_s=0.05)
-                if tick.status is not None:
-                    status = tick.status
+                terminal, last_feedback = self._apply_drive_tick(
+                    publisher,
+                    tick,
+                    stamped=stamped,
+                    tag=tag,
+                    started=started,
+                    last_feedback=last_feedback,
+                )
+                if terminal is not None:
+                    status = terminal
                     break
-                if tick.action != "move":
-                    time.sleep(0.05)
-                    continue
-                pub.publish(self._velocity_message(stamped, tick.linear, tick.angular))
-                now = time.monotonic()
-                if now - last_fb >= 0.5:
-                    last_fb = now
-                    _emit(
-                        {
-                            "event": "nav_feedback",
-                            "tag": tag,
-                            "distance_remaining": round(tick.distance_remaining, 2),
-                            "recoveries": tick.recoveries,
-                            "avoiding": tick.avoiding,
-                            "elapsed": round(now - started, 1),
-                        }
-                    )
-                time.sleep(0.05)  # ~20 Hz control
         finally:
             self._finish_direct_drive(
                 cmd_vel_topic,
@@ -819,6 +796,42 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
                 tag=tag,
                 status=status,
             )
+
+    def _apply_drive_tick(
+        self,
+        publisher: Any,
+        tick: Any,
+        *,
+        stamped: bool,
+        tag: str,
+        started: float,
+        last_feedback: float,
+    ) -> tuple[str | None, float]:
+        """Publish one controller decision and its throttled feedback."""
+        if tick.zero_first:
+            self._pulse_zero(publisher, stamped, interval_s=0.05)
+        if tick.status is not None:
+            return str(tick.status), last_feedback
+        if tick.action != "move":
+            time.sleep(0.05)
+            return None, last_feedback
+
+        publisher.publish(self._velocity_message(stamped, tick.linear, tick.angular))
+        now = time.monotonic()
+        if now - last_feedback >= 0.5:
+            last_feedback = now
+            _emit(
+                {
+                    "event": "nav_feedback",
+                    "tag": tag,
+                    "distance_remaining": round(tick.distance_remaining, 2),
+                    "recoveries": tick.recoveries,
+                    "avoiding": tick.avoiding,
+                    "elapsed": round(now - started, 1),
+                }
+            )
+        time.sleep(0.05)
+        return None, last_feedback
 
     def _velocity_message(self, stamped: bool, linear: float, angular: float) -> Any:
         """Create one bounded velocity message in the configured ROS family."""

@@ -10,7 +10,7 @@ from jenai.config.store import build_minimal_config
 from jenai.schemas import Location, Pose2D, RouteOutput, SessionState, VisionOutput
 from jenai.secure_files import atomic_write_bytes
 from jenai.state.runs import RunStore
-from jenai.tools.area_patrol_agent_tools import (
+from jenai.tools.area_patrol_service import (
     AgentAreaPatrolRuntime,
     _normalize_patrol_target,
     _step_verdict,
@@ -53,7 +53,7 @@ def _context(tmp_path: Path) -> JenAIRunContext:
         ("succeeded", StepVerdict.SUCCEEDED),
         ("blocked", StepVerdict.BLOCKED),
         ("referred", StepVerdict.BLOCKED),
-        ("unavailable", StepVerdict.UNAVAILABLE),
+        ("unavailable", StepVerdict.RETRYABLE_FAILURE),
         ("cancelled", StepVerdict.CANCELLED),
         ("endpoint_mismatch", StepVerdict.RETRYABLE_FAILURE),
         ("failed", StepVerdict.RETRYABLE_FAILURE),
@@ -111,7 +111,7 @@ def test_navigation_progress_is_forwarded_to_workflow_status(
         )
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.execute_navigation",
+        "jenai.tools.area_patrol_service.execute_navigation",
         fake_execute_navigation,
     )
     runtime = AgentAreaPatrolRuntime(
@@ -162,11 +162,11 @@ def test_inspection_preserves_image_evidence_and_requires_review_for_anomaly(
         )
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.RosBridgeClient",
+        "jenai.tools.area_patrol_service.RosBridgeClient",
         FakeBridge,
     )
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.capture_and_analyze",
+        "jenai.tools.area_patrol_service.capture_and_analyze",
         fake_capture,
     )
     runtime = AgentAreaPatrolRuntime(context, [])
@@ -203,7 +203,7 @@ def test_inspection_failure_never_claims_verified(
             raise RuntimeError("camera offline")
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.RosBridgeClient",
+        "jenai.tools.area_patrol_service.RosBridgeClient",
         FailingBridge,
     )
     runtime = AgentAreaPatrolRuntime(context, [])

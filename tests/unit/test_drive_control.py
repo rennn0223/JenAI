@@ -5,13 +5,47 @@ from typing import Any
 
 import pytest
 
-from jenai.bridge._drive_control import DirectDriveController, terminal_status_after_halt
+from jenai.bridge._drive_control import (
+    DirectDriveController,
+    direct_drive_terminal_status,
+    terminal_status_after_halt,
+)
 
 
 @pytest.mark.parametrize("status", ["succeeded", "canceled", "failed"])
 def test_terminal_status_never_hides_a_failed_final_halt(status: str) -> None:
     assert terminal_status_after_halt(status, halt_completed=True) == status
     assert terminal_status_after_halt(status, halt_completed=False) == "halt_failed"
+
+
+@pytest.mark.parametrize(
+    ("cancelled", "elapsed", "timeout", "odom_ready", "odom_timeout", "expected"),
+    [
+        (True, 0.0, 10.0, True, 1.0, "canceled"),
+        (False, 10.1, 10.0, True, 1.0, "timed_out"),
+        (False, 1.1, 10.0, False, 1.0, "odom_unavailable"),
+        (False, 0.5, 10.0, False, 1.0, None),
+        (False, 2.0, 10.0, True, 1.0, None),
+    ],
+)
+def test_direct_drive_lifecycle_has_explicit_terminal_precedence(
+    cancelled: bool,
+    elapsed: float,
+    timeout: float,
+    odom_ready: bool,
+    odom_timeout: float,
+    expected: str | None,
+) -> None:
+    assert (
+        direct_drive_terminal_status(
+            cancelled=cancelled,
+            elapsed=elapsed,
+            timeout=timeout,
+            odom_ready=odom_ready,
+            odom_timeout=odom_timeout,
+        )
+        == expected
+    )
 
 
 def _avoidance(**overrides: Any) -> dict[str, Any]:

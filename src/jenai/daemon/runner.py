@@ -226,91 +226,141 @@ async def _execute_halt(
     audit.record("event_action_finished", decision, status=status, summary=summary)
 
 
+class _DaemonRuntime:
+    """Own event processing and every resource created after bridge startup."""
+
+    def __init__(
+        self,
+        config: AppConfig,
+        config_path: Path,
+        rules: list[Rule],
+        bridge: RosBridgeClient,
+        on_decision: DecisionCallback,
+        on_status: StatusCallback,
+    ) -> None:
+        self._config = config
+        self._rules = rules
+        self._bridge = bridge
+        self._on_decision = on_decision
+        self._on_status = on_status
+        self._engine = RuleEngine(
+            rules,
+            nav_allowed=config.route_adapter == "nav2"
+            and has_registered_capability(config, "navigate"),
+        )
+        audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
+        self._audit = _DecisionAudit(audit_store)
+        self._navigation = NavigationGateway(
+            config,
+            get_bridge=self._get_bridge,
+            config_path=config_path,
+            audit_store=audit_store,
+        )
+        self._worker = _NavigationWorker(
+            config.resolved_locations_path(config_path),
+            self._navigation,
+            on_status,
+            self._audit,
+        )
+        self._queue: EventQueue = asyncio.Queue()
+        self._perception: PerceptionLoop | None = None
+
+    async def _get_bridge(self) -> RosBridgeClient:
+        return self._bridge
+
+    async def run(self) -> None:
+        topic_rules = [rule for rule in self._rules if rule.topic != PERCEPTION_TOPIC]
+        perception_rules = [rule for rule in self._rules if rule.topic == PERCEPTION_TOPIC]
+        try:
+            await _register_topic_watches(self._bridge, topic_rules, self._queue, self._on_status)
+            self._perception = await _start_perception(
+                self._config,
+                self._bridge,
+                perception_rules,
+                self._queue,
+                self._on_status,
+            )
+            await self._event_loop()
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await self._close()
+
+    async def _event_loop(self) -> None:
+        while True:
+            rule, data = await self._queue.get()
+            await self._handle_event(rule, data)
+
+    async def _handle_event(self, rule: Rule, data: EventData) -> None:
+        decision = self._engine.handle_event(rule, data)
+        self._record_trigger(decision)
+        if decision.halt:
+            await _execute_halt(
+                self._config,
+                self._bridge,
+                decision,
+                self._worker,
+                self._on_status,
+                self._audit,
+            )
+            return
+        if decision.navigate_to:
+            self._start_navigation(rule, decision)
+
+    def _record_trigger(self, decision: Decision) -> None:
+        if not decision.fired:
+            return
+        self._on_decision(decision)
+        self._audit.record("event_triggered", decision, status="fired", summary=decision.reason)
+        if not decision.halt and decision.navigate_to is None:
+            outcome = "notified" if decision.rule.action == "notify" else "blocked"
+            self._audit.record(
+                "event_action_finished",
+                decision,
+                status=outcome,
+                summary=decision.reason,
+            )
+
+    def _start_navigation(self, rule: Rule, decision: Decision) -> None:
+        if not self._worker.active:
+            self._worker.start(decision)
+            return
+        summary = "navigation already in progress — skipped"
+        self._on_status(f"'{rule.name}': {summary}")
+        self._audit.record("event_action_finished", decision, status="busy", summary=summary)
+
+    async def _close(self) -> None:
+        if self._perception is not None:
+            await self._perception.stop()
+        # Stop in-flight navigation first so cancellation reaches Nav2 before
+        # the shared bridge transport is torn down.
+        await self._worker.close()
+        await self._navigation.close()
+        try:
+            await self._bridge.stop()
+        except BridgeError:
+            pass
+
+
 async def run_daemon(
     config: AppConfig,
     config_path: Path,
     rules: list[Rule],
     *,
-    on_decision: Callable[[Decision], None],
-    on_status: Callable[[str], None] = lambda _s: None,
+    on_decision: DecisionCallback,
+    on_status: StatusCallback = lambda _s: None,
 ) -> None:
     """Watch every rule's topic through the bridge and act on decisions.
 
-    Runs until cancelled. Decisions stream to `on_decision` (the CLI prints
-    them); a decision with navigate_to set actually sends the robot, one goal
-    at a time — a new trigger while navigating is reported but not stacked.
+    Runs until cancelled. Decisions stream to `on_decision`; navigation rules
+    send one robot goal at a time, while triggers received during an active
+    goal are reported but never stacked.
     """
-    engine = RuleEngine(
-        rules,
-        nav_allowed=config.route_adapter == "nav2"
-        and has_registered_capability(config, "navigate"),
-    )
     bridge = RosBridgeClient()
     # Registered before start: every (re)spawn arms the watchdog, so a dead
     # daemon can never leave the robot driving — even after a bridge crash.
     await arm_watchdog(config, bridge)
     await bridge.start()
     on_status(f"bridge up · watching {len(rules)} rule(s)")
-
-    async def _get_bridge() -> RosBridgeClient:
-        return bridge
-
-    audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
-    audit = _DecisionAudit(audit_store)
-    navigation = NavigationGateway(
-        config,
-        get_bridge=_get_bridge,
-        config_path=config_path,
-        audit_store=audit_store,
-    )
-    worker = _NavigationWorker(
-        config.resolved_locations_path(config_path), navigation, on_status, audit
-    )
-    queue: EventQueue = asyncio.Queue()
-
-    topic_rules = [rule for rule in rules if rule.topic != PERCEPTION_TOPIC]
-    perception_rules = [rule for rule in rules if rule.topic == PERCEPTION_TOPIC]
-    perception: PerceptionLoop | None = None
-    try:
-        # Registration and perception startup belong to the same ownership
-        # scope as the steady-state loop. A partial startup must still stop the
-        # already-running bridge and any successfully-created resources.
-        await _register_topic_watches(bridge, topic_rules, queue, on_status)
-        perception = await _start_perception(config, bridge, perception_rules, queue, on_status)
-        while True:
-            rule, data = await queue.get()
-            decision = engine.handle_event(rule, data)
-            if decision.fired:
-                on_decision(decision)
-                audit.record("event_triggered", decision, status="fired", summary=decision.reason)
-                if not decision.halt and decision.navigate_to is None:
-                    outcome = "notified" if decision.rule.action == "notify" else "blocked"
-                    audit.record(
-                        "event_action_finished",
-                        decision,
-                        status=outcome,
-                        summary=decision.reason,
-                    )
-            if decision.halt:
-                await _execute_halt(config, bridge, decision, worker, on_status, audit)
-                continue
-            if decision.navigate_to:
-                if worker.active:
-                    summary = "navigation already in progress — skipped"
-                    on_status(f"'{rule.name}': {summary}")
-                    audit.record("event_action_finished", decision, status="busy", summary=summary)
-                else:
-                    worker.start(decision)
-    except asyncio.CancelledError:
-        raise
-    finally:
-        if perception is not None:
-            await perception.stop()
-        # Stop an in-flight navigation first (cancels the Nav2 goal, so the
-        # robot actually halts), then tear down the bridge.
-        await worker.close()
-        await navigation.close()
-        try:
-            await bridge.stop()
-        except BridgeError:
-            pass
+    runtime = _DaemonRuntime(config, config_path, rules, bridge, on_decision, on_status)
+    await runtime.run()

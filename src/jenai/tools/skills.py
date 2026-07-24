@@ -298,6 +298,64 @@ def exploration_candidates(locations: list[Location], tag: str | None = None) ->
     return candidates
 
 
+def _choose_exploration_location(
+    candidates: list[Location],
+    visits: dict[str, int],
+    failed: set[str],
+    previous_id: str | None,
+    chooser: random.Random,
+) -> Location | None:
+    """Choose randomly among least-visited eligible locations without immediate repeats."""
+    available = [item for item in candidates if item.id not in failed]
+    if not available:
+        return None
+    least_visits = min(visits[item.id] for item in available)
+    pool = [item for item in available if visits[item.id] == least_visits]
+    alternatives = [item for item in pool if item.id != previous_id]
+    return chooser.choice(alternatives or pool)
+
+
+async def _navigate_exploration_location(
+    config: AppConfig,
+    candidates: list[Location],
+    location: Location,
+    attempt: int,
+    remaining_s: float,
+    navigate: Callable[[dict[str, Any]], Awaitable[RouteOutput]],
+) -> tuple[ExploreStepResult, bool]:
+    """Run one bounded navigation and say whether the overall duration expired."""
+    try:
+        async with asyncio.timeout(remaining_s):
+            name, status, detail = await resolve_and_navigate(
+                config,
+                candidates,
+                location.name,
+                navigate=navigate,
+                capability_id="explore_known_locations",
+            )
+        return ExploreStepResult(attempt, name, status, detail), False
+    except TimeoutError:
+        return (
+            ExploreStepResult(
+                attempt,
+                location.name,
+                "failed",
+                "exploration time limit reached; active navigation canceled",
+            ),
+            True,
+        )
+    except Exception as exc:  # noqa: BLE001 — record and stop by policy
+        return ExploreStepResult(attempt, location.name, "failed", f"error: {exc}"), False
+
+
+async def _notify_explore_step(
+    result: ExploreStepResult,
+    callback: Callable[[ExploreStepResult], Awaitable[None]] | None,
+) -> None:
+    if callback is not None:
+        await callback(result)
+
+
 async def run_explore(
     config: AppConfig,
     locations: list[Location],
@@ -336,40 +394,31 @@ async def run_explore(
             report.stop_reason = "duration"
             break
 
-        available = [item for item in candidates if item.id not in failed]
-        if not available:
+        location = _choose_exploration_location(
+            candidates,
+            visits,
+            failed,
+            previous_id,
+            chooser,
+        )
+        if location is None:
             report.stop_reason = "no_candidates"
             break
-        least_visits = min(visits[item.id] for item in available)
-        pool = [item for item in available if visits[item.id] == least_visits]
-        alternatives = [item for item in pool if item.id != previous_id]
-        location = chooser.choice(alternatives or pool)
 
         attempt = len(report.results) + 1
-        try:
-            async with asyncio.timeout(remaining_s):
-                name, status, detail = await resolve_and_navigate(
-                    config,
-                    candidates,
-                    location.name,
-                    navigate=navigate,
-                    capability_id="explore_known_locations",
-                )
-            result = ExploreStepResult(attempt, name, status, detail)
-        except TimeoutError:
-            result = ExploreStepResult(
-                attempt,
-                location.name,
-                "failed",
-                "exploration time limit reached; active navigation canceled",
-            )
+        result, timed_out = await _navigate_exploration_location(
+            config,
+            candidates,
+            location,
+            attempt,
+            remaining_s,
+            navigate,
+        )
+        if timed_out:
             report.results.append(result)
-            if on_step is not None:
-                await on_step(result)
+            await _notify_explore_step(result, on_step)
             report.stop_reason = "duration"
             break
-        except Exception as exc:  # noqa: BLE001 — record and stop by policy
-            result = ExploreStepResult(attempt, location.name, "failed", f"error: {exc}")
 
         if result.status == "succeeded":
             visits[location.id] += 1
@@ -382,8 +431,7 @@ async def run_explore(
             consecutive_failures += 1
 
         report.results.append(result)
-        if on_step is not None:
-            await on_step(result)
+        await _notify_explore_step(result, on_step)
         if consecutive_failures >= spec.max_failures:
             report.stop_reason = "failure_limit"
             break

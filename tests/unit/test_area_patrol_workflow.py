@@ -276,3 +276,50 @@ def test_cancel_during_navigation_stops_before_inspection_or_return_home() -> No
     assert report.returned_home is False
     assert runtime.calls == [("navigate", "Entrance")]
     assert all(call[0] not in {"inspect", "return_home"} for call in runtime.calls)
+
+
+def test_async_task_cancellation_returns_aborted_report_with_partial_coverage() -> None:
+    async def scenario():
+        second_navigation_started = asyncio.Event()
+
+        class BlockingRuntime(FakeRuntime):
+            async def navigate(self, point: InspectionPoint) -> NavigationResult:
+                if point.location == "Equipment":
+                    self.calls.append(("navigate", point.location))
+                    second_navigation_started.set()
+                    await asyncio.Event().wait()
+                return await super().navigate(point)
+
+        runtime = BlockingRuntime()
+        workflow = AreaPatrolWorkflow(runtime)
+        task = asyncio.create_task(
+            workflow.run(
+                _request(),
+                (
+                    _area("entrance", "Entrance"),
+                    _area("equipment", "Equipment"),
+                ),
+            )
+        )
+        await second_navigation_started.wait()
+        task.cancel()
+        return await task, runtime
+
+    report, runtime = asyncio.run(scenario())
+
+    assert report.status is PatrolMissionStatus.ABORTED
+    assert report.coverage_ratio == 0.5
+    assert report.returned_home is False
+    assert report.areas[0].status is AreaStatus.COMPLETED
+    assert report.areas[0].observation_covered is True
+    assert report.areas[1].status is AreaStatus.FAILED
+    assert runtime.calls == [
+        ("navigate", "Entrance"),
+        ("inspect", "Entrance"),
+        ("navigate", "Equipment"),
+    ]
+    assert any(
+        event.event_type == "inspection_point_interrupted"
+        and event.status == StepVerdict.CANCELLED.value
+        for event in report.events
+    )

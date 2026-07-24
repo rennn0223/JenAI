@@ -14,10 +14,8 @@ from jenai.config.store import build_minimal_config
 from jenai.schemas import Location, Pose2D, RouteOutput, SessionState, VisionOutput
 from jenai.site_assets import fingerprint_locations_file
 from jenai.state.runs import RunStore
-from jenai.tools.area_patrol_agent_tools import (
-    AgentAreaPatrolRuntime,
-    area_patrol_workflow_tool,
-)
+from jenai.tools.area_patrol_agent_tools import area_patrol_workflow_tool
+from jenai.tools.area_patrol_service import AgentAreaPatrolRuntime
 from jenai.workflows.area_patrol import (
     InspectionPoint,
     InspectionVerdict,
@@ -124,7 +122,7 @@ def test_runtime_navigation_resolves_saved_locations_and_classifies_failures(
         )
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.execute_navigation",
+        "jenai.tools.area_patrol_service.execute_navigation",
         fake_execute,
     )
     runtime = AgentAreaPatrolRuntime(context, locations)
@@ -143,6 +141,57 @@ def test_runtime_navigation_resolves_saved_locations_and_classifies_failures(
     assert "unknown location" in missing.detail
     assert [item["goal"]["name"] for item in outgoing] == ["Inspection A", "Dock"]
     assert all(item["capability_id"] == "area_patrol" for item in outgoing)
+
+
+def test_agent_workflow_retries_temporarily_unavailable_navigation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    navigation_calls = 0
+
+    class FakeBridge:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    async def fake_execute(config, action, **kwargs) -> RouteOutput:
+        nonlocal navigation_calls
+        navigation_calls += 1
+        if navigation_calls == 1:
+            return RouteOutput(
+                input_text="",
+                route_preview="map identity is temporarily unavailable",
+                execution_status="unavailable",
+            )
+        return RouteOutput(
+            input_text="",
+            route_preview="arrived",
+            execution_status="succeeded",
+        )
+
+    async def fake_capture(*args, **kwargs) -> VisionOutput:
+        return VisionOutput(source="image://inspection-a", summary="No anomaly observed.")
+
+    monkeypatch.setattr("jenai.tools.area_patrol_service.RosBridgeClient", FakeBridge)
+    monkeypatch.setattr("jenai.tools.area_patrol_service.execute_navigation", fake_execute)
+    monkeypatch.setattr("jenai.tools.area_patrol_service.capture_and_analyze", fake_capture)
+
+    async def invoke() -> dict[str, object]:
+        arguments = json.dumps(
+            {"target": "equipment", "max_navigation_retries": 1, "return_home": False}
+        )
+        raw = await area_patrol_workflow_tool.on_invoke_tool(
+            _tool_context(context, arguments), arguments
+        )
+        return _decode_tool_output(raw)
+
+    output = asyncio.run(invoke())
+
+    assert output["execution_status"] == "success"
+    assert navigation_calls == 2
 
 
 def test_runtime_verified_inspection_and_model_unavailable_are_distinct(
@@ -170,11 +219,11 @@ def test_runtime_verified_inspection_and_model_unavailable_are_distinct(
         return outputs.pop(0)
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.RosBridgeClient",
+        "jenai.tools.area_patrol_service.RosBridgeClient",
         FakeBridge,
     )
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.capture_and_analyze",
+        "jenai.tools.area_patrol_service.capture_and_analyze",
         fake_capture,
     )
     runtime = AgentAreaPatrolRuntime(context, [])
@@ -222,15 +271,15 @@ def test_agent_workflow_tool_runs_one_complete_deterministic_mission(
         )
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.RosBridgeClient",
+        "jenai.tools.area_patrol_service.RosBridgeClient",
         FakeBridge,
     )
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.execute_navigation",
+        "jenai.tools.area_patrol_service.execute_navigation",
         fake_execute,
     )
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_agent_tools.capture_and_analyze",
+        "jenai.tools.area_patrol_service.capture_and_analyze",
         fake_capture,
     )
 
@@ -285,3 +334,55 @@ def test_agent_workflow_tool_rejects_invalid_site_and_retry_bounds(
     assert "Site Profile" in str(missing_site["summary"])
     assert invalid_retry["execution_status"] == "failed"
     assert "between 0 and 5" in str(invalid_retry["summary"])
+
+
+def test_cancelled_agent_workflow_persists_aborted_report_and_finishes_tool(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    navigation_started = asyncio.Event()
+
+    async def blocking_execute(config, action, **kwargs) -> RouteOutput:
+        navigation_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled navigation must not resume")
+
+    monkeypatch.setattr(
+        "jenai.tools.area_patrol_service.execute_navigation",
+        blocking_execute,
+    )
+
+    async def scenario() -> dict[str, object]:
+        arguments = json.dumps(
+            {
+                "target": "equipment",
+                "max_navigation_retries": 1,
+                "return_home": True,
+            }
+        )
+        task = asyncio.create_task(
+            area_patrol_workflow_tool.on_invoke_tool(
+                _tool_context(context, arguments),
+                arguments,
+            )
+        )
+        await navigation_started.wait()
+        task.cancel()
+        return _decode_tool_output(await task)
+
+    output = asyncio.run(scenario())
+
+    assert output["execution_status"] == "aborted"
+    assert output["outcome"] == "cancelled"
+    assert output["report_saved"] is True
+    report_path = Path(str(output["report_path"]))
+    assert report_path.is_file()
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report_payload["execution_status"] == "aborted"
+    assert report_payload["returned_home"] is False
+    assert any(
+        event["event_type"] == "inspection_point_interrupted" for event in report_payload["events"]
+    )
+    assert context.run.outcome == "cancelled"
+    assert context.run.tool_calls[0].status == "failed"

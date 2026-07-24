@@ -23,6 +23,37 @@ class NavProgress:
     elapsed: float
 
 
+@dataclass
+class _NavigationEventCollector:
+    """Own tag matching and terminal/feedback delivery for one navigation."""
+
+    result_future: asyncio.Future[dict[str, Any]]
+    on_progress: Callable[[NavProgress], None] | None = None
+    tag: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.tag:
+            self.tag = uuid4().hex[:8]
+
+    def _matches(self, event: dict[str, Any]) -> bool:
+        return event.get("tag", "") in ("", self.tag)
+
+    def record_feedback(self, event: dict[str, Any]) -> None:
+        if self.on_progress is None or not self._matches(event):
+            return
+        self.on_progress(
+            NavProgress(
+                distance_remaining=float(event.get("distance_remaining", 0.0)),
+                recoveries=int(event.get("recoveries", 0)),
+                elapsed=float(event.get("elapsed", 0.0)),
+            )
+        )
+
+    def record_result(self, event: dict[str, Any]) -> None:
+        if self._matches(event) and not self.result_future.done():
+            self.result_future.set_result(event)
+
+
 class NavigationCancelled(asyncio.CancelledError):
     """Task cancellation with the bridge's Nav2 acknowledgement attached.
 
@@ -258,6 +289,57 @@ async def _bridge_heartbeat(bridge: RosBridgeClient) -> None:
             return
 
 
+async def _dispatch_navigation(
+    bridge: RosBridgeClient,
+    goal: dict[str, Any],
+    pose: dict[str, Any],
+    collector: _NavigationEventCollector,
+    *,
+    direct: bool,
+    vehicle: VehicleProfile | None,
+    avoidance: dict[str, Any] | None,
+    timeout: float,
+) -> None:
+    """Dispatch exactly one goal through Nav2 or the explicit direct driver."""
+    if direct:
+        await bridge.drive_to_pose(
+            x=float(pose.get("x", 0.0)),
+            y=float(pose.get("y", 0.0)),
+            yaw=float(pose.get("yaw", 0.0)),
+            tag=collector.tag,
+            cmd_vel_topic=getattr(vehicle, "cmd_vel_topic", "/cmd_vel"),
+            stamped=getattr(vehicle, "cmd_vel_stamped", False),
+            max_linear=getattr(vehicle, "max_linear", 1.0),
+            max_angular=getattr(vehicle, "max_angular", 2.0),
+            odom_timeout_s=getattr(vehicle, "odom_timeout_s", 1.0),
+            timeout=timeout,
+            avoidance=avoidance,
+        )
+        return
+    await bridge.nav_send(
+        x=float(pose.get("x", 0.0)),
+        y=float(pose.get("y", 0.0)),
+        yaw=float(pose.get("yaw", 0.0)),
+        frame_id=goal.get("frame_id", "map"),
+        tag=collector.tag,
+    )
+
+
+async def _accepted_navigation_outcome(
+    bridge: RosBridgeClient,
+    terminal: dict[str, Any],
+    goal: dict[str, Any],
+    vehicle: VehicleProfile | None,
+    *,
+    direct: bool,
+) -> tuple[str, str]:
+    """Translate the bridge result and independently verify Nav2 success."""
+    execution, detail = _navigation_outcome(terminal)
+    if execution == "succeeded" and not direct:
+        return await _verify_nav2_arrival(bridge, terminal, goal, vehicle)
+    return execution, detail
+
+
 async def navigate_live(
     bridge: RosBridgeClient,
     outgoing_action: NavigationAction,
@@ -287,64 +369,25 @@ async def navigate_live(
             execution, detail = planning_failure
             return _route_output(outgoing_action, execution, detail)
 
-    loop = asyncio.get_running_loop()
-    result_future: asyncio.Future[dict[str, Any]] = loop.create_future()
-    # Events are matched by tag: after an Esc-cancel, the goal's terminal
-    # "canceled" result can arrive while the NEXT navigation is already
-    # listening — without the tag it would consume that stale result as its own.
-    tag = uuid4().hex[:8]
-
-    def _mine(event: dict[str, Any]) -> bool:
-        return event.get("tag", "") in ("", tag)  # "" tolerates older bridges
-
-    def _on_feedback(event: dict[str, Any]) -> None:
-        if on_progress is not None and _mine(event):
-            on_progress(
-                NavProgress(
-                    distance_remaining=float(event.get("distance_remaining", 0.0)),
-                    recoveries=int(event.get("recoveries", 0)),
-                    elapsed=float(event.get("elapsed", 0.0)),
-                )
-            )
-
-    def _on_result(event: dict[str, Any]) -> None:
-        if _mine(event) and not result_future.done():
-            result_future.set_result(event)
-
-    bridge.on_event("nav_feedback", _on_feedback)
-    bridge.on_event("nav_result", _on_result)
+    collector = _NavigationEventCollector(asyncio.get_running_loop().create_future(), on_progress)
+    bridge.on_event("nav_feedback", collector.record_feedback)
+    bridge.on_event("nav_result", collector.record_result)
     heartbeat = asyncio.create_task(_bridge_heartbeat(bridge))
     try:
-        # Once dispatch begins, a transport failure cannot prove that Nav2 or
-        # the direct driver did not accept the request. Treat the outcome as
-        # ambiguous and brake; never claim "NOT sent" after bytes may have
-        # crossed the process boundary.
-        if direct:
-            await bridge.drive_to_pose(
-                x=float(pose.get("x", 0.0)),
-                y=float(pose.get("y", 0.0)),
-                yaw=float(pose.get("yaw", 0.0)),
-                tag=tag,
-                cmd_vel_topic=getattr(vehicle, "cmd_vel_topic", "/cmd_vel"),
-                stamped=getattr(vehicle, "cmd_vel_stamped", False),
-                max_linear=getattr(vehicle, "max_linear", 1.0),
-                max_angular=getattr(vehicle, "max_angular", 2.0),
-                odom_timeout_s=getattr(vehicle, "odom_timeout_s", 1.0),
-                timeout=timeout,
-                avoidance=avoidance,
-            )
-        else:
-            await bridge.nav_send(
-                x=float(pose.get("x", 0.0)),
-                y=float(pose.get("y", 0.0)),
-                yaw=float(pose.get("yaw", 0.0)),
-                frame_id=goal.get("frame_id", "map"),
-                tag=tag,
-            )
-        terminal = await asyncio.wait_for(result_future, timeout)
-        execution, detail = _navigation_outcome(terminal)
-        if execution == "succeeded" and not direct:
-            execution, detail = await _verify_nav2_arrival(bridge, terminal, goal, vehicle)
+        await _dispatch_navigation(
+            bridge,
+            goal,
+            pose,
+            collector,
+            direct=direct,
+            vehicle=vehicle,
+            avoidance=avoidance,
+            timeout=timeout,
+        )
+        terminal = await asyncio.wait_for(collector.result_future, timeout)
+        execution, detail = await _accepted_navigation_outcome(
+            bridge, terminal, goal, vehicle, direct=direct
+        )
     except BridgeError as exc:
         halt = await _halt_quietly(bridge)
         execution = "unavailable"
@@ -366,8 +409,8 @@ async def navigate_live(
         heartbeat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat
-        bridge.off_event("nav_feedback", _on_feedback)
-        bridge.off_event("nav_result", _on_result)
+        bridge.off_event("nav_feedback", collector.record_feedback)
+        bridge.off_event("nav_result", collector.record_result)
 
     return _route_output(outgoing_action, execution, detail)
 

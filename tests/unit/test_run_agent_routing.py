@@ -45,3 +45,19 @@ def test_ordered_waypoints_are_not_misrouted_to_area_coverage() -> None:
 def test_state_and_named_navigation_requests_are_not_area_patrols() -> None:
     assert route_run_request("檢查目前機器人位置和 Nav2 狀態") is RunAgentRoute.GENERAL
     assert route_run_request("navigate to the laboratory") is RunAgentRoute.GENERAL
+
+
+def test_substrings_negations_and_questions_do_not_force_workflow_selection() -> None:
+    assert route_run_request("inspect the small laboratory") is RunAgentRoute.GENERAL
+    assert route_run_request("do not inspect all laboratory areas") is RunAgentRoute.GENERAL
+    assert route_run_request("can you inspect all laboratory areas?") is RunAgentRoute.GENERAL
+    assert route_run_request("不要巡檢整個實驗室") is RunAgentRoute.GENERAL
+
+
+def test_area_patrol_requires_a_registered_workflow_capability() -> None:
+    config = _config()
+    config.vehicle.capabilities = ["navigate"]
+    task = "inspect all required laboratory areas"
+
+    assert route_run_request(task) is RunAgentRoute.AREA_PATROL
+    assert build_run_agent(config, task).name == "JenAI"

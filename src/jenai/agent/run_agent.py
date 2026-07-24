@@ -11,6 +11,7 @@ from jenai.agent.specialists import (
     build_area_patrol_selector_agent,
     build_supervisor_agent,
 )
+from jenai.capabilities import has_registered_capability
 from jenai.config.models import AppConfig
 from jenai.schemas import RunRecord
 
@@ -20,7 +21,11 @@ def build_run_agent(config: AppConfig, task: str | None = None) -> Agent[JenAIRu
     (ROS Developer / Explorer / Navigation / Perception) via the
     openai-agents SDK.
     """
-    if task is not None and route_run_request(task) is RunAgentRoute.AREA_PATROL:
+    if (
+        task is not None
+        and route_run_request(task) is RunAgentRoute.AREA_PATROL
+        and has_registered_capability(config, "area_patrol")
+    ):
         return build_area_patrol_selector_agent(config)
     return build_supervisor_agent(config)
 

@@ -111,12 +111,11 @@
 - **為什麼**：測試能直接用 fake runtime 驗完整任務，不需啟動模型或模擬器；未來換
   Nova Carter、機器狗或其他 navigator，只替換小型 runtime seam。
 
-### `tools/area_patrol_agent_tools.py` + `site_profiles.py`
-- **做什麼**：前者把一次 Agent tool call 接到 WorkflowRuntime、NavigationGateway、相機
-  與 durable report；後者安全匯入／啟用 Site Profile，重算 locations 指紋並驗證引用。
-- **為什麼分開**：Agent wrapper 只翻譯資料與 I/O；coverage 規則只存在於 Workflow。
-  `site_assets.py` 是 map-frame 資產 invariant，`cli/site.py` 只是 operator adapter。
-- **讀法**：先讀純 Workflow 與單元測試，再讀 adapter；不要從 TUI handler 反推任務規則。
+### `tools/area_patrol_service.py` + `tools/area_patrol_agent_tools.py`
+- **做什麼**：`area_patrol_service.py` 是產品介面中立的 application service，把 WorkflowRuntime 接到 Site Profile、NavigationGateway、相機、run store 與 durable report；`area_patrol_agent_tools.py` 只負責 OpenAI Agents SDK 的 context 轉接與 tool 註冊。
+- **為什麼分開**：TUI、未來 Web／MCP 或測試可直接呼叫同一 service，不需要 import Agent SDK，也不會各自複製巡檢邏輯；coverage 規則仍只存在於 Workflow domain。
+- **架構防線**：`tests/unit/test_architecture.py` 會拒絕 service 依賴 Agent SDK／UI，並要求 Agent adapter 透過 service 呼叫。`site_assets.py` 則守住 map-frame 資產 invariant。
+- **讀法**：先讀純 Workflow 與單元測試，再讀 service，最後才讀 Agent adapter；不要從 TUI handler 反推任務規則。
 
 ### `tools/safety.py`(32 行)——最小卻最重要
 - `halt_robot`/`arm_watchdog`:急停語意的唯一出處。TUI/WebUI/MCP/daemon 全呼叫它。

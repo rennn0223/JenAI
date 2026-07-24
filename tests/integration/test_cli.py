@@ -105,6 +105,67 @@ def test_onboard_without_config_starts_wizard_without_confirmation(
     assert list(tmp_path.glob("config.toml.bak-*")) == []
 
 
+def test_scaffold_build_repairs_once_and_reports_success(tmp_path: Path, monkeypatch) -> None:
+    from jenai.tools import ros2_pkg_core
+    from jenai.tools.ros2_pkg_core import PackagePlan
+
+    config_path = tmp_path / "config.toml"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="gpt-test",
+            api_key_env="",
+        ),
+        config_path,
+    )
+    plan = PackagePlan(
+        package_name="demo_pkg",
+        description="Demo package",
+        node_name="demo_node",
+        node_code="def main():\n    pass\n",
+        dependencies=["rclpy"],
+    )
+    build_results = iter([(False, "SyntaxError"), (True, "built")])
+    build_calls: list[str] = []
+
+    async def generate(_config, _spec):
+        return plan
+
+    async def repair(_config, original, log):
+        assert original is plan
+        assert log == "SyntaxError"
+        return original.model_copy(update={"node_code": "# repaired\n"})
+
+    def build(_workspace, package_name):
+        build_calls.append(package_name)
+        return next(build_results)
+
+    monkeypatch.setattr(ros2_pkg_core, "generate_package_plan", generate)
+    monkeypatch.setattr(ros2_pkg_core, "repair_node", repair)
+    monkeypatch.setattr(ros2_pkg_core, "build_package", build)
+
+    workspace = tmp_path / "ros_ws"
+    result = runner.invoke(
+        app,
+        [
+            "scaffold",
+            "make a demo",
+            "--config",
+            str(config_path),
+            "--ws",
+            str(workspace),
+            "--build",
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert build_calls == ["demo_pkg", "demo_pkg"]
+    assert "Build succeeded" in result.stdout
+    assert (workspace / "src/demo_pkg/demo_pkg/demo_node.py").read_text() == "# repaired\n"
+
+
 def test_first_main_wizard_continues_into_tui(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.toml"
     configured = build_minimal_config(

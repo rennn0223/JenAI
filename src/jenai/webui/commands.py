@@ -159,95 +159,117 @@ async def _slash(config: AppConfig, config_path: Path, text: str) -> WebResponse
 
 async def _ros(config: AppConfig, rest: str) -> WebResponse:
     op, _, arg = rest.partition(" ")
-    arg = arg.strip()
-    if op == "topics":
-        topics_out = await ros2_core.ros_topics(config)
-        if not topics_out.topics:
-            return _result(_p("No topics on the graph."))
-        items = "".join(
-            f"<li><b>{_esc(t.name)}</b> <span class='dim'>{_esc(t.kind_hint)}</span></li>"
-            for t in topics_out.topics
+    handlers = {
+        "topics": _ros_topics,
+        "topic-info": _ros_topic_info,
+        "schema": _ros_schema,
+        "echo": _ros_echo,
+        "pub": _ros_pub,
+        "drive": _ros_drive,
+    }
+    handler = handlers.get(op)
+    if handler is None:
+        return _error(f"Unknown: /ros {op}")
+    return await handler(config, arg.strip())
+
+
+async def _ros_topics(config: AppConfig, _arg: str) -> WebResponse:
+    topics_out = await ros2_core.ros_topics(config)
+    if not topics_out.topics:
+        return _result(_p("No topics on the graph."))
+    items = "".join(
+        f"<li><b>{_esc(topic.name)}</b> <span class='dim'>{_esc(topic.kind_hint)}</span></li>"
+        for topic in topics_out.topics
+    )
+    return _result(f"<ul class='cmd-list'>{items}</ul>")
+
+
+async def _ros_topic_info(config: AppConfig, arg: str) -> WebResponse:
+    info_out = await ros2_core.ros_topic_info(config, arg)
+    if not info_out.message_type:
+        return _result(_p(info_out.summary))
+    return _result(
+        _p(
+            f"{info_out.name}\n{info_out.message_type}\n"
+            f"{info_out.publisher_count} publisher(s) · "
+            f"{info_out.subscriber_count} subscriber(s)"
         )
-        return _result(f"<ul class='cmd-list'>{items}</ul>")
-    if op == "topic-info":
-        info_out = await ros2_core.ros_topic_info(config, arg)
-        if not info_out.message_type:
-            return _result(_p(info_out.summary))
-        return _result(
-            _p(
-                f"{info_out.name}\n{info_out.message_type}\n"
-                f"{info_out.publisher_count} publisher(s) · "
-                f"{info_out.subscriber_count} subscriber(s)"
-            )
-        )
-    if op == "schema":
-        schema_out = await ros2_core.ros_schema(config, arg)
-        rows = "".join(
-            f"<li><b>{_esc(f.field_name)}</b> <span class='dim'>{_esc(f.field_type)}</span> "
-            f"— {_esc(f.description)}</li>"
-            for f in schema_out.field_summary
-        )
-        example = _esc(json.dumps(schema_out.example_payload, ensure_ascii=False))
-        return _result(
-            f"<p><b>{_esc(schema_out.message_type)}</b></p><ul class='cmd-list'>{rows}</ul>"
-            f"<p class='dim'>example: <code>{example}</code></p>"
-        )
-    if op == "echo":
-        parts = arg.split()
-        topic = parts[0] if parts else ""
-        limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-        echo_out = await ros2_core.ros_echo(config, topic, limit=limit)
-        if not echo_out.messages:
-            return _result(_p(echo_out.summary))
-        return _result("".join(f"<pre>{_esc(m.get('raw', ''))}</pre>" for m in echo_out.messages))
-    if op == "pub":
-        topic, _, payload_json = arg.partition(" ")
-        if not payload_json.strip():
-            return _error("Usage: /ros pub &lt;topic&gt; &lt;json&gt;")
-        try:
-            payload = _parse_payload_object(payload_json)
-        except ValueError as exc:
-            return _error(f"Invalid payload: {exc}")
-        validation = await ros2_core.ros_pub_validate(topic, payload)
-        if not validation.ok:
-            return _error(validation.error.message if validation.error else "Validation failed.")
-        return _confirm(
-            _p(f"Publish to {topic}\n{json.dumps(payload, ensure_ascii=False)}"),
-            {
-                "type": "pub",
-                "topic": topic,
-                "message_type": validation.message_type,
-                "payload": payload,
-            },
-            danger=f"This publishes one message to {topic}.",
-        )
-    if op == "drive":
-        parts = arg.split()
-        if len(parts) < 2:
-            return _error("Usage: /ros drive &lt;topic&gt; &lt;json&gt; [seconds]")
-        duration = 1.0
-        if len(parts) >= 3 and _isnum(parts[-1]):
-            duration = float(parts[-1])
-            payload_json = " ".join(parts[1:-1])
-        else:
-            payload_json = " ".join(parts[1:])
-        topic = parts[0]
-        try:
-            payload = _parse_payload_object(payload_json)
-        except ValueError as exc:
-            return _error(f"Invalid payload: {exc}")
-        return _confirm(
-            _p(f"Drive {topic} for {duration:g}s\n{json.dumps(payload, ensure_ascii=False)}"),
-            {
-                "type": "drive",
-                "topic": topic,
-                "message_type": TWIST,
-                "payload": payload,
-                "duration": duration,
-            },
-            danger=f"This drives the robot on {topic} for {duration:g}s.",
-        )
-    return _error(f"Unknown: /ros {op}")
+    )
+
+
+async def _ros_schema(config: AppConfig, arg: str) -> WebResponse:
+    schema_out = await ros2_core.ros_schema(config, arg)
+    rows = "".join(
+        f"<li><b>{_esc(field.field_name)}</b> <span class='dim'>{_esc(field.field_type)}</span> "
+        f"— {_esc(field.description)}</li>"
+        for field in schema_out.field_summary
+    )
+    example = _esc(json.dumps(schema_out.example_payload, ensure_ascii=False))
+    return _result(
+        f"<p><b>{_esc(schema_out.message_type)}</b></p><ul class='cmd-list'>{rows}</ul>"
+        f"<p class='dim'>example: <code>{example}</code></p>"
+    )
+
+
+async def _ros_echo(config: AppConfig, arg: str) -> WebResponse:
+    parts = arg.split()
+    topic = parts[0] if parts else ""
+    limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+    echo_out = await ros2_core.ros_echo(config, topic, limit=limit)
+    if not echo_out.messages:
+        return _result(_p(echo_out.summary))
+    return _result("".join(f"<pre>{_esc(m.get('raw', ''))}</pre>" for m in echo_out.messages))
+
+
+async def _ros_pub(config: AppConfig, arg: str) -> WebResponse:
+    topic, _, payload_json = arg.partition(" ")
+    if not payload_json.strip():
+        return _error("Usage: /ros pub &lt;topic&gt; &lt;json&gt;")
+    try:
+        payload = _parse_payload_object(payload_json)
+    except ValueError as exc:
+        return _error(f"Invalid payload: {exc}")
+    validation = await ros2_core.ros_pub_validate(topic, payload)
+    if not validation.ok:
+        return _error(validation.error.message if validation.error else "Validation failed.")
+    return _confirm(
+        _p(f"Publish to {topic}\n{json.dumps(payload, ensure_ascii=False)}"),
+        {
+            "type": "pub",
+            "topic": topic,
+            "message_type": validation.message_type,
+            "payload": payload,
+        },
+        danger=f"This publishes one message to {topic}.",
+    )
+
+
+async def _ros_drive(config: AppConfig, arg: str) -> WebResponse:
+    parts = arg.split()
+    if len(parts) < 2:
+        return _error("Usage: /ros drive &lt;topic&gt; &lt;json&gt; [seconds]")
+    duration = 1.0
+    if len(parts) >= 3 and _isnum(parts[-1]):
+        duration = float(parts[-1])
+        payload_json = " ".join(parts[1:-1])
+    else:
+        payload_json = " ".join(parts[1:])
+    topic = parts[0]
+    try:
+        payload = _parse_payload_object(payload_json)
+    except ValueError as exc:
+        return _error(f"Invalid payload: {exc}")
+    return _confirm(
+        _p(f"Drive {topic} for {duration:g}s\n{json.dumps(payload, ensure_ascii=False)}"),
+        {
+            "type": "drive",
+            "topic": topic,
+            "message_type": TWIST,
+            "payload": payload,
+            "duration": duration,
+        },
+        danger=f"This drives the robot on {topic} for {duration:g}s.",
+    )
 
 
 async def _drive_nl(config: AppConfig, rest: str) -> WebResponse:
@@ -319,6 +341,103 @@ def _loc(config: AppConfig, config_path: Path, rest: str) -> WebResponse:
     return _error("Usage: /loc list | /loc show &lt;name&gt;")
 
 
+class _WebActionExecutor:
+    """Execute one confirmed action through a shared audit/error boundary."""
+
+    def __init__(
+        self,
+        config: AppConfig,
+        config_path: Path | None,
+        audit_store: AuditStore | None,
+    ) -> None:
+        self.config = config
+        self.config_path = config_path
+        self.audit_store = audit_store
+
+    def _audit(
+        self,
+        action_type: str,
+        event_type: str,
+        status: str,
+        *,
+        outcome: str | None = None,
+    ) -> None:
+        if self.audit_store is None:
+            return
+        details = {"source": "webui", "action_type": action_type}
+        if outcome is not None:
+            details["outcome"] = outcome
+        try:
+            self.audit_store.record(
+                event_type,
+                status=status,
+                details=details,
+            )
+        except Exception:
+            logger.warning("WebUI action audit failed", exc_info=True)
+
+    async def execute(self, action: WebAction) -> WebResponse:
+        kind = str(action.get("type") or "")
+        action_type = kind or "unknown"
+        self._audit(action_type, "approval_resolved", "approved")
+        handlers = {
+            "drive": self._drive,
+            "pub": self._publish,
+            "route": self._route,
+        }
+        handler = handlers.get(kind)
+        if handler is None:
+            self._audit(action_type, "tool_updated", "failed")
+            return _error("Unknown action.")
+        try:
+            return await handler(action)
+        except Exception as exc:
+            self._audit(action_type, "tool_updated", "failed")
+            return _error(f"Error: {exc}")
+
+    async def _drive(self, action: WebAction) -> WebResponse:
+        drive_out = await ros2_core.ros_drive(
+            action["topic"],
+            action["message_type"],
+            action["payload"],
+            duration_s=float(action.get("duration", 1.0)),
+            max_linear=self.config.vehicle.max_linear,
+            max_angular=self.config.vehicle.max_angular,
+        )
+        self._audit("drive", "tool_updated", drive_out.execution_status)
+        return _result(_p(drive_out.result_message or "done"))
+
+    async def _publish(self, action: WebAction) -> WebResponse:
+        pub_out = await ros2_core.ros_pub_execute(
+            action["topic"],
+            action["message_type"],
+            action["payload"],
+            max_linear=self.config.vehicle.max_linear,
+            max_angular=self.config.vehicle.max_angular,
+        )
+        self._audit("pub", "tool_updated", pub_out.execution_status)
+        return _result(_p(pub_out.result_message or "done"))
+
+    async def _route(self, action: WebAction) -> WebResponse:
+        if not has_registered_capability(self.config, "navigate"):
+            self._audit("route", "tool_updated", "blocked")
+            return _error("Navigation is not registered for this robot profile.")
+        route_out = await execute_navigation(
+            self.config,
+            action["outgoing_action"],
+            config_path=self.config_path,
+            audit_store=self.audit_store,
+        )
+        task_result = navigation_output_result(route_out)
+        self._audit(
+            "route",
+            "tool_updated",
+            task_result.run_status.value,
+            outcome=task_result.outcome.value,
+        )
+        return _result(_p(navigation_receipt_text(route_out)))
+
+
 async def run_web_confirm(
     config: AppConfig,
     action: WebAction,
@@ -331,61 +450,5 @@ async def run_web_confirm(
         if config_path is not None
         else None
     )
-    kind = action.get("type")
-
-    def _audit(event_type: str, status: str, *, outcome: str | None = None) -> None:
-        if audit_store is None:
-            return
-        details = {"source": "webui", "action_type": str(kind or "unknown")}
-        if outcome is not None:
-            details["outcome"] = outcome
-        try:
-            audit_store.record(
-                event_type,
-                status=status,
-                details=details,
-            )
-        except Exception:
-            logger.warning("WebUI action audit failed", exc_info=True)
-
-    _audit("approval_resolved", "approved")
-    try:
-        if kind == "drive":
-            drive_out = await ros2_core.ros_drive(
-                action["topic"],
-                action["message_type"],
-                action["payload"],
-                duration_s=float(action.get("duration", 1.0)),
-                max_linear=config.vehicle.max_linear,
-                max_angular=config.vehicle.max_angular,
-            )
-            _audit("tool_updated", drive_out.execution_status)
-            return _result(_p(drive_out.result_message or "done"))
-        if kind == "pub":
-            pub_out = await ros2_core.ros_pub_execute(
-                action["topic"],
-                action["message_type"],
-                action["payload"],
-                max_linear=config.vehicle.max_linear,
-                max_angular=config.vehicle.max_angular,
-            )
-            _audit("tool_updated", pub_out.execution_status)
-            return _result(_p(pub_out.result_message or "done"))
-        if kind == "route":
-            if not has_registered_capability(config, "navigate"):
-                _audit("tool_updated", "blocked")
-                return _error("Navigation is not registered for this robot profile.")
-            route_out = await execute_navigation(
-                config,
-                action["outgoing_action"],
-                config_path=config_path,
-                audit_store=audit_store,
-            )
-            task_result = navigation_output_result(route_out)
-            _audit("tool_updated", task_result.run_status.value, outcome=task_result.outcome.value)
-            return _result(_p(navigation_receipt_text(route_out)))
-        _audit("tool_updated", "failed")
-        return _error("Unknown action.")
-    except Exception as exc:
-        _audit("tool_updated", "failed")
-        return _error(f"Error: {exc}")
+    executor = _WebActionExecutor(config, config_path, audit_store)
+    return await executor.execute(action)

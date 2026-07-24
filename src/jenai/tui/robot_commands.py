@@ -651,69 +651,74 @@ class RobotCommandsMixin(LocationCommandsMixin):
 
     async def _show_report(self, arg: str = "") -> None:
         report_arg = arg.strip().lower()
-        if report_arg == "event" or report_arg == "events":
-            from jenai.state.audit import AuditStore
-
-            audit_store = AuditStore.best_effort(self.config_path.parent / "audit.sqlite3")
-            events = (
-                []
-                if audit_store is None
-                else [
-                    event
-                    for event in audit_store.list_events(limit=100)
-                    if event.event_type.startswith("event_")
-                ][:20]
-            )
-            if not events:
-                await self._mount_event(
-                    TimelineItem("warn", "No daemon event records yet — start JenAI daemon first.")
-                )
-                return
-            rows = [
-                f"{event.occurred_at} · {event.entity_id or '?'} · "
-                f"{event.event_type.removeprefix('event_')} · {event.status or '?'}"
-                + (f" — {escape(event.summary)}" if event.summary else "")
-                for event in events
-            ]
-            await self._mount_event(OutputPanel("Event records (newest first)", "\n".join(rows)))
-            return
-
+        if report_arg in {"event", "events"}:
+            return await self._show_event_report()
         if report_arg == "task" or report_arg.startswith("task "):
-            from jenai.state.task_receipts import TaskReceiptStore, render_task_receipt
+            return await self._show_task_report(report_arg)
+        await self._show_patrol_report(arg)
 
-            receipt_store = TaskReceiptStore(self.config_path.parent / "reports" / "tasks")
-            paths = receipt_store.list_paths()
-            if not paths:
-                await self._mount_event(
-                    TimelineItem("warn", "No task receipts yet — finish a recorded task first.")
-                )
-                return
-            if report_arg == "task list":
-                rows = []
-                for index, path in enumerate(paths[:10], start=1):
-                    receipt = receipt_store.load(path)
-                    if receipt is None:
-                        continue
-                    failure = f" · {receipt.failure_code}" if receipt.failure_code else ""
-                    rows.append(
-                        f"{index}. {receipt.status}{failure} · "
-                        f"{receipt.duration_ms / 1000:.2f}s · {escape(receipt.request)}"
-                    )
-                body = "\n".join(rows) or "No readable task receipts."
-                await self._mount_event(OutputPanel("Task receipts (newest first)", body))
-                return
-            receipt = receipt_store.load(paths[0])
-            if receipt is None:
-                await self._mount_event(TimelineItem("error", f"Receipt unreadable: {paths[0]}"))
-                return
+    async def _show_event_report(self) -> None:
+        from jenai.state.audit import AuditStore
+
+        audit_store = AuditStore.best_effort(self.config_path.parent / "audit.sqlite3")
+        events = (
+            []
+            if audit_store is None
+            else [
+                event
+                for event in audit_store.list_events(limit=100)
+                if event.event_type.startswith("event_")
+            ][:20]
+        )
+        if not events:
             await self._mount_event(
-                OutputPanel(
-                    f"Task receipt · {receipt.run_id}",
-                    escape(render_task_receipt(receipt)),
-                )
+                TimelineItem("warn", "No daemon event records yet — start JenAI daemon first.")
             )
             return
+        rows = [
+            f"{event.occurred_at} · {event.entity_id or '?'} · "
+            f"{event.event_type.removeprefix('event_')} · {event.status or '?'}"
+            + (f" — {escape(event.summary)}" if event.summary else "")
+            for event in events
+        ]
+        await self._mount_event(OutputPanel("Event records (newest first)", "\n".join(rows)))
 
+    async def _show_task_report(self, report_arg: str) -> None:
+        from jenai.state.task_receipts import TaskReceiptStore, render_task_receipt
+
+        receipt_store = TaskReceiptStore(self.config_path.parent / "reports" / "tasks")
+        paths = receipt_store.list_paths()
+        if not paths:
+            await self._mount_event(
+                TimelineItem("warn", "No task receipts yet — finish a recorded task first.")
+            )
+            return
+        if report_arg == "task list":
+            rows: list[str] = []
+            for index, path in enumerate(paths[:10], start=1):
+                receipt = receipt_store.load(path)
+                if receipt is None:
+                    continue
+                failure = f" · {receipt.failure_code}" if receipt.failure_code else ""
+                rows.append(
+                    f"{index}. {receipt.status}{failure} · "
+                    f"{receipt.duration_ms / 1000:.2f}s · {escape(receipt.request)}"
+                )
+            body = "\n".join(rows) or "No readable task receipts."
+            await self._mount_event(OutputPanel("Task receipts (newest first)", body))
+            return
+        receipt = receipt_store.load(paths[0])
+        if receipt is None:
+            await self._mount_event(TimelineItem("error", f"Receipt unreadable: {paths[0]}"))
+            return
+        await self._mount_event(
+            OutputPanel(
+                f"Task receipt · {receipt.run_id}",
+                escape(render_task_receipt(receipt)),
+            )
+        )
+
+    async def _show_patrol_report(self, arg: str) -> None:
         from jenai.state.reports import (
             list_patrol_logs,
             load_patrol_log,
@@ -741,12 +746,10 @@ class RobotCommandsMixin(LocationCommandsMixin):
         digest = await summarize_patrol(self.config, log)
         if digest:
             await self._mount_event(TimelineItem("assistant", escape(digest)))
-        else:
-            # Honest: the deterministic body above IS the report; the LLM
-            # paragraph is a bonus, never a dependency.
-            await self._mount_event(
-                TimelineItem("warn", "LLM digest unavailable — deterministic report shown above.")
-            )
+            return
+        await self._mount_event(
+            TimelineItem("warn", "LLM digest unavailable — deterministic report shown above.")
+        )
 
     # -- Vision, perception, bridge lifecycle, and emergency stop -------
 
@@ -841,79 +844,87 @@ class RobotCommandsMixin(LocationCommandsMixin):
         sub = sub.strip().lower()
 
         if sub == "start":
-            loop = getattr(self, "_perception", None)
-            if loop is not None and loop.running:
-                await self._mount_event(
-                    TimelineItem(
-                        "warn", "Perception loop already running — /perception stop first."
-                    )
-                )
-                return
-            topic = None
-            hz = 1.0
-            for token in rest.split():
-                if token.startswith("/"):
-                    topic = token
-                elif _is_number(token):
-                    hz = max(0.05, float(token))
-            try:
-                bridge = await self._get_bridge()
-            except BridgeError as exc:
-                await self._mount_event(
-                    TimelineItem("warn", f"Perception unavailable (no ROS bridge): {exc}")
-                )
-                return
-
-            async def _on_analysis(analysis: SceneAnalysis) -> None:
-                parts = [escape(analysis.scene_context or "(no description)")]
-                if analysis.affordances:
-                    tags = " ".join(f"#{escape(a)}" for a in analysis.affordances)
-                    parts.append(f"[#9c9689]{tags}[/]")
-                if analysis.suggested_action:
-                    note = (
-                        " [#9c9689](suggestion only — needs approval)[/]"
-                        if analysis.requires_approval
-                        else ""
-                    )
-                    parts.append(f"[bold #f2ede1]→ {escape(analysis.suggested_action)}[/]{note}")
-                parts.append(f"[#9c9689]{analysis.confidence:.0%}[/]")
-                await self._mount_event(TimelineItem("muted", "👁 " + " · ".join(parts)))
-                self._scroll_to_bottom()
-
-            async def _on_status(message: str) -> None:
-                await self._mount_event(TimelineItem("warn", escape(message)))
-                self._scroll_to_bottom()
-
-            self._perception = PerceptionLoop(
-                self.config,
-                bridge,
-                topic=topic,
-                hz=hz,
-                on_analysis=_on_analysis,
-                on_status=_on_status,
-            )
-            await self._perception.start()
-            await self._mount_event(
-                TimelineItem(
-                    "success",
-                    f"Perception loop started · {self._perception.topic} @ {hz:g}Hz "
-                    "(/perception stop to end)",
-                )
-            )
-            return
-
+            return await self._start_perception(rest)
         if sub == "stop":
-            loop = getattr(self, "_perception", None)
-            if loop is None or not loop.running:
-                await self._mount_event(TimelineItem("warn", "Perception loop is not running."))
-                return
-            frames = loop.frames
-            await loop.stop()
+            return await self._stop_perception()
+        await self._show_perception_status()
+
+    @staticmethod
+    def _perception_settings(rest: str) -> tuple[str | None, float]:
+        topic: str | None = None
+        hz = 1.0
+        for token in rest.split():
+            if token.startswith("/"):
+                topic = token
+            elif _is_number(token):
+                hz = max(0.05, float(token))
+        return topic, hz
+
+    async def _on_perception_analysis(self, analysis: SceneAnalysis) -> None:
+        parts = [escape(analysis.scene_context or "(no description)")]
+        if analysis.affordances:
+            tags = " ".join(f"#{escape(affordance)}" for affordance in analysis.affordances)
+            parts.append(f"[#9c9689]{tags}[/]")
+        if analysis.suggested_action:
+            note = (
+                " [#9c9689](suggestion only — needs approval)[/]"
+                if analysis.requires_approval
+                else ""
+            )
+            parts.append(f"[bold #f2ede1]→ {escape(analysis.suggested_action)}[/]{note}")
+        parts.append(f"[#9c9689]{analysis.confidence:.0%}[/]")
+        await self._mount_event(TimelineItem("muted", "👁 " + " · ".join(parts)))
+        self._scroll_to_bottom()
+
+    async def _on_perception_status(self, message: str) -> None:
+        await self._mount_event(TimelineItem("warn", escape(message)))
+        self._scroll_to_bottom()
+
+    async def _start_perception(self, rest: str) -> None:
+        loop = getattr(self, "_perception", None)
+        if loop is not None and loop.running:
             await self._mount_event(
-                TimelineItem("success", f"Perception loop stopped ({frames} frames analyzed).")
+                TimelineItem("warn", "Perception loop already running — /perception stop first.")
+            )
+            return
+        topic, hz = self._perception_settings(rest)
+        try:
+            bridge = await self._get_bridge()
+        except BridgeError as exc:
+            await self._mount_event(
+                TimelineItem("warn", f"Perception unavailable (no ROS bridge): {exc}")
             )
             return
 
+        self._perception = PerceptionLoop(
+            self.config,
+            bridge,
+            topic=topic,
+            hz=hz,
+            on_analysis=self._on_perception_analysis,
+            on_status=self._on_perception_status,
+        )
+        await self._perception.start()
+        await self._mount_event(
+            TimelineItem(
+                "success",
+                f"Perception loop started · {self._perception.topic} @ {hz:g}Hz "
+                "(/perception stop to end)",
+            )
+        )
+
+    async def _stop_perception(self) -> None:
+        loop = getattr(self, "_perception", None)
+        if loop is None or not loop.running:
+            await self._mount_event(TimelineItem("warn", "Perception loop is not running."))
+            return
+        frames = loop.frames
+        await loop.stop()
+        await self._mount_event(
+            TimelineItem("success", f"Perception loop stopped ({frames} frames analyzed).")
+        )
+
+    async def _show_perception_status(self) -> None:
         loop = getattr(self, "_perception", None)
         if loop is not None and loop.running:
             latest = loop.latest
@@ -924,10 +935,10 @@ class RobotCommandsMixin(LocationCommandsMixin):
                     f"Perception running · {loop.topic} · {loop.frames} frames{detail}",
                 )
             )
-        else:
-            await self._mount_event(
-                TimelineItem("muted", "Perception idle. Usage: /perception start [topic] [hz]")
-            )
+            return
+        await self._mount_event(
+            TimelineItem("muted", "Perception idle. Usage: /perception start [topic] [hz]")
+        )
 
     async def _halt_once(self) -> str:
         """One bridge-level cancel + zero pulse, shared by both stop phases."""

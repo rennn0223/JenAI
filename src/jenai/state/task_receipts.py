@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from jenai.schemas import (
@@ -15,6 +16,7 @@ from jenai.schemas import (
     TaskActionReceipt,
     TaskOutcome,
     TaskReceipt,
+    ToolCallRecord,
     ToolCallStatus,
 )
 from jenai.secure_files import atomic_write_text
@@ -35,6 +37,50 @@ _NAVIGATION = re.compile(
     re.IGNORECASE,
 )
 
+_STRUCTURED_FAILURE_CODES = {
+    ErrorType.CONFIG_ERROR: FailureCode.CONFIGURATION,
+    ErrorType.ENV_ERROR: FailureCode.ENVIRONMENT,
+    ErrorType.VALIDATION_ERROR: FailureCode.VALIDATION,
+    ErrorType.MODEL_ERROR: FailureCode.PROVIDER,
+    ErrorType.APPROVAL_REJECTED: FailureCode.APPROVAL_REJECTED,
+}
+
+
+@dataclass(frozen=True)
+class _TextFailureRule:
+    pattern: re.Pattern[str]
+    failure_code: FailureCode
+
+
+_TEXT_FAILURE_RULES = (
+    _TextFailureRule(_SAFETY, FailureCode.SAFETY_BLOCKED),
+    _TextFailureRule(_TIMEOUT, FailureCode.TIMEOUT),
+    _TextFailureRule(_BUSY, FailureCode.BUSY),
+    _TextFailureRule(_UNAVAILABLE, FailureCode.UNAVAILABLE),
+    _TextFailureRule(_NAVIGATION, FailureCode.NAVIGATION),
+    _TextFailureRule(_INTERRUPTED, FailureCode.INTERRUPTED),
+)
+
+
+def _failure_text(run: RunRecord, failed_tools: list[ToolCallRecord]) -> str:
+    return " ".join(
+        part
+        for part in (
+            run.final_output,
+            run.error.message if run.error is not None else None,
+            *(call.error.message for call in run.tool_calls if call.error is not None),
+            *(call.output_summary for call in failed_tools),
+        )
+        if part
+    )
+
+
+def _classify_text(text: str) -> FailureCode | None:
+    for rule in _TEXT_FAILURE_RULES:
+        if rule.pattern.search(text):
+            return rule.failure_code
+    return None
+
 
 def classify_failure(run: RunRecord) -> FailureCode | None:
     """Map detailed run state onto a stable, deliberately small taxonomy."""
@@ -51,40 +97,15 @@ def classify_failure(run: RunRecord) -> FailureCode | None:
     # Structured error types identify the failing subsystem more reliably
     # than words such as "unavailable" in a provider response.
     if run.error is not None:
-        structured = {
-            ErrorType.CONFIG_ERROR: FailureCode.CONFIGURATION,
-            ErrorType.ENV_ERROR: FailureCode.ENVIRONMENT,
-            ErrorType.VALIDATION_ERROR: FailureCode.VALIDATION,
-            ErrorType.MODEL_ERROR: FailureCode.PROVIDER,
-            ErrorType.APPROVAL_REJECTED: FailureCode.APPROVAL_REJECTED,
-        }.get(run.error.error_type)
+        structured = _STRUCTURED_FAILURE_CODES.get(run.error.error_type)
         if structured is not None:
             return structured
 
-    text = " ".join(
-        part
-        for part in (
-            run.final_output,
-            run.error.message if run.error is not None else None,
-            *(call.error.message for call in run.tool_calls if call.error is not None),
-            *(call.output_summary for call in failed_tools),
-        )
-        if part
-    )
     # Safety language outranks generic "cancelled": a safety gate commonly
     # cancels navigation, but the actionable root cause is the safety block.
-    if _SAFETY.search(text):
-        return FailureCode.SAFETY_BLOCKED
-    if _TIMEOUT.search(text):
-        return FailureCode.TIMEOUT
-    if _BUSY.search(text):
-        return FailureCode.BUSY
-    if _UNAVAILABLE.search(text):
-        return FailureCode.UNAVAILABLE
-    if _NAVIGATION.search(text):
-        return FailureCode.NAVIGATION
-    if _INTERRUPTED.search(text):
-        return FailureCode.INTERRUPTED
+    text_failure = _classify_text(_failure_text(run, failed_tools))
+    if text_failure is not None:
+        return text_failure
 
     if run.error is not None:
         return (

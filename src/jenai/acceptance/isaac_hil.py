@@ -1069,6 +1069,133 @@ async def _run_cancel_goal(
     return await _run_cancel_and_stop(gateway, bridge, cancel_config, goal, options)
 
 
+async def _run_live_preflight(
+    bridge: RosBridgeClient,
+    config: AppConfig,
+    execution_config: AppConfig,
+    options: IsaacHilOptions,
+    ambient_domain: str,
+) -> tuple[list[Check], bool]:
+    """Start the supervised bridge and decide whether live motion may continue."""
+    await arm_watchdog(execution_config, bridge)
+    await bridge.start()
+    pose = await bridge.get_pose(timeout=3.0)
+    checks = [_live_bridge_check(pose)]
+    map_cell = (
+        await bridge.map_cell(pose.x, pose.y, timeout=3.0) if pose.frame_id == "map" else None
+    )
+    start_pose_check = _evaluate_start_pose(
+        pose,
+        config,
+        check_id="start_pose_recheck",
+        map_cell=map_cell,
+    )
+    checks.append(start_pose_check)
+    if start_pose_check["status"] != "pass":
+        return checks, False
+
+    checks.append(_twin_isolation_check(config, options, ambient_domain))
+    may_move = not options.require_twin or execution_config.twin.enabled
+    return checks, may_move
+
+
+async def _run_live_goals(
+    gateway: NavigationGateway,
+    execution_config: AppConfig,
+    config_path: Path,
+    bridge: RosBridgeClient,
+    locations: list[Location],
+    options: IsaacHilOptions,
+) -> list[Check]:
+    """Run ordered goals fail-closed, then exercise cancellation when still safe."""
+    checks: list[Check] = []
+    abort_reason: str | None = None
+    for goal_name in options.goals:
+        if abort_reason is not None:
+            checks.append(
+                _check(
+                    f"route:{goal_name}",
+                    "skip",
+                    detail=f"Live goal withheld after an earlier motion failure: {abort_reason}",
+                )
+            )
+            continue
+        goal = find_location(locations, goal_name)
+        goal_checks = await _run_route_goal(gateway, execution_config, goal)
+        checks.extend(goal_checks)
+        failed = next((check for check in goal_checks if check["status"] == "fail"), None)
+        if failed is not None:
+            abort_reason = f"{failed['id']}: {failed['detail']}"
+
+    cancel_check = await _run_optional_cancel_exercise(
+        execution_config,
+        config_path,
+        bridge,
+        locations,
+        options,
+        abort_reason,
+    )
+    if cancel_check is not None:
+        checks.append(cancel_check)
+    return checks
+
+
+async def _run_optional_cancel_exercise(
+    execution_config: AppConfig,
+    config_path: Path,
+    bridge: RosBridgeClient,
+    locations: list[Location],
+    options: IsaacHilOptions,
+    abort_reason: str | None,
+) -> Check | None:
+    """Exercise cancellation only when requested and prior motion remained safe."""
+    if not options.cancel_goal:
+        return None
+    if abort_reason is not None:
+        return _check(
+            f"cancel_stop:{options.cancel_goal}",
+            "skip",
+            detail=f"Cancel exercise withheld after an earlier motion failure: {abort_reason}",
+        )
+    goal = find_location(locations, options.cancel_goal)
+    return await _run_cancel_goal(execution_config, config_path, bridge, goal, options)
+
+
+async def _finalize_live_run(
+    execution_config: AppConfig,
+    bridge: RosBridgeClient,
+) -> list[Check]:
+    """Always halt motion and close the bridge, recording both outcomes."""
+    checks: list[Check] = []
+    try:
+        halt_message = await halt_robot(execution_config, bridge)
+    except Exception as exc:
+        checks.append(
+            _check(
+                "final_halt",
+                "fail",
+                detail=f"Final emergency halt was not confirmed: {type(exc).__name__}: {exc}",
+            )
+        )
+    else:
+        checks.append(_check("final_halt", "pass", detail=halt_message))
+    try:
+        await bridge.stop()
+    except Exception as exc:
+        checks.append(
+            _check(
+                "bridge_shutdown",
+                "fail",
+                detail=f"ROS bridge shutdown failed: {type(exc).__name__}: {exc}",
+            )
+        )
+    else:
+        checks.append(
+            _check("bridge_shutdown", "pass", detail="ROS bridge process stopped cleanly.")
+        )
+    return checks
+
+
 async def _run_live(
     config: AppConfig,
     config_path: Path,
@@ -1083,92 +1210,31 @@ async def _run_live(
         execution_config, config_path=config_path, get_bridge=lambda: _ready_bridge(bridge)
     )
     try:
-        await arm_watchdog(execution_config, bridge)
-        await bridge.start()
-        pose = await bridge.get_pose(timeout=3.0)
-        checks.append(_live_bridge_check(pose))
-        map_cell = (
-            await bridge.map_cell(pose.x, pose.y, timeout=3.0) if pose.frame_id == "map" else None
-        )
-        start_pose_check = _evaluate_start_pose(
-            pose,
+        preflight_checks, may_move = await _run_live_preflight(
+            bridge,
             config,
-            check_id="start_pose_recheck",
-            map_cell=map_cell,
+            execution_config,
+            options,
+            ambient_domain,
         )
-        checks.append(start_pose_check)
-        if start_pose_check["status"] != "pass":
+        checks.extend(preflight_checks)
+        if not may_move:
             return checks
-
-        checks.append(_twin_isolation_check(config, options, ambient_domain))
-        if options.require_twin and not execution_config.twin.enabled:
-            return checks
-        abort_reason: str | None = None
-        for goal_name in options.goals:
-            if abort_reason is not None:
-                checks.append(
-                    _check(
-                        f"route:{goal_name}",
-                        "skip",
-                        detail=(
-                            f"Live goal withheld after an earlier motion failure: {abort_reason}"
-                        ),
-                    )
-                )
-                continue
-            goal = find_location(locations, goal_name)
-            goal_checks = await _run_route_goal(gateway, execution_config, goal)
-            checks.extend(goal_checks)
-            failed = next((check for check in goal_checks if check["status"] == "fail"), None)
-            if failed is not None:
-                abort_reason = f"{failed['id']}: {failed['detail']}"
-        if options.cancel_goal:
-            if abort_reason is not None:
-                checks.append(
-                    _check(
-                        f"cancel_stop:{options.cancel_goal}",
-                        "skip",
-                        detail=(
-                            "Cancel exercise withheld after an earlier motion failure: "
-                            f"{abort_reason}"
-                        ),
-                    )
-                )
-            else:
-                goal = find_location(locations, options.cancel_goal)
-                checks.append(
-                    await _run_cancel_goal(execution_config, config_path, bridge, goal, options)
-                )
+        checks.extend(
+            await _run_live_goals(
+                gateway,
+                execution_config,
+                config_path,
+                bridge,
+                locations,
+                options,
+            )
+        )
     except Exception as exc:
         # This evidence boundary must serialize unexpected failures before exit.
         checks.append(_check("live_exception", "fail", detail=f"{type(exc).__name__}: {exc}"))
     finally:
-        try:
-            halt_message = await halt_robot(execution_config, bridge)
-        except Exception as exc:
-            checks.append(
-                _check(
-                    "final_halt",
-                    "fail",
-                    detail=f"Final emergency halt was not confirmed: {type(exc).__name__}: {exc}",
-                )
-            )
-        else:
-            checks.append(_check("final_halt", "pass", detail=halt_message))
-        try:
-            await bridge.stop()
-        except Exception as exc:
-            checks.append(
-                _check(
-                    "bridge_shutdown",
-                    "fail",
-                    detail=f"ROS bridge shutdown failed: {type(exc).__name__}: {exc}",
-                )
-            )
-        else:
-            checks.append(
-                _check("bridge_shutdown", "pass", detail="ROS bridge process stopped cleanly.")
-            )
+        checks.extend(await _finalize_live_run(execution_config, bridge))
     return checks
 
 

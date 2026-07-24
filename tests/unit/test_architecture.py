@@ -109,6 +109,23 @@ def test_workflow_domain_is_independent_of_llm_ros_and_user_interfaces() -> None
     )
 
 
+def test_area_patrol_service_is_independent_of_agent_and_ui_adapters() -> None:
+    """Every UI and the LLM adapter must share one deterministic patrol service."""
+
+    service = SRC / "tools" / "area_patrol_service.py"
+    assert service.is_file(), "shared area-patrol service disappeared"
+    forbidden = ("agents", "jenai.agent", "jenai.tui", "jenai.webui")
+    violations = [name for name in _imports_of(service) if name.startswith(forbidden)]
+    assert not violations, (
+        "The shared patrol service must not depend on Agent SDK or UI adapters: "
+        + ", ".join(violations)
+    )
+
+    agent_adapter_imports = _imports_of(SRC / "tools" / "area_patrol_agent_tools.py")
+    assert "jenai.tools.area_patrol_service" in agent_adapter_imports
+    assert not any(name.startswith("jenai.webui") for name in agent_adapter_imports)
+
+
 def test_layers_above_vehicle_profile_stay_vehicle_agnostic() -> None:
     files = [SRC / rel for rel in _VEHICLE_AGNOSTIC_FILES]
     for directory in _VEHICLE_AGNOSTIC_DIRS:

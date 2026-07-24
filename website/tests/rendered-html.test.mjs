@@ -28,9 +28,11 @@ test("renders the JenAI documentation home page", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /JENAI 2\.3 · SIMULATION-FIRST ROBOTICS/i);
+  assert.match(html, /JENAI 2\.4 · SIMULATION-FIRST ROBOTICS/i);
   assert.match(html, /<title>JenAI Documentation<\/title>/i);
   assert.match(html, /Robot workflows selected by AI/i);
+  assert.match(html, /v2\.4\.0/i);
+  assert.doesNotMatch(html, /v2\.2\.0/i);
   assert.match(html, /Semantic area patrol/i);
   assert.doesNotMatch(html, /codex-preview/i);
 });
@@ -41,7 +43,16 @@ test("renders the semantic area patrol guide", async () => {
 
   const html = await response.text();
   assert.match(html, /Semantic area patrol/i);
-  assert.match(html, /JenAI v2\.3\.0/i);
+  assert.match(html, /JenAI v2\.4\.0/i);
   assert.match(html, /does not choose every waypoint in a token-by-token loop/i);
   assert.match(html, /partial_success/i);
+});
+
+test("keeps the conventional QuickStart URL available", async () => {
+  const response = await render("/docs/quickstart");
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /Isaac Sim QuickStart/i);
+  assert.match(html, /JenAI v2\.4\.0/i);
 });
