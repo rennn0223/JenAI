@@ -8,7 +8,7 @@ import sys
 import time
 
 
-def emit(payload: dict) -> None:
+def emit(payload: dict[str, object]) -> None:
     sys.stdout.write(json.dumps(payload) + "\n")
     sys.stdout.flush()
 

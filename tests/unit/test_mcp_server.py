@@ -36,6 +36,18 @@ def test_actions_hidden_unless_operator_opts_in(tmp_path: Path) -> None:
     assert {"ros_topics", "list_locations", "robot_pose", "camera_look"} <= ro_names
 
 
+def test_allow_actions_does_not_expose_unregistered_navigation(tmp_path: Path) -> None:
+    from jenai.config.models import VehicleProfile
+
+    config, config_path = _setup(tmp_path)
+    config.vehicle = VehicleProfile(type="quadruped", display_name="Nexuni prototype")
+
+    server = build_mcp_server(config, config_path, allow_actions=True)
+    tool_names = {tool.name for tool in asyncio.run(server.list_tools())}
+
+    assert "navigate_to" not in tool_names
+
+
 def test_list_locations_tool_reports_saved_places(tmp_path: Path) -> None:
     config, config_path = _setup(tmp_path)
     server = build_mcp_server(config, config_path)
@@ -112,7 +124,7 @@ def test_navigate_to_refuses_concurrent_goals(tmp_path: Path, monkeypatch) -> No
             await release.wait()
             return RouteOutput(
                 input_text="",
-                outgoing_action=action,
+                outgoing_action={**action, "capability_id": "dock_approach"},
                 execution_status="succeeded",
                 route_preview="Arrived at the goal.",
             )
@@ -125,7 +137,7 @@ def test_navigate_to_refuses_concurrent_goals(tmp_path: Path, monkeypatch) -> No
         assert "busy" in second  # the in-flight goal was NOT preempted
 
         release.set()
-        assert "succeeded" in _text(await first)
+        assert "outcome=arrived_unverified" in _text(await first)
 
     asyncio.run(run())
 

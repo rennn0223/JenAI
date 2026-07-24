@@ -1,6 +1,6 @@
 # JenAI 命令規格
 
-> 對應版本:v2.2.0(2026-07)。
+> 對應版本:v2.3.0(2026-07)。
 
 JenAI 的命令分為兩層：
 1. **CLI 命令**：在 shell 中直接執行，以 `JenAI` 開頭（裝了啟動器則用小寫 `jenai`）
@@ -18,6 +18,12 @@ JenAI 的命令分為兩層：
 | `JenAI mcp` | MCP stdio server：把機器人工具開放給 Claude Code/Desktop 等 client。預設唯讀，`--allow-actions` 才註冊 `navigate_to` |
 | `JenAI daemon` | 常駐規則引擎：監看 topics 觸發規則（`--rules` 指定檔案，預設 `~/.config/jenai/rules.toml`） |
 | `JenAI doctor` | 檢查 ROS2、provider、model、locations、環境（`--json` 機器可讀） |
+| `JenAI site status` | 顯示 active Site Profile、地圖與 locations 信任狀態；`--json` 可機器讀取 |
+| `JenAI site map-identity` | 唯讀取得 live ROS OccupancyGrid 的 SHA-256、frame、尺寸、解析度與原點；不需先有 active profile |
+| `JenAI site init [profile.toml]` | 從 live map 與現有地點產生 inactive 草稿；不自動 activate，預設拒絕覆寫 |
+| `JenAI site activate <profile.toml>` | 驗證 map／地點引用，重算 locations SHA-256 後明確啟用 Site Profile；不信任匯入檔的 active／validated 自我宣稱 |
+| `JenAI site validate` | 重新核對 active Site Profile、目前地圖與所有 route／home／dock／area 引用；`--json` 可機器讀取 |
+| `JenAI site validate --repair` | 顯式遷移舊 Profile：live map 必須符合既有 identity，才重新綁定目前 locations 檔；不自動信任其他地圖 |
 | `JenAI onboard` | 備份目前 `config.toml` 後重跑 setup wizard;`.env`、locations、skills、reports、run history 全部保留。已有 config 時需確認,`--yes/-y` 可略過確認 |
 | `JenAI data status` | **唯讀**盤點 sessions、pending runs、locations、reports、traces、audit、config 與 backups 的位置、檔數、大小、mode 與不安全／拒絕項；`--json` 提供機器可讀輸出，`--config PATH` 可指定設定檔 |
 | `JenAI data harden` | 顯示 legacy operational data 的精確權限修復計畫（目錄 0700、檔案 0600），拒絕 symlink／hardlink 等不安全路徑；預設再詢問一次才執行，`--dry-run` 絕不改動，`--yes/-y` 只批准畫面所列計畫 |
@@ -89,6 +95,20 @@ JenAI 啟動流程：
 不要移動機器人」，JenAI 會直接呼叫受記錄的唯讀 ROS2 狀態工具並產生確定性摘要，不等待
 LLM。若同一句包含判斷或後續動作（例如「檢查狀態後回到 dock」），則保留完整 Agent
 流程；LLM、批准卡、NavigationGateway 與結果驗證皆不會被快速路徑略過。
+
+### 自然語言 Workflow 選擇
+
+長時間任務不應讓 LLM 每一步重新選工具。像「巡檢所有必要區域、保存照片並回到 home」會讓
+Agent 選擇一次 `area_patrol_workflow_tool`；之後由確定性 Workflow 負責區域覆蓋、Nav2、
+照片、有限重試、return-home 與報告。只有 Workflow 無法解決的高階事件才回到 LLM。
+
+```text
+巡檢目前 Site Profile 中的所有必要區域，每個觀察點保存照片；
+完成後回到 home，證據不足或有異常時要求人工確認。
+```
+
+它沒有專用 slash 指令，因為 TUI、WebUI、MCP 與 Agent 應共用同一個 Workflow API，
+而不是把任務邏輯寫在某個輸入介面的 parser 裡。
 
 ### Provider / Model
 

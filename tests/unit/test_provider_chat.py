@@ -94,3 +94,42 @@ def test_stream_provider_tolerates_null_delta(monkeypatch) -> None:
         return [d async for d in stream_provider(config, "hello")]
 
     assert asyncio.run(collect()) == ["hi"]
+
+
+def test_ollama_vision_is_bounded_and_disables_reasoning(monkeypatch) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from jenai.providers.chat import ask_vision_json
+
+    seen: dict[str, dict[str, object]] = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            seen["create"] = kwargs
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"summary":"ok"}'))]
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            seen["client"] = kwargs
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("jenai.providers.chat.AsyncOpenAI", FakeClient)
+    config = build_minimal_config(
+        provider_name="local",
+        provider="ollama",
+        default_model="qwen3.6:35b",
+        api_key_env="",
+    )
+
+    result = asyncio.run(ask_vision_json(config, "inspect", "data:image/png;base64,AAAA"))
+
+    assert result == {"summary": "ok"}

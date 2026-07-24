@@ -1,26 +1,22 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v2.2.0(2026-07)。專案方向見 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](product/ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v2.3.0(2026-07)。專案方向見 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](product/ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
-**用對話和 slash 指令操作 ROS2 機器人的終端介面** —— 可以想成「機器人的 Claude Code」。核心特性:
+**以自然語言選擇高階 Robot Workflow 的決策代理**。LLM 理解任務與選擇能力；確定性
+Workflow 負責可靠執行，Nav2／ROS 2／載具控制器負責移動。核心特性：
 
-- **TUI 優先**(Textual):聊天(串流回覆)、`/plan`/`/run` 代理任務、`/ros` 檢查、`/route`/`/mission` 導航、`/vision` 視覺
-- **緊急停止**:`/stop`(TUI)、紅色 STOP 鈕(WebUI)、`stop` 工具(MCP)、`halt` 規則(daemon)——免批准、忙碌中可搶佔;bridge 端 watchdog 在 client 斷線/卡死時**自主停車**
-- **任務技能**:`/patrol`(循環巡邏 + 每點拍照 VLM 回報)、`/dock`(回充)、`/mission`(多步任務)
-- **持續感知**:`/perception start` 定頻相機→VLM 結構化分析;affordance 可作 daemon 規則觸發條件(與數值閾值並列),動作照走既有批准
-- **誠實回報**:沒有 ROS、沒有 Nav2、沒有金鑰時明確說 unavailable,絕不假裝成功
-- **危險動作要批准**:所有會動到機器人的操作(pub、drive、route、patrol、shell)先出審批卡
-- **載具設定 `[vehicle]`**:cmd_vel topic、硬限速、相機 topic 集中一處——換載具改設定不改程式
-- **模型雲地隨切**:任何 OpenAI 相容端點(NVIDIA NIM、Ollama⋯),`/provider`、`/model` 即時切換
-- **WebUI 儀表板**:手機也能看狀態、下指令、批准動作、看即時地圖
-- **MCP server**:`jenai mcp` 把機器人工具開放給 Claude Code/Desktop 等 client(預設唯讀)
-- **daemon 常駐**:規則觸發(如電量低回充),預設只通報、明確授權才動作
-- **權限三模式**(v0.22):Shift+Tab 循環「審批/規劃/自動」;裸自然語言依模式路由(規劃只想不動、自動免批准卡),急停/硬限速永不放鬆
-- **Development copilot**(v0.19+):`JenAI scaffold` 自然語言生成 ROS2 套件(`--build` 生成即 colcon 驗證);`skills/*.toml` 檔案定義技能
-- **決策腦 + 評測**(v0.21):`decision_core` 有界動作單選決策、`JenAI eval` E1 場景評測(論文工具鏈)
+- **任務理解與 Workflow 選擇**：複雜意圖交給 Agent；正常步驟不反覆呼叫 LLM。
+- **深模組 Workflow**：語意區域巡檢一次承擔覆蓋、有限重試、影像證據、回到 home 與完成判定。
+- **高低階邊界**：Agent 不發布底層速度／轉向；導航一律經 Navigation Gateway 與 Nav2。
+- **Site Profile**：map SHA-256、地點、route、dock、home、巡檢區域與證據綁成同一場域契約。
+- **誠實回報**：沒有 ROS、Nav2、相機、模型或完成證據時明確降級，不把流程結束改寫成成功。
+- **安全與批准**：`/stop`／STOP／watchdog 可搶佔；致動經批准、能力、場域與結果閘門。
+- **多介面共用能力**：TUI、WebUI、MCP、daemon 與自然語言不得複製工作流邏輯。
+- **模型雲地切換**：OpenAI 相容端點（NVIDIA NIM、Ollama 等）由 provider adapter 隔離。
+- **支援能力**：ROS 2 開發指令、scaffold、感知、決策評測保留，但不是底層控制器。
 
 ## 2. 從零建置
 
@@ -156,17 +152,28 @@ jenai daemon                                        # Ctrl-C 停止
 ### 4.1 資料流總覽
 
 ```
-使用者 ─ TUI(Textual)/ WebUI(http.server)/ CLI(Typer)/ daemon
+使用者 ─ TUI / WebUI / CLI / MCP / daemon
               │
-              ├── providers/  ← OpenAI 相容 API(NVIDIA、Ollama…):chat、JSON、vision、agent 模型
-              ├── agent/      ← /plan /run 的代理協調(規劃→批准→執行→回報)
-              ├── tools/      ← 每個能力的純邏輯核心(*_core.py)+ agent 工具包裝(*_agent_tools.py)
-              │       │
-              │       ├── adapters/ros2_adapter.py   ← ros2 CLI subprocess(topics/echo/pub)
-              │       └── bridge/                    ← rclpy 常駐 sidecar(pose/Nav2回饋/相機/watch)
+              ▼
+         agent/ + capabilities.py
+         理解目標、選擇已註冊 Workflow、要求批准
               │
-              ├── config/ + state/ + schemas/        ← 設定、run 記錄、pydantic 資料模型
-              └── doctor/                            ← 環境健檢
+              ▼
+         workflows/area_patrol.py
+         純 domain 狀態機：coverage / retry / completion / return-home
+              │
+              ▼
+         tools/area_patrol_agent_tools.py
+         將 WorkflowRuntime 接到既有 navigation / camera / report seams
+              │
+              ▼
+         tools/navigation_gateway.py + vision_core.py
+              │
+              ▼
+         bridge/ros_bridge.py ─ Nav2 / ROS 2 / camera
+
+旁路支援：providers/（LLM adapter） · site_profiles.py（場域匯入／啟用）
+          state/（durable evidence） · doctor/（readiness） · config/（政策）
 ```
 
 ### 4.2 模組導覽(每個檔案做什麼)
@@ -191,6 +198,11 @@ jenai daemon                                        # Ctrl-C 停止
 | `bridge/_drive_control.py` | — | 純狀態機的 odom→cmd_vel 控制、深度 freshness、detour/replan；ROS I/O 只套用輸出 |
 | `bridge/client.py` | — | venv 側非同步 client:安全 argv spawn、request future 清理、reader 故障傳播、事件隔離；致動／watchdog 輸入與 pose/map/plan/cancel/halt 回應皆採嚴格 wire 驗證，拒絕 truthiness、非 finite 值、無效範圍與矛盾安全證據 |
 | `tools/*_core.py` | — | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
+| `workflows/area_patrol.py` | — | 純 Python 深模組：不可變 area／mission model、合法狀態轉移、確定性 coverage plan、有限重試、取消、return-home 與完成判定；不 import ROS、LLM、UI |
+| `tools/area_patrol_agent_tools.py` | — | OpenAI Agent tool 與 WorkflowRuntime adapter；解析 active Site Profile、共用 NavigationGateway、抓取獨立照片、保存原子報告；不重作 domain 規則 |
+| `site_profiles.py` / `site_assets.py` | — | 不信任匯入檔自我宣稱；重算 locations SHA-256、驗 route／dock／home／area 引用，明確 activation 後才可導航 |
+| `cli/site.py` | — | `site status/map-identity/activate/validate/deactivate` 維運介面；map-identity 是 activation 前可用的唯讀 bootstrap |
+| `task_results.py` / `state/reports.py` | — | 單一 outcome 映射與 durable evidence serializer；run 結束、任務成功與報告落盤是不同事實 |
 | `tools/nav_live.py` | 313 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback` 只接受受監督 bridge，bridge/watchdog 不可用即 fail-closed，絕不降級成 CLI goal** |
 | `tools/skills.py` | 145 | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
 | `tools/ros2_pkg_core.py` | 286 | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋;`--build` 生成即 colcon 驗證(失敗餵錯誤回 LLM 修一輪)。從 control agent 邁向 development copilot |

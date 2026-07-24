@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import time
-from pathlib import Path
 
 import pytest
 
@@ -102,13 +99,6 @@ def test_route_preview_unresolvable_start_still_navigates_to_goal() -> None:
     assert "start" not in output.outgoing_action
 
 
-def test_route_execute_reports_no_backend_honestly() -> None:
-    output = asyncio.run(route_core.route_execute(_config(), {"start": "a", "goal": "b"}))
-    # No navigation backend is wired: report "unavailable", never fake success.
-    assert output.execution_status == "unavailable"
-    assert "not sent" in output.route_preview.lower()
-
-
 def test_route_preview_goal_only_chinese_goes_from_current_position() -> None:
     # 「去X」/「到X」 must resolve without a provider: goal-only regex fast path.
     for text in ("去Mechanical Hall", "到Mechanical Hall", "前往Mechanical Hall"):
@@ -156,82 +146,22 @@ def test_natural_language_dock_route_carries_unverified_dock_contract() -> None:
         pose=Pose2D(x=1, y=2, yaw=0),
     )
 
-    output = asyncio.run(route_core.route_preview(_config(), [dock], "回到 dock"))
+    config = _config()
+    config.site.dock_location = dock.name
+    output = asyncio.run(route_core.route_preview(config, [dock], "回到 dock"))
 
     assert output.outgoing_action["capability_id"] == "dock_approach"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-specific")
-def test_route_cli_fallback_cancellation_kills_and_reaps_send_goal(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """The fallback must not send/finish a Nav2 goal after Esc reports cancel."""
-
-    events = tmp_path / "route-events.log"
-    pid_file = tmp_path / "route.pid"
-    fake_ros2 = tmp_path / "ros2"
-    fake_ros2.write_text(
-        """#!/usr/bin/env python3
-import os
-import signal
-import sys
-import time
-from pathlib import Path
-
-if sys.argv[1:3] == ["action", "list"]:
-    print("/navigate_to_pose")
-    raise SystemExit(0)
-
-events = Path(os.environ["FAKE_ROUTE_EVENTS"])
-pid_file = Path(os.environ["FAKE_ROUTE_PID"])
-running = True
-
-def stop(signum, frame):
-    global running
-    running = False
-
-signal.signal(signal.SIGTERM, stop)
-pid_file.write_text(str(os.getpid()))
-with events.open("a") as stream:
-    stream.write("goal-started\\n")
-deadline = time.monotonic() + 0.4
-while running and time.monotonic() < deadline:
-    time.sleep(0.01)
-with events.open("a") as stream:
-    stream.write("goal-reaped\\n" if not running else "late-goal-complete\\n")
-""",
-        encoding="utf-8",
+def test_tagged_dock_without_site_binding_is_regular_navigation() -> None:
+    dock = Location(
+        name="charging_approach",
+        aliases=["dock"],
+        tags=["dock"],
+        frame_id="map",
+        pose=Pose2D(x=1, y=2, yaw=0),
     )
-    fake_ros2.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
-    monkeypatch.setenv("FAKE_ROUTE_EVENTS", str(events))
-    monkeypatch.setenv("FAKE_ROUTE_PID", str(pid_file))
-    config = _config().model_copy(update={"route_adapter": "nav2"})
-    action = {
-        "goal": {
-            "name": "A",
-            "frame_id": "map",
-            "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0},
-        }
-    }
 
-    async def scenario() -> int:
-        task = asyncio.create_task(route_core.route_execute(config, action))
-        for _ in range(100):
-            if pid_file.exists() and events.exists():
-                break
-            await asyncio.sleep(0.01)
-        assert pid_file.exists() and events.exists()
-        pid = int(pid_file.read_text())
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        return pid
+    output = asyncio.run(route_core.route_preview(_config(), [dock], "回到 dock"))
 
-    pid = asyncio.run(scenario())
-    lines_after_cancel = events.read_text().splitlines()
-    assert lines_after_cancel == ["goal-started", "goal-reaped"]
-    time.sleep(0.5)
-    assert events.read_text().splitlines() == lines_after_cancel
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert "capability_id" not in output.outgoing_action

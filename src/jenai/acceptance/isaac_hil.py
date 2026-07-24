@@ -1053,6 +1053,7 @@ async def _run_route_goal(
 
 async def _run_cancel_goal(
     execution_config: AppConfig,
+    config_path: Path,
     bridge: RosBridgeClient,
     goal: Location,
     options: IsaacHilOptions,
@@ -1062,12 +1063,15 @@ async def _run_cancel_goal(
     cancel_config = execution_config.model_copy(
         update={"twin": execution_config.twin.model_copy(update={"enabled": False})}
     )
-    gateway = NavigationGateway(cancel_config, get_bridge=lambda: _ready_bridge(bridge))
+    gateway = NavigationGateway(
+        cancel_config, config_path=config_path, get_bridge=lambda: _ready_bridge(bridge)
+    )
     return await _run_cancel_and_stop(gateway, bridge, cancel_config, goal, options)
 
 
 async def _run_live(
     config: AppConfig,
+    config_path: Path,
     locations: list[Location],
     options: IsaacHilOptions,
 ) -> list[Check]:
@@ -1075,7 +1079,9 @@ async def _run_live(
     bridge = RosBridgeClient()
     ambient_domain = os.environ.get("ROS_DOMAIN_ID", "0").strip() or "0"
     execution_config = _execution_config(config, options.target, ambient_domain)
-    gateway = NavigationGateway(execution_config, get_bridge=lambda: _ready_bridge(bridge))
+    gateway = NavigationGateway(
+        execution_config, config_path=config_path, get_bridge=lambda: _ready_bridge(bridge)
+    )
     try:
         await arm_watchdog(execution_config, bridge)
         await bridge.start()
@@ -1130,7 +1136,9 @@ async def _run_live(
                 )
             else:
                 goal = find_location(locations, options.cancel_goal)
-                checks.append(await _run_cancel_goal(execution_config, bridge, goal, options))
+                checks.append(
+                    await _run_cancel_goal(execution_config, config_path, bridge, goal, options)
+                )
     except Exception as exc:
         # This evidence boundary must serialize unexpected failures before exit.
         checks.append(_check("live_exception", "fail", detail=f"{type(exc).__name__}: {exc}"))
@@ -1336,7 +1344,7 @@ async def run_isaac_hil(options: IsaacHilOptions) -> Check:
                         check["status"] == "pass" for check in route_plan_checks
                     )
         if options.execute and doctor_ok and scan_quality_ok and start_pose_ok and route_plans_ok:
-            checks.extend(await _run_live(config, locations, options))
+            checks.extend(await _run_live(config, config_path, locations, options))
         elif options.execute:
             checks.append(
                 _check(

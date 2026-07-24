@@ -175,6 +175,37 @@ class MapDatum(BaseModel):
         return self.lat is not None and self.lon is not None
 
 
+class PatrolAreaProfile(BaseModel):
+    """Semantic area and the registered inspection locations that cover it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    area_id: str
+    display_name: str
+    inspection_locations: list[str] = Field(min_length=1)
+    required: bool = True
+
+    @field_validator("area_id", "display_name")
+    @classmethod
+    def required_identity(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("patrol area identity must not be blank")
+        return stripped
+
+    @field_validator("inspection_locations")
+    @classmethod
+    def normalize_inspection_locations(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("inspection location must not be blank")
+            if stripped not in normalized:
+                normalized.append(stripped)
+        return normalized
+
+
 class SiteProfile(BaseModel):
     """Versioned operating-site binding for saved map-frame assets."""
 
@@ -187,9 +218,12 @@ class SiteProfile(BaseModel):
     validated: bool = False
     map_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     map_frame: str = "map"
+    locations_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     reference_scene: str | None = None
     locations_path: str | None = None
     validated_routes: list[str] = Field(default_factory=list)
+    home_location: str | None = None
+    patrol_areas: list[PatrolAreaProfile] = Field(default_factory=list)
     dock_location: str | None = None
     validation_evidence: list[str] = Field(default_factory=list)
 
@@ -201,12 +235,12 @@ class SiteProfile(BaseModel):
             raise ValueError("site identity text must not be blank")
         return stripped
 
-    @field_validator("map_sha256")
+    @field_validator("map_sha256", "locations_sha256")
     @classmethod
     def normalize_map_digest(cls, value: str | None) -> str | None:
         return value.lower() if value is not None else None
 
-    @field_validator("reference_scene", "locations_path", "dock_location")
+    @field_validator("reference_scene", "locations_path", "dock_location", "home_location")
     @classmethod
     def optional_asset_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -226,10 +260,28 @@ class SiteProfile(BaseModel):
                 normalized.append(stripped)
         return normalized
 
+    @property
+    def execution_ready(self) -> bool:
+        """Whether this selected profile may authorize saved-coordinate motion.
+
+        Older JenAI releases did not persist ``locations_sha256``. Those
+        profiles must remain loadable so operators can inspect and revalidate
+        them, but every execution boundary treats them as untrusted.
+        """
+
+        return (
+            self.active
+            and self.validated
+            and self.map_sha256 is not None
+            and self.locations_sha256 is not None
+        )
+
     @model_validator(mode="after")
-    def active_site_is_verified(self) -> SiteProfile:
-        if self.active and (not self.validated or self.map_sha256 is None):
-            raise ValueError("an active site must be validated and include map_sha256")
+    def patrol_area_ids_are_unique(self) -> SiteProfile:
+        area_ids = [area.area_id.casefold() for area in self.patrol_areas]
+        if len(area_ids) != len(set(area_ids)):
+            raise ValueError("duplicate patrol area id")
+
         return self
 
 

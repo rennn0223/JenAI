@@ -340,6 +340,7 @@ def _run_daemon_until(
 def test_daemon_twin_refer_blocks_autonomous_goto(tmp_path: Path, monkeypatch) -> None:
     """Autonomous path has no human to refer to: anything short of a clean
     twin pass must keep the robot parked, and say so."""
+    import hashlib
     from types import SimpleNamespace
 
     moved: list[dict] = []
@@ -359,6 +360,8 @@ def test_daemon_twin_refer_blocks_autonomous_goto(tmp_path: Path, monkeypatch) -
         cfg.site.active = True
         cfg.site.validated = True
         cfg.site.map_sha256 = "a" * 64
+        cfg.site.locations_sha256 = hashlib.sha256(_DOCK_LOCATIONS.encode()).hexdigest()
+        cfg.site.validated_routes = ["Dock"]
         cfg.site.locations_path = "locations.toml"
 
     statuses = _run_daemon_until(

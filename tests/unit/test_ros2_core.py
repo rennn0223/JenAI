@@ -109,12 +109,23 @@ def test_ros_topic_info_missing_gives_fuzzy_candidates(monkeypatch) -> None:
 
 
 def test_ros_nav_status_reports_readiness_without_inventing_activity(monkeypatch) -> None:
+    topic_calls: list[dict[str, object]] = []
+
+    def list_topics(**kwargs):
+        topic_calls.append(kwargs)
+        return [
+            "/map",
+            "/amcl_pose",
+            "/scan",
+            "/cmd_vel",
+            "/navigate_to_pose/_action/status",
+        ]
+
     monkeypatch.setattr(
         ros2_adapter,
         "list_topics",
-        lambda **kw: ["/map", "/amcl_pose", "/scan", "/cmd_vel"],
+        list_topics,
     )
-    monkeypatch.setattr(ros2_adapter, "list_actions", lambda **kw: ["/navigate_to_pose"])
     monkeypatch.setattr(
         ros2_adapter,
         "topic_info",
@@ -130,6 +141,7 @@ def test_ros_nav_status_reports_readiness_without_inventing_activity(monkeypatch
     assert "did not measure" in status["activity_report"]
     assert "no-current-goal" in status["activity_note"]
     assert "another client" in status["activity_note"]
+    assert topic_calls == [{"fresh": True}]
 
 
 def test_ros_nav_status_retries_a_cold_partial_topic_graph(monkeypatch) -> None:
@@ -138,10 +150,19 @@ def test_ros_nav_status_retries_a_cold_partial_topic_graph(monkeypatch) -> None:
     def list_topics(**kwargs):
         nonlocal calls
         calls += 1
-        return [] if calls == 1 else ["/map", "/amcl_pose", "/scan", "/cmd_vel"]
+        return (
+            []
+            if calls == 1
+            else [
+                "/map",
+                "/amcl_pose",
+                "/scan",
+                "/cmd_vel",
+                "/navigate_to_pose/_action/status",
+            ]
+        )
 
     monkeypatch.setattr(ros2_adapter, "list_topics", list_topics)
-    monkeypatch.setattr(ros2_adapter, "list_actions", lambda **kw: ["/navigate_to_pose"])
     monkeypatch.setattr(
         ros2_adapter,
         "topic_info",
@@ -162,7 +183,6 @@ def test_ros_nav_status_fails_readiness_when_action_or_controller_is_missing(
         "list_topics",
         lambda **kw: ["/map", "/amcl_pose", "/scan", "/cmd_vel"],
     )
-    monkeypatch.setattr(ros2_adapter, "list_actions", lambda **kw: [])
     monkeypatch.setattr(
         ros2_adapter,
         "topic_info",
@@ -174,6 +194,37 @@ def test_ros_nav_status_fails_readiness_when_action_or_controller_is_missing(
     assert status["ready"] is False
     assert status["checks"]["navigate_to_pose"] is False
     assert status["checks"]["cmd_vel_subscriber"] is False
+
+
+def test_ros_state_discovers_nav2_odom_topic_instead_of_hardcoding_default(
+    monkeypatch,
+) -> None:
+    parameter_calls: list[tuple[str, str, dict[str, object]]] = []
+    echo_calls: dict[str, dict[str, object]] = {}
+
+    def parameter_get(node: str, parameter: str, **kwargs) -> str:
+        parameter_calls.append((node, parameter, kwargs))
+        return "/chassis/odom"
+
+    def topic_echo(topic: str, **kwargs) -> list[str]:
+        echo_calls[topic] = kwargs
+        return [f"snapshot: {topic}"]
+
+    monkeypatch.setattr(ros2_adapter, "parameter_get", parameter_get)
+    monkeypatch.setattr(ros2_adapter, "topic_echo", topic_echo)
+
+    state = asyncio.run(ros2_core.ros_state(_config()))
+
+    assert state["odom_topic"] == "/chassis/odom"
+    assert state["odom"] == "snapshot: /chassis/odom"
+    assert parameter_calls == [
+        ("/controller_server", "odom_topic", {"timeout": 10.0, "fresh": True})
+    ]
+    assert echo_calls == {
+        "/amcl_pose": {"count": 1, "latched": True, "best_effort": False},
+        "/chassis/odom": {"count": 1, "latched": False, "best_effort": True},
+        "/scan": {"count": 1, "latched": False, "best_effort": True},
+    }
 
 
 def test_example_payload_handles_nested_types() -> None:

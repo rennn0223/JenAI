@@ -16,6 +16,9 @@ import re
 import tomllib
 from pathlib import Path
 
+from jenai.agent.specialists import build_supervisor_agent
+from jenai.config.store import build_minimal_config
+
 SRC = Path(__file__).resolve().parents[2] / "src" / "jenai"
 ROOT = SRC.parents[1]
 
@@ -34,6 +37,18 @@ _REFLEX_MODULES = [
     "twin/gate.py",
 ]
 _LLM_IMPORT_PREFIXES = ("openai", "litellm", "agents", "jenai.providers", "jenai.agent")
+_WORKFLOW_FORBIDDEN_IMPORT_PREFIXES = (
+    "agents",
+    "openai",
+    "rclpy",
+    "jenai.adapters",
+    "jenai.agent",
+    "jenai.bridge",
+    "jenai.providers",
+    "jenai.tools",
+    "jenai.tui",
+    "jenai.webui",
+)
 
 # Rule 2: layers above the vehicle profile must not name a vehicle. The
 # profile itself (config/models.py) and the bridge-side message-family clamp
@@ -75,6 +90,25 @@ def test_reflex_layer_never_imports_the_llm_stack() -> None:
     )
 
 
+def test_workflow_domain_is_independent_of_llm_ros_and_user_interfaces() -> None:
+    """Workflow logic stays executable through its seam without infrastructure."""
+
+    violations: list[str] = []
+    workflow_files = sorted((SRC / "workflows").glob("*.py"))
+    assert workflow_files, "workflow domain package disappeared"
+    for path in workflow_files:
+        relative = path.relative_to(SRC).as_posix()
+        violations.extend(
+            f"{relative} imports {name}"
+            for name in _imports_of(path)
+            if name.startswith(_WORKFLOW_FORBIDDEN_IMPORT_PREFIXES)
+        )
+    assert not violations, (
+        "Workflow domain must not depend on LLM, ROS, tools, or UI adapters:\n"
+        + "\n".join(violations)
+    )
+
+
 def test_layers_above_vehicle_profile_stay_vehicle_agnostic() -> None:
     files = [SRC / rel for rel in _VEHICLE_AGNOSTIC_FILES]
     for directory in _VEHICLE_AGNOSTIC_DIRS:
@@ -91,7 +125,7 @@ def test_layers_above_vehicle_profile_stay_vehicle_agnostic() -> None:
 
 
 def test_navigation_surfaces_cannot_bypass_the_gateway() -> None:
-    allowed = {"tools/navigation_gateway.py", "tools/route_core.py"}
+    allowed = {"tools/navigation_gateway.py"}
     violations: list[str] = []
     for path in SRC.rglob("*.py"):
         rel = str(path.relative_to(SRC))
@@ -101,6 +135,10 @@ def test_navigation_surfaces_cannot_bypass_the_gateway() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr == "route_execute":
                 violations.append(f"{rel}:{node.lineno} calls route_execute directly")
+            if isinstance(node, ast.ImportFrom) and node.module == "jenai.adapters.route_adapter":
+                violations.append(f"{rel}:{node.lineno} imports the route adapter directly")
+            if isinstance(node, ast.Name) and node.id == "get_route_adapter":
+                violations.append(f"{rel}:{node.lineno} resolves the route adapter directly")
             if isinstance(node, ast.Name) and node.id == "navigate_with_fallback":
                 violations.append(f"{rel}:{node.lineno} bypasses NavigationGateway")
     assert not violations, "Navigation must go through NavigationGateway:\n" + "\n".join(violations)
@@ -162,3 +200,27 @@ def test_litellm_gateway_remains_server_side_not_a_client_dependency() -> None:
     # JenAI calls the gateway through its OpenAI-compatible HTTP endpoint;
     # installing LiteLLM on the robot duplicates the server and its large tree.
     assert not any(dependency.lower().startswith("litellm") for dependency in dependencies)
+
+
+def test_autonomous_agent_never_receives_raw_actuation_tools() -> None:
+    """Low-level diagnostics may exist, but cannot enter the LLM tool graph."""
+
+    config = build_minimal_config(
+        provider_name="architecture",
+        provider="openai",
+        default_model="model",
+        api_key_env="",
+    )
+    supervisor = build_supervisor_agent(config)
+    forbidden = {
+        "ros_drive_execute_tool",
+        "ros_drive_verified_tool",
+        "ros_pub_execute_tool",
+        "ros_pub_validate_tool",
+    }
+    violations: dict[str, list[str]] = {}
+    for agent in [supervisor, *supervisor.handoffs]:
+        exposed = sorted(forbidden & {tool.name for tool in agent.tools})
+        if exposed:
+            violations[agent.name] = exposed
+    assert not violations, f"Autonomous Agent exposes low-level actuation tools: {violations}"

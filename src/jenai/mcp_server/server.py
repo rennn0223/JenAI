@@ -15,9 +15,11 @@ from jenai.adapters.locations import (
 )
 from jenai.adapters.ros2_adapter import Ros2NotAvailableError
 from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.capabilities import has_registered_capability
 from jenai.config.models import AppConfig
 from jenai.schemas import Location
 from jenai.state.audit import AuditStore
+from jenai.task_results import navigation_receipt_text
 from jenai.tools import ros2_core
 from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.safety import arm_watchdog, halt_robot
@@ -36,6 +38,7 @@ class _ServerResources:
         self.navigation = NavigationGateway(
             config,
             get_bridge=self.bridge,
+            config_path=config_path,
             audit_store=AuditStore.best_effort(config_path.parent / "audit.sqlite3"),
         )
 
@@ -183,7 +186,7 @@ def _register_navigation_tool(mcp: FastMCP, resources: _ServerResources) -> None
                 return f"Unknown location '{location}' (near: {hint})."
             action = {"goal": target.model_dump(mode="json")}
             output = await resources.navigation.execute(action)
-            return f"{output.execution_status}: {output.route_preview}"
+            return navigation_receipt_text(output)
 
 
 def build_mcp_server(
@@ -204,7 +207,7 @@ def build_mcp_server(
     resources = _ServerResources(config, config_path)
     _register_ros_tools(mcp, resources)
     _register_robot_tools(mcp, resources)
-    if allow_actions:
+    if allow_actions and has_registered_capability(config, "navigate"):
         _register_navigation_tool(mcp, resources)
 
     return mcp

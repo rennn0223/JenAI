@@ -19,13 +19,16 @@ from jenai.adapters.locations import (
     find_location,
     load_locations_tolerant,
 )
+from jenai.capabilities import has_registered_capability
 from jenai.cli.data import data_app
+from jenai.cli.site import site_app
 from jenai.config import ConfigError, default_config_path, load_config, load_env_file
 from jenai.config.models import AppConfig
 from jenai.config.setup import run_setup_wizard
 from jenai.doctor import run_doctor
 from jenai.schemas import DoctorResult, DoctorStatus, Location
 from jenai.secure_files import atomic_write_bytes
+from jenai.task_results import navigation_output_result, navigation_receipt_text
 from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.route_core import route_preview
 from jenai.tui import run_tui, status_color
@@ -38,6 +41,7 @@ app = typer.Typer(
 loc_app = typer.Typer(help="Manage locations.")
 app.add_typer(loc_app, name="loc")
 app.add_typer(data_app, name="data")
+app.add_typer(site_app, name="site")
 console = Console()
 # ALL diagnostics/warnings/status lines go here, never to `console`: stdout is
 # the MCP protocol channel under `jenai mcp`, and one stray decorated print
@@ -231,6 +235,9 @@ def route(text: str, config: ConfigOption = None) -> None:
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
+    if not has_registered_capability(loaded, "navigate"):
+        console.print("[red]Capability 'navigate' is not registered for this robot profile.[/red]")
+        raise typer.Exit(1)
 
     locations = _load_locations_for_cli(loaded, config_path)
     output = asyncio.run(route_preview(loaded, locations, text))
@@ -246,12 +253,13 @@ def route(text: str, config: ConfigOption = None) -> None:
 
     audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
     result = asyncio.run(
-        execute_navigation(loaded, output.outgoing_action, audit_store=audit_store)
+        execute_navigation(
+            loaded, output.outgoing_action, config_path=config_path, audit_store=audit_store
+        )
     )
-    if result.execution_status == "succeeded":
-        console.print(f"[green]{result.execution_status}[/green]")
-    else:
-        console.print(f"[yellow]{result.execution_status}: {result.route_preview}[/yellow]")
+    task_result = navigation_output_result(result)
+    style = "green" if task_result.succeeded else "yellow"
+    console.print(navigation_receipt_text(result), style=style, markup=False)
 
 
 @app.command()

@@ -53,7 +53,30 @@ def test_analyze_image_maps_vlm_json(monkeypatch, tmp_path) -> None:
     assert output.next_action_suggestions == ["avoid spill"]
 
 
+def test_analyze_image_discards_normal_state_prose_from_anomalies(monkeypatch, tmp_path) -> None:
+    image = tmp_path / "frame.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n fake pixels")
+
+    async def fake_vision_json(config, prompt, data_url, **kw):
+        return {
+            "summary": "Warehouse view.",
+            "anomalies": [
+                "No significant anomalies detected; the environment appears orderly and safe.",
+                "No human operators visible.",
+                "The environment has a simulated or rendered appearance.",
+                "Liquid spill beside the blue barrel.",
+                "Liquid spill beside the blue barrel.",
+            ],
+        }
+
+    monkeypatch.setattr(vision_core, "ask_vision_json", fake_vision_json)
+    output = asyncio.run(vision_core.analyze_image(_config(), str(image)))
+
+    assert output.anomalies == ["Liquid spill beside the blue barrel."]
+
+
 def test_analyze_image_degrades_when_model_unavailable(monkeypatch, tmp_path) -> None:
+
     image = tmp_path / "frame.jpg"
     image.write_bytes(b"fake jpeg")
 

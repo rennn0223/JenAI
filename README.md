@@ -1,17 +1,21 @@
 # JenAI
 
-> An agentic AI terminal assistant for ROS2-based robot systems.
+> A high-level robot decision agent that selects reliable ROS 2 workflows.
 
-JenAI 是一套以 terminal 為核心的 AI Agent 操作介面，專為機器人開發者設計。它整合大型語言模型、ROS2 工具鏈、視覺理解能力與 human-in-the-loop 批准機制，讓你能以自然語言規劃、執行、監控機器人任務。
+JenAI 讓 LLM 理解任務並選擇已註冊的高階 Workflow；確定性流程再透過 ROS 2／Nav2
+執行、限制重試、保存證據與判定完成。Agent 不取代局部規劃、速度／轉向或硬體安全控制。
 
-產品文件（目前為 owner-only 私有站）：
-[JenAI Documentation](https://jenai-docs.ren910223.chatgpt.site)
+產品文件原始碼位於 [`website/`](website/)，穩定文字入口從
+[`docs/QUICKSTART.md`](docs/QUICKSTART.md) 開始；網站的新可分享部署完成前不再提供 owner-only 連結。
 
 ---
 
 ## 核心能力
 
 - **自然語言任務規劃與執行**：以 `/plan` 與 `/run` 驅動 agent 完成多步驟任務
+- **Workflow-first 決策**：LLM 選擇一次高階能力，正常任務步驟不以 token-by-token 工具迴圈執行
+- **語意區域巡檢**：依 active Site Profile 自動覆蓋 required areas、保存逐次照片、有限重試、回到 home 並產生 typed report
+- **場域資產契約**：地圖 SHA-256、locations、routes、dock、home、patrol areas 與驗證證據必須同屬一個明確啟用的 Site Profile
 - **可見但不洩露私密思維的執行進度**：TUI 即時顯示理解、工具執行、驗證與完成階段；狀態查詢的量測數字由工具確定性產生，LLM 不得改寫
 - **ROS2 整合**：topics 探索、schema 解析、echo 監看、pub 控制
 - **即時導航**：`/route`、`/mission` 走 Nav2，剩餘距離即時顯示；Esc 會取消 goal 並補送零速度（rclpy bridge）
@@ -61,7 +65,7 @@ uv run JenAI web
 三者必須是**同一個 release**；constraints 固定該版通過發布閘的依賴解析，checksum 用來
 確認下載資產與同一份 manifest 一致。只有 asset 清單實際包含這三項的 release 才適用；
 例如既有 `v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證；
-目前請使用 `v2.2.0` 或後續資產完整版本。
+目前穩定版請使用 `v2.2.0`；本分支為 `v2.3.0` 發布候選，必須等公開 Release 資產與驗證實際完成後才算正式發布。
 
 下列已驗證的 copy-paste 流程以 Linux／Ubuntu 為目標，使用系統提供的 GNU
 `sha256sum`。macOS 在 [SUPPORT_MATRIX](docs/operations/SUPPORT_MATRIX.md) 仍是 Experimental；可自行
@@ -114,6 +118,7 @@ wheel 的小寫 entry point 共存。
 | `config.toml`（provider／model） | 首次 `JenAI` 自動跑 setup wizard 建立 |
 | `.env`（API 金鑰） | 手動一行（見下方「API 金鑰」）；JenAI 啟動時自動載入 |
 | `locations.toml`（地點） | 依 [`locations.example.toml`](locations.example.toml) 填 |
+| `site-profile.toml`（場域匯入文件） | 執行 `JenAI site init` 產生 inactive 草稿，審閱後再明確 activate；[`site-profile.example.toml`](site-profile.example.toml) 是完整參考 |
 
 需要從原始碼安裝時，只使用已審閱的**精確 tag 或完整 commit SHA**，並記錄解析出的
 commit。此路徑在支援矩陣列為 Supported，尚未等同 release wheel 的隔離環境驗證：
@@ -261,7 +266,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v2.2.0，2026-07）
+## 狀態（v2.3.0，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >

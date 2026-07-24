@@ -316,6 +316,7 @@ def test_live_hil_aborts_remaining_motion_after_first_failed_goal(monkeypatch, t
     checks = asyncio.run(
         _run_live(
             AppConfig(twin=TwinProfile(enabled=False)),
+            tmp_path / "config.toml",
             locations,
             _options(
                 tmp_path,
@@ -377,6 +378,7 @@ def test_live_hil_records_unconfirmed_final_halt_as_failure(monkeypatch, tmp_pat
     checks = asyncio.run(
         _run_live(
             AppConfig(twin=TwinProfile(enabled=False)),
+            tmp_path / "config.toml",
             [location],
             _options(
                 tmp_path,

@@ -14,11 +14,13 @@ from jenai.adapters.locations import (
     find_location,
     load_locations_tolerant,
 )
+from jenai.capabilities import has_registered_capability
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
 from jenai.providers.chat import ProviderChatError, ask_provider, chat_model_name
 from jenai.schemas import Location
 from jenai.state.audit import AuditStore
+from jenai.task_results import navigation_output_result, navigation_receipt_text
 from jenai.tools import ros2_core
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.navigation_gateway import execute_navigation
@@ -274,6 +276,9 @@ async def _drive_nl(config: AppConfig, rest: str) -> WebResponse:
 async def _route(config: AppConfig, config_path: Path, rest: str) -> WebResponse:
     if not rest:
         return _error("Usage: /route from A to B")
+    if not has_registered_capability(config, "navigate"):
+        return _error("Navigation is not registered for this robot profile.")
+
     locations = _load_locations(config, config_path)
     out = await route_preview(config, locations, rest)
     if not out.outgoing_action:
@@ -328,14 +333,17 @@ async def run_web_confirm(
     )
     kind = action.get("type")
 
-    def _audit(event_type: str, status: str) -> None:
+    def _audit(event_type: str, status: str, *, outcome: str | None = None) -> None:
         if audit_store is None:
             return
+        details = {"source": "webui", "action_type": str(kind or "unknown")}
+        if outcome is not None:
+            details["outcome"] = outcome
         try:
             audit_store.record(
                 event_type,
                 status=status,
-                details={"source": "webui", "action_type": str(kind or "unknown")},
+                details=details,
             )
         except Exception:
             logger.warning("WebUI action audit failed", exc_info=True)
@@ -364,13 +372,18 @@ async def run_web_confirm(
             _audit("tool_updated", pub_out.execution_status)
             return _result(_p(pub_out.result_message or "done"))
         if kind == "route":
+            if not has_registered_capability(config, "navigate"):
+                _audit("tool_updated", "blocked")
+                return _error("Navigation is not registered for this robot profile.")
             route_out = await execute_navigation(
                 config,
                 action["outgoing_action"],
+                config_path=config_path,
                 audit_store=audit_store,
             )
-            _audit("tool_updated", route_out.execution_status)
-            return _result(_p(route_out.route_preview))
+            task_result = navigation_output_result(route_out)
+            _audit("tool_updated", task_result.run_status.value, outcome=task_result.outcome.value)
+            return _result(_p(navigation_receipt_text(route_out)))
         _audit("tool_updated", "failed")
         return _error("Unknown action.")
     except Exception as exc:

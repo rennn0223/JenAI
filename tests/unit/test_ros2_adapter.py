@@ -60,6 +60,32 @@ def test_list_topics_parses_lines(monkeypatch) -> None:
     assert ros2_adapter.list_topics() == ["/cmd_vel", "/scan", "/rosout"]
 
 
+def test_list_topics_fresh_bypasses_daemon_and_waits_for_discovery(monkeypatch) -> None:
+    monkeypatch.setattr(ros2_adapter.shutil, "which", lambda name: "/usr/bin/ros2")
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return _completed(stdout="/map\n/scan\n")
+
+    monkeypatch.setattr(ros2_adapter.subprocess, "run", run)
+
+    topics = ros2_adapter.list_topics(fresh=True)
+
+    assert topics == ["/map", "/scan"]
+    assert commands == [
+        [
+            "ros2",
+            "topic",
+            "list",
+            "--no-daemon",
+            "--spin-time",
+            "3.0",
+            "--include-hidden-topics",
+        ]
+    ]
+
+
 def test_list_topics_nonzero_exit_raises_command_error(monkeypatch) -> None:
     monkeypatch.setattr(ros2_adapter.shutil, "which", lambda name: "/usr/bin/ros2")
     monkeypatch.setattr(
@@ -126,6 +152,30 @@ def test_parameter_get_rejects_failed_or_empty_response(
 
     with pytest.raises(ros2_adapter.Ros2CommandError):
         ros2_adapter.parameter_get("/controller_server", "odom_topic")
+
+
+def test_topic_echo_best_effort_builds_sensor_compatible_subscription(monkeypatch) -> None:
+    monkeypatch.setattr(ros2_adapter.shutil, "which", lambda name: "/usr/bin/ros2")
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return _completed(stdout="data: 1\n")
+
+    monkeypatch.setattr(ros2_adapter.subprocess, "run", run)
+
+    assert ros2_adapter.topic_echo("/scan", best_effort=True) == ["data: 1"]
+    assert commands == [
+        [
+            "ros2",
+            "topic",
+            "echo",
+            "/scan",
+            "--once",
+            "--qos-reliability",
+            "best_effort",
+        ]
+    ]
 
 
 def test_interface_show_returns_raw_text(monkeypatch) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -14,21 +15,29 @@ from jenai.adapters.locations import (
     load_locations,
 )
 from jenai.agent.context import JenAIRunContext
+from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.schemas import (
     EffectScope,
     Location,
     RiskLevel,
     RouteOutput,
-    TaskOutcome,
     ToolCallCategory,
     ToolCallRecord,
     ToolCallStatus,
 )
+from jenai.task_results import aggregate_step_outcome, navigation_output_result
 from jenai.tools import route_core
 from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.registry import ToolRiskInfo, register_tool
 from jenai.tools.route_action import normalize_route_action, unwrap_route_action
-from jenai.tools.skills import ExploreSpec, exploration_candidates, run_explore
+from jenai.tools.skills import (
+    ExploreSpec,
+    PatrolSpec,
+    exploration_candidates,
+    run_explore,
+    run_patrol,
+)
+from jenai.tools.vision_core import capture_and_analyze
 
 ToolOutput = dict[str, Any]
 
@@ -44,6 +53,21 @@ def _load_locations(ctx: RunContextWrapper[JenAIRunContext]) -> list[Location]:
         return []
     ensure_locations_file(path)
     return load_locations(path)
+
+
+async def _capture_live_camera(run_ctx: JenAIRunContext) -> str:
+    bridge = RosBridgeClient()
+    try:
+        await bridge.start()
+        output = await capture_and_analyze(
+            run_ctx.config,
+            bridge,
+            run_ctx.config.vehicle.camera_topic,
+        )
+        return output.summary
+    finally:
+        with contextlib.suppress(BridgeError):
+            await bridge.stop()
 
 
 def _record_call(
@@ -126,26 +150,15 @@ async def route_execute_tool(
     output = await execute_navigation(
         run_ctx.config,
         outgoing_action,
+        config_path=run_ctx.config_path,
         audit_store=run_ctx.run_store.audit_store,
         run_id=run_ctx.run.run_id,
         session_id=run_ctx.run.session_id,
     )
-    ok = output.execution_status == "succeeded"
-    if ok:
-        run_ctx.run.outcome = (
-            TaskOutcome.ARRIVED_UNVERIFIED
-            if outgoing_action.get("capability_id") == "dock_approach"
-            else TaskOutcome.SUCCEEDED
-        )
-    elif output.execution_status == "endpoint_mismatch":
-        run_ctx.run.outcome = TaskOutcome.ENDPOINT_MISMATCH
-    elif output.execution_status == "unavailable":
-        run_ctx.run.outcome = TaskOutcome.UNAVAILABLE
-    elif output.execution_status == "blocked":
-        run_ctx.run.outcome = TaskOutcome.BLOCKED
-    else:
-        run_ctx.run.outcome = TaskOutcome.FAILED
-    _finish_call(ctx, call, ok=ok, summary=output.execution_status if ok else output.route_preview)
+    result = navigation_output_result(output)
+    run_ctx.run.outcome = result.outcome
+    summary = f"{output.execution_status}: {output.route_preview}"
+    _finish_call(ctx, call, ok=result.succeeded, summary=summary)
     return output.model_dump(mode="json")
 
 
@@ -157,6 +170,7 @@ async def explore_area_tool(
     max_failures: int = 2,
     tag: str = "",
     seed: int = -1,
+    photo: bool = False,
 ) -> ToolOutput:
     """Run one bounded, low-repeat exploration over eligible saved locations.
 
@@ -178,6 +192,7 @@ async def explore_area_tool(
             max_goals=max_goals,
             max_failures=max_failures,
             tag=tag.strip() or None,
+            photo=photo,
             seed=None if seed == -1 else seed,
         )
     except ValueError as exc:
@@ -204,6 +219,7 @@ async def explore_area_tool(
         return await execute_navigation(
             run_ctx.config,
             action,
+            config_path=run_ctx.config_path,
             audit_store=run_ctx.run_store.audit_store,
             run_id=run_ctx.run.run_id,
             session_id=run_ctx.run.session_id,
@@ -214,11 +230,13 @@ async def explore_area_tool(
         locations,
         spec,
         navigate=_navigate,
+        observe=(lambda: _capture_live_camera(run_ctx)) if spec.photo else None,
     )
-    ok = report.completed_normally and report.success_count > 0
-    _finish_call(ctx, call, ok=ok, summary=report.summary)
+    outcome = aggregate_step_outcome([result.status for result in report.results])
+    run_ctx.run.outcome = outcome
+    _finish_call(ctx, call, ok=report.success_count > 0, summary=report.summary)
     return {
-        "execution_status": "succeeded" if ok else "failed",
+        "execution_status": outcome.value,
         "summary": report.summary,
         "stop_reason": report.stop_reason,
         "success_count": report.success_count,
@@ -230,6 +248,68 @@ async def explore_area_tool(
                 "point": result.point,
                 "status": result.status,
                 "detail": result.detail,
+                "observation": result.observation,
+            }
+            for result in report.results
+        ],
+    }
+
+
+@function_tool(needs_approval=True)
+async def patrol_area_tool(
+    ctx: RunContextWrapper[JenAIRunContext],
+    points: list[str],
+    loops: int = 1,
+    photo: bool = True,
+) -> ToolOutput:
+    """Visit named Site Profile locations and optionally capture evidence."""
+    call = _record_call(
+        ctx,
+        "patrol_area_tool",
+        f"{len(points)} points, {loops} loops, photo={photo}",
+    )
+    normalized = [point.strip() for point in points if point.strip()]
+    if not normalized or not 1 <= loops <= 20 or len(normalized) * loops > 100:
+        message = "Patrol needs 1-100 total waypoint visits and loops between 1 and 20."
+        _finish_call(ctx, call, ok=False, summary=message)
+        return {"execution_status": "failed", "summary": message}
+
+    spec = PatrolSpec(points=normalized, loops=loops, photo=photo)
+    locations = _load_locations(ctx)
+    run_ctx = ctx.context
+
+    async def _navigate(action: ToolOutput) -> RouteOutput:
+        return await execute_navigation(
+            run_ctx.config,
+            action,
+            config_path=run_ctx.config_path,
+            audit_store=run_ctx.run_store.audit_store,
+            run_id=run_ctx.run.run_id,
+            session_id=run_ctx.run.session_id,
+        )
+
+    report = await run_patrol(
+        run_ctx.config,
+        locations,
+        spec,
+        navigate=_navigate,
+        observe=(lambda: _capture_live_camera(run_ctx)) if spec.photo else None,
+    )
+    outcome = aggregate_step_outcome([result.status for result in report.results])
+    run_ctx.run.outcome = outcome
+    reached = any(result.status in {"succeeded", "partial"} for result in report.results)
+    _finish_call(ctx, call, ok=reached, summary=report.summary)
+    return {
+        "execution_status": outcome.value,
+        "outcome": outcome.value,
+        "summary": report.summary,
+        "results": [
+            {
+                "loop": result.loop,
+                "point": result.point,
+                "status": result.status,
+                "detail": result.detail,
+                "observation": result.observation,
             }
             for result in report.results
         ],
@@ -268,6 +348,12 @@ ROUTE_TOOL_NAMES: dict[str, ToolRiskInfo] = {
         effect_scope=EffectScope.SIM_CONTROL,
         needs_approval=True,
         description="Explore eligible saved locations within hard time and goal limits.",
+    ),
+    "patrol_area_tool": ToolRiskInfo(
+        risk_level=RiskLevel.P1,
+        effect_scope=EffectScope.SIM_CONTROL,
+        needs_approval=True,
+        description="Visit registered patrol points with optional camera evidence.",
     ),
     "loc_lookup_tool": ToolRiskInfo(
         risk_level=RiskLevel.P0,

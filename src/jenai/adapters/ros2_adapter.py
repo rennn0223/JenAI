@@ -89,8 +89,30 @@ async def _run_async(
         raise Ros2CommandError(f"ros2 {' '.join(args)} could not run: {exc}") from exc
 
 
-def list_topics(*, timeout: float = 5.0, domain_id: int | None = None) -> list[str]:
-    completed = _run(["topic", "list"], timeout=timeout, domain_id=domain_id)
+def list_topics(
+    *,
+    timeout: float = 5.0,
+    domain_id: int | None = None,
+    fresh: bool = False,
+) -> list[str]:
+    """List graph topics, optionally bypassing the ROS daemon cache.
+
+    ``fresh=True`` is reserved for health and safety checks. It waits for a
+    new DDS discovery snapshot, avoiding partial daemon graphs without adding
+    latency to normal interactive commands.
+    """
+
+    args = ["topic", "list"]
+    if fresh:
+        args.extend(
+            [
+                "--no-daemon",
+                "--spin-time",
+                "3.0",
+                "--include-hidden-topics",
+            ]
+        )
+    completed = _run(args, timeout=timeout, domain_id=domain_id)
     if completed.returncode != 0:
         raise Ros2CommandError(
             f"ros2 topic list exited with code {completed.returncode}: {completed.stderr.strip()}",
@@ -118,17 +140,24 @@ def list_actions(*, timeout: float = 5.0, domain_id: int | None = None) -> list[
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
-def parameter_get(node: str, parameter: str, *, timeout: float = 5.0) -> str:
-    """Read one ROS parameter value without its type annotation.
+def parameter_get(
+    node: str,
+    parameter: str,
+    *,
+    timeout: float = 5.0,
+    fresh: bool = False,
+) -> str:
+    """Read one ROS parameter value, optionally bypassing daemon discovery.
 
     The raw CLI wrapper is intentionally narrow: diagnostics only need a
     trustworthy string value and non-zero/empty responses are errors rather
     than values that callers could accidentally treat as configuration.
     """
-    completed = _run(
-        ["param", "get", node, parameter, "--hide-type"],
-        timeout=timeout,
-    )
+    args = ["param", "get", node, parameter]
+    if fresh:
+        args.extend(["--no-daemon", "--spin-time", "3.0"])
+    args.append("--hide-type")
+    completed = _run(args, timeout=timeout)
     value = completed.stdout.strip()
     if completed.returncode != 0 or not value:
         detail = completed.stderr.strip() or "empty parameter value"
@@ -153,8 +182,13 @@ class TopicInfo:
     subscribers: list[str] = field(default_factory=list)
 
 
-def topic_info(topic: str, *, timeout: float = 5.0) -> TopicInfo:
-    completed = _run(["topic", "info", topic, "--verbose"], timeout=timeout)
+def topic_info(topic: str, *, timeout: float = 5.0, fresh: bool = False) -> TopicInfo:
+    """Describe topic endpoints, optionally using a fresh DDS snapshot."""
+
+    args = ["topic", "info", topic, "--verbose"]
+    if fresh:
+        args.extend(["--no-daemon", "--spin-time", "3.0"])
+    completed = _run(args, timeout=timeout)
     if completed.returncode != 0:
         raise Ros2CommandError(
             f"ros2 topic info {topic} exited with code {completed.returncode}: "
@@ -234,7 +268,12 @@ def interface_show(message_type: str, *, timeout: float = 5.0) -> str:
 
 
 def topic_echo(
-    topic: str, *, count: int = 1, timeout: float = 5.0, latched: bool = False
+    topic: str,
+    *,
+    count: int = 1,
+    timeout: float = 5.0,
+    latched: bool = False,
+    best_effort: bool = False,
 ) -> list[str]:
     """Capture up to `count` snapshot messages from a topic.
 
@@ -244,10 +283,15 @@ def topic_echo(
     `latched` subscribes RELIABLE + TRANSIENT_LOCAL — required for topics like
     /amcl_pose that only re-publish on updates (a volatile subscriber would
     wait forever next to a stationary robot).
+    `best_effort` is intended for live sensor snapshots such as Isaac Sim's
+    LaserScan publisher. It is ignored for latched topics, whose historical
+    sample contract requires reliable delivery.
     """
     args = ["topic", "echo", topic, "--once"]
     if latched:
         args += ["--qos-durability", "transient_local", "--qos-reliability", "reliable"]
+    elif best_effort:
+        args += ["--qos-reliability", "best_effort"]
     messages: list[str] = []
     for _ in range(max(1, count)):
         completed = _run(args, timeout=timeout)

@@ -280,3 +280,240 @@ def test_help_command_lists_cli_and_oneshot_recipes() -> None:
     # Every subcommand family shows up, plus the one-shot recipes section.
     for needle in ("JenAI doctor", "JenAI web", "JenAI daemon", "一鍵常用", "/stop"):
         assert needle in result.stdout
+
+
+def test_site_activate_status_and_deactivate(tmp_path: Path) -> None:
+    from jenai.adapters.locations import save_locations
+    from jenai.config import load_config
+    from jenai.schemas import Location, Pose2D
+
+    config_path = tmp_path / "config.toml"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="model",
+            api_key_env="",
+        ),
+        config_path,
+    )
+    save_locations(
+        [
+            Location(name="Inspection A", pose=Pose2D(x=1.0, y=2.0, yaw=0.0)),
+            Location(name="Home", pose=Pose2D(x=0.0, y=0.0, yaw=0.0)),
+        ],
+        tmp_path / "locations.toml",
+    )
+    profile = tmp_path / "site.toml"
+    profile.write_text(
+        """
+[site]
+site_id = "warehouse"
+display_name = "Warehouse"
+version = "1"
+map_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+locations_path = "locations.toml"
+validated_routes = ["Inspection A", "Home"]
+home_location = "Home"
+
+[[site.patrol_areas]]
+area_id = "inspection"
+display_name = "Inspection"
+inspection_locations = ["Inspection A"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    activated = runner.invoke(
+        app,
+        [
+            "site",
+            "activate",
+            str(profile),
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert activated.exit_code == 0
+    assert "Activated Site Profile" in activated.stdout
+    loaded = load_config(config_path)
+    assert loaded.site.active is True
+    assert loaded.site.locations_sha256 != "0" * 64
+
+    status = runner.invoke(
+        app,
+        ["site", "status", "--config", str(config_path), "--json"],
+    )
+    assert status.exit_code == 0
+    payload = json.loads(status.stdout)
+    assert payload["site_id"] == "warehouse"
+    assert payload["patrol_areas"][0]["area_id"] == "inspection"
+
+    deactivated = runner.invoke(
+        app,
+        ["site", "deactivate", "--config", str(config_path), "--yes"],
+    )
+    assert deactivated.exit_code == 0
+    assert load_config(config_path).site.active is False
+
+
+def test_site_activate_rejects_unknown_area_location_without_writing(
+    tmp_path: Path,
+) -> None:
+    from jenai.adapters.locations import save_locations
+    from jenai.config import load_config
+    from jenai.schemas import Location, Pose2D
+
+    config_path = tmp_path / "config.toml"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="model",
+            api_key_env="",
+        ),
+        config_path,
+    )
+    save_locations(
+        [Location(name="Home", pose=Pose2D(x=0.0, y=0.0, yaw=0.0))],
+        tmp_path / "locations.toml",
+    )
+    profile = tmp_path / "invalid-site.toml"
+    profile.write_text(
+        """
+[site]
+site_id = "warehouse"
+display_name = "Warehouse"
+map_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+locations_path = "locations.toml"
+validated_routes = ["Home"]
+home_location = "Home"
+
+[[site.patrol_areas]]
+area_id = "missing"
+display_name = "Missing"
+inspection_locations = ["Not Registered"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "site",
+            "activate",
+            str(profile),
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "unknown location" in result.stderr
+    assert load_config(config_path).site.active is False
+
+
+def test_site_map_identity_reports_live_fingerprint(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    observed = SimpleNamespace(
+        algorithm="sha256-occupancy-grid-v1",
+        digest="c" * 64,
+        frame_id="map",
+        width=100,
+        height=80,
+        resolution=0.05,
+        origin_x=-1.0,
+        origin_y=-2.0,
+        origin_yaw=0.0,
+        source="/map",
+    )
+    monkeypatch.setattr(
+        "jenai.cli.site.read_live_map_identity",
+        lambda: observed,
+    )
+
+    result = runner.invoke(app, ["site", "map-identity", "--json"])
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["digest"] == "c" * 64
+    assert payload["width"] == 100
+    assert payload["source"] == "/map"
+
+
+def test_site_init_creates_inactive_reviewable_draft(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from jenai.adapters.locations import save_locations
+    from jenai.config import load_config
+    from jenai.schemas import Location, Pose2D
+    from jenai.site_profiles import load_site_profile_document
+
+    config_path = tmp_path / "config.toml"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="model",
+            api_key_env="",
+        ),
+        config_path,
+    )
+    save_locations(
+        [
+            Location(
+                name="Dock",
+                tags=["dock"],
+                pose=Pose2D(x=0.0, y=0.0, yaw=0.0),
+            ),
+            Location(name="Inspection A", pose=Pose2D(x=1.0, y=1.0, yaw=0.0)),
+        ],
+        tmp_path / "locations.toml",
+    )
+    monkeypatch.setattr(
+        "jenai.cli.site.read_live_map_identity",
+        lambda: SimpleNamespace(digest="d" * 64, frame_id="map"),
+    )
+    profile_path = tmp_path / "draft.toml"
+
+    result = runner.invoke(
+        app,
+        [
+            "site",
+            "init",
+            str(profile_path),
+            "--config",
+            str(config_path),
+            "--site-id",
+            "warehouse",
+            "--name",
+            "Warehouse",
+            "--scene",
+            "Isaac Sim Warehouse",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "inactive Site Profile draft" in result.stdout
+    profile = load_site_profile_document(profile_path)
+    assert profile.site_id == "warehouse"
+    assert profile.map_sha256 == "d" * 64
+    assert profile.home_location == "Dock"
+    assert profile.dock_location == "Dock"
+    assert profile.patrol_areas[0].inspection_locations == ["Inspection A"]
+    assert load_config(config_path).site.active is False
+
+    second = runner.invoke(
+        app,
+        [
+            "site",
+            "init",
+            str(profile_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+    assert second.exit_code == 1
+    assert "already exists" in second.stderr

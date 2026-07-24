@@ -120,7 +120,11 @@ async def run_patrol(
         for point in spec.points:
             try:
                 name, status, detail = await resolve_and_navigate(
-                    config, locations, point, navigate=navigate
+                    config,
+                    locations,
+                    point,
+                    navigate=navigate,
+                    capability_id="patrol_photo",
                 )
                 result = PatrolStepResult(loop, name, status, detail)
             except Exception as exc:  # noqa: BLE001 — record and continue
@@ -345,7 +349,11 @@ async def run_explore(
         try:
             async with asyncio.timeout(remaining_s):
                 name, status, detail = await resolve_and_navigate(
-                    config, candidates, location.name, navigate=navigate
+                    config,
+                    candidates,
+                    location.name,
+                    navigate=navigate,
+                    capability_id="explore_known_locations",
                 )
             result = ExploreStepResult(attempt, name, status, detail)
         except TimeoutError:

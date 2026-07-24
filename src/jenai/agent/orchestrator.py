@@ -26,16 +26,14 @@ from jenai.schemas import (
     ApprovalStatus,
     EffectScope,
     ErrorType,
-    FailureCode,
     JenAIError,
     RiskLevel,
     RunRecord,
     RunStatus,
     TaskOutcome,
-    ToolCallStatus,
 )
 from jenai.schemas.models import new_id
-from jenai.state.task_receipts import classify_failure
+from jenai.task_results import agent_completion_outcome, run_status_for_outcome
 from jenai.tools.approval_formatters import format_approval
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tools.ros2_agent_tools import inspect_robot_state
@@ -205,10 +203,11 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
         final_output = (
             _deterministic_state_report(run) or _final_text(result) or _tool_result_summary(run)
         )
+        outcome = agent_completion_outcome(run)
         run_store.finish(
             run,
-            status=RunStatus.COMPLETED,
-            outcome=_completed_agent_outcome(run),
+            status=run_status_for_outcome(outcome),
+            outcome=outcome,
             final_output=final_output,
         )
         return run
@@ -254,8 +253,8 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
             final_output=_final_text(result)
             or (
                 "Stopped: the agent kept re-requesting an action it had already asked to "
-                "approve this run (a model loop). Start a new /run for the next step, or run "
-                'the action directly, e.g. /ros drive /cmd_vel \'{"linear": {"x": 0.2}}\' 1'
+                "approve this run (a model loop). Start a new /run for the next high-level "
+                "step. Low-level diagnostic motion remains an explicit operator command."
             ),
         )
         return run
@@ -265,19 +264,6 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
     run_store.set_status(run, RunStatus.AWAITING_APPROVAL)
     run_store.stash_pending_state(run.run_id, state, approval_ids)
     return run
-
-
-def _completed_agent_outcome(run: RunRecord) -> TaskOutcome:
-    """Derive completion only from recorded tools, preserving domain-specific outcomes."""
-
-    if run.outcome is not None:
-        return TaskOutcome(run.outcome)
-    if any(call.status == ToolCallStatus.FAILED for call in run.tool_calls):
-        failure_code = classify_failure(run)
-        if failure_code == FailureCode.UNAVAILABLE:
-            return TaskOutcome.UNAVAILABLE
-        return TaskOutcome.FAILED
-    return TaskOutcome.SUCCEEDED
 
 
 def _final_text(result: Any) -> str:
@@ -424,10 +410,8 @@ def _deterministic_state_report(run: RunRecord) -> str:
 def _ros_developer_actuation_is_unverified(result: Any, run: RunRecord) -> bool:
     """Prevent a ROS Developer run from completing after unverified raw motion.
 
-    The normal Motion specialist remains suitable for an explicitly requested
-    one-shot drive. The combined ROS Developer workflow, however, promises a
-    discover → execute → verify loop and must fail closed when a weak model ends
-    immediately after the actuation tool result.
+    This is defense in depth for persisted runs created by earlier releases. Current autonomous
+    agents do not receive raw actuation tools, but a resumed legacy run must still fail closed.
     """
     last_agent = getattr(result, "last_agent", None)
     if getattr(last_agent, "name", "") != "ROS Developer":

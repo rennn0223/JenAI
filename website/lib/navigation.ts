@@ -79,6 +79,12 @@ export const navGroups: NavGroup[] = [
         keywords: ["explore", "patrol", "random", "known locations"],
       },
       {
+        slug: "area-patrol",
+        title: "Semantic area patrol",
+        description: "Cover required site areas, preserve image evidence, and return home.",
+        keywords: ["coverage", "semantic area", "workflow", "inspection", "evidence"],
+      },
+      {
         slug: "dock-approach",
         title: "Dock approach",
         description: "Reach a registered dock pose without making a false charging claim.",

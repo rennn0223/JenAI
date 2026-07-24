@@ -226,6 +226,15 @@ def test_output_panel_uses_uniform_line_spacing() -> None:
     assert all(line.strip() for line in compact.split("\n"))  # 表格不受影響
 
 
+def test_output_panel_plain_body_neutralizes_rich_markup() -> None:
+    body = "{'unresolved': ['map-left-up'], 'summary': '[bold]unsafe[/]'}"
+
+    rendered = str(OutputPanel("Result [unsafe]", body, body_markup=False).render())
+
+    assert "Result [unsafe]" in rendered
+    assert body in rendered
+
+
 def test_transcript_entries_share_one_row_gap() -> None:
     async def run() -> None:
         app = _app()
@@ -780,7 +789,8 @@ def test_tui_escape_interrupts_active_task(monkeypatch) -> None:
             bodies = [getattr(w, "body", "") for w in app.query_one("#events").children]
             assert "Interrupted." in bodies
             assert app._active_task is None
-            assert app.run_store.get(active_run.run_id).status == "blocked"
+            assert app.run_store.get(active_run.run_id).status == "interrupted"
+            assert app.run_store.get(active_run.run_id).outcome == "cancelled"
 
     asyncio.run(run())
 
@@ -912,19 +922,18 @@ def test_tui_ros_pub_invalid_json_shows_error(monkeypatch) -> None:
 def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
     from jenai.schemas import Location, Pose2D
 
-    start = Location(name="A", frame_id="map", pose=Pose2D(x=0, y=0, yaw=0))
     goal = Location(name="B", frame_id="map", pose=Pose2D(x=1, y=1, yaw=0))
 
     async def fake_route_preview(config, locations, text):
         return RouteOutput(
             input_text=text,
-            resolved_start=start,
+            resolved_start=None,
             resolved_goal=goal,
             route_preview="Route from A to B.",
             outgoing_action={"start": "A", "goal": "B"},
         )
 
-    async def fake_route_execute(config, outgoing_action):
+    async def fake_route_execute(_gateway, outgoing_action, **_kwargs):
         return RouteOutput(
             input_text="",
             outgoing_action=outgoing_action,
@@ -933,9 +942,7 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
         )
 
     monkeypatch.setattr("jenai.tui.robot_commands.route_preview", fake_route_preview)
-    # Execution dispatch lives in the shared navigate_with_fallback, which
-    # resolves route_execute from route_core at call time.
-    monkeypatch.setattr("jenai.tools.route_core.route_execute", fake_route_execute)
+    monkeypatch.setattr("jenai.tui.robot_commands.NavigationGateway.execute", fake_route_execute)
 
     async def run() -> None:
         app = _app(tmp_path)
@@ -947,6 +954,9 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
             await pilot.press("1")
             await pilot.pause()
             assert list(app.query(ApprovalCard)) == []
+            run_record = app.run_store.list_runs()[-1]
+            assert run_record.status == "failed"
+            assert run_record.outcome == "unavailable"
 
     asyncio.run(run())
 
@@ -1475,14 +1485,28 @@ def test_tui_explore_shows_bounded_card_and_runs(monkeypatch) -> None:
     asyncio.run(run())
 
 
-def test_tui_dock_without_dock_location_warns(tmp_path) -> None:
+def test_tui_dock_requires_explicit_site_binding(monkeypatch, tmp_path) -> None:
+    from jenai.schemas import Location, Pose2D
+
     async def run() -> None:
-        app = _app(tmp_path)  # locations file exists but holds no dock
+        app = _app(tmp_path)
+        monkeypatch.setattr(
+            app,
+            "_load_locations",
+            lambda: [
+                Location(
+                    name="Charger",
+                    tags=["dock"],
+                    frame_id="map",
+                    pose=Pose2D(x=9, y=9, yaw=0),
+                )
+            ],
+        )
         async with app.run_test():
             await app.handle_user_text("/dock")
             bodies = [i.body for i in app.query(TimelineItem)]
-            assert any("No dock location" in b for b in bodies)
-            assert list(app.query(ApprovalCard)) == []  # nothing to approve
+            assert any("Site Profile" in b for b in bodies)
+            assert list(app.query(ApprovalCard)) == []
 
     asyncio.run(run())
 
@@ -1496,13 +1520,15 @@ def test_tui_dock_routes_to_tagged_location(monkeypatch, tmp_path) -> None:
         sent["goal"] = action["goal"]["name"]
         return RouteOutput(
             input_text="",
-            outgoing_action=action,
+            outgoing_action={**action, "capability_id": "dock_approach"},
             execution_status="succeeded",
             route_preview="arrived at dock",
         )
 
     async def run() -> None:
         app = _app(tmp_path)
+        app.config.site.dock_location = "Charger"
+        app.config.site.active = True
         monkeypatch.setattr(
             app,
             "_load_locations",
@@ -1765,6 +1791,8 @@ def test_tui_dock_and_route_approval_memory_are_isolated(monkeypatch, tmp_path) 
 
     async def run() -> None:
         app = _app(tmp_path)
+        app.config.site.dock_location = "Charger"
+        app.config.site.active = True
         monkeypatch.setattr(
             app,
             "_load_locations",
@@ -1782,6 +1810,20 @@ def test_tui_dock_and_route_approval_memory_are_isolated(monkeypatch, tmp_path) 
             await app.handle_user_text("/dock")
             # /dock must still raise its own card, not silently execute.
             assert len(list(app.query(ApprovalCard))) == 1
+
+    asyncio.run(run())
+
+
+def test_tui_route_refuses_unregistered_navigation_capability(tmp_path) -> None:
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.vehicle.capabilities = ["inspect_state"]
+
+        async with app.run_test():
+            await app.handle_user_text("/route Dock")
+            bodies = [item.body for item in app.query(TimelineItem)]
+            assert any("not registered" in body for body in bodies)
+            assert list(app.query(ApprovalCard)) == []
 
     asyncio.run(run())
 

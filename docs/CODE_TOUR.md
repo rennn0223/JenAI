@@ -1,10 +1,10 @@
 # CODE_TOUR — 全程式碼導讀(給補課用的逐檔解說)
 
-> 對應 v0.30.x。每個檔案講三件事:**做什麼**、**用了什麼 SDK/庫**、
+> 對應 v2.2.x。每個檔案講三件事:**做什麼**、**用了什麼 SDK/庫**、
 > **為什麼這樣寫**(關鍵段落的設計理由)。搭配各目錄 README 與
 > [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md) 服用;讀碼時對著原始檔開兩個視窗。
 
-## 先背五個全局決定(每個檔案都繞著它們轉)
+## 先背七個全局決定(每個檔案都繞著它們轉)
 
 1. **venv/ROS 隔離**:uv 管的 venv 看不到 rclpy;ROS 的 PYTHONPATH 會遮蔽 venv 套件。
    → 所有 rclpy 程式碼住在獨立系統程序(`bridge/ros_bridge.py`),用 JSON/stdio 溝通。
@@ -13,6 +13,10 @@
    相機→VLM=`capture_and_analyze` —— 四介面共用同一實作。
 4. **LLM 永不進即時迴路**;載具字眼只准出現在 config(CI 用 `test_architecture.py` 強制)。
 5. **純邏輯/包裝分離**:`*_core.py` 可單測純邏輯;`*_agent_tools.py` 只是包給 SDK 的殼。
+6. **LLM 選 Workflow，不逐步駕駛**：正常區域排序、導航、重試、證據與完成判定由
+   `workflows/` 的確定性狀態機完成；未解的高階事件才重新進 Agent。
+7. **Site 資產不可脫離地圖**：地點、route、dock、home 與 patrol area 必須通過 active
+   Site Profile 的 map／locations 雜湊與引用驗證；匯入檔不能自我授權。
 
 ## 使用的外部庫(一次認識)
 
@@ -99,6 +103,20 @@
 ---
 
 # 第二層:純邏輯核心(tools/,大部分可以直接單測)
+
+### `workflows/area_patrol.py`——第一個深模組
+- **做什麼**：定義不可變 `PatrolMission`、area／mission 狀態、合法 transition、
+  確定性 coverage order、有限重試、取消、return-home 與 completion result。
+- **依賴**：只用 Python／Pydantic domain types；不 import ROS 2、Nav2、Agent SDK、UI。
+- **為什麼**：測試能直接用 fake runtime 驗完整任務，不需啟動模型或模擬器；未來換
+  Nova Carter、機器狗或其他 navigator，只替換小型 runtime seam。
+
+### `tools/area_patrol_agent_tools.py` + `site_profiles.py`
+- **做什麼**：前者把一次 Agent tool call 接到 WorkflowRuntime、NavigationGateway、相機
+  與 durable report；後者安全匯入／啟用 Site Profile，重算 locations 指紋並驗證引用。
+- **為什麼分開**：Agent wrapper 只翻譯資料與 I/O；coverage 規則只存在於 Workflow。
+  `site_assets.py` 是 map-frame 資產 invariant，`cli/site.py` 只是 operator adapter。
+- **讀法**：先讀純 Workflow 與單元測試，再讀 adapter；不要從 TUI handler 反推任務規則。
 
 ### `tools/safety.py`(32 行)——最小卻最重要
 - `halt_robot`/`arm_watchdog`:急停語意的唯一出處。TUI/WebUI/MCP/daemon 全呼叫它。

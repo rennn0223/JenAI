@@ -341,20 +341,27 @@ def test_doctor_twin_checks_probe_the_twin_domain(monkeypatch) -> None:
 
     config = AppConfig(twin=TwinProfile(enabled=True, domain_id=42))
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
-    seen_domains: list[int | None] = []
+    seen_queries: list[tuple[int | None, bool]] = []
 
-    def fake_topics(*, timeout=5.0, domain_id=None):
-        seen_domains.append(domain_id)
-        return ["/twin/collision", "/map", "/scan"]
+    def fake_topics(*, timeout=5.0, domain_id=None, fresh=False):
+        seen_queries.append((domain_id, fresh))
+        return [
+            "/twin/collision",
+            "/map",
+            "/scan",
+            "/navigate_to_pose/_action/status",
+        ]
 
     monkeypatch.setattr("jenai.adapters.ros2_adapter.list_topics", fake_topics)
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.list_actions",
-        lambda *, timeout=5.0, domain_id=None: ["/navigate_to_pose"],
+        lambda *, timeout=5.0, domain_id=None: (_ for _ in ()).throw(
+            AssertionError("fresh hidden action endpoint must avoid daemon lookup")
+        ),
     )
 
     items = _check_twin(config)
-    assert seen_domains == [42]  # probed on the twin's domain, not the robot's
+    assert seen_queries == [(42, True)]  # fresh discovery on twin domain, not robot domain
     assert {i.check_name: i.status for i in items} == {
         "twin_isolation": "pass",
         "twin_graph": "pass",
@@ -394,7 +401,7 @@ def test_doctor_twin_disabled_reported_and_warns_when_unreachable(monkeypatch) -
     config = AppConfig(twin=TwinProfile(enabled=True))
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
 
-    def boom(*, timeout=5.0, domain_id=None):
+    def boom(*, timeout=5.0, domain_id=None, fresh=False):
         raise Ros2AdapterError("graph unreachable")
 
     monkeypatch.setattr("jenai.adapters.ros2_adapter.list_topics", boom)

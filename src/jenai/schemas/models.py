@@ -25,6 +25,7 @@ class RunStatus(StrEnum):
     RUNNING = "running"
     AWAITING_APPROVAL = "awaiting_approval"
     BLOCKED = "blocked"
+    INTERRUPTED = "interrupted"
     COMPLETED = "completed"
     FAILED = "failed"
 

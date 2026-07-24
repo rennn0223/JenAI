@@ -151,19 +151,36 @@ async def ros_topic_info(config: AppConfig, topic: str) -> RosTopicInfoOutput:
 
 
 async def ros_state(
-    config: AppConfig, *, odom_topic: str = "/odom", scan_topic: str = "/scan"
+    config: AppConfig, *, odom_topic: str | None = None, scan_topic: str = "/scan"
 ) -> Payload:
     """Snapshot the robot's current state (localized pose, odometry, laser scan)
     so the agent can *observe* before deciding — the closed-loop primitive behind
     "drive until arrived" / "stop if there's an obstacle". Each field is the raw
     one-shot message, or None if that topic is idle/absent (honest, never faked).
     """
-    _ = config
+    if odom_topic is None:
+        try:
+            odom_topic = await asyncio.to_thread(
+                ros2_adapter.parameter_get,
+                "/controller_server",
+                "odom_topic",
+                timeout=10.0,
+                fresh=True,
+            )
+        except ros2_adapter.Ros2AdapterError:
+            # Nav2 may be absent while the observation tool is still useful.
+            # Keep the conventional fallback explicit and report it instead
+            # of failing the complete read-only snapshot.
+            odom_topic = "/odom"
 
-    async def _snap(topic: str, *, latched: bool = False) -> str | None:
+    async def _snap(topic: str, *, latched: bool = False, best_effort: bool = False) -> str | None:
         try:
             blocks = await asyncio.to_thread(
-                ros2_adapter.topic_echo, topic, count=1, latched=latched
+                ros2_adapter.topic_echo,
+                topic,
+                count=1,
+                latched=latched,
+                best_effort=best_effort,
             )
         except ros2_adapter.Ros2AdapterError:
             return None
@@ -177,8 +194,8 @@ async def ros_state(
     # topic (commonly /odom in Isaac/Nav2) from serially delaying pose and scan.
     pose, odom, scan = await asyncio.gather(
         _snap("/amcl_pose", latched=True),
-        _snap(odom_topic),
-        _snap(scan_topic),
+        _snap(odom_topic, best_effort=True),
+        _snap(scan_topic, best_effort=True),
     )
     return {
         "pose_topic": "/amcl_pose",
@@ -197,13 +214,9 @@ async def ros_nav_status(config: AppConfig) -> Payload:
     an idle/moving verdict for goals that may have been sent by another client.
     """
 
-    topics, actions = await asyncio.gather(
-        asyncio.to_thread(ros2_adapter.list_topics),
-        asyncio.to_thread(ros2_adapter.list_actions),
-    )
+    topics = await asyncio.to_thread(ros2_adapter.list_topics, fresh=True)
     topic_names = set(topics)
-    action_names = set(actions)
-    required_topics = {"/map", "/amcl_pose", "/scan"}
+    required_topics = {"/map", "/amcl_pose", "/scan", "/navigate_to_pose/_action/status"}
     if not required_topics <= topic_names:
         # A freshly started ros2 daemon can return a partial graph on its first
         # discovery pass even though Nav2 is already publishing. Retry only the
@@ -211,12 +224,16 @@ async def ros_nav_status(config: AppConfig) -> Payload:
         # result can never erase evidence observed in the first pass.
         await asyncio.sleep(0.2)
         try:
-            topic_names.update(await asyncio.to_thread(ros2_adapter.list_topics))
+            topic_names.update(await asyncio.to_thread(ros2_adapter.list_topics, fresh=True))
         except ros2_adapter.Ros2AdapterError:
             pass
     cmd_vel_subscribed = False
     try:
-        cmd_info = await asyncio.to_thread(ros2_adapter.topic_info, config.vehicle.cmd_vel_topic)
+        cmd_info = await asyncio.to_thread(
+            ros2_adapter.topic_info,
+            config.vehicle.cmd_vel_topic,
+            fresh=True,
+        )
         cmd_vel_subscribed = cmd_info.subscriber_count > 0
     except ros2_adapter.Ros2AdapterError:
         pass
@@ -225,7 +242,7 @@ async def ros_nav_status(config: AppConfig) -> Payload:
         "map": "/map" in topic_names,
         "localization": "/amcl_pose" in topic_names,
         "laser": "/scan" in topic_names,
-        "navigate_to_pose": "/navigate_to_pose" in action_names,
+        "navigate_to_pose": "/navigate_to_pose/_action/status" in topic_names,
         "cmd_vel_subscriber": cmd_vel_subscribed,
     }
     return {

@@ -30,9 +30,10 @@ export const docPages: Record<string, DocPage> = {
     body: (
       <>
         <p>
-          JenAI gives an unmanned ground vehicle a decision layer. An operator can ask for a
-          task in natural language; JenAI inspects registered robot capabilities, plans an
-          action, calls existing ROS 2 or robot APIs, and verifies the observable result.
+          JenAI gives robots a high-level decision layer. An operator describes the goal in
+          natural language; the Agent chooses a registered Workflow, while that deterministic
+          Workflow owns coverage, bounded retries, evidence collection, completion checks, and
+          the call to existing ROS 2 or robot APIs.
         </p>
         <Callout title="The product boundary" tone="success">
           JenAI decides <em>what</em> the robot should do. Nav2, motor controllers,
@@ -48,15 +49,18 @@ export const docPages: Record<string, DocPage> = {
           <div><span>Local model</span><strong>Ollama · Qwen</strong></div>
           <div><span>Interface</span><strong>Terminal-first TUI</strong></div>
         </div>
-        <h2>Two interpretation paths, one truth</h2>
+        <h2>One decision, then a reliable workflow</h2>
         <p>
-          Common unambiguous requests can use a deterministic fast path. Complex requests use
-          the LLM-assisted Agent path. Both paths share the same approvals, capability
-          contracts, execution gateway, evidence, and task outcomes.
+          Common unambiguous requests may use a deterministic fast path. Complex requests use
+          the LLM-assisted Agent to choose a bounded Workflow. Normal navigation and inspection
+          steps then run without repeatedly asking the model. Only an unresolved high-level
+          event returns to the Agent. Every path shares approvals, capability contracts,
+          execution gateways, evidence, and honest task outcomes.
         </p>
         <div className="flow-row">
-          <div>Natural language</div><span>→</span><div>Fast path or Agent</div><span>→</span>
-          <div>Registered API</div><span>→</span><div>Evidence verifier</div>
+          <div>Natural language</div><span>→</span><div>Workflow selection</div><span>→</span>
+          <div>Deterministic workflow</div><span>→</span><div>ROS 2 / Nav2</div><span>→</span>
+          <div>Evidence contract</div>
         </div>
       </>
     ),
@@ -92,7 +96,24 @@ export const docPages: Record<string, DocPage> = {
           checks pass. A provider warning is acceptable only when you plan to use deterministic
           slash commands; natural-language Agent tasks need a working model provider.
         </p>
-        <h2>4. Inspect without moving</h2>
+        <h2>4. Bind the saved locations to this map</h2>
+        <CodeBlock label="Terminal B">{`
+JenAI site status
+JenAI site map-identity
+JenAI site init ~/.config/jenai/site-profile.toml \
+  --site-id isaac-warehouse \
+  --name "Isaac Sim Warehouse" \
+  --scene "Isaac Sim 5.1.0 Warehouse"
+# Review home, dock, patrol-area grouping, and required flags before activation.
+JenAI site activate ~/.config/jenai/site-profile.toml
+JenAI site validate
+`}</CodeBlock>
+        <p>
+          If a valid Site Profile is already active, only run <code>site status</code> and
+          <code>site validate</code>. Activation recomputes the locations-file identity; the
+          imported file cannot mark itself trusted.
+        </p>
+        <h2>5. Inspect without moving</h2>
         <CodeBlock label="JenAI TUI">{`
 幫我檢查現在機器人的位置、雷射掃描與 Nav2 狀態，不要移動機器人。
 `}</CodeBlock>
@@ -100,7 +121,7 @@ export const docPages: Record<string, DocPage> = {
           The result should include a map-frame pose, a bounded LaserScan summary, Nav2
           readiness, and an explicit statement that no movement command was sent.
         </p>
-        <h2>5. Verify saved locations</h2>
+        <h2>6. Verify saved locations</h2>
         <CodeBlock label="JenAI TUI">{`
 /loc list
 `}</CodeBlock>
@@ -109,7 +130,7 @@ export const docPages: Record<string, DocPage> = {
           locations are coordinates, not universal place names; use them only with the matching
           Site Profile.
         </p>
-        <h2>6. Run one navigation task</h2>
+        <h2>7. Run one navigation task</h2>
         <CodeBlock label="JenAI TUI">{`
 請導航到 map_left_up，到達後檢查位置並告訴我誤差。
 `}</CodeBlock>
@@ -118,9 +139,22 @@ export const docPages: Record<string, DocPage> = {
           show progress immediately, call Nav2, then independently compare the terminal pose
           with the configured 5 cm / 0.15 rad reference limits.
         </p>
-        <h2>7. Read the outcome, not just “Done”</h2>
+        <h2>8. Run the autonomous area workflow</h2>
+        <CodeBlock label="JenAI TUI · natural language">{`
+巡檢目前 Site Profile 中的所有必要區域，每個觀察點保存照片；
+完成後回到 home，若證據不足或發現異常就誠實標記需要人工確認。
+`}</CodeBlock>
+        <p>
+          The Agent selects <code>area_patrol_workflow_tool</code> once. The Workflow—not the
+          LLM—tracks required coverage, orders areas, calls Nav2, bounds retries, captures image
+          evidence, returns home, and writes the durable report. No dedicated slash command is
+          required.
+        </p>
+        <h2>9. Read the outcome, not just “Done”</h2>
         <ul>
           <li><StatusPill tone="good">succeeded</StatusPill> completion evidence passed.</li>
+          <li><StatusPill tone="warn">partial_success</StatusPill> only part of the required work was verified.</li>
+          <li><StatusPill tone="warn">requires_human_review</StatusPill> evidence or an anomaly needs review.</li>
           <li><StatusPill tone="bad">endpoint_mismatch</StatusPill> Nav2 ended outside JenAI limits.</li>
           <li><StatusPill tone="warn">arrived_unverified</StatusPill> approach reached; physical effect unobserved.</li>
           <li><StatusPill tone="neutral">blocked</StatusPill> a prerequisite or policy prevented motion.</li>
@@ -139,18 +173,21 @@ export const docPages: Record<string, DocPage> = {
       <>
         <p>
           JenAI is an orchestrator, not a replacement controller. It selects a registered
-          high-level capability such as navigation, state inspection, bounded patrol, or dock
-          approach. The selected API owns the lower-level implementation.
+          high-level capability such as semantic-area patrol, state inspection, navigation, or
+          dock approach. A Workflow owns normal task sequencing and may call smaller Skills;
+          the selected robot API owns the lower-level implementation.
         </p>
         <div className="boundary-stack">
           <div><strong>Operator intent</strong><span>Natural language or slash shortcut</span></div>
-          <div><strong>JenAI decision layer</strong><span>Interpret, plan, approve, supervise, verify</span></div>
+          <div><strong>JenAI decision layer</strong><span>Interpret the goal and select a registered Workflow</span></div>
+          <div><strong>Workflow layer</strong><span>Execute, monitor, retry, collect evidence, and evaluate completion</span></div>
           <div><strong>Robot APIs</strong><span>Nav2, ROS 2 topics/actions, perception interfaces</span></div>
           <div><strong>Control & safety</strong><span>Localization, planners, controllers, watchdog, hardware limits</span></div>
         </div>
         <h2>Non-negotiable rules</h2>
         <ul>
           <li>The model cannot invent a capability, coordinate, observation, or successful result.</li>
+          <li>The LLM is not polled for each normal navigation or inspection step.</li>
           <li>Motion uses the single Navigation Gateway and the same approval boundary.</li>
           <li>LLM failure cannot disable stop, cancel, or monitoring.</li>
           <li>Simulation ground truth evaluates JenAI; it never corrects JenAI’s operational answer.</li>
@@ -225,21 +262,43 @@ Limitation: charging state is unavailable
           map where they were recorded. An active Site Profile binds them to a SHA-256 identity
           of the complete ROS OccupancyGrid and its geometry.
         </p>
-        <CodeBlock label="Reference site binding">{`
+        <CodeBlock label="Create an import document">{`
+JenAI site map-identity
+JenAI site init ~/.config/jenai/site-profile.toml \
+  --site-id isaac-warehouse \
+  --name "Isaac Sim Warehouse" \
+  --scene "Isaac Sim 5.1.0 Warehouse"
+`}</CodeBlock>
+        <CodeBlock label="Site Profile excerpt">{`
 [site]
-site_id = "isaac-warehouse-nova-carter"
-display_name = "Isaac Warehouse — Nova Carter"
+site_id = "isaac-warehouse"
+display_name = "Isaac Sim Warehouse"
 version = "1"
-active = true
-validated = true
-map_sha256 = "0bbe99c7be3c7eae05b7872e0945c95f8f71bf88c763e4ad12d8aefed82d22e3"
+map_sha256 = "<copy the live SHA-256 from site map-identity>"
 map_frame = "map"
-reference_scene = "JenAI.usd"
+reference_scene = "Isaac Sim 5.1.0 Warehouse"
 locations_path = "locations.toml"
 validated_routes = ["map_left_up", "map_right_up", "map_left_down", "map_right_down", "dock"]
+home_location = "dock"
 dock_location = "dock"
-validation_evidence = ["isaac-hil-live-product-v4-20260724.json"]
+validation_evidence = ["docs/validation/ISAAC_HIL_ACCEPTANCE.md"]
+
+[[site.patrol_areas]]
+area_id = "upper_left"
+display_name = "Upper-left inspection area"
+inspection_locations = ["map_left_up"]
+required = true
 `}</CodeBlock>
+        <h2>Activate and verify</h2>
+        <CodeBlock label="Terminal">{`
+JenAI site activate ~/.config/jenai/site-profile.toml
+JenAI site validate
+`}</CodeBlock>
+        <p>
+          Activation recomputes <code>locations_sha256</code> and validates every referenced
+          route, home, dock, and inspection location. Imported <code>active</code>,
+          <code>validated</code>, or locations-hash self-claims are never trusted.
+        </p>
         <Callout title="Mismatch behavior" tone="warning">
           If ROS publishes a different map, JenAI blocks navigation before the goal reaches
           Nav2. Validate and explicitly activate a new profile instead of reusing old
@@ -319,6 +378,72 @@ validation_evidence = ["isaac-hil-live-product-v4-20260724.json"]
       </>
     ),
   },
+  "area-patrol": {
+    title: "Semantic area patrol",
+    description: "Cover every required Site Profile area with bounded execution and evidence.",
+    eyebrow: "Workflows",
+    body: (
+      <>
+        <p>
+          Explicit waypoint patrol follows a route chosen by the user. Known-location
+          exploration samples registered places with a time or goal limit. Semantic area patrol
+          instead owns a completion contract: every required configured area must be inspected,
+          unresolved work must be reported, and the robot returns to the configured home.
+        </p>
+        <div className="outcome-table">
+          <div><code>Waypoint patrol</code><span>User chooses the ordered places.</span></div>
+          <div><code>Random exploration</code><span>System samples eligible saved locations within a bound.</span></div>
+          <div><code>Area patrol</code><span>Workflow covers all required semantic areas and proves completion.</span></div>
+        </div>
+        <h2>Prerequisites</h2>
+        <ul>
+          <li>An active, validated Site Profile with <code>patrol_areas</code> and <code>home_location</code>.</li>
+          <li>Every inspection location exists in the profile-bound locations file.</li>
+          <li>Nav2, localization, and the configured camera topic are available.</li>
+        </ul>
+        <h2>Ask in natural language</h2>
+        <CodeBlock label="JenAI TUI">{`
+巡檢目前場域的所有必要區域，每個觀察點保存照片；
+完成後回到 home，證據不足或有異常時要求人工確認。
+`}</CodeBlock>
+        <p>
+          The Agent selects the registered <code>area_patrol_workflow_tool</code> once. It does
+          not choose every waypoint in a token-by-token loop. The durable Workflow can continue
+          normal steps even when the model is not consulted again.
+        </p>
+        <h2>What the Workflow owns</h2>
+        <Steps>
+          <li>Load required and optional areas from the active Site Profile.</li>
+          <li>Create a deterministic coverage order from registered inspection locations.</li>
+          <li>Navigate through the single approval and Navigation Gateway boundary.</li>
+          <li>Capture a distinct image for every inspection attempt.</li>
+          <li>Apply bounded retries and preserve blocked or unresolved areas.</li>
+          <li>Return to the configured home when the coverage attempt finishes.</li>
+          <li>Write an immutable report whose status follows the completion evidence.</li>
+        </Steps>
+        <h2>Honest final states</h2>
+        <div className="outcome-table">
+          <div><code>succeeded</code><span>All required areas, evidence, and return-home contract passed.</span></div>
+          <div><code>partial_success</code><span>Some requested work completed, but the full contract did not.</span></div>
+          <div><code>requires_human_review</code><span>An anomaly or missing evidence needs a person.</span></div>
+          <div><code>failed</code><span>The workflow could not complete its required work.</span></div>
+          <div><code>aborted</code><span>The operator or system stopped the workflow.</span></div>
+        </div>
+        <h2>Reports and images</h2>
+        <p>
+          JSON reports are stored under <code>~/.config/jenai/reports/area-patrol-*.json</code>.
+          Captures use distinct <code>evidence-*.png</code> files in the same managed directory,
+          so export, retention, and hardening rules cover both the decision trace and its images.
+        </p>
+        <Callout title="No invented inspection" tone="warning">
+          A saved image is evidence that a frame was captured—not proof that the scene is normal.
+          Until change detection or a reviewed perception contract exists, JenAI records the
+          observation and reports uncertainty instead of inventing “no anomaly.”
+        </Callout>
+      </>
+    ),
+  },
+
   "dock-approach": {
     title: "Dock approach",
     description: "Reach the saved approach pose without claiming an unobserved charge state.",
@@ -348,6 +473,11 @@ validation_evidence = ["isaac-hil-live-product-v4-20260724.json"]
       <>
         <div className="command-grid">
           <div><code>/doctor</code><span>Check ROS 2, Nav2, provider, site, and storage readiness.</span></div>
+          <div><code>JenAI site status</code><span>Show the active profile and trust state.</span></div>
+          <div><code>JenAI site map-identity</code><span>Read the live occupancy-map SHA-256 and geometry.</span></div>
+          <div><code>JenAI site activate FILE</code><span>Validate, fingerprint, and explicitly activate one profile.</span></div>
+          <div><code>JenAI site init [FILE]</code><span>Create an inactive, reviewable draft from the live map and saved locations.</span></div>
+          <div><code>JenAI site validate</code><span>Recheck the active map and all bound assets.</span></div>
           <div><code>/loc list</code><span>List registered locations without aliases noise.</span></div>
           <div><code>/route …</code><span>Preview and execute a named Nav2 route.</span></div>
           <div><code>/explore …</code><span>Run a bounded known-location exploration.</span></div>
@@ -359,6 +489,9 @@ validation_evidence = ["isaac-hil-live-product-v4-20260724.json"]
         <p>
           Use natural language when the goal requires interpretation. Use slash commands when
           teaching, debugging, repeating an experiment, or avoiding unnecessary model latency.
+          Semantic area patrol intentionally has no dedicated slash command: the Agent selects
+          the same registered Workflow that other interfaces can call, so task logic never lives
+          in the TUI parser.
         </p>
       </>
     ),
@@ -396,6 +529,7 @@ domain_id = 0
           <li><code>~/.config/jenai/config.toml</code> — non-secret product settings.</li>
           <li><code>~/.config/jenai/.env</code> — provider credentials, mode 0600.</li>
           <li><code>~/.config/jenai/locations.toml</code> — site-specific named poses.</li>
+          <li><code>~/.config/jenai/site-profile.toml</code> — import document for explicit site activation.</li>
         </ul>
       </>
     ),
@@ -453,7 +587,7 @@ domain_id = 0
           <li><strong>Final docking</strong><span>Close-range alignment and verified charge engagement.</span></li>
           <li><strong>Quadruped integration</strong><span>Explicit Nexuni APIs, capability registration, and platform validation.</span></li>
           <li><strong>New-site onboarding</strong><span>Guided map capture, profile validation, and explicit activation.</span></li>
-          <li><strong>Visual change evidence</strong><span>Before/after images and VLM-assisted anomaly review with factual provenance.</span></li>
+          <li><strong>Visual change detection</strong><span>Compare managed baseline/current images and add VLM-assisted review with factual provenance.</span></li>
           <li><strong>Agent latency</strong><span>Smaller prompts, model routing, caching, and broader deterministic intent coverage.</span></li>
           <li><strong>User study</strong><span>A five-person exploratory usability pilot; not a statistical efficacy claim.</span></li>
         </ul>

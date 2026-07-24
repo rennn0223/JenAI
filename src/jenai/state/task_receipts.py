@@ -45,6 +45,8 @@ def classify_failure(run: RunRecord) -> FailureCode | None:
     failed_tools = [call for call in run.tool_calls if call.status == ToolCallStatus.FAILED]
     if run.status == RunStatus.COMPLETED and run.error is None and not failed_tools:
         return None
+    if run.status == RunStatus.INTERRUPTED:
+        return FailureCode.INTERRUPTED
 
     # Structured error types identify the failing subsystem more reliably
     # than words such as "unavailable" in a provider response.

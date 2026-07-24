@@ -10,10 +10,19 @@ from jenai.state.reports import (
     list_patrol_logs,
     load_patrol_log,
     render_patrol_markdown,
+    save_area_patrol_log,
     save_patrol_log,
     summarize_patrol,
 )
 from jenai.tools.skills import PatrolReport, PatrolSpec, PatrolStepResult
+from jenai.workflows.area_patrol import (
+    AreaPatrolReport,
+    AreaResult,
+    AreaStatus,
+    CoverageEvent,
+    PatrolMissionStatus,
+    PointResult,
+)
 
 
 def _report() -> PatrolReport:
@@ -37,6 +46,45 @@ def test_save_and_load_roundtrip(tmp_path: Path) -> None:
     assert log["summary"] == "Patrol finished: 3/4 waypoints reached."
     assert log["results"][1]["status"] == "failed"
     assert log["results"][0]["observation"] == "path clear"
+
+
+def test_save_area_patrol_report_is_private_typed_and_path_safe(tmp_path: Path) -> None:
+    report = AreaPatrolReport(
+        mission_id="run/../../unsafe",
+        target="all",
+        status=PatrolMissionStatus.SUCCESS,
+        coverage_ratio=1.0,
+        areas=(
+            AreaResult(
+                area_id="warehouse",
+                required=True,
+                status=AreaStatus.COMPLETED,
+                points=(
+                    PointResult(
+                        "dock", True, AreaStatus.COMPLETED, "clear", 1, ("/tmp/evidence.png",)
+                    ),
+                ),
+            ),
+        ),
+        returned_home=True,
+        home_detail="dock reached",
+        events=(CoverageEvent(1, "mission_finished", None, "success", "done"),),
+    )
+    config_path = tmp_path / "config.toml"
+    path = save_area_patrol_log(report, config_path, now=datetime(2026, 7, 24, 12, 0, tzinfo=UTC))
+    log = load_patrol_log(path)
+
+    assert path.parent == tmp_path / "reports"
+    assert path.name.startswith("area-patrol-20260724-120000-")
+    assert "unsafe" not in path.name
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+    assert log is not None
+
+    assert log["coverage_ratio"] == 1.0
+    assert log["unresolved_required_areas"] == []
+    assert log["review_required_areas"] == []
+    assert log["areas"][0]["observation_covered"] is True
 
 
 def test_list_logs_newest_first_and_empty_dir(tmp_path: Path) -> None:

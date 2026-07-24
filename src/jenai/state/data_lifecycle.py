@@ -388,9 +388,10 @@ def _managed_report_files(directory: Path) -> Iterator[Path]:
     """
     if not directory.is_dir() or directory.is_symlink():
         return
-    for path in sorted(directory.glob("patrol-*.json")):
-        if path.is_file() and not path.is_symlink():
-            yield path
+    for pattern in ("patrol-*.json", "area-patrol-*.json", "evidence-*.png"):
+        for path in sorted(directory.glob(pattern)):
+            if path.is_file() and not path.is_symlink():
+                yield path
     tasks = directory / "tasks"
     if not tasks.is_dir() or tasks.is_symlink():
         return

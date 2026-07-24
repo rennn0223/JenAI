@@ -170,7 +170,7 @@ def build_hardening_plan(paths: DataPathsLike) -> HardenPlan:
     report_entries, report_refusals = _inspect_directory(
         "reports",
         paths.reports,
-        ("patrol-*.json",),
+        ("patrol-*.json", "area-patrol-*.json", "evidence-*.png"),
         protected_paths=protected_paths,
         protected_identities=protected_identities,
         recursive=False,

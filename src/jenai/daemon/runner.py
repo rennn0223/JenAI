@@ -12,9 +12,11 @@ from typing import Any
 
 from jenai.adapters.locations import LocationNotFoundError, find_location, load_locations
 from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.capabilities import has_registered_capability
 from jenai.config.models import AppConfig
 from jenai.daemon.engine import Decision, Rule, RuleEngine
 from jenai.state.audit import AuditStore
+from jenai.task_results import navigation_output_result, navigation_receipt_text
 from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.perception import PerceptionLoop
 from jenai.tools.safety import arm_watchdog, halt_robot
@@ -129,11 +131,8 @@ class _NavigationWorker:
             output = await self._gateway.execute(
                 {"goal": location.model_dump(mode="json")}, on_gate=self._on_status
             )
-            self._finish(
-                decision,
-                output.execution_status,
-                f"{output.execution_status} — {output.route_preview}",
-            )
+            task_result = navigation_output_result(output)
+            self._finish(decision, task_result.run_status.value, navigation_receipt_text(output))
         except asyncio.CancelledError:
             if started:
                 self._finish(decision, "cancelled", self._cancel_summary, prefix="cancelled — ")
@@ -241,7 +240,11 @@ async def run_daemon(
     them); a decision with navigate_to set actually sends the robot, one goal
     at a time — a new trigger while navigating is reported but not stacked.
     """
-    engine = RuleEngine(rules, nav_allowed=config.route_adapter == "nav2")
+    engine = RuleEngine(
+        rules,
+        nav_allowed=config.route_adapter == "nav2"
+        and has_registered_capability(config, "navigate"),
+    )
     bridge = RosBridgeClient()
     # Registered before start: every (re)spawn arms the watchdog, so a dead
     # daemon can never leave the robot driving — even after a bridge crash.
@@ -257,6 +260,7 @@ async def run_daemon(
     navigation = NavigationGateway(
         config,
         get_bridge=_get_bridge,
+        config_path=config_path,
         audit_store=audit_store,
     )
     worker = _NavigationWorker(

@@ -144,4 +144,5 @@ def test_resume_rejection_still_reaches_model_with_real_sdk(monkeypatch, tmp_pat
     )
 
     assert _EXECUTED == []  # rejected tool must never run
-    assert resumed.status == "completed"  # model got the rejection and wrapped up
+    assert resumed.status == "blocked"  # the model wrapped up, but the task was refused
+    assert resumed.outcome == "blocked"
