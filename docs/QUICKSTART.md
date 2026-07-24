@@ -8,9 +8,11 @@
 
 ## 0. JenAI 是什麼?我需要準備什麼?
 
-JenAI 是一個**用聊天操作機器人的終端程式**——你打「帶我去機械系館」,
-它負責解析、請你批准、然後指揮機器人。沒有機器人也能用:聊天、規劃、
-查詢功能照常,機器人相關指令會誠實告訴你「後端不可用」。
+JenAI 是一個**高階 Robot Decision Agent**。你用自然語言描述任務，LLM 從已註冊能力中
+選擇合適的 Workflow；Workflow 再以確定性流程呼叫 ROS 2／Nav2、限制重試、保存證據、
+檢查完成條件。LLM 不負責速度、轉向、局部避障，也不必在每個巡檢點重新思考。
+
+沒有機器人也能用聊天、規劃與查詢；機器人後端不可用時會誠實回報，不會假裝成功。
 
 | 你想做到 | 需要準備 |
 |---|---|
@@ -35,7 +37,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 選定正式版本後，命令會下載該版 wheel、matching constraints 和 checksum，先驗證兩個
 安裝檔再交給 `uv`。只有 asset 清單確實含 wheel、同版 constraints、`SHA256SUMS` 的
 release 才適用；例如歷史 `v1.1.4` 缺少後兩項，不代表供應鏈檢查已通過；目前請使用
-`v2.2.0` 或後續資產完整版本。
+目前穩定版為 `v2.2.0`；本分支的 `v2.3.0` 必須等公開 Release 資產與驗證實際完成後才算正式發布。
 這段流程以 Linux／Ubuntu 為目標；macOS 仍是 Experimental，須自行安裝 GNU coreutils
 並將 `sha256sum` 換成 `gsha256sum`，且不因此取得相同驗證等級。
 
@@ -138,17 +140,55 @@ JenAI
 - 隨時 **`/help`** 看全部指令、**`/quit`** 離開
 - 記住一件事就好:**`/stop` 永遠有效**——任何時刻、不用批准、立刻停車
 
-## 6. (選讀)接上機器人後的第一次導航
+## 6. (選讀)接上 Isaac Sim／機器人後跑第一個完整 Workflow
 
-車端 ROS 2 + 建圖照 [ONBOARDING](ONBOARDING.md) 完成後:
+車端 ROS 2 + 建圖照 [ONBOARDING](ONBOARDING.md) 完成後，先把地點綁到目前地圖：
+
+```bash
+JenAI site status
+JenAI site map-identity
+JenAI site init ~/.config/jenai/site-profile.toml \
+  --site-id isaac-warehouse \
+  --name "Isaac Sim Warehouse" \
+  --scene "Isaac Sim 5.1.0 Warehouse"
+# 審閱 home_location、dock_location、patrol_areas 與 required；草稿不會自行啟用
+JenAI site activate ~/.config/jenai/site-profile.toml
+JenAI site validate
+```
+
+若已有有效的 active Site Profile，只需跑 `site status` 與 `site validate`。啟用時會重新計算
+locations 檔指紋；匯入檔自己寫的 `active`／`validated` 不會被信任。
+
+若 `site status` 顯示舊版 Profile 缺少 locations identity，請保持已驗證地圖運作並執行
+`JenAI site validate --repair`。這個命令只有在 live map 與原本記錄的 map identity 完全相符時
+才會重新綁定目前 locations 檔；不會默默接受另一張地圖。
+
+先在 TUI 測一個已知地點：
 
 ```
-/loc add here 充電站        ← 在現場幫位置取名字
-/route 從 充電站 到 門口     ← 機器人控制批准卡預選否；要執行必須明確選是
+/loc list
+請導航到 map_left_up，到達後核對位置與朝向誤差。
 ```
 
-WebUI(手機也能用):`JenAI web`——啟動時會**把所有能開的網址
-直接印給你**(本機/SSH/區網),照著開即可;紅色 STOP 鈕永遠在右上角。
+確認單點流程正常後，直接用自然語言啟動完整語意區域巡檢：
+
+```
+巡檢目前 Site Profile 中的所有必要區域，每個觀察點保存照片；
+完成後回到 home，證據不足或有異常時要求人工確認。
+```
+
+Agent 只選一次 `area_patrol_workflow_tool`。正常的區域排序、Nav2 導航、照片保存、有限重試、
+回到 home 與最終報告都由 Workflow 自己完成；未解的高階事件才回到 LLM。
+
+- `/patrol A, B xN photo`：使用者指定順序的 waypoint 巡邏。
+- `/explore ...`：在合格已知點位間做有界、低重複巡遊，不保證完整覆蓋。
+- 語意區域巡檢：覆蓋 Site Profile 中所有 `required = true` 區域並依證據判定完成。
+
+報告與照片存於 `~/.config/jenai/reports/`；`JenAI data export`、`prune`、`harden` 會用同一套
+資料生命週期管理它們。
+
+WebUI(手機也能用):`JenAI web`——啟動時會**把所有能開的網址直接印給你**
+(本機/SSH/區網),照著開即可;紅色 STOP 鈕永遠在右上角。
 
 ## 7. 常見狀況對照表
 

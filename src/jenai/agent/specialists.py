@@ -1,14 +1,25 @@
-"""Specialist agents (ROS/Motion/Navigation/Perception) and the handoff graph."""
+"""Specialist agents (ROS/Navigation/Perception) and the handoff graph."""
 
 from __future__ import annotations
 
-from agents import Agent, FunctionToolResult, RunContextWrapper, ToolsToFinalOutputResult
+from typing import Any
+
+from agents import (
+    Agent,
+    FunctionToolResult,
+    Handoff,
+    ModelSettings,
+    RunContextWrapper,
+    Tool,
+    ToolsToFinalOutputResult,
+)
 from openai import AsyncOpenAI
+from openai.types.shared.reasoning import Reasoning
 
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.guardrails import unsafe_command_guardrail
 from jenai.agent.instructions import (
-    MOTION_AGENT_INSTRUCTIONS,
+    AREA_PATROL_SELECTOR_INSTRUCTIONS,
     NAVIGATION_AGENT_INSTRUCTIONS,
     PERCEPTION_AGENT_INSTRUCTIONS,
     ROS_DEVELOPER_INSTRUCTIONS,
@@ -17,15 +28,12 @@ from jenai.agent.instructions import (
 )
 from jenai.agent.orchestrator import is_read_only_state_request
 from jenai.agent.runtime import build_model
-from jenai.capabilities import capability_prompt
+from jenai.capabilities import capability_prompt, registered_capability_ids
 from jenai.config.models import AppConfig
 from jenai.providers.agent_model import make_agent_client
+from jenai.tools.area_patrol_agent_tools import area_patrol_workflow_tool
 from jenai.tools.ros2_agent_tools import (
-    ros_drive_execute_tool,
-    ros_drive_verified_tool,
     ros_echo_tool,
-    ros_pub_execute_tool,
-    ros_pub_validate_tool,
     ros_schema_tool,
     ros_state_tool,
     ros_topic_info_tool,
@@ -34,6 +42,7 @@ from jenai.tools.ros2_agent_tools import (
 from jenai.tools.route_agent_tools import (
     explore_area_tool,
     loc_lookup_tool,
+    patrol_area_tool,
     route_execute_tool,
     route_preview_tool,
 )
@@ -68,6 +77,41 @@ def _finish_read_only_state(
     )
 
 
+def _capability_set(config: AppConfig) -> frozenset[str]:
+    return frozenset(registered_capability_ids(config))
+
+
+def _navigation_tools(config: AppConfig) -> list[Tool]:
+    capabilities = _capability_set(config)
+    tools: list[Tool] = []
+    if capabilities & {"navigate", "dock_approach"}:
+        tools.extend(
+            [
+                loc_lookup_tool,
+                route_preview_tool,
+                route_execute_tool,
+            ]
+        )
+    if "explore_known_locations" in capabilities:
+        tools.append(explore_area_tool)
+    if "patrol_photo" in capabilities:
+        tools.append(patrol_area_tool)
+    if "area_patrol" in capabilities:
+        tools.append(area_patrol_workflow_tool)
+    return tools
+
+
+def _ros_developer_tools(config: AppConfig) -> list[Tool]:
+    del config
+    return [
+        ros_topics_tool,
+        ros_topic_info_tool,
+        ros_schema_tool,
+        ros_echo_tool,
+        ros_state_tool,
+    ]
+
+
 def build_ros_explorer_agent(
     config: AppConfig, client: AsyncOpenAI | None = None
 ) -> Agent[JenAIRunContext]:
@@ -90,36 +134,15 @@ def build_ros_explorer_agent(
 def build_ros_developer_agent(
     config: AppConfig, client: AsyncOpenAI | None = None
 ) -> Agent[JenAIRunContext]:
-    """One bounded specialist for live interface discovery, action, and feedback."""
+    """Read-only specialist for live interface discovery and feedback."""
     return Agent[JenAIRunContext](
         name="ROS Developer",
         handoff_description=(
-            "Discover a ROS2 interface, run one approved bounded test, and verify feedback."
+            "Discover and validate a ROS2 interface without publishing or moving the robot."
         ),
         instructions=ROS_DEVELOPER_INSTRUCTIONS,
         model=build_model(config, binding="chat", client=client),
-        tools=[
-            ros_topics_tool,
-            ros_topic_info_tool,
-            ros_schema_tool,
-            ros_echo_tool,
-            ros_state_tool,
-            ros_pub_validate_tool,
-            ros_pub_execute_tool,
-            ros_drive_verified_tool,
-        ],
-    )
-
-
-def build_motion_agent(
-    config: AppConfig, client: AsyncOpenAI | None = None
-) -> Agent[JenAIRunContext]:
-    return Agent[JenAIRunContext](
-        name="Motion",
-        handoff_description="Publish/drive commands to move the robot (needs approval).",
-        instructions=MOTION_AGENT_INSTRUCTIONS,
-        model=build_model(config, binding="chat", client=client),
-        tools=[ros_pub_validate_tool, ros_pub_execute_tool, ros_drive_execute_tool],
+        tools=_ros_developer_tools(config),
     )
 
 
@@ -134,12 +157,37 @@ def build_navigation_agent(
         ),
         instructions=NAVIGATION_AGENT_INSTRUCTIONS,
         model=build_model(config, binding="route", client=client),
-        tools=[
-            loc_lookup_tool,
-            route_preview_tool,
-            route_execute_tool,
-            explore_area_tool,
-        ],
+        tools=_navigation_tools(config),
+    )
+
+
+def build_area_patrol_selector_agent(
+    config: AppConfig, client: AsyncOpenAI | None = None
+) -> Agent[JenAIRunContext]:
+    """Use one LLM turn to bind an explicit coverage mission to one workflow.
+
+    Candidate narrowing is deterministic, but the model still interprets the
+    user's retry and return-home intent. The workflow result is final, so a
+    normal patrol never incurs a second LLM turn after every point or after the
+    completed workflow.
+    """
+
+    profile = config.active_profile()
+    reasoning = (
+        Reasoning(effort="none") if profile and profile.provider.lower() == "ollama" else None
+    )
+    return Agent[JenAIRunContext](
+        name="Area Patrol Workflow Selector",
+        instructions=AREA_PATROL_SELECTOR_INSTRUCTIONS,
+        model=build_model(config, binding="route", client=client),
+        model_settings=ModelSettings(
+            temperature=0.0,
+            tool_choice="required",
+            parallel_tool_calls=False,
+            reasoning=reasoning,
+        ),
+        tools=[area_patrol_workflow_tool],
+        tool_use_behavior="stop_on_first_tool",
     )
 
 
@@ -159,10 +207,18 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
     """The top-level agent: keeps a couple of general tools and hands off the
     domain work to specialists via the SDK's handoff mechanism.
 
-    One AsyncOpenAI client is shared across the supervisor and all five
-    specialists, so a `/run` opens a single connection pool rather than six.
+    One AsyncOpenAI client is shared across the supervisor and all four
+    specialists, so a `/run` opens a single connection pool rather than five.
     """
     client = make_agent_client(config)
+    navigation_tools = _navigation_tools(config)
+    handoffs: list[Agent[Any] | Handoff[JenAIRunContext, Any]] = [
+        build_ros_developer_agent(config, client),
+        build_ros_explorer_agent(config, client),
+    ]
+    if navigation_tools:
+        handoffs.append(build_navigation_agent(config, client))
+    handoffs.append(build_perception_agent(config, client))
     return Agent[JenAIRunContext](
         name="JenAI",
         instructions=f"{SUPERVISOR_INSTRUCTIONS}\n\n{capability_prompt(config)}",
@@ -175,23 +231,11 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
         # preserving route_execute/explore approval and NavigationGateway safety.
         tools=[
             shell_run_tool,
-            # Keep common live-state inspection directly reachable. Local
-            # models otherwise tend to choose the supervisor's shell tool
-            # instead of emitting a handoff for a simple read-only question.
             ros_topics_tool,
             ros_topic_info_tool,
             ros_state_tool,
-            loc_lookup_tool,
-            route_preview_tool,
-            route_execute_tool,
-            explore_area_tool,
-        ],
+        ]
+        + navigation_tools,
         input_guardrails=[unsafe_command_guardrail],
-        handoffs=[
-            build_ros_developer_agent(config, client),
-            build_ros_explorer_agent(config, client),
-            build_motion_agent(config, client),
-            build_navigation_agent(config, client),
-            build_perception_agent(config, client),
-        ],
+        handoffs=handoffs,
     )

@@ -25,7 +25,12 @@ from jenai.secure_files import atomic_write_text
 from jenai.state.audit import AuditStore
 from jenai.state.task_receipts import TaskReceiptStore
 
-TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED}
+TERMINAL_STATUSES = {
+    RunStatus.COMPLETED,
+    RunStatus.FAILED,
+    RunStatus.BLOCKED,
+    RunStatus.INTERRUPTED,
+}
 _MUTABLE_TOOL_FIELDS = frozenset(
     {
         "status",
@@ -185,6 +190,8 @@ class RunStore:
             run.outcome = TaskOutcome.BLOCKED
         elif run.outcome is None and status == RunStatus.FAILED:
             run.outcome = TaskOutcome.FAILED
+        elif run.outcome is None and status == RunStatus.INTERRUPTED:
+            run.outcome = TaskOutcome.CANCELLED
         run.error = error
         self.set_status(run, status)
         self.audit_event(

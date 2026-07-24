@@ -118,12 +118,27 @@ _CATALOG: dict[str, CapabilityContract] = {
         capability_id="patrol_photo",
         summary="Visit registered patrol points and preserve image observations.",
         summary_zh="巡訪已登錄巡邏點並保存影像觀測。",
-        interface_name="patrol",
+        interface_name="patrol_area_tool",
         supported_platforms=["ackermann", "diff"],
         risk_level="p1",
         requires_approval=True,
         maturity=CapabilityMaturity.IMPLEMENTED_UNVALIDATED,
         completion_evidence=["per_goal_result", "captured_observation", "patrol_report"],
+    ),
+    "area_patrol": CapabilityContract(
+        capability_id="area_patrol",
+        summary="Cover configured semantic areas, preserve evidence, and return home.",
+        summary_zh="覆蓋已設定的語意區域、保存巡檢證據並返回起點。",
+        interface_name="area_patrol_workflow_tool",
+        supported_platforms=["ackermann", "diff"],
+        risk_level="p1",
+        requires_approval=True,
+        maturity=CapabilityMaturity.IMPLEMENTED_UNVALIDATED,
+        completion_evidence=[
+            "required_area_coverage",
+            "image_observations",
+            "return_home_result",
+        ],
     ),
     "dock_approach": CapabilityContract(
         capability_id="dock_approach",
@@ -142,7 +157,7 @@ _CATALOG: dict[str, CapabilityContract] = {
 }
 
 
-def _registered_capability_ids(config: AppConfig) -> tuple[str, ...]:
+def registered_capability_ids(config: AppConfig) -> tuple[str, ...]:
     configured = config.vehicle.capabilities
     if configured is not None:
         return tuple(dict.fromkeys(configured))
@@ -153,10 +168,17 @@ def _registered_capability_ids(config: AppConfig) -> tuple[str, ...]:
     )
 
 
+def has_registered_capability(config: AppConfig, *capability_ids: str) -> bool:
+    """Return whether any requested capability is registered for this robot."""
+
+    registered = frozenset(registered_capability_ids(config))
+    return any(capability_id in registered for capability_id in capability_ids)
+
+
 def build_robot_capability_card(config: AppConfig) -> RobotCapabilityCard:
     """Build the single capability claim used by the UI, Agent, and reports."""
 
-    capability_ids = _registered_capability_ids(config)
+    capability_ids = registered_capability_ids(config)
     unknown = sorted(set(capability_ids) - _CATALOG.keys())
     if unknown:
         raise ValueError(f"Unknown robot capabilities: {', '.join(unknown)}")

@@ -87,6 +87,8 @@ def test_export_excludes_unmanaged_json_below_reports(tmp_path: Path) -> None:
     tasks = paths.reports / "tasks"
     tasks.mkdir()
     (paths.reports / "patrol-owned.json").write_text("{}", encoding="utf-8")
+    (paths.reports / "area-patrol-owned.json").write_text("{}", encoding="utf-8")
+    (paths.reports / "evidence-owned.png").write_bytes(b"image")
     (tasks / "task-owned.json").write_text("{}", encoding="utf-8")
     (paths.reports / "customer-notes.json").write_text("{}", encoding="utf-8")
     archive_dir = paths.reports / "archive"
@@ -96,11 +98,13 @@ def test_export_excludes_unmanaged_json_below_reports(tmp_path: Path) -> None:
     output = tmp_path / "backup.tar.gz"
     _exported, count = export_data(paths, output)
 
-    assert count == 2
+    assert count == 4
     with tarfile.open(output, "r:gz") as archive:
         names = set(archive.getnames())
     assert "reports/patrol-owned.json" in names
     assert "reports/tasks/task-owned.json" in names
+    assert "reports/area-patrol-owned.json" in names
+    assert "reports/evidence-owned.png" in names
     assert "reports/customer-notes.json" not in names
     assert "reports/archive/task-not-owned.json" not in names
 
@@ -174,13 +178,14 @@ def test_prune_removes_old_files_and_only_old_trace_rows(tmp_path: Path) -> None
     old_session = paths.sessions / "old.json"
     old_report = paths.reports / "patrol-old.json"
     recent_report = paths.reports / "patrol-recent.json"
+    old_evidence = paths.reports / "evidence-old.png"
     tasks_dir = paths.reports / "tasks"
     tasks_dir.mkdir()
     old_task_receipt = tasks_dir / "task-old.json"
     unrelated = paths.reports / "customer-notes.json"
     nested = paths.reports / "archive" / "task-not-owned.json"
     nested.parent.mkdir()
-    for path in (old_session, old_report, recent_report, old_task_receipt):
+    for path in (old_session, old_report, old_evidence, recent_report, old_task_receipt):
         path.write_text("{}", encoding="utf-8")
     unrelated.write_text("{}", encoding="utf-8")
     nested.write_text("{}", encoding="utf-8")
@@ -188,6 +193,7 @@ def test_prune_removes_old_files_and_only_old_trace_rows(tmp_path: Path) -> None
     recent_timestamp = datetime(2026, 7, 17, tzinfo=UTC).timestamp()
     os.utime(old_session, (old_timestamp, old_timestamp))
     os.utime(old_report, (old_timestamp, old_timestamp))
+    os.utime(old_evidence, (old_timestamp, old_timestamp))
     os.utime(old_task_receipt, (old_timestamp, old_timestamp))
     os.utime(unrelated, (old_timestamp, old_timestamp))
     os.utime(nested, (old_timestamp, old_timestamp))
@@ -206,14 +212,16 @@ def test_prune_removes_old_files_and_only_old_trace_rows(tmp_path: Path) -> None
         ("sessions", "old.json"),
         ("reports", "patrol-old.json"),
         ("reports", "task-old.json"),
+        ("reports", "evidence-old.png"),
         ("traces", "traces.jsonl"),
     }
     assert next(item for item in candidates if item.category == "traces").stale_records == 1
 
     files, records = prune_data(candidates, older_than_days=30, now=now)
-    assert (files, records) == (3, 1)
+    assert (files, records) == (4, 1)
     assert not old_session.exists() and not old_report.exists()
     assert not old_task_receipt.exists()
+    assert not old_evidence.exists()
     assert recent_report.exists()
     assert unrelated.exists()
     assert nested.exists()

@@ -49,6 +49,9 @@ _DEFAULT_SYSTEM_PROMPT = (
     "workflows. Answer clearly and keep responses practical."
 )
 
+_VISION_REQUEST_TIMEOUT_SECONDS = 120.0
+_VISION_MAX_COMPLETION_TOKENS = 512
+
 
 def _chat_messages(prompt: str, system_prompt: str | None) -> list[ChatCompletionMessageParam]:
     return cast(
@@ -279,12 +282,26 @@ async def ask_vision_json(
         ],
     )
     try:
-        async with AsyncOpenAI(api_key=api_key, base_url=profile.base_url or None) as client:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.0,
-            )
+        async with AsyncOpenAI(
+            api_key=api_key,
+            base_url=profile.base_url or None,
+            timeout=_VISION_REQUEST_TIMEOUT_SECONDS,
+        ) as client:
+            if profile.provider.casefold() == "ollama":
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_completion_tokens=_VISION_MAX_COMPLETION_TOKENS,
+                    reasoning_effort="none",
+                )
+            else:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_completion_tokens=_VISION_MAX_COMPLETION_TOKENS,
+                )
         content = response.choices[0].message.content if response.choices else None
         if not content:
             return None

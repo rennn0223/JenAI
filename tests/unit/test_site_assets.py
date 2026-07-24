@@ -5,7 +5,15 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from jenai.config.models import AppConfig, SiteProfile
+from jenai.adapters.locations import save_locations
+from jenai.config.models import AppConfig, PatrolAreaProfile, SiteProfile
+from jenai.schemas import Location, Pose2D
+from jenai.site_assets import (
+    SiteAssetError,
+    bind_navigation_action,
+    fingerprint_locations_file,
+    load_site_patrol_areas,
+)
 
 
 def _active_site(**updates) -> SiteProfile:
@@ -13,6 +21,7 @@ def _active_site(**updates) -> SiteProfile:
         "site_id": "warehouse",
         "display_name": "Warehouse",
         "active": True,
+        "locations_sha256": "b" * 64,
         "validated": True,
         "map_sha256": "a" * 64,
     }
@@ -41,6 +50,20 @@ def test_active_site_rejects_conflicting_or_missing_location_binding() -> None:
         AppConfig(site=_active_site())
 
 
+def test_active_site_without_locations_content_identity_is_not_execution_ready() -> None:
+    site = SiteProfile(
+        site_id="warehouse",
+        display_name="Warehouse",
+        active=True,
+        validated=True,
+        map_sha256="a" * 64,
+        locations_path="locations.toml",
+    )
+
+    assert site.active is True
+    assert site.execution_ready is False
+
+
 def test_site_asset_references_are_versioned_and_normalized() -> None:
     site = _active_site(
         locations_path=" locations.toml ",
@@ -53,3 +76,109 @@ def test_site_asset_references_are_versioned_and_normalized() -> None:
     assert site.validated_routes == ["map_left_down", "dock"]
     assert site.dock_location == "dock"
     assert site.validation_evidence == ["artifacts/hil.json"]
+
+
+def test_locations_fingerprint_is_content_bound(tmp_path: Path) -> None:
+    path = tmp_path / "locations.toml"
+    path.write_text("[[locations]]\nname='Dock'\n", encoding="utf-8")
+    first = fingerprint_locations_file(path)
+
+    path.write_text("[[locations]]\nname='Warehouse'\n", encoding="utf-8")
+
+    assert fingerprint_locations_file(path) != first
+    assert len(first) == 64
+
+
+def test_navigation_action_is_bound_to_validated_location_content(tmp_path: Path) -> None:
+    locations_path = tmp_path / "locations.toml"
+    dock = Location(
+        name="Dock",
+        frame_id="map",
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
+        tags=["dock"],
+    )
+    save_locations([dock], locations_path)
+    digest = fingerprint_locations_file(locations_path)
+    config = AppConfig(
+        locations_path="locations.toml",
+        site=_active_site(
+            locations_path="locations.toml",
+            locations_sha256=digest,
+            validated_routes=["Dock"],
+            dock_location="Dock",
+        ),
+    )
+    bound = bind_navigation_action(
+        config, tmp_path / "config.toml", {"goal": dock.model_dump(mode="json")}
+    )
+    assert bound["capability_id"] == "dock_approach"
+
+    tampered = {"goal": dock.model_dump(mode="json")}
+    tampered["goal"]["pose"]["x"] = 9.0
+    with pytest.raises(SiteAssetError, match="does not match"):
+        bind_navigation_action(config, tmp_path / "config.toml", tampered)
+
+
+def test_patrol_area_profiles_are_typed_and_unique() -> None:
+    area = PatrolAreaProfile(
+        area_id=" equipment ",
+        display_name=" Equipment Zone ",
+        inspection_locations=[" Inspection A ", "Inspection A", "Inspection B"],
+    )
+
+    assert area.area_id == "equipment"
+    assert area.display_name == "Equipment Zone"
+    assert area.inspection_locations == ["Inspection A", "Inspection B"]
+
+    with pytest.raises(ValidationError, match="duplicate patrol area"):
+        SiteProfile(
+            patrol_areas=[
+                area,
+                PatrolAreaProfile(
+                    area_id="EQUIPMENT",
+                    display_name="Duplicate",
+                    inspection_locations=["Inspection C"],
+                ),
+            ]
+        )
+
+
+def test_site_patrol_areas_resolve_only_validated_location_assets(tmp_path: Path) -> None:
+    locations_path = tmp_path / "locations.toml"
+    inspection = Location(
+        name="Inspection A",
+        frame_id="map",
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
+    )
+    home = Location(
+        name="Home",
+        frame_id="map",
+        pose=Pose2D(x=0.0, y=0.0, yaw=0.0),
+    )
+    save_locations([inspection, home], locations_path)
+    config = AppConfig(
+        locations_path="locations.toml",
+        site=_active_site(
+            locations_path="locations.toml",
+            locations_sha256=fingerprint_locations_file(locations_path),
+            validated_routes=["Inspection A", "Home"],
+            home_location="Home",
+            patrol_areas=[
+                PatrolAreaProfile(
+                    area_id="equipment",
+                    display_name="Equipment Zone",
+                    inspection_locations=["Inspection A"],
+                )
+            ],
+        ),
+    )
+
+    areas = load_site_patrol_areas(config, tmp_path / "config.toml", "equipment")
+
+    assert len(areas) == 1
+    assert areas[0].area_id == "equipment"
+    assert areas[0].inspection_points[0].location == "Inspection A"
+
+    config.site.patrol_areas[0].inspection_locations = ["Missing"]
+    with pytest.raises(SiteAssetError, match="unknown location"):
+        load_site_patrol_areas(config, tmp_path / "config.toml", "equipment")

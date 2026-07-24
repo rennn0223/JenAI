@@ -13,6 +13,12 @@ from typing import Any
 from jenai.agent.context import JenAIRunContext
 from jenai.schemas import RunStatus, TaskOutcome, ToolCallStatus
 from jenai.state.reports import save_patrol_log
+from jenai.state.runs import TERMINAL_STATUSES
+from jenai.task_results import (
+    aggregate_step_outcome,
+    navigation_output_result,
+    run_status_for_outcome,
+)
 from jenai.tools.mission_core import run_mission
 from jenai.tools.ros2_core import ros_drive, ros_pub_execute
 from jenai.tools.shell_core import run_shell
@@ -40,7 +46,7 @@ class DirectExecutionMixin(TuiHostContract):
             await self._run_direct(pending)
         except Exception as exc:
             self._finish_direct_tool(pending, ok=False, summary=str(exc))
-            if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
+            if ctx.run.status not in TERMINAL_STATUSES:
                 self.run_store.finish(ctx.run, status=RunStatus.FAILED, final_output=str(exc))
             await self._mount_event(TimelineItem("error", f"Action failed: {exc}"))
             self._scroll_to_bottom()
@@ -135,19 +141,14 @@ class DirectExecutionMixin(TuiHostContract):
 
     async def _run_route_command(self, pending: PendingCommand) -> None:
         output = await self._execute_route_action(pending["outgoing_action"])
-        sent = output.execution_status == "succeeded"
-        if sent:
-            outcome = TaskOutcome(pending.get("success_outcome", TaskOutcome.SUCCEEDED))
-        elif output.execution_status == "endpoint_mismatch":
-            outcome = TaskOutcome.ENDPOINT_MISMATCH
-        else:
-            outcome = None
+        task_result = navigation_output_result(output)
+        sent = task_result.succeeded
         self._complete_direct_run(
             pending,
             ok=sent,
             summary=output.route_preview,
-            failure_status=RunStatus.BLOCKED,
-            outcome=outcome,
+            failure_status=task_result.run_status,
+            outcome=task_result.outcome,
         )
         # Honest rendering: warn when no backend actually sent the goal.
         await self._mount_event(TimelineItem("success" if sent else "warn", output.route_preview))
@@ -166,12 +167,14 @@ class DirectExecutionMixin(TuiHostContract):
             on_step=on_step,
             navigate=self._execute_route_action,
         )
-        ok = all(result.status == "succeeded" for result in report.results)
+        outcome = aggregate_step_outcome([result.status for result in report.results])
+        ok = outcome in {TaskOutcome.SUCCEEDED, TaskOutcome.PARTIAL}
         self._complete_direct_run(
             pending,
             ok=ok,
             summary=report.summary,
-            failure_status=RunStatus.BLOCKED,
+            failure_status=run_status_for_outcome(outcome),
+            outcome=outcome,
         )
         await self._mount_event(OutputPanel("Mission report", report.summary))
 
@@ -193,15 +196,13 @@ class DirectExecutionMixin(TuiHostContract):
             on_step=on_step,
             observe=self._observe_camera if spec.photo else None,
         )
-        ok = all(result.status in {"succeeded", "partial"} for result in report.results)
-        outcome = (
-            TaskOutcome.PARTIAL if any(r.status == "partial" for r in report.results) else None
-        )
+        outcome = aggregate_step_outcome([result.status for result in report.results])
+        ok = outcome in {TaskOutcome.SUCCEEDED, TaskOutcome.PARTIAL}
         self._complete_direct_run(
             pending,
             ok=ok,
             summary=report.summary,
-            failure_status=RunStatus.BLOCKED,
+            failure_status=run_status_for_outcome(outcome),
             outcome=outcome,
         )
         await self._mount_event(OutputPanel("Patrol report", report.summary))
@@ -236,17 +237,13 @@ class DirectExecutionMixin(TuiHostContract):
             on_step=on_step,
             observe=self._observe_camera if spec.photo else None,
         )
-        ok = report.completed_normally and report.success_count > 0
-        outcome = (
-            TaskOutcome.PARTIAL
-            if ok and any(result.status != "succeeded" for result in report.results)
-            else None
-        )
+        outcome = aggregate_step_outcome([result.status for result in report.results])
+        ok = outcome in {TaskOutcome.SUCCEEDED, TaskOutcome.PARTIAL}
         self._complete_direct_run(
             pending,
             ok=ok,
             summary=report.summary,
-            failure_status=RunStatus.BLOCKED,
+            failure_status=run_status_for_outcome(outcome),
             outcome=outcome,
         )
         await self._mount_event(OutputPanel("Exploration report", report.summary))

@@ -237,7 +237,11 @@ class JenAITuiApp(
                 run=run,
                 run_store=self.run_store,
             )
-            await self._render_run_update(ctx, run, agent=build_run_agent(self.config))
+            await self._render_run_update(
+                ctx,
+                run,
+                agent=build_run_agent(self.config, run.user_input),
+            )
 
     def _animate_mascot(self) -> None:
         try:
@@ -457,7 +461,7 @@ class JenAITuiApp(
         run = self.run_store.get(run_id)
         in_flight = (RunStatus.RUNNING, RunStatus.UNDERSTANDING, RunStatus.PLANNING)
         if run is not None and run.status in in_flight:
-            self.run_store.finish(run, status=RunStatus.BLOCKED)
+            self.run_store.finish(run, status=RunStatus.INTERRUPTED)
             try:
                 session = JenAIFileSession(run.session_id)
                 tail = await session.get_items(limit=1)
@@ -959,8 +963,11 @@ class JenAITuiApp(
         elif run.status == "completed":
             if run.final_output:
                 # Normalize model-authored paragraph gaps; all transcript
-                # entries otherwise use the same one-row line spacing.
-                await self._mount_event(OutputPanel("Result", run.final_output, spaced=True))
+                # entries otherwise use the same one-row line spacing. Agent
+                # and tool output is untrusted text, never Rich markup.
+                await self._mount_event(
+                    OutputPanel("Result", run.final_output, spaced=True, body_markup=False)
+                )
             await self._mount_event(TimelineItem("success", "Done."))
         elif run.status == "failed":
             if run.error:
@@ -972,7 +979,9 @@ class JenAITuiApp(
             # stop with a suggested manual command) — swallowing it would hide
             # an honest report behind a four-word warning.
             if run.final_output:
-                await self._mount_event(OutputPanel("Run blocked", run.final_output, spaced=True))
+                await self._mount_event(
+                    OutputPanel("Run blocked", run.final_output, spaced=True, body_markup=False)
+                )
             else:
                 await self._mount_event(TimelineItem("warn", "Run blocked."))
 
@@ -1033,7 +1042,7 @@ class JenAITuiApp(
             return
 
         ctx = self._new_run_context(arg)
-        agent = build_run_agent(self.config)
+        agent = build_run_agent(self.config, arg)
         self._scroll_to_bottom()
         run = await self._run_with_agent_progress(ctx, orchestrator.start_run(agent, ctx, arg))
         await self._render_run_update(ctx, run, agent=agent)
@@ -1104,7 +1113,7 @@ class JenAITuiApp(
                 self.run_store.resolve_interruption(run, tool_call_id, ApprovalStatus.REJECTED)
                 del self._pending_direct_approvals[tool_call_id]
 
-        self.run_store.finish(run, status=RunStatus.BLOCKED)
+        self.run_store.finish(run, status=RunStatus.INTERRUPTED)
         await self._mount_event(TimelineItem("warn", "Run aborted."))
 
     async def _show_queue(self, arg: str = "") -> None:

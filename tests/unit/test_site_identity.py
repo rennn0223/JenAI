@@ -3,16 +3,19 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from jenai.adapters.locations import save_locations
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.bridge._occupancy import occupancy_grid_identity
 from jenai.bridge._protocol import dispatch_request
 from jenai.bridge._watchdog import WatchdogState
 from jenai.config.models import AppConfig, SiteProfile
-from jenai.schemas import RouteOutput
+from jenai.schemas import Location, Pose2D, RouteOutput
+from jenai.site_assets import fingerprint_locations_file
 from jenai.tools import navigation_gateway as gateway_module
 
 
@@ -119,15 +122,17 @@ def test_bridge_map_identity_rejects_malformed_evidence(monkeypatch, mutation) -
     asyncio.run(run())
 
 
-def test_active_site_requires_validated_map_identity() -> None:
-    with pytest.raises(ValueError, match="validated"):
-        SiteProfile(
-            site_id="isaac-warehouse",
-            display_name="Isaac Warehouse",
-            version="1",
-            active=True,
-            map_sha256="a" * 64,
-        )
+def test_active_site_without_validation_is_not_execution_ready() -> None:
+    site = SiteProfile(
+        site_id="isaac-warehouse",
+        display_name="Isaac Warehouse",
+        version="1",
+        active=True,
+        map_sha256="a" * 64,
+    )
+
+    assert site.active is True
+    assert site.execution_ready is False
 
 
 def test_active_site_blocks_navigation_when_observed_map_differs(monkeypatch) -> None:
@@ -160,6 +165,7 @@ def test_active_site_blocks_navigation_when_observed_map_differs(monkeypatch) ->
             active=True,
             validated=True,
             map_sha256=expected,
+            locations_sha256="c" * 64,
         ),
     )
     gateway = gateway_module.NavigationGateway(config, get_bridge=get_bridge)
@@ -197,3 +203,56 @@ def test_unbound_site_blocks_navigation_before_dispatch(monkeypatch) -> None:
 
     assert output.execution_status == "blocked"
     assert "no validated site profile is active" in output.route_preview.lower()
+
+
+def test_gateway_blocks_goal_that_differs_from_validated_location(
+    monkeypatch, tmp_path: Path
+) -> None:
+    expected = "a" * 64
+    locations_path = tmp_path / "locations.toml"
+    location = Location(
+        name="Dock",
+        frame_id="map",
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
+    )
+    save_locations([location], locations_path)
+    bridge = SimpleNamespace(running=True)
+
+    async def get_bridge():
+        return bridge
+
+    async def identity(*_args, **_kwargs):
+        return SimpleNamespace(digest=expected, frame_id="map")
+
+    bridge.map_identity = identity
+
+    async def fake_arm(_config, _bridge) -> None:
+        return None
+
+    async def must_not_dispatch(*_args, **_kwargs):
+        raise AssertionError("navigation must not start for a modified saved goal")
+
+    monkeypatch.setattr(gateway_module, "arm_watchdog", fake_arm)
+    monkeypatch.setattr(gateway_module, "navigate_with_fallback", must_not_dispatch)
+    config = AppConfig(
+        locations_path="locations.toml",
+        site=SiteProfile(
+            site_id="isaac-warehouse",
+            display_name="Isaac Warehouse",
+            active=True,
+            validated=True,
+            map_sha256=expected,
+            locations_sha256=fingerprint_locations_file(locations_path),
+            locations_path="locations.toml",
+            validated_routes=["Dock"],
+        ),
+    )
+    gateway = gateway_module.NavigationGateway(
+        config, config_path=tmp_path / "config.toml", get_bridge=get_bridge
+    )
+    action = {"goal": location.model_dump(mode="json")}
+    action["goal"]["pose"]["x"] = 9.0
+    output = asyncio.run(gateway.execute(action))
+
+    assert output.execution_status == "blocked"
+    assert "does not match" in output.route_preview.lower()

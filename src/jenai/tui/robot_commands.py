@@ -19,6 +19,7 @@ from jenai.adapters.locations import (
 )
 from jenai.agent.context import JenAIRunContext
 from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.capabilities import has_registered_capability
 from jenai.schemas import (
     ApprovalRequest,
     EffectScope,
@@ -31,6 +32,7 @@ from jenai.schemas import (
     ToolCallRecord,
     VisionOutput,
 )
+from jenai.site_assets import SiteAssetError, resolve_site_location
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.mission_core import MissionStep, parse_mission
 from jenai.tools.nav_live import NavProgress
@@ -47,7 +49,6 @@ from jenai.tools.route_core import explicit_route_goal, route_preview
 from jenai.tools.safety import arm_watchdog, halt_robot
 from jenai.tools.skills import (
     exploration_candidates,
-    find_dock,
     parse_explore,
     parse_patrol,
 )
@@ -275,8 +276,20 @@ class RobotCommandsMixin(LocationCommandsMixin):
         )
         await self._request_direct_approval(ctx, tool_call, pending, approval)
 
+    async def _require_capability(self, capability_id: str) -> bool:
+        if has_registered_capability(self.config, capability_id):
+            return True
+        await self._mount_event(
+            TimelineItem(
+                "warn", f"Capability '{capability_id}' is not registered for this robot profile."
+            )
+        )
+        return False
+
     async def _show_drive(self, arg: str) -> None:
         # Natural-language driving: "前進兩秒", "turn left", "slowly reverse".
+        if not await self._require_capability("bounded_drive"):
+            return
         if not arg:
             await self._mount_event(
                 TimelineItem("warn", "Usage: /drive <plain language>, e.g. /drive 前進兩秒")
@@ -336,6 +349,14 @@ class RobotCommandsMixin(LocationCommandsMixin):
             await self._mount_event(TimelineItem("warn", "No mission steps recognized."))
             return
 
+        if any(step.kind == "goto" for step in steps) and not await self._require_capability(
+            "navigate"
+        ):
+            return
+        if any(step.kind == "drive" for step in steps) and not await self._require_capability(
+            "bounded_drive"
+        ):
+            return
         plan = " → ".join(f"{s.kind} {s.target}" for s in steps)
         ctx = self._new_run_context(f"/mission {arg}")
         tool_call = ToolCallRecord(
@@ -367,6 +388,8 @@ class RobotCommandsMixin(LocationCommandsMixin):
     async def _show_patrol(self, arg: str) -> None:
         # /patrol A, B, C x3 photo → loop the waypoints, optional VLM report.
         spec = parse_patrol(arg) if arg else None
+        if not await self._require_capability("patrol_photo"):
+            return
         if spec is None:
             await self._mount_event(
                 TimelineItem("warn", "Usage: /patrol <place>, <place>, … [xN] [photo]")
@@ -403,6 +426,8 @@ class RobotCommandsMixin(LocationCommandsMixin):
         await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_explore(self, arg: str) -> None:
+        if not await self._require_capability("explore_known_locations"):
+            return
         # /explore 5m goals=8 tag=room photo → bounded, low-repeat patrol.
         spec = parse_explore(arg)
         if spec is None:
@@ -467,16 +492,23 @@ class RobotCommandsMixin(LocationCommandsMixin):
         await self._request_direct_approval(ctx, tool_call, pending, approval)
 
     async def _show_dock(self, _: str = "") -> None:
-        # /dock → navigate to the location tagged 'dock' (or named like one).
-        dock = find_dock(self._load_locations())
-        if dock is None:
+        if not await self._require_capability("dock_approach"):
+            return
+        dock_reference = self.config.site.dock_location
+        if not self.config.site.active or dock_reference is None:
             await self._mount_event(
                 TimelineItem(
                     "warn",
-                    "No dock location found. Tag one in locations.toml "
-                    '(tags = ["dock"]) or save it: /loc add here Dock',
+                    "No active Site Profile with a dock_location is configured. "
+                    "Validate and activate the site before using /dock.",
                 )
             )
+            return
+
+        try:
+            dock = resolve_site_location(self._load_locations(), dock_reference)
+        except SiteAssetError as exc:
+            await self._mount_event(TimelineItem("warn", f"Configured dock is invalid: {exc}"))
             return
 
         ctx = self._new_run_context("/dock")
@@ -493,9 +525,11 @@ class RobotCommandsMixin(LocationCommandsMixin):
         pending = {
             "kind": "route",
             "auto_key": "dock",
-            "success_outcome": "arrived_unverified",
             "ctx": ctx,
-            "outgoing_action": {"goal": dock.model_dump(mode="json")},
+            "outgoing_action": {
+                "goal": dock.model_dump(mode="json"),
+                "capability_id": "dock_approach",
+            },
         }
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
@@ -526,6 +560,8 @@ class RobotCommandsMixin(LocationCommandsMixin):
                 TimelineItem("warn", "Usage: /route <natural language request>")
             )
             return
+        if not await self._require_capability("navigate"):
+            return
 
         locations = self._load_locations()
         output = await route_preview(self.config, locations, arg)
@@ -554,11 +590,6 @@ class RobotCommandsMixin(LocationCommandsMixin):
             "kind": "route",
             "ctx": ctx,
             "outgoing_action": output.outgoing_action,
-            "success_outcome": (
-                "arrived_unverified"
-                if output.outgoing_action.get("capability_id") == "dock_approach"
-                else "succeeded"
-            ),
         }
         approval = ApprovalRequest(
             run_id=ctx.run.run_id,
@@ -947,6 +978,7 @@ class RobotCommandsMixin(LocationCommandsMixin):
         gateway = NavigationGateway(
             self.config,
             get_bridge=self._get_bridge,
+            config_path=self.config_path,
             audit_store=self.run_store.audit_store,
         )
         run = self._current_run()

@@ -212,6 +212,7 @@ def test_resume_with_approval_completes_run(monkeypatch) -> None:
     assert result.status == "completed"
     assert result.final_output == "published successfully"
     assert result.interruptions[0].status == "approved"
+    assert result.outcome == "partial"
 
 
 def test_resume_with_rejection_feeds_rejection_message(monkeypatch) -> None:
@@ -235,9 +236,11 @@ def test_resume_with_rejection_feeds_rejection_message(monkeypatch) -> None:
     result = asyncio.run(orchestrator.resume_with_approvals(_agent(), ctx, {"call_1": False}))
 
     assert first_state.rejected == [("call_1", "The user rejected this action.")]
-    assert result.status == "completed"
+    assert result.status == "blocked"
+    assert result.outcome == "blocked"
     assert "rejected" in result.final_output
     assert result.interruptions[0].status == "rejected"
+    assert result.outcome == "blocked"
 
 
 def test_resume_stops_blocked_when_model_loops_same_action(monkeypatch) -> None:

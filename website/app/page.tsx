@@ -27,6 +27,12 @@ const cards = [
     text: "Bind locations and docks to the exact ROS map where they are valid.",
     href: "/docs/site-profiles",
   },
+  {
+    kicker: "AUTONOMY",
+    title: "Semantic area patrol",
+    text: "Let one deterministic workflow cover configured areas, preserve evidence, and return home.",
+    href: "/docs/area-patrol",
+  },
 ];
 
 export default function Home() {
@@ -34,11 +40,11 @@ export default function Home() {
     <DocsShell>
       <section className="home-hero">
         <div className="hero-copy">
-          <div className="eyebrow">JENAI 2.1 · SIMULATION-FIRST ROBOTICS</div>
+          <div className="eyebrow">JENAI 2.2 · SIMULATION-FIRST ROBOTICS</div>
           <h1>A decision layer for robots—without replacing their controls.</h1>
           <p>
-            Turn natural-language intent into bounded ROS 2 tasks, call registered robot APIs,
-            and report what the evidence can actually prove.
+            Let the LLM select a bounded robot workflow, then execute it through registered ROS 2
+            capabilities with deterministic evidence and honest outcomes.
           </p>
           <div className="hero-actions">
             <Link className="button button-primary" href="/docs/isaac-sim-quickstart">
@@ -52,12 +58,12 @@ export default function Home() {
         <div className="hero-console" aria-label="JenAI execution example">
           <div className="console-head"><span /><span /><span /><b>JenAI · approved mode</b></div>
           <div className="console-body">
-            <p><i>›</i> Navigate to map_left_up and verify the result.</p>
-            <p><span>Understanding</span> Resolve a registered site location</p>
-            <p><span>Checking</span> Map identity · Nav2 · localization</p>
-            <p><span>Acting</span> NavigateToPose through the gateway</p>
-            <p><span>Verifying</span> Terminal position and yaw</p>
-            <p className="console-success">● succeeded · endpoint contract passed</p>
+            <p><i>›</i> Inspect every configured area, preserve evidence, then return home.</p>
+            <p><span>Understanding</span> Resolve the mission goal and active site</p>
+            <p><span>Selecting</span> Semantic area-patrol workflow</p>
+            <p><span>Executing</span> Coverage · Nav2 · inspection · bounded retries</p>
+            <p><span>Verifying</span> Required coverage · evidence · return home</p>
+            <p className="console-success">● succeeded · completion contract passed</p>
           </div>
         </div>
       </section>
@@ -85,8 +91,8 @@ export default function Home() {
           <span>Slash commands remain shortcuts, not the product’s brain.</span>
         </div>
         <div>
-          <strong>One execution boundary</strong>
-          <span>Every navigation path shares approvals and verification.</span>
+          <strong>Workflow, not a token loop</strong>
+          <span>Normal task steps run deterministically; only unresolved events return to the LLM.</span>
         </div>
         <div>
           <strong>No invented success</strong>

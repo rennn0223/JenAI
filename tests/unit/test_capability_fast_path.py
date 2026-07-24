@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from jenai.capability_reporting import capability_card_report, is_capability_card_request
+from jenai.config.models import AppConfig
 from jenai.config.store import build_minimal_config
 
 
-def _config():
+def _config() -> AppConfig:
     config = build_minimal_config(
         provider_name="test",
         provider="openai",

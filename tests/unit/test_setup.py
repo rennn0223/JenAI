@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import stat
+from collections.abc import Sequence
+from pathlib import Path
+
+import pytest
 
 from jenai.config.setup import run_setup_wizard
 from jenai.config.store import load_config
 
 
-def _drive(monkeypatch, answers: list[str]) -> None:
+def _drive(monkeypatch: pytest.MonkeyPatch, answers: Sequence[str]) -> None:
     it = iter(answers)
     monkeypatch.setattr("typer.prompt", lambda *args, **kwargs: next(it))
 
 
-def test_run_setup_wizard_writes_config_and_starter_locations_file(tmp_path, monkeypatch) -> None:
+def test_run_setup_wizard_writes_config_and_starter_locations_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config_path = tmp_path / "config.toml"
 
     # choice=3 (OpenAI preset), then name/model/base_url/api_key_env/locations
@@ -27,7 +34,10 @@ def test_run_setup_wizard_writes_config_and_starter_locations_file(tmp_path, mon
     assert (tmp_path / "locations.toml").exists()
 
 
-def test_run_setup_wizard_respects_custom_locations_path(tmp_path, monkeypatch) -> None:
+def test_run_setup_wizard_respects_custom_locations_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config_path = tmp_path / "config.toml"
 
     _drive(
@@ -39,7 +49,10 @@ def test_run_setup_wizard_respects_custom_locations_path(tmp_path, monkeypatch) 
     assert (tmp_path / "custom" / "locations.toml").exists()
 
 
-def test_run_setup_wizard_local_preset_and_bad_choice_retry(tmp_path, monkeypatch) -> None:
+def test_run_setup_wizard_local_preset_and_bad_choice_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config_path = tmp_path / "config.toml"
 
     # "9" is out of range → wizard re-asks instead of crashing; "1" = local Ollama
@@ -57,7 +70,11 @@ def test_run_setup_wizard_local_preset_and_bad_choice_retry(tmp_path, monkeypatc
     assert not loaded.provider_profiles["local"].api_key_env
 
 
-def test_setup_moves_accidentally_pasted_nvidia_key_to_env(tmp_path, monkeypatch, capsys) -> None:
+def test_setup_moves_accidentally_pasted_nvidia_key_to_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     config_path = tmp_path / "config.toml"
     secret = "nvapi-example-secret"
     (tmp_path / ".env").write_text("export NVIDIA_API_KEY=old\nKEEP_ME=yes\n", encoding="utf-8")

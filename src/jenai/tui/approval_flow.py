@@ -16,6 +16,7 @@ from textual.widgets import Input
 from jenai.agent import orchestrator
 from jenai.agent.context import JenAIRunContext
 from jenai.schemas import ApprovalRequest, ApprovalStatus, RunStatus, ToolCallStatus
+from jenai.state.runs import TERMINAL_STATUSES
 from jenai.tui.approval_policy import can_remember_approval
 from jenai.tui.host_contract import TuiHostContract
 from jenai.tui.panels import TimelineItem
@@ -123,8 +124,10 @@ class ApprovalFlowMixin(TuiHostContract):
             await self._execute_direct(pending)
         except asyncio.CancelledError:
             self._finish_direct_tool(pending, ok=False, summary="interrupted")
-            if ctx.run.status not in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.BLOCKED):
-                self.run_store.finish(ctx.run, status=RunStatus.BLOCKED, final_output="interrupted")
+            if ctx.run.status not in TERMINAL_STATUSES:
+                self.run_store.finish(
+                    ctx.run, status=RunStatus.INTERRUPTED, final_output="interrupted"
+                )
             if self.is_running:
                 try:
                     await self._mount_event(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,10 @@ def _site_identity_already_verified(monkeypatch) -> None:
 
     async def verified(_self, _action, *, run_id, session_id):
         return None
+
+    monkeypatch.setattr(
+        gateway_module, "bind_navigation_action", lambda _config, _path, action: action
+    )
 
     monkeypatch.setattr(gateway_module.NavigationGateway, "_verify_active_site", verified)
 
@@ -53,7 +58,9 @@ def test_owned_gateway_arms_watchdog_before_start_and_closes(monkeypatch) -> Non
     monkeypatch.setattr(gateway_module, "navigate_with_fallback", fake_dispatch)
     config = AppConfig(route_adapter="nav2")
 
-    output = asyncio.run(gateway_module.execute_navigation(config, ACTION))
+    output = asyncio.run(
+        gateway_module.execute_navigation(config, ACTION, config_path=Path("/tmp/config.toml"))
+    )
 
     assert output.execution_status == "succeeded"
     assert events == ["arm", "start", "execute", "stop"]
@@ -76,7 +83,9 @@ def test_external_gateway_reuses_bridge_without_taking_ownership(monkeypatch) ->
 
     monkeypatch.setattr(gateway_module, "arm_watchdog", fake_arm)
     monkeypatch.setattr(gateway_module, "navigate_with_fallback", fake_dispatch)
-    gateway = gateway_module.NavigationGateway(AppConfig(), get_bridge=get_bridge)
+    gateway = gateway_module.NavigationGateway(
+        AppConfig(), config_path=Path("/tmp/config.toml"), get_bridge=get_bridge
+    )
 
     asyncio.run(gateway.execute(ACTION))
     asyncio.run(gateway.close())
@@ -105,11 +114,15 @@ def test_gateway_persists_structured_gate_verdict(monkeypatch, tmp_path) -> None
         return RouteOutput(input_text="", execution_status="failed")
 
     monkeypatch.setattr(gateway_module, "navigate_with_fallback", fake_dispatch)
-    gateway = gateway_module.NavigationGateway(AppConfig(), audit_store=audit)
+    gateway = gateway_module.NavigationGateway(
+        AppConfig(), config_path=Path("/tmp/config.toml"), audit_store=audit
+    )
 
     asyncio.run(gateway.execute(ACTION, run_id="run-1", session_id="session-1"))
 
-    event = audit.list_events(run_id="run-1")[0]
+    event = next(
+        item for item in audit.list_events(run_id="run-1") if item.event_type == "gate_verdict"
+    )
     assert event.event_type == "gate_verdict"
     assert event.status == "refer"
     assert event.summary == "endpoint unavailable"
@@ -125,7 +138,7 @@ def test_gateway_exposes_structured_gate_verdict_without_audit_store(monkeypatch
         return RouteOutput(input_text="", execution_status="blocked")
 
     monkeypatch.setattr(gateway_module, "navigate_with_fallback", fake_dispatch)
-    gateway = gateway_module.NavigationGateway(AppConfig())
+    gateway = gateway_module.NavigationGateway(AppConfig(), config_path=Path("/tmp/config.toml"))
 
     asyncio.run(gateway.execute(ACTION, on_gate_report=observed.append))
 
@@ -143,8 +156,27 @@ def test_gate_observer_failure_does_not_change_navigation_result(monkeypatch) ->
         raise RuntimeError("evidence sink unavailable")
 
     monkeypatch.setattr(gateway_module, "navigate_with_fallback", fake_dispatch)
-    gateway = gateway_module.NavigationGateway(AppConfig())
+    gateway = gateway_module.NavigationGateway(AppConfig(), config_path=Path("/tmp/config.toml"))
 
     output = asyncio.run(gateway.execute(ACTION, on_gate_report=broken_observer))
 
     assert output.execution_status == "succeeded"
+
+
+def test_gateway_blocks_an_unregistered_navigation_capability(monkeypatch) -> None:
+    async def must_not_dispatch(*_args, **_kwargs):
+        raise AssertionError("an unregistered capability reached Nav2")
+
+    monkeypatch.setattr(gateway_module, "navigate_with_fallback", must_not_dispatch)
+    config = AppConfig()
+    config.vehicle.capabilities = ["inspect_state"]
+    gateway = gateway_module.NavigationGateway(
+        config,
+        config_path=Path("/tmp/config.toml"),
+    )
+
+    output = asyncio.run(gateway.execute(ACTION))
+
+    assert output.execution_status == "blocked"
+    assert "navigate" in output.route_preview
+    assert "not registered" in output.route_preview

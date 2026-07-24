@@ -1,12 +1,11 @@
-"""Route parsing ('from A to B') + execution through the route adapter."""
+"""Route intent parsing and saved-location resolution."""
 
 from __future__ import annotations
 
 import re
 from typing import Any
 
-from jenai.adapters.locations import LocationNotFoundError, find_dock, find_location
-from jenai.adapters.route_adapter import get_route_adapter
+from jenai.adapters.locations import LocationNotFoundError, find_location
 from jenai.config.models import AppConfig
 from jenai.providers.chat import ask_json
 from jenai.schemas import Location, RouteOutput
@@ -160,7 +159,11 @@ async def route_preview(config: AppConfig, locations: list[Location], text: str)
         )
 
     outgoing_action: dict[str, Any] = {"goal": resolved_goal.model_dump(mode="json")}
-    if (dock := find_dock(locations)) is not None and dock.id == resolved_goal.id:
+    dock_reference = config.site.dock_location
+    if dock_reference is not None and dock_reference.casefold() in {
+        resolved_goal.id.casefold(),
+        resolved_goal.name.casefold(),
+    }:
         outgoing_action["capability_id"] = "dock_approach"
     if resolved_start is not None:
         outgoing_action["start"] = resolved_start.model_dump(mode="json")
@@ -170,18 +173,4 @@ async def route_preview(config: AppConfig, locations: list[Location], text: str)
         resolved_goal=resolved_goal,
         route_preview=f"Navigate to {resolved_goal.name} (from the robot's current position).",
         outgoing_action=outgoing_action,
-    )
-
-
-async def route_execute(config: AppConfig, outgoing_action: dict[str, Any]) -> RouteOutput:
-    adapter = get_route_adapter(config.route_adapter)
-    # Every adapter is async. In particular the Nav2 CLI fallback owns a native
-    # subprocess group, so Esc and /stop kill and reap send_goal before unwinding.
-    result = await adapter.resolve(outgoing_action)
-    return RouteOutput(
-        input_text="",
-        outgoing_action=outgoing_action,
-        approval_status="approved",
-        execution_status=result.execution_status,
-        route_preview=result.detail,
     )

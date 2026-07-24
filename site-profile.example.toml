@@ -1,0 +1,51 @@
+# Copy this file, replace the map digest and location names, then run:
+#   JenAI site map-identity
+#   JenAI site activate ./site-profile.toml
+#   JenAI site validate
+#
+# Paths are resolved relative to the JenAI config file. Activation recomputes
+# locations_sha256 and ignores any imported active/validated self-claims.
+
+[site]
+site_id = "isaac-warehouse"
+display_name = "Isaac Sim Warehouse"
+version = "1"
+map_frame = "map"
+# Replace with the SHA-256 reported for the exact validated occupancy map.
+map_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+locations_path = "locations.toml"
+validated_routes = [
+  "map_left_up",
+  "map_right_up",
+  "map_left_down",
+  "map_right_down",
+  "dock",
+]
+home_location = "dock"
+dock_location = "dock"
+reference_scene = "Isaac Sim 5.1.0 Warehouse"
+validation_evidence = ["docs/validation/ISAAC_HIL_ACCEPTANCE.md"]
+
+[[site.patrol_areas]]
+area_id = "upper_left"
+display_name = "Upper-left inspection area"
+inspection_locations = ["map_left_up"]
+required = true
+
+[[site.patrol_areas]]
+area_id = "upper_right"
+display_name = "Upper-right inspection area"
+inspection_locations = ["map_right_up"]
+required = true
+
+[[site.patrol_areas]]
+area_id = "lower_left"
+display_name = "Lower-left inspection area"
+inspection_locations = ["map_left_down"]
+required = true
+
+[[site.patrol_areas]]
+area_id = "lower_right"
+display_name = "Lower-right inspection area"
+inspection_locations = ["map_right_down"]
+required = true

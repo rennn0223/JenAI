@@ -44,6 +44,7 @@
 | [EXPERIMENTS](validation/EXPERIMENTS.md) | E1–E4、HIL、B4 與 soak runbook |
 | [USABILITY_STUDY](validation/USABILITY_STUDY.md) | 手動 ROS 2、Slash、自然語言的使用者研究流程 |
 | [EVIDENCE_LEDGER](validation/EVIDENCE_LEDGER.md) | 正式數字、artifact 雜湊與不可延伸主張 |
+| [QUALITY_REVIEW_2026-07-25](product/QUALITY_REVIEW_2026-07-25.md) | Workflow-first 重構、品質門檻、Isaac 實測與剩餘風險 |
 | [SAFETY_CASE](validation/SAFETY_CASE.md) | 危害、防護層、驗證證據與殘餘風險 |
 | [THREAT_MODEL](validation/THREAT_MODEL.md) | WebUI、MCP、Shell 與部署信任邊界 |
 | [SECURITY](../SECURITY.md) | 漏洞通報與安全修補政策 |

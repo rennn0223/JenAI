@@ -126,12 +126,18 @@ def test_hardening_includes_nested_task_receipts(tmp_path: Path) -> None:
     tasks = paths.reports / "tasks"
     tasks.mkdir(parents=True)
     receipt = tasks / "task-20260723-run.json"
+    area_report = paths.reports / "area-patrol-20260724-run.json"
+    evidence = paths.reports / "evidence-run-dock.png"
     unrelated = paths.reports / "customer-notes.json"
     receipt.write_text('{"request":"private task"}', encoding="utf-8")
+    area_report.write_text("{}", encoding="utf-8")
+    evidence.write_bytes(b"image")
     unrelated.write_text("{}", encoding="utf-8")
     os.chmod(paths.reports, 0o755)
     os.chmod(tasks, 0o755)
     os.chmod(receipt, 0o644)
+    os.chmod(area_report, 0o644)
+    os.chmod(evidence, 0o644)
     os.chmod(unrelated, 0o644)
 
     plan = build_hardening_plan(paths)
@@ -139,5 +145,7 @@ def test_hardening_includes_nested_task_receipts(tmp_path: Path) -> None:
     assert (paths.reports, 0o700) in planned
     assert (tasks, 0o700) in planned
     assert (receipt, 0o600) in planned
+    assert (area_report, 0o600) in planned
+    assert (evidence, 0o600) in planned
     assert all(path != unrelated for path, _mode_target in planned)
     assert _mode(unrelated) == 0o644

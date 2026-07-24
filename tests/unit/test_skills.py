@@ -58,6 +58,7 @@ def test_run_patrol_loops_and_continues_after_failure() -> None:
     visited: list[str] = []
 
     async def navigate(action: dict) -> RouteOutput:
+        assert action["capability_id"] == "patrol_photo"
         name = action["goal"]["name"]
         visited.append(name)
         status = "failed" if name == "B" else "succeeded"
@@ -207,6 +208,7 @@ def test_run_explore_visits_least_used_points_before_repeating() -> None:
     visited: list[str] = []
 
     async def navigate(action: dict) -> RouteOutput:
+        assert action["capability_id"] == "explore_known_locations"
         name = action["goal"]["name"]
         visited.append(name)
         return RouteOutput(

@@ -138,12 +138,13 @@ def _bullet_markup(variant: str, body: str) -> str:
     return f"[{color}]{BULLET}[/] {body}"
 
 
-def _detail_markup(lines: list[str]) -> str:
+def _detail_markup(lines: list[str], *, trusted_markup: bool = False) -> str:
     """Render detail lines under a bullet as Claude Code elbow-indented text."""
     out: list[str] = []
     for i, line in enumerate(lines):
         prefix = f"  [{MUTED}]{ELBOW}[/] " if i == 0 else "     "
-        out.append(f"{prefix}[{MUTED}]{line}[/]")
+        body = line if trusted_markup else escape(line)
+        out.append(f"{prefix}[{MUTED}]{body}[/]")
     return "\n".join(out)
 
 
@@ -195,13 +196,19 @@ class OutputPanel(Static):
     """
 
     def __init__(
-        self, title: str, body: str, *, variant: str = "assistant", spaced: bool = False
+        self,
+        title: str,
+        body: str,
+        *,
+        variant: str = "assistant",
+        spaced: bool = False,
+        body_markup: bool = True,
     ) -> None:
         body_lines = body.split("\n") if body else []
         if spaced:
             body_lines = _normalized_detail(body_lines)
-        detail = _detail_markup(body_lines) if body_lines else ""
-        markup = _bullet_markup(variant, f"[bold #f2ede1]{title}[/]")
+        detail = _detail_markup(body_lines, trusted_markup=body_markup) if body_lines else ""
+        markup = _bullet_markup(variant, f"[bold #f2ede1]{escape(title)}[/]")
         if detail:
             markup = f"{markup}\n{detail}"
         super().__init__(markup, classes="bullet-line")

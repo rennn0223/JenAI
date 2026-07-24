@@ -56,14 +56,10 @@ class MockUGV(Node):
         response.message = f"feedback_enabled={self.feedback_enabled}"
         return response
 
-    def on_drop_feedback_on_motion(
-        self, request: SetBool.Request, response: SetBool.Response
-    ):
+    def on_drop_feedback_on_motion(self, request: SetBool.Request, response: SetBool.Response):
         self.drop_feedback_on_motion = bool(request.data)
         response.success = True
-        response.message = (
-            f"drop_feedback_on_motion={self.drop_feedback_on_motion}"
-        )
+        response.message = f"drop_feedback_on_motion={self.drop_feedback_on_motion}"
         return response
 
     def on_reset(self, _request: Trigger.Request, response: Trigger.Response):

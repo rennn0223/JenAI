@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from jenai.adapters import ros2_adapter
 
 
-def test_ros_cli_environment_always_has_a_canonical_domain(monkeypatch) -> None:
+def test_ros_cli_environment_always_has_a_canonical_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("ROS_DOMAIN_ID", raising=False)
     assert ros2_adapter._ros_env(None)["ROS_DOMAIN_ID"] == "0"
 

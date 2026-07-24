@@ -100,6 +100,7 @@ async def resolve_and_navigate(
     target: str,
     *,
     navigate: Callable[[dict[str, Any]], Awaitable[RouteOutput]] | None = None,
+    capability_id: str = "navigate",
 ) -> tuple[str, str, str]:
     """Resolve a location name and navigate to it: (name, status, detail).
 
@@ -112,7 +113,10 @@ async def resolve_and_navigate(
         hint = ", ".join(c.name for c in exc.candidates)
         detail = f"unknown location (near: {hint})" if hint else "unknown location"
         return target, "failed", detail
-    action = {"goal": location.model_dump(mode="json")}
+    action = {
+        "goal": location.model_dump(mode="json"),
+        "capability_id": capability_id,
+    }
     out = (
         await navigate(action) if navigate is not None else await execute_navigation(config, action)
     )

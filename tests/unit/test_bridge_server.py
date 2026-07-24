@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from typing import Any
+
+import pytest
 
 from jenai.bridge import _server
 
@@ -57,13 +61,21 @@ def test_server_reports_malformed_request_then_continues() -> None:
     assert emitted[1] == {"id": 2, "ok": True, "result": {"op": "ping"}}
 
 
-def test_slow_read_only_operation_does_not_block_emergency_halt(monkeypatch) -> None:
+def test_slow_read_only_operation_does_not_block_emergency_halt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     deferred: list[tuple[Any, tuple[Any, ...]]] = []
     emitted: list[dict[str, Any]] = []
     dispatched: list[str] = []
 
     class DeferredThread:
-        def __init__(self, *, target, args, daemon: bool) -> None:
+        def __init__(
+            self,
+            *,
+            target: Callable[..., None],
+            args: tuple[Any, ...],
+            daemon: bool,
+        ) -> None:
             assert daemon is True
             self.target = target
             self.args = args
@@ -75,7 +87,7 @@ def test_slow_read_only_operation_does_not_block_emergency_halt(monkeypatch) -> 
         dispatched.append(op)
         return {"op": op}
 
-    monkeypatch.setattr(_server.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(threading, "Thread", DeferredThread)
     _server.serve_requests(
         [
             '{"id":1,"op":"pose"}\n',
@@ -97,19 +109,25 @@ def test_slow_read_only_operation_does_not_block_emergency_halt(monkeypatch) -> 
     assert emitted[-1] == {"id": 1, "ok": True, "result": {"op": "pose"}}
 
 
-def test_server_bounds_concurrent_slow_operations(monkeypatch) -> None:
+def test_server_bounds_concurrent_slow_operations(monkeypatch: pytest.MonkeyPatch) -> None:
     deferred: list[tuple[Any, tuple[Any, ...]]] = []
     emitted: list[dict[str, Any]] = []
 
     class DeferredThread:
-        def __init__(self, *, target, args, daemon: bool) -> None:
+        def __init__(
+            self,
+            *,
+            target: Callable[..., None],
+            args: tuple[Any, ...],
+            daemon: bool,
+        ) -> None:
             self.target = target
             self.args = args
 
         def start(self) -> None:
             deferred.append((self.target, self.args))
 
-    monkeypatch.setattr(_server.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(threading, "Thread", DeferredThread)
     _server.serve_requests(
         [
             '{"id":1,"op":"pose"}\n',

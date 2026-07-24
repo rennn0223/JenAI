@@ -106,27 +106,30 @@ def test_nav_stack_checks_read_the_graph(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.list_topics",
-        lambda *, timeout=5.0: [
+        lambda *, timeout=5.0, fresh=False: [
             "/map",
             "/amcl_pose",
             "/scan",
             "/cmd_vel",
             "/chassis/odom",
+            "/navigate_to_pose/_action/status",
         ],
     )
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.list_actions",
-        lambda *, timeout=5.0: ["/navigate_to_pose"],
+        lambda *, timeout=5.0: (_ for _ in ()).throw(
+            AssertionError("fresh hidden action endpoint must avoid daemon lookup")
+        ),
     )
 
     from jenai.adapters.ros2_adapter import TopicInfo
 
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.parameter_get",
-        lambda node, parameter, *, timeout=5.0: "/chassis/odom",
+        lambda node, parameter, *, timeout=5.0, fresh=False: "/chassis/odom",
     )
 
-    def topic_info(topic: str, *, timeout: float = 5.0) -> TopicInfo:
+    def topic_info(topic: str, *, timeout: float = 5.0, fresh: bool = False) -> TopicInfo:
         if topic == "/chassis/odom":
             return TopicInfo(
                 name=topic,
@@ -155,7 +158,7 @@ def test_nav_stack_warns_when_controller_odom_has_no_publisher(monkeypatch) -> N
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.list_topics",
-        lambda *, timeout=5.0: ["/map", "/amcl_pose", "/scan", "/cmd_vel", "/odom"],
+        lambda *, timeout=5.0, fresh=False: ["/map", "/amcl_pose", "/scan", "/cmd_vel", "/odom"],
     )
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.list_actions",
@@ -163,10 +166,10 @@ def test_nav_stack_warns_when_controller_odom_has_no_publisher(monkeypatch) -> N
     )
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.parameter_get",
-        lambda node, parameter, *, timeout=5.0: "/odom",
+        lambda node, parameter, *, timeout=5.0, fresh=False: "/odom",
     )
 
-    def topic_info(topic: str, *, timeout: float = 5.0) -> TopicInfo:
+    def topic_info(topic: str, *, timeout: float = 5.0, fresh: bool = False) -> TopicInfo:
         if topic == "/odom":
             return TopicInfo(
                 name=topic,
@@ -191,7 +194,7 @@ def test_nav_stack_warns_and_points_at_onboarding(monkeypatch) -> None:
     monkeypatch.setattr("jenai.doctor.checks.shutil.which", lambda _: "/usr/bin/ros2")
     monkeypatch.setattr(
         "jenai.adapters.ros2_adapter.list_topics",
-        lambda *, timeout=5.0: ["/rosout", "/parameter_events"],
+        lambda *, timeout=5.0, fresh=False: ["/rosout", "/parameter_events"],
     )
     monkeypatch.setattr("jenai.adapters.ros2_adapter.list_actions", lambda *, timeout=5.0: [])
 

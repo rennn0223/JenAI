@@ -64,7 +64,7 @@ def run_doctor(config_path: Path | None = None, *, include_nav: bool = True) -> 
     items.extend(_check_ros2())
     if include_nav:
         items.extend(_check_nav_stack(config))
-        items.extend(check_site(config))
+        items.extend(check_site(config, config_path))
         items.extend(_check_twin(config))
     items.extend(_check_provider(config))
     items.extend(_check_locations(config, config_path))
@@ -227,18 +227,28 @@ def _check_nav2_controller(actions: list[str]) -> DoctorCheckItem:
         )
 
     try:
-        odom_topic = ros2_adapter.parameter_get("/controller_server", "odom_topic", timeout=5.0)
+        odom_topic = ros2_adapter.parameter_get(
+            "/controller_server", "odom_topic", timeout=10.0, fresh=True
+        )
         if not odom_topic.startswith("/"):
             odom_topic = f"/{odom_topic}"
-        odom_info = ros2_adapter.topic_info(odom_topic, timeout=5.0)
-        controller_subscribed = any(
-            name.rstrip("/").rsplit("/", 1)[-1] == "controller_server"
-            for name in odom_info.subscribers
-        )
-        odom_ready = odom_info.publisher_count > 0 and controller_subscribed
+        odom_info = ros2_adapter.topic_info(odom_topic, timeout=10.0, fresh=True)
+
+        def odom_ready(info: ros2_adapter.TopicInfo) -> bool:
+            controller_subscribed = any(
+                name.rstrip("/").rsplit("/", 1)[-1] == "controller_server"
+                for name in info.subscribers
+            )
+            return info.publisher_count > 0 and controller_subscribed
+
+        # DDS endpoints can arrive in separate discovery rounds. Retry only an
+        # incomplete snapshot; a second incomplete snapshot remains a warning.
+        if not odom_ready(odom_info):
+            odom_info = ros2_adapter.topic_info(odom_topic, timeout=10.0, fresh=True)
+        ready = odom_ready(odom_info)
         return _nav_item(
             "nav2",
-            odom_ready,
+            ready,
             (
                 "Nav2 NavigateToPose is available and controller_server "
                 f"consumes live odometry from {odom_topic}."
@@ -284,7 +294,7 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
 
     try:
         # First call may also spawn the ros2 daemon — give it headroom.
-        topics = set(ros2_adapter.list_topics(timeout=15.0))
+        topics = set(ros2_adapter.list_topics(timeout=15.0, fresh=True))
     except ros2_adapter.Ros2AdapterError:
         return [
             DoctorCheckItem(
@@ -320,23 +330,29 @@ def _check_nav_stack(config: AppConfig | None) -> list[DoctorCheckItem]:
         ),
     ]
 
-    # Nav2 detection MUST use `ros2 action list`: action topics are hidden
-    # topics that `ros2 topic list` omits, so grepping topics warns forever
-    # even while Nav2 is actively navigating.
-    try:
-        actions = ros2_adapter.list_actions(timeout=5.0)
-    except ros2_adapter.Ros2AdapterError:
-        actions = []
+    # Fresh discovery includes hidden topics, so the action status endpoint is
+    # stronger evidence than the daemon-backed `ros2 action list`. Fall back to
+    # the latter for ROS distributions that do not expose hidden endpoints.
+    if "/navigate_to_pose/_action/status" in topics:
+        actions = ["/navigate_to_pose"]
+    else:
+        try:
+            actions = ros2_adapter.list_actions(timeout=5.0)
+        except ros2_adapter.Ros2AdapterError:
+            actions = []
     items.append(_check_nav2_controller(actions))
 
     # Someone must be listening on cmd_vel, or every motion command is a no-op.
-    # The adapter's tolerant parser handles the count-label variations across
-    # distros; the daemon is warm by now, so a short timeout suffices.
+    # The adapter parser tolerates count-label variations across distributions;
+    # one bounded retry handles an incomplete DDS endpoint snapshot.
     cmd_vel = config.vehicle.cmd_vel_topic if config is not None else "/cmd_vel"
     subscribed = False
     if cmd_vel in topics:
         try:
-            subscribed = ros2_adapter.topic_info(cmd_vel, timeout=5.0).subscriber_count > 0
+            cmd_info = ros2_adapter.topic_info(cmd_vel, timeout=10.0, fresh=True)
+            if cmd_info.subscriber_count == 0:
+                cmd_info = ros2_adapter.topic_info(cmd_vel, timeout=10.0, fresh=True)
+            subscribed = cmd_info.subscriber_count > 0
         except ros2_adapter.Ros2AdapterError:
             subscribed = False
     items.append(
@@ -454,7 +470,7 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
     )
     try:
         # First call may also spawn this domain's ros2 daemon — give it headroom.
-        topics = set(ros2_adapter.list_topics(timeout=15.0, domain_id=twin.domain_id))
+        topics = set(ros2_adapter.list_topics(timeout=15.0, domain_id=twin.domain_id, fresh=True))
     except ros2_adapter.Ros2AdapterError:
         return [
             DoctorCheckItem(
@@ -476,10 +492,13 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
         ),
     ]
 
-    try:
-        actions = ros2_adapter.list_actions(timeout=5.0, domain_id=twin.domain_id)
-    except ros2_adapter.Ros2AdapterError:
-        actions = []
+    if "/navigate_to_pose/_action/status" in topics:
+        actions = ["/navigate_to_pose"]
+    else:
+        try:
+            actions = ros2_adapter.list_actions(timeout=5.0, domain_id=twin.domain_id)
+        except ros2_adapter.Ros2AdapterError:
+            actions = []
     nav_ok = "/navigate_to_pose" in actions
     items.append(
         DoctorCheckItem(

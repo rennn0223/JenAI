@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import stat
 from pathlib import Path
 
 from jenai.bridge import BridgeError
 from jenai.config.store import build_minimal_config
 from jenai.schemas import VisionOutput
+from jenai.tools.vision_core import capture_and_analyze
 from jenai.tui import JenAITuiApp
 
 
@@ -129,3 +131,33 @@ def test_vision_camera_default_topic_comes_from_vehicle_profile(
         assert fake.requested_topics == ["/rgb"]
 
     asyncio.run(run())
+
+
+def test_capture_can_preserve_private_evidence_and_remove_temporary_frame(
+    tmp_path: Path, monkeypatch
+) -> None:
+    temporary_frame = tmp_path / "temporary.png"
+    temporary_frame.write_bytes(b"captured-image")
+    evidence = tmp_path / "mission-evidence" / "inspection.png"
+    analyzed: list[str] = []
+
+    async def fake_analyze(config, path, task_context=""):
+        analyzed.append(str(path))
+        return VisionOutput(source=str(path), summary="verified")
+
+    async def run() -> VisionOutput:
+        monkeypatch.setattr("jenai.tools.vision_core.analyze_image", fake_analyze)
+        return await capture_and_analyze(
+            _app(tmp_path).config,
+            _FakeBridge(temporary_frame),
+            "/camera/image_raw",
+            preserve_to=evidence,
+        )
+
+    result = asyncio.run(run())
+
+    assert result.source == str(evidence)
+    assert analyzed == [str(evidence)]
+    assert evidence.read_bytes() == b"captured-image"
+    assert stat.S_IMODE(evidence.stat().st_mode) == 0o600
+    assert not temporary_frame.exists()

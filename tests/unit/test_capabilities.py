@@ -57,3 +57,59 @@ def test_capability_prompt_is_authoritative_context_for_the_llm() -> None:
     assert "dock_approach" in prompt
     assert isinstance(supervisor.instructions, str)
     assert prompt in supervisor.instructions
+
+
+def test_unregistered_quadruped_agent_has_no_motion_or_navigation_tools() -> None:
+    config = _config()
+    config.vehicle = VehicleProfile(type="quadruped", display_name="Nexuni prototype")
+
+    supervisor = build_supervisor_agent(config)
+    tool_names = {tool.name for tool in supervisor.tools}
+    handoff_names = {handoff.name for handoff in supervisor.handoffs}
+
+    assert "route_execute_tool" not in tool_names
+    assert "explore_area_tool" not in tool_names
+    assert "Motion" not in handoff_names
+    assert "Navigation" not in handoff_names
+
+
+def test_explicit_navigation_only_capability_does_not_expose_explore() -> None:
+    config = _config()
+    config.vehicle.capabilities = ["inspect_state", "navigate"]
+
+    supervisor = build_supervisor_agent(config)
+    navigation = next(handoff for handoff in supervisor.handoffs if handoff.name == "Navigation")
+    supervisor_tools = {tool.name for tool in supervisor.tools}
+    navigation_tools = {tool.name for tool in navigation.tools}
+
+    assert "route_execute_tool" in supervisor_tools
+    assert "route_execute_tool" in navigation_tools
+    assert "explore_area_tool" not in supervisor_tools
+    assert "explore_area_tool" not in navigation_tools
+
+
+def test_registered_patrol_photo_capability_exposes_agent_tool() -> None:
+    config = _config()
+
+    supervisor = build_supervisor_agent(config)
+    navigation = next(handoff for handoff in supervisor.handoffs if handoff.name == "Navigation")
+    supervisor_tools = {tool.name for tool in supervisor.tools}
+    navigation_tools = {tool.name for tool in navigation.tools}
+
+    assert "patrol_area_tool" in supervisor_tools
+    assert "patrol_area_tool" in navigation_tools
+
+
+def test_registered_area_patrol_capability_exposes_workflow_tool() -> None:
+    config = _config()
+
+    supervisor = build_supervisor_agent(config)
+    navigation = next(handoff for handoff in supervisor.handoffs if handoff.name == "Navigation")
+    supervisor_tools = {tool.name for tool in supervisor.tools}
+    navigation_tools = {tool.name for tool in navigation.tools}
+
+    assert "area_patrol_workflow_tool" in supervisor_tools
+    assert "area_patrol_workflow_tool" in navigation_tools
+    assert "area_patrol" in {
+        item.capability_id for item in build_robot_capability_card(config).capabilities
+    }

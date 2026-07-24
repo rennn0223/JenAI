@@ -20,6 +20,40 @@ A registered action or observation that a robot can perform through a known
 interface. A capability includes its maturity, prerequisites, completion
 contract, evidence sources, and known limitations.
 
+### Workflow Capability
+
+A long-running, goal-level robot capability that owns a complete deterministic
+process rather than one primitive action. A Workflow Capability defines typed
+inputs, normal sequencing, bounded retries, cancellation, evidence, completion,
+and reporting. The LLM selects it but does not execute its normal steps.
+
+### Semantic Area Patrol
+
+The first Workflow Capability. It covers every required Inspection Area in the
+active Site Profile, visits its Inspection Points, preserves observations,
+evaluates required-area coverage, and applies the Return Home contract. It is
+not random exploration and is not merely an operator-provided waypoint list.
+
+### Inspection Area and Inspection Point
+
+An Inspection Area is a semantic part of a site whose coverage can be required
+or optional. An Inspection Point is a registered, map-bound observation pose
+that contributes evidence for its area. Reaching a point without obtaining its
+required observation does not complete the area.
+
+### Event-driven decision
+
+The rule that normal Workflow steps do not call the LLM. JenAI re-enters the
+Agent Path only when a new goal or unresolved high-level event requires semantic
+judgment, policy choice, or human escalation. Nav2 feedback, retry counters, and
+ordinary progress updates are handled deterministically.
+
+### Robot Runtime Seam
+
+The small typed interface through which a Workflow navigates, inspects, and
+returns home. ROS 2, Nav2, Isaac Sim, and future robot-specific SDKs implement
+this seam; the Workflow domain does not import them.
+
 ### Robot Capability Card
 
 The authoritative description of a robot's identity and registered
@@ -30,9 +64,9 @@ not support.
 ### Site Profile
 
 The versioned definition of an operating site. It binds a map identity to the
-site's locations, routes, dock approaches, reference scene, and validation
-evidence. A profile must be explicitly activated before its coordinates can be
-used.
+site's locations, routes, semantic Inspection Areas, home and dock approaches,
+reference scene, and validation evidence. A profile must be explicitly
+activated before its coordinates or Workflow definitions can be used.
 
 ### Map Identity
 
@@ -77,7 +111,9 @@ execution interfaces, and result verification as the Agent Path.
 
 An LLM-assisted interpretation and planning route for complex or ambiguous
 intents. The model may reason and choose among registered capabilities, but it
-cannot create facts, coordinates, observations, or successful outcomes.
+cannot create facts, coordinates, observations, or successful outcomes. After
+selecting a Workflow Capability it yields normal execution to the deterministic
+runtime and is re-entered only by a high-level event.
 
 ### Ground-truth evaluator
 

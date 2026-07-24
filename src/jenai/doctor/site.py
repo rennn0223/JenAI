@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from jenai.bridge import BridgeError, MapIdentityInfo, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.schemas import DoctorCheckItem, DoctorStatus
+from jenai.site_assets import SiteAssetError, validate_site_assets
 
 
 async def _read_active_map_identity_async() -> MapIdentityInfo:
     """Read one map fingerprint while owning and closing the sidecar process."""
     bridge = RosBridgeClient()
     try:
-        return await bridge.map_identity(timeout=3.0)
+        for attempt in range(2):
+            try:
+                return await bridge.map_identity(timeout=5.0)
+            except BridgeError:
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(0.2)
+        raise AssertionError("bounded map identity loop did not return or raise")
     except BridgeError:
         raise
     except Exception as exc:
@@ -33,7 +42,13 @@ def _read_active_map_identity() -> MapIdentityInfo:
         return pool.submit(lambda: asyncio.run(_read_active_map_identity_async())).result()
 
 
-def check_site(config: AppConfig | None) -> list[DoctorCheckItem]:
+def read_live_map_identity() -> MapIdentityInfo:
+    """Read the current ROS occupancy-map identity without requiring an active site."""
+
+    return _read_active_map_identity()
+
+
+def _check_site_map(config: AppConfig | None) -> list[DoctorCheckItem]:
     """Fail closed when an active Site Profile does not match the live map."""
     if config is None or not config.site.active:
         return []
@@ -111,3 +126,67 @@ def check_site(config: AppConfig | None) -> list[DoctorCheckItem]:
             ),
         )
     ]
+
+
+def check_site(
+    config: AppConfig | None,
+    config_path: Path | None = None,
+) -> list[DoctorCheckItem]:
+    """Check both the live map identity and every bound Site Profile asset."""
+
+    items = _check_site_map(config)
+    if config is None or not config.site.active:
+        return items
+    if not config.site.execution_ready:
+        items.append(
+            DoctorCheckItem(
+                section="site",
+                check_name="execution_trust",
+                status=DoctorStatus.FAIL,
+                message=(
+                    f"Active site '{config.site.display_name}' is selected but not execution-ready."
+                ),
+                fix_suggestion=(
+                    "With the validated map active, run "
+                    "'JenAI site validate --repair' to bind current locations explicitly."
+                ),
+            )
+        )
+        return items
+    if config_path is None:
+        items.append(
+            DoctorCheckItem(
+                section="site",
+                check_name="locations_identity",
+                status=DoctorStatus.FAIL,
+                message="The active Site Profile locations cannot be verified without config_path.",
+                fix_suggestion=("Run JenAI doctor with the same config file used to launch JenAI."),
+            )
+        )
+        return items
+    try:
+        locations = validate_site_assets(config, config_path)
+    except SiteAssetError as exc:
+        items.append(
+            DoctorCheckItem(
+                section="site",
+                check_name="locations_identity",
+                status=DoctorStatus.FAIL,
+                message=str(exc),
+                fix_suggestion="Revalidate and reactivate this Site Profile before navigation.",
+            )
+        )
+    else:
+        digest = config.site.locations_sha256
+        items.append(
+            DoctorCheckItem(
+                section="site",
+                check_name="locations_identity",
+                status=DoctorStatus.PASS,
+                message=(
+                    f"Active site binds {len(locations)} validated location(s) to "
+                    f"{digest[:12] if digest else 'missing'}."
+                ),
+            )
+        )
+    return items

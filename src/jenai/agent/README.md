@@ -1,8 +1,10 @@
 # agent — /plan 與 /run 的代理協調
 
-openai-agents SDK 上的多代理層:Supervisor 解析意圖後 handoff 給專職
-agent(ROS/Motion/Navigation/Perception),任何 side-effect 工具都以
-批准中斷(interruption)交回 UI 的批准卡 —— **代理不能繞過人**。
+openai-agents SDK 上的多代理層：Supervisor 解析意圖後 handoff 給
+ROS、Navigation 或 Perception 專職 agent。自主 Agent 只能選擇已登錄的
+高階 Workflow／Nav2 能力，不能發布 `/cmd_vel`、轉向、關節或任意 ROS 訊息。
+任何高階 side effect 都以批准中斷（interruption）交回 UI 的批准卡。
+人工維運的低階診斷命令仍由 TUI 明確入口提供，不屬於 Agent tool set。
 
 | 檔案 | 職責 |
 |---|---|

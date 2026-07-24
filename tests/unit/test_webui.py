@@ -278,6 +278,44 @@ def test_web_confirm_executes_drive(monkeypatch, tmp_path: Path) -> None:
     assert all(event.details["source"] == "webui" for event in events)
 
 
+def test_web_confirm_navigation_returns_and_audits_product_outcome(monkeypatch, tmp_path) -> None:
+    from jenai.schemas import RouteOutput
+    from jenai.webui import commands
+
+    async def fake_navigation(config, outgoing_action, **kwargs):
+        return RouteOutput(
+            input_text="",
+            outgoing_action={**outgoing_action, "capability_id": "dock_approach"},
+            execution_status="succeeded",
+            route_preview="Arrived at the configured dock pose.",
+        )
+
+    monkeypatch.setattr(commands, "execute_navigation", fake_navigation)
+    config_path = tmp_path / "config.toml"
+    action = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
+    result = asyncio.run(run_web_confirm(_config(), action, config_path=config_path))
+
+    assert result["kind"] == "result"
+    assert "outcome=arrived_unverified" in result["html"]
+    from jenai.state.audit import AuditStore
+
+    events = AuditStore(tmp_path / "audit.sqlite3").list_events()
+    finished = next(event for event in events if event.event_type == "tool_updated")
+    assert finished.status == "completed"
+
+
+def test_web_route_refuses_unregistered_navigation_capability(tmp_path: Path) -> None:
+    from jenai.config.models import VehicleProfile
+
+    config = _config()
+    config.vehicle = VehicleProfile(type="quadruped", display_name="Nexuni prototype")
+
+    result = asyncio.run(run_web_command(config, tmp_path / "config.toml", "/route Dock"))
+
+    assert result["kind"] == "error"
+    assert "not registered" in result["html"]
+
+
 def test_web_command_unknown_is_error(tmp_path: Path) -> None:
     res = asyncio.run(run_web_command(_config(), tmp_path / "c.toml", "/frobnicate"))
     assert res["kind"] == "error"

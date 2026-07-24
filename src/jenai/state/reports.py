@@ -9,15 +9,20 @@ deterministic section alone when the LLM is unavailable.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jenai.config.models import AppConfig
+from jenai.json_types import JsonObject
 from jenai.providers.chat import ProviderChatError, ask_provider
 from jenai.secure_files import atomic_write_text
 from jenai.tools.skills import PatrolReport
+
+if TYPE_CHECKING:
+    from jenai.workflows.area_patrol import AreaPatrolReport
 
 _SUMMARY_PROMPT = (
     "你是巡邏機器人的值班紀錄員。根據以下巡邏 log(JSON),寫一段 3–5 句的中文日報:"
@@ -56,6 +61,75 @@ def save_patrol_log(
     }
     directory = reports_dir(config_path)
     path = directory / f"patrol-{stamp}.json"
+    return atomic_write_text(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        harden_parent=True,
+    )
+
+
+def area_patrol_report_payload(report: AreaPatrolReport) -> JsonObject:
+    """Serialize the typed semantic-coverage result for UI and durable storage."""
+
+    return {
+        "mission_id": report.mission_id,
+        "target": report.target,
+        "execution_status": report.status.value,
+        "coverage_ratio": report.coverage_ratio,
+        "returned_home": report.returned_home,
+        "home_detail": report.home_detail,
+        "unresolved_required_areas": list(report.unresolved_required_areas),
+        "review_required_areas": list(report.review_required_areas),
+        "areas": [
+            {
+                "area_id": area.area_id,
+                "required": area.required,
+                "status": area.status.value,
+                "observation_covered": area.observation_covered,
+                "inspection_points": [
+                    {
+                        "location": point.location,
+                        "required": point.required,
+                        "status": point.status.value,
+                        "detail": point.detail,
+                        "navigation_attempts": point.navigation_attempts,
+                        "evidence": list(point.evidence),
+                    }
+                    for point in area.points
+                ],
+            }
+            for area in report.areas
+        ],
+        "events": [
+            {
+                "sequence": event.sequence,
+                "event_type": event.event_type,
+                "area_id": event.area_id,
+                "status": event.status,
+                "detail": event.detail,
+            }
+            for event in report.events
+        ],
+    }
+
+
+def save_area_patrol_log(
+    report: AreaPatrolReport,
+    config_path: Path,
+    *,
+    now: datetime | None = None,
+) -> Path:
+    """Persist one semantic-area patrol with a stable, private report format."""
+
+    moment = now or datetime.now().astimezone()
+    stamp = moment.strftime("%Y%m%d-%H%M%S")
+    mission_digest = hashlib.sha256(report.mission_id.encode("utf-8")).hexdigest()[:12]
+    payload = {
+        "kind": "area_patrol",
+        "saved_at": moment.isoformat(),
+        **area_patrol_report_payload(report),
+    }
+    path = reports_dir(config_path) / f"area-patrol-{stamp}-{mission_digest}.json"
     return atomic_write_text(
         path,
         json.dumps(payload, ensure_ascii=False, indent=2),

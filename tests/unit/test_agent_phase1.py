@@ -12,7 +12,6 @@ import jenai.agent.tracing as tracing_mod
 import jenai.providers.agent_model as agent_model
 from jenai.agent.session import JenAIFileSession
 from jenai.agent.specialists import (
-    build_motion_agent,
     build_navigation_agent,
     build_ros_developer_agent,
     build_ros_explorer_agent,
@@ -54,7 +53,6 @@ def test_supervisor_hands_off_to_specialists() -> None:
     assert _handoff_names(sup) == {
         "ROS Developer",
         "ROS Explorer",
-        "Motion",
         "Navigation",
         "Perception",
     }
@@ -114,12 +112,9 @@ def test_agent_client_has_a_bounded_non_retrying_request(monkeypatch) -> None:
 
 def test_specialists_carry_focused_toolsets() -> None:
     explorer = build_ros_explorer_agent(_config())
-    motion = build_motion_agent(_config())
     explorer_tools = {t.name for t in explorer.tools}
-    motion_tools = {t.name for t in motion.tools}
-    # Explorer is read-only; Motion owns the actuation tools.
+    # Both ROS inspection specialists are read-only.
     assert "ros_drive_execute_tool" not in explorer_tools
-    assert "ros_drive_execute_tool" in motion_tools
     assert "ros_topics_tool" in explorer_tools
 
     developer = build_ros_developer_agent(_config())
@@ -127,10 +122,11 @@ def test_specialists_carry_focused_toolsets() -> None:
     assert {
         "ros_topics_tool",
         "ros_schema_tool",
-        "ros_drive_verified_tool",
         "ros_state_tool",
     } <= developer_tools
     assert "ros_drive_execute_tool" not in developer_tools
+    assert "ros_drive_verified_tool" not in developer_tools
+    assert "ros_pub_execute_tool" not in developer_tools
     assert "shell_run_tool" not in developer_tools
 
     navigation = build_navigation_agent(_config())
