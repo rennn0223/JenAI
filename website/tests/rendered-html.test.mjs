@@ -28,6 +28,7 @@ test("renders the JenAI documentation home page", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
+  assert.match(html, /JENAI 2\.3 · SIMULATION-FIRST ROBOTICS/i);
   assert.match(html, /<title>JenAI Documentation<\/title>/i);
   assert.match(html, /Robot workflows selected by AI/i);
   assert.match(html, /Semantic area patrol/i);
@@ -40,6 +41,7 @@ test("renders the semantic area patrol guide", async () => {
 
   const html = await response.text();
   assert.match(html, /Semantic area patrol/i);
+  assert.match(html, /JenAI v2\.3\.0/i);
   assert.match(html, /does not choose every waypoint in a token-by-token loop/i);
   assert.match(html, /partial_success/i);
 });
