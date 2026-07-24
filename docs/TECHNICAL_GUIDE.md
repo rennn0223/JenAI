@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v2.3.0(2026-07)。專案方向見 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](product/ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v2.4.0(2026-07)。專案方向見 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](product/ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -199,7 +199,8 @@ jenai daemon                                        # Ctrl-C 停止
 | `bridge/client.py` | — | venv 側非同步 client:安全 argv spawn、request future 清理、reader 故障傳播、事件隔離；致動／watchdog 輸入與 pose/map/plan/cancel/halt 回應皆採嚴格 wire 驗證，拒絕 truthiness、非 finite 值、無效範圍與矛盾安全證據 |
 | `tools/*_core.py` | — | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
 | `workflows/area_patrol.py` | — | 純 Python 深模組：不可變 area／mission model、合法狀態轉移、確定性 coverage plan、有限重試、取消、return-home 與完成判定；不 import ROS、LLM、UI |
-| `tools/area_patrol_agent_tools.py` | — | OpenAI Agent tool 與 WorkflowRuntime adapter；解析 active Site Profile、共用 NavigationGateway、抓取獨立照片、保存原子報告；不重作 domain 規則 |
+| `tools/area_patrol_service.py` | — | 產品介面中立的 application service 與 WorkflowRuntime adapter；解析 active Site Profile、共用 NavigationGateway、抓取獨立照片、保存原子報告；不 import Agent SDK 或 UI |
+| `tools/area_patrol_agent_tools.py` | — | 薄 OpenAI Agents SDK adapter：轉交最小 run context、宣告批准需求並註冊 tool；不承載任務流程 |
 | `site_profiles.py` / `site_assets.py` | — | 不信任匯入檔自我宣稱；重算 locations SHA-256、驗 route／dock／home／area 引用，明確 activation 後才可導航 |
 | `cli/site.py` | — | `site status/map-identity/activate/validate/deactivate` 維運介面；map-identity 是 activation 前可用的唯讀 bootstrap |
 | `task_results.py` / `state/reports.py` | — | 單一 outcome 映射與 durable evidence serializer；run 結束、任務成功與報告落盤是不同事實 |
@@ -259,7 +260,7 @@ uv run mypy                         # 全部 src/jenai production code 採 stric
 uv run pytest --cov=jenai --cov-branch
 ```
 
-- **目前工作樹基準**:全專案 branch coverage 77%（門檻 76%）、安全鏈 branch coverage 94%（門檻 90%）；Ruff format/lint 與全部 `src/jenai` production code 的 mypy strict 均通過。`ros_bridge.py` 的 rclpy 接線不假裝由無 ROS 的 hosted CI 覆蓋，另由人工 self-hosted Isaac HIL 驗收。精確測試數以當次 CI summary 為準；發布證據仍以該 tag 的 GitHub Actions run 為準，不能用本機結果冒充 release 證明。
+- **目前工作樹基準**:全專案 branch coverage 79%（門檻 76%）、安全鏈 branch coverage 94%（門檻 90%）；Ruff format/lint 與全部 `src/jenai` production code 的 mypy strict 均通過。`ros_bridge.py` 的 rclpy 接線不假裝由無 ROS 的 hosted CI 覆蓋，另由人工 self-hosted Isaac HIL 驗收。精確測試數以當次 CI summary 為準；發布證據仍以該 tag 的 GitHub Actions run 為準，不能用本機結果冒充 release 證明。
 - **真實 TUI 驗收**:[TUI_LIVE_ACCEPTANCE_2026-07-17.md](validation/TUI_LIVE_ACCEPTANCE_2026-07-17.md) 記錄 Isaac Sim/Nav2 的 ROS introspection、有限時致動、stop、vision/perception、patrol、Slash/NL explore 與四角 inspect。該紀錄是描述性系統驗收，不代替實體安全或使用者效率實驗。
 - **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test` 以 Python 3.12／3.13／3.14 matrix 跑 Ruff format/lint、mypy strict 與 pytest branch coverage（整體 `fail-under=76`、安全鏈 `fail-under=90`）、`build`(`uv build` + 全新 tool 環境裝 wheel 跑 lifecycle smoke,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護：所有導航必經 gateway，且任何函式超過 120 行都會失敗，目前無白名單。直接依賴同時有最低版與下一個未審核主版本上限，release 仍另輸出精確 constraints。
 - **Release**(`.github/workflows/release.yml`):兩個入口共用 tag／pyproject 一致、完整 lint／測試／安全 coverage、dependency audit、重現性 build、敏感檔掃描、constraints、SBOM、checksum 與隔離 wheel lifecycle 閘；public repository 另強制 build provenance 與 SBOM attestations。推 `vX.Y.Z` tag 只建立草稿；`workflow_dispatch` 建新 tag 時只接受 fetched `origin/main` 的精確 commit，並以 `docs/releases/<tag>.md` 發布。既有 tag recovery 必須從同一 tag ref 觸發，且只可覆寫尚未發布的 draft；published release 永不可變更，必須升版。

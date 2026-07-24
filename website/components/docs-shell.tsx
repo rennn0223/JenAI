@@ -58,7 +58,7 @@ export function DocsShell({
               </div>
             ) : null}
           </div>
-          <span className="version-badge">v2.2.0</span>
+          <span className="version-badge">v2.4.0</span>
           <button
             className="menu-button"
             type="button"

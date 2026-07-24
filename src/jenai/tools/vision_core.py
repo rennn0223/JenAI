@@ -38,6 +38,7 @@ _NON_ANOMALY_PHRASES = (
     "simulated appearance",
     "rendered appearance",
 )
+_QUALIFIERS = (" but ", " however ", " except ", "；但", "，但", "但是", "然而")
 
 
 class VisionError(Exception):
@@ -66,10 +67,10 @@ def _normalize_anomalies(value: object) -> list[str]:
         item = raw.strip()
         folded = " ".join(item.casefold().split())
         negative_prefix = folded.startswith(_NEGATIVE_ANOMALY_PREFIXES)
-        qualified = " but " in folded or " however " in folded
+        qualified = any(marker in folded for marker in _QUALIFIERS)
         if not item or (negative_prefix and not qualified):
             continue
-        if any(phrase in folded for phrase in _NON_ANOMALY_PHRASES):
+        if any(phrase in folded for phrase in _NON_ANOMALY_PHRASES) and not qualified:
             continue
         if folded not in seen:
             normalized.append(item)

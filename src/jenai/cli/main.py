@@ -7,7 +7,7 @@ import json
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
@@ -32,6 +32,9 @@ from jenai.task_results import navigation_output_result, navigation_receipt_text
 from jenai.tools.navigation_gateway import execute_navigation
 from jenai.tools.route_core import route_preview
 from jenai.tui import run_tui, status_color
+
+if TYPE_CHECKING:
+    from jenai.tools.ros2_pkg_core import PackagePlan
 
 app = typer.Typer(
     name="JenAI",
@@ -262,6 +265,27 @@ def route(text: str, config: ConfigOption = None) -> None:
     console.print(navigation_receipt_text(result), style=style, markup=False)
 
 
+def _build_scaffold_with_one_repair(
+    config: AppConfig,
+    plan: PackagePlan,
+    ws_src: Path,
+) -> tuple[bool, str]:
+    """Build once and allow exactly one model repair of the generated node."""
+    from jenai.tools.ros2_pkg_core import build_package, repair_node, rewrite_node
+
+    workspace = ws_src.parent
+    console.print(f"[#9c9689]colcon build --packages-select {plan.package_name} …[/]")
+    ok, log = build_package(workspace, plan.package_name)
+    if ok:
+        return ok, log
+    console.print("[yellow]Build failed — asking the model for one repair round…[/yellow]")
+    repaired = asyncio.run(repair_node(config, plan, log))
+    if repaired is None:
+        return ok, log
+    rewrite_node(repaired, ws_src)
+    return build_package(workspace, plan.package_name)
+
+
 @app.command()
 def scaffold(
     spec: Annotated[str, typer.Argument(help="Plain-language description of the ROS2 package.")],
@@ -284,12 +308,9 @@ def scaffold(
     reported either way.
     """
     from jenai.tools.ros2_pkg_core import (
-        build_package,
         default_ws,
         generate_package_plan,
         render_package,
-        repair_node,
-        rewrite_node,
         write_package,
     )
 
@@ -332,16 +353,7 @@ def scaffold(
         )
         return
 
-    # Generate-and-verify: build now; one honest repair round on failure.
-    ws_root = ws_src.parent
-    console.print(f"[#9c9689]colcon build --packages-select {plan.package_name} …[/]")
-    ok, log = build_package(ws_root, plan.package_name)
-    if not ok:
-        console.print("[yellow]Build failed — asking the model for one repair round…[/yellow]")
-        repaired = asyncio.run(repair_node(loaded, plan, log))
-        if repaired is not None:
-            rewrite_node(repaired, ws_src)
-            ok, log = build_package(ws_root, plan.package_name)
+    ok, log = _build_scaffold_with_one_repair(loaded, plan, ws_src)
     if ok:
         console.print(
             f"[green]Build succeeded.[/green] Try: ros2 run {plan.package_name} {plan.node_name}"

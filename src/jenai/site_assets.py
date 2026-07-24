@@ -69,48 +69,85 @@ def _same_pose(requested: Location, saved: Location) -> bool:
     ) == saved.pose.model_dump(mode="python")
 
 
+class _SiteAssetValidator:
+    """Own the content-identity and semantic-reference policy for one site."""
+
+    def __init__(self, config: AppConfig, config_path: Path) -> None:
+        self._config = config
+        self._config_path = config_path
+        self._site = config.site
+
+    def validate(self) -> list[Location]:
+        self._require_execution_ready()
+        locations, observed_digest = self._load_locations()
+        self._require_matching_identity(observed_digest)
+        self._validate_route_references(locations)
+        self._validate_dock_reference(locations)
+        self._validate_mission_references(locations)
+        return locations
+
+    def _require_execution_ready(self) -> None:
+        if not self._site.execution_ready:
+            raise SiteAssetError(
+                "The active Site Profile is not execution-ready; run "
+                "'JenAI site validate --repair' before navigation."
+            )
+
+    def _load_locations(self) -> tuple[list[Location], str]:
+        locations_path = self._config.resolved_locations_path(self._config_path)
+        if locations_path is None:
+            raise SiteAssetError("The active Site Profile has no locations file.")
+        try:
+            observed_digest = fingerprint_locations_file(locations_path)
+            locations = load_locations(locations_path)
+            return locations, observed_digest
+        except (OSError, LocationsFileError) as exc:
+            raise SiteAssetError(
+                f"Could not load the active Site Profile locations: {exc}"
+            ) from exc
+
+    def _require_matching_identity(self, observed_digest: str) -> None:
+        if observed_digest != self._site.locations_sha256:
+            raise SiteAssetError("Locations identity mismatch for the active Site Profile.")
+
+    def _validate_route_references(self, locations: list[Location]) -> None:
+        for reference in self._site.validated_routes:
+            if not any(_location_matches_reference(item, reference) for item in locations):
+                raise SiteAssetError(f"validated_routes references unknown location '{reference}'.")
+
+    def _validate_dock_reference(self, locations: list[Location]) -> None:
+        reference = self._site.dock_location
+        if reference is not None and not any(
+            _location_matches_reference(item, reference) for item in locations
+        ):
+            raise SiteAssetError(f"dock_location references unknown location '{reference}'.")
+
+    def _validate_mission_references(self, locations: list[Location]) -> None:
+        if self._site.home_location is not None:
+            _validated_location(
+                locations,
+                self._site.validated_routes,
+                self._site.home_location,
+                owner="home_location",
+            )
+        for area in self._site.patrol_areas:
+            references = (
+                *area.inspection_locations,
+                *area.optional_inspection_locations,
+            )
+            for reference in references:
+                _validated_location(
+                    locations,
+                    self._site.validated_routes,
+                    reference,
+                    owner=f"patrol area '{area.area_id}'",
+                )
+
+
 def validate_site_assets(config: AppConfig, config_path: Path) -> list[Location]:
     """Load and validate every location reference bound by the active profile."""
 
-    site = config.site
-    if not site.execution_ready:
-        raise SiteAssetError(
-            "The active Site Profile is not execution-ready; run "
-            "'JenAI site validate --repair' before navigation."
-        )
-    locations_path = config.resolved_locations_path(config_path)
-    if locations_path is None:
-        raise SiteAssetError("The active Site Profile has no locations file.")
-    try:
-        observed_digest = fingerprint_locations_file(locations_path)
-        locations = load_locations(locations_path)
-    except (OSError, LocationsFileError) as exc:
-        raise SiteAssetError(f"Could not load the active Site Profile locations: {exc}") from exc
-    if observed_digest != site.locations_sha256:
-        raise SiteAssetError("Locations identity mismatch for the active Site Profile.")
-    for reference in site.validated_routes:
-        if not any(_location_matches_reference(location, reference) for location in locations):
-            raise SiteAssetError(f"validated_routes references unknown location '{reference}'.")
-    if site.dock_location is not None and not any(
-        _location_matches_reference(location, site.dock_location) for location in locations
-    ):
-        raise SiteAssetError(f"dock_location references unknown location '{site.dock_location}'.")
-    if site.home_location is not None:
-        _validated_location(
-            locations,
-            site.validated_routes,
-            site.home_location,
-            owner="home_location",
-        )
-    for area in site.patrol_areas:
-        for reference in area.inspection_locations:
-            _validated_location(
-                locations,
-                site.validated_routes,
-                reference,
-                owner=f"patrol area '{area.area_id}'",
-            )
-    return locations
+    return _SiteAssetValidator(config, config_path).validate()
 
 
 def load_site_patrol_areas(
@@ -142,8 +179,15 @@ def load_site_patrol_areas(
             display_name=area.display_name,
             required=area.required,
             inspection_points=tuple(
-                InspectionPoint(location=resolve_site_location(locations, reference).name)
-                for reference in area.inspection_locations
+                InspectionPoint(
+                    location=resolve_site_location(locations, reference).name,
+                    required=required,
+                )
+                for references, required in (
+                    (area.inspection_locations, True),
+                    (area.optional_inspection_locations, False),
+                )
+                for reference in references
             ),
         )
         for area in selected

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -165,7 +166,21 @@ class NavigationGateway:
         except BridgeError as exc:
             message = (
                 f"Could not verify the active map for site '{site.display_name}': {exc}. "
-                "Navigation was blocked."
+                "Navigation is temporarily unavailable."
+            )
+            self._audit_site_map(
+                "unavailable",
+                expected_digest,
+                observed_digest,
+                run_id=run_id,
+                session_id=session_id,
+            )
+            return RouteOutput(
+                input_text="",
+                route_preview=message,
+                outgoing_action=outgoing_action,
+                approval_status="approved",
+                execution_status="unavailable",
             )
 
         self._audit_site_map(
@@ -227,6 +242,43 @@ class NavigationGateway:
         except Exception:
             logger.warning("Site asset verdict audit failed", exc_info=True)
 
+    def _observe_gate_report(
+        self,
+        report: GateReport,
+        *,
+        observer: Callable[[GateReport], None] | None,
+        run_id: str | None,
+        session_id: str | None,
+    ) -> None:
+        """Forward and persist immutable gate evidence without altering its verdict."""
+        if observer is not None:
+            try:
+                observer(report)
+            except Exception:
+                logger.warning("Gate evidence observer failed", exc_info=True)
+        if self._audit_store is None:
+            return
+        try:
+            self._audit_store.record(
+                "gate_verdict",
+                run_id=run_id,
+                session_id=session_id,
+                status=report.verdict,
+                summary=report.reason or None,
+                details={
+                    "elapsed_s": report.twin_elapsed_s,
+                    "criteria": [
+                        {
+                            "id": criterion.criterion_id,
+                            "status": criterion.status,
+                        }
+                        for criterion in report.criteria
+                    ],
+                },
+            )
+        except Exception:
+            logger.warning("Gate verdict audit failed", exc_info=True)
+
     async def execute(
         self,
         outgoing_action: dict[str, Any],
@@ -237,39 +289,12 @@ class NavigationGateway:
         run_id: str | None = None,
         session_id: str | None = None,
     ) -> RouteOutput:
-        def _audit_gate(report: GateReport) -> None:
-            # Acceptance/HIL callers need the exact three-valued verdict in
-            # their immutable artifact; UI callers can continue using only the
-            # human-readable progress callback. Observation never changes the
-            # gate decision.
-            if on_gate_report is not None:
-                try:
-                    on_gate_report(report)
-                except Exception:
-                    logger.warning("Gate evidence observer failed", exc_info=True)
-            if self._audit_store is None:
-                return
-            try:
-                self._audit_store.record(
-                    "gate_verdict",
-                    run_id=run_id,
-                    session_id=session_id,
-                    status=report.verdict,
-                    summary=report.reason or None,
-                    details={
-                        "elapsed_s": report.twin_elapsed_s,
-                        "criteria": [
-                            {
-                                "id": criterion.criterion_id,
-                                "status": criterion.status,
-                            }
-                            for criterion in report.criteria
-                        ],
-                    },
-                )
-            except Exception:
-                logger.warning("Gate verdict audit failed", exc_info=True)
-
+        audit_gate = partial(
+            self._observe_gate_report,
+            observer=on_gate_report,
+            run_id=run_id,
+            session_id=session_id,
+        )
         requested_capability = str(outgoing_action.get("capability_id") or "navigate")
         if not has_registered_capability(self._config, *_NAVIGATION_CAPABILITY_IDS):
             return _blocked_capability(outgoing_action, requested_capability)
@@ -331,7 +356,7 @@ class NavigationGateway:
             outgoing_action,
             on_progress=on_progress,
             on_gate=on_gate,
-            on_gate_report=_audit_gate,
+            on_gate_report=audit_gate,
         )
 
     async def close(self) -> None:

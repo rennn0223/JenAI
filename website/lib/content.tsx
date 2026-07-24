@@ -288,6 +288,7 @@ area_id = "upper_left"
 display_name = "Upper-left inspection area"
 inspection_locations = ["map_left_up"]
 required = true
+optional_inspection_locations = ["map_right_up"]
 `}</CodeBlock>
         <h2>Activate and verify</h2>
         <CodeBlock label="Terminal">{`
@@ -296,7 +297,8 @@ JenAI site validate
 `}</CodeBlock>
         <p>
           Activation recomputes <code>locations_sha256</code> and validates every referenced
-          route, home, dock, and inspection location. Imported <code>active</code>,
+          route, home, dock, required inspection location, and optional inspection location.
+          Required and optional lists may not overlap. Imported <code>active</code>,
           <code>validated</code>, or locations-hash self-claims are never trusted.
         </p>
         <Callout title="Mismatch behavior" tone="warning">

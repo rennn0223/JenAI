@@ -180,6 +180,48 @@ def test_active_site_blocks_navigation_when_observed_map_differs(monkeypatch) ->
     assert observed[:12] in output.route_preview
 
 
+def test_active_site_reports_transient_map_read_as_unavailable(monkeypatch) -> None:
+    expected = "a" * 64
+    bridge = SimpleNamespace(running=True)
+
+    async def get_bridge():
+        return bridge
+
+    async def identity(*_args, **_kwargs):
+        raise BridgeError("No latched OccupancyGrid received on /map")
+
+    bridge.map_identity = identity
+
+    async def fake_arm(_config, _bridge) -> None:
+        return None
+
+    async def must_not_dispatch(*_args, **_kwargs):
+        raise AssertionError("navigation must not start without verified map identity")
+
+    monkeypatch.setattr(gateway_module, "arm_watchdog", fake_arm)
+    monkeypatch.setattr(gateway_module, "navigate_with_fallback", must_not_dispatch)
+    config = AppConfig(
+        locations_path="locations.toml",
+        site=SiteProfile(
+            site_id="isaac-warehouse",
+            display_name="Isaac Warehouse",
+            version="1",
+            active=True,
+            validated=True,
+            map_sha256=expected,
+            locations_sha256="c" * 64,
+        ),
+    )
+    gateway = gateway_module.NavigationGateway(config, get_bridge=get_bridge)
+
+    output = asyncio.run(
+        gateway.execute({"goal": {"frame_id": "map", "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0}}})
+    )
+
+    assert output.execution_status == "unavailable"
+    assert "temporarily unavailable" in output.route_preview.lower()
+
+
 def test_unbound_site_blocks_navigation_before_dispatch(monkeypatch) -> None:
     bridge = SimpleNamespace(running=True)
 

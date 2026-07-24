@@ -172,6 +172,9 @@ def build_area_patrol_selector_agent(
     completed workflow.
     """
 
+    if "area_patrol" not in _capability_set(config):
+        raise ValueError("The active robot profile does not register area_patrol.")
+
     profile = config.active_profile()
     reasoning = (
         Reasoning(effort="none") if profile and profile.provider.lower() == "ollama" else None

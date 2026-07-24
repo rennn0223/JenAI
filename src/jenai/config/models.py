@@ -183,6 +183,7 @@ class PatrolAreaProfile(BaseModel):
     area_id: str
     display_name: str
     inspection_locations: list[str] = Field(min_length=1)
+    optional_inspection_locations: list[str] = Field(default_factory=list)
     required: bool = True
 
     @field_validator("area_id", "display_name")
@@ -193,7 +194,7 @@ class PatrolAreaProfile(BaseModel):
             raise ValueError("patrol area identity must not be blank")
         return stripped
 
-    @field_validator("inspection_locations")
+    @field_validator("inspection_locations", "optional_inspection_locations")
     @classmethod
     def normalize_inspection_locations(cls, values: list[str]) -> list[str]:
         normalized: list[str] = []
@@ -204,6 +205,14 @@ class PatrolAreaProfile(BaseModel):
             if stripped not in normalized:
                 normalized.append(stripped)
         return normalized
+
+    @model_validator(mode="after")
+    def unique_inspection_roles(self) -> PatrolAreaProfile:
+        overlap = set(self.inspection_locations) & set(self.optional_inspection_locations)
+        if overlap:
+            names = ", ".join(sorted(overlap))
+            raise ValueError(f"inspection locations cannot be both required and optional: {names}")
+        return self
 
 
 class SiteProfile(BaseModel):

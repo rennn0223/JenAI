@@ -1,6 +1,6 @@
 [project]
 name = "jenai"
-version = "2.3.0"
+version = "2.4.0"
 description = "Terminal-first AI agent interface for ROS2 robot workflows."
 readme = "README.md"
 authors = [{ name = "林書任 / LIN, SHU-JEN" }]
@@ -98,10 +98,15 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "DTZ", "PERF", "PIE", "RUF012", "S101"]
+select = ["E", "F", "I", "UP", "B", "C90", "DTZ", "PERF", "PIE", "RUF012", "S101"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]
+"tests/unit/fake_bridge.py" = ["C901"]
+"tests/unit/test_tui.py" = ["C901"]
 # The WebUI embeds CSS/HTML/JS as string literals (fonts URL, CSS rules, HTML
 # fragments) that legitimately exceed the line-length limit.
 "src/jenai/webui/server.py" = ["E501"]

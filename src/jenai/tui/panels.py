@@ -15,6 +15,7 @@ from typing import NamedTuple
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
+from textual.content import Content
 from textual.markup import escape
 from textual.widgets import Static
 
@@ -202,16 +203,23 @@ class OutputPanel(Static):
         *,
         variant: str = "assistant",
         spaced: bool = False,
-        body_markup: bool = True,
+        body_markup: bool = False,
     ) -> None:
         body_lines = body.split("\n") if body else []
         if spaced:
             body_lines = _normalized_detail(body_lines)
-        detail = _detail_markup(body_lines, trusted_markup=body_markup) if body_lines else ""
-        markup = _bullet_markup(variant, f"[bold #f2ede1]{escape(title)}[/]")
-        if detail:
-            markup = f"{markup}\n{detail}"
-        super().__init__(markup, classes="bullet-line")
+        color = _MARKER_COLOR.get(variant, ACCENT)
+        visual = Content.styled(BULLET, color)
+        visual = visual.append_text(" ")
+        visual = visual.append_text(title, "bold #f2ede1")
+        for index, line in enumerate(body_lines):
+            visual = visual.append_text("\n")
+            visual = visual.append_text(f"  {ELBOW} " if index == 0 else "     ", MUTED)
+            if body_markup:
+                visual = visual.append(Content.from_markup(line))
+            else:
+                visual = visual.append_text(line, MUTED)
+        super().__init__(visual, classes="bullet-line")
         self.title = title
         self.body = body
 
@@ -349,6 +357,15 @@ def terminal_mascot() -> Text:
 def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
     """Render the compact robot-dog dachshund with a tiny terminal animation."""
 
+    cells, width, height = _animated_dog_cells(frame, running=running)
+    return _render_half_block_sprite(cells, width=width, height=height)
+
+
+def _animated_dog_cells(
+    frame: int, *, running: bool
+) -> tuple[dict[tuple[int, int], str | None], int, int]:
+    """Build one animation frame while keeping the source sprite immutable."""
+
     width, height = max(map(len, _DESIGNED_DOG)), len(_DESIGNED_DOG)
     cells: dict[tuple[int, int], str | None] = {}
     for y, row in enumerate(_DESIGNED_DOG):
@@ -369,6 +386,13 @@ def pixel_mark(frame: int = 0, *, running: bool = False) -> Text:
         lift = ((10, 16), (29, 16)) if frame % 2 else ((13, 15), (32, 15))
         for point in lift:
             cells[point] = None
+    return cells, width, height
+
+
+def _render_half_block_sprite(
+    cells: dict[tuple[int, int], str | None], *, width: int, height: int
+) -> Text:
+    """Pack two vertical source pixels into each terminal half-block cell."""
 
     text = Text()
     for y in range(0, height, 2):

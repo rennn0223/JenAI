@@ -124,11 +124,21 @@ def test_patrol_area_profiles_are_typed_and_unique() -> None:
         area_id=" equipment ",
         display_name=" Equipment Zone ",
         inspection_locations=[" Inspection A ", "Inspection A", "Inspection B"],
+        optional_inspection_locations=[" Optional A ", "Optional A"],
     )
 
     assert area.area_id == "equipment"
     assert area.display_name == "Equipment Zone"
     assert area.inspection_locations == ["Inspection A", "Inspection B"]
+    assert area.optional_inspection_locations == ["Optional A"]
+
+    with pytest.raises(ValidationError, match="both required and optional"):
+        PatrolAreaProfile(
+            area_id="conflict",
+            display_name="Conflict",
+            inspection_locations=["Inspection A"],
+            optional_inspection_locations=["Inspection A"],
+        )
 
     with pytest.raises(ValidationError, match="duplicate patrol area"):
         SiteProfile(
@@ -150,24 +160,30 @@ def test_site_patrol_areas_resolve_only_validated_location_assets(tmp_path: Path
         frame_id="map",
         pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
     )
+    optional = Location(
+        name="Optional View",
+        frame_id="map",
+        pose=Pose2D(x=1.5, y=2.5, yaw=0.0),
+    )
     home = Location(
         name="Home",
         frame_id="map",
         pose=Pose2D(x=0.0, y=0.0, yaw=0.0),
     )
-    save_locations([inspection, home], locations_path)
+    save_locations([inspection, optional, home], locations_path)
     config = AppConfig(
         locations_path="locations.toml",
         site=_active_site(
             locations_path="locations.toml",
             locations_sha256=fingerprint_locations_file(locations_path),
-            validated_routes=["Inspection A", "Home"],
+            validated_routes=["Inspection A", "Optional View", "Home"],
             home_location="Home",
             patrol_areas=[
                 PatrolAreaProfile(
                     area_id="equipment",
                     display_name="Equipment Zone",
                     inspection_locations=["Inspection A"],
+                    optional_inspection_locations=["Optional View"],
                 )
             ],
         ),
@@ -178,6 +194,9 @@ def test_site_patrol_areas_resolve_only_validated_location_assets(tmp_path: Path
     assert len(areas) == 1
     assert areas[0].area_id == "equipment"
     assert areas[0].inspection_points[0].location == "Inspection A"
+    assert areas[0].inspection_points[0].required is True
+    assert areas[0].inspection_points[1].location == "Optional View"
+    assert areas[0].inspection_points[1].required is False
 
     config.site.patrol_areas[0].inspection_locations = ["Missing"]
     with pytest.raises(SiteAssetError, match="unknown location"):

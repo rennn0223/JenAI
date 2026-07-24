@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v2.3.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v2.4.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(DGX Spark 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -26,7 +26,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.3.0 本機 1,048 項測試通過；branch coverage 78%，安全鏈 94%。全部 `src/jenai` production code 採 mypy strict；[PR #118](https://github.com/rennn0223/JenAI/pull/118) 的 Python 3.12／3.13／3.14、build、audit/SBOM 與 [v2.3.0 Release run](https://github.com/rennn0223/JenAI/actions/runs/30124399612) 皆通過 |
+| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.4.0 候選版在本機 1,066 項測試通過；branch coverage 79%，安全鏈 94%。全部 `src/jenai` production code 採 mypy strict；遠端 Python 3.12／3.13／3.14、build、audit/SBOM 與 release 證據須等本版 PR／Release workflow 實際通過，不能沿用 v2.3.0 證據 |
 | Isaac HIL（人工啟動） | Actions → `Isaac HIL Acceptance`，或依 `docs/validation/ISAAC_HIL_ACCEPTANCE.md` 執行 | 一般 CI 絕不動車；精確確認後在 self-hosted runner 驗 route、Nav2 cancel acknowledgement、software halt、完整 scan metadata gate 與可選 Twin verdict。任一 motion 失敗即停止後續 goal，artifact 必含 `final_halt`／`bridge_shutdown`；畸形 wire 回應不得算成功。clean `d942130…855` 本機 artifact 已通過，Twin 同 domain 明記 skip；這不等於已產生 GitHub workflow artifact |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | 最小 `contents: read` 權限；同 ref 新 run 取消舊 run；`test` job（30 分鐘上限）以 Python 3.12／3.13／3.14 matrix 跑 ruff format/lint、全 production code mypy strict、pytest branch coverage（整體 76% 與安全鏈 90% 退步閘）；`build` job（20 分鐘上限）以 `uv build` + 全新 tool 環境驗 wheel lifecycle |
@@ -82,7 +82,7 @@ patrol/explore/inspect 與報告已在 2026-07-17 以真實 Isaac Sim graph 逐�
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 2.3.0`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 2.4.0`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |

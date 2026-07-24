@@ -154,6 +154,54 @@ class PoseInfo:
         )
 
 
+def _nullable_int(result: BridgePayload, field: str, operation: str) -> int | None:
+    """Read a protocol integer that explicitly permits JSON null."""
+    value = result.get(field)
+    if value is None:
+        return None
+    if type(value) is not int:
+        raise BridgeError(f"invalid {operation} response: {field} must be an integer or null")
+    return value
+
+
+def _validate_map_cell_evidence(
+    *,
+    in_bounds: bool,
+    free: bool,
+    value: int | None,
+    cell_x: int,
+    cell_y: int,
+    width: int,
+    height: int,
+    resolution: float,
+) -> None:
+    """Reject geometrically or semantically contradictory map evidence."""
+    if width <= 0 or height <= 0:
+        raise BridgeError("invalid map_cell response: map dimensions must be positive")
+    if resolution <= 0.0:
+        raise BridgeError("invalid map_cell response: resolution must be positive")
+
+    coordinates_in_bounds = 0 <= cell_x < width and 0 <= cell_y < height
+    if in_bounds:
+        if not coordinates_in_bounds:
+            raise BridgeError(
+                "invalid map_cell response: in-bounds coordinates exceed map dimensions"
+            )
+        if value is None or not -1 <= value <= 100:
+            raise BridgeError(
+                "invalid map_cell response: in-bounds occupancy must be between -1 and 100"
+            )
+        if free != (value == 0):
+            raise BridgeError("invalid map_cell response: free flag contradicts occupancy value")
+        return
+    if coordinates_in_bounds:
+        raise BridgeError("invalid map_cell response: out-of-bounds coordinates are inside the map")
+    if free or value is not None:
+        raise BridgeError(
+            "invalid map_cell response: out-of-bounds cells cannot be free or occupied"
+        )
+
+
 @dataclass(frozen=True)
 class MapCellInfo:
     """Bounded evidence for one queried static-map cell."""
@@ -173,62 +221,30 @@ class MapCellInfo:
 
     @classmethod
     def from_payload(cls, result: BridgePayload) -> MapCellInfo:
-        """Validate the sidecar's occupancy evidence without coercing types.
-
-        The map-cell result is a motion-safety gate. Values such as ``"false"``
-        and ``100`` must never become truthy booleans accidentally, and a
-        contradictory ``free=true, value=100`` response must fail closed.
-        """
-
-        in_bounds = _require_bool(result, "in_bounds", "map_cell")
-        free = _require_bool(result, "free", "map_cell")
-        cell_x = _require_int(result, "cell_x", "map_cell")
-        cell_y = _require_int(result, "cell_y", "map_cell")
-        width = _require_int(result, "width", "map_cell")
-        height = _require_int(result, "height", "map_cell")
-        resolution = _require_finite_float(result, "resolution", "map_cell")
-        origin_x = _require_finite_float(result, "origin_x", "map_cell")
-        origin_y = _require_finite_float(result, "origin_y", "map_cell")
-        frame_id = _require_text(result, "frame_id", "map_cell")
-        source = _require_text(result, "source", "map_cell")
-
-        raw_value = result.get("value")
-        if raw_value is None:
-            value = None
-        elif type(raw_value) is int:
-            value = raw_value
-        else:
-            raise BridgeError("invalid map_cell response: value must be an integer or null")
-
-        if width <= 0 or height <= 0:
-            raise BridgeError("invalid map_cell response: map dimensions must be positive")
-        if resolution <= 0.0:
-            raise BridgeError("invalid map_cell response: resolution must be positive")
-
-        coordinates_in_bounds = 0 <= cell_x < width and 0 <= cell_y < height
-        if in_bounds:
-            if not coordinates_in_bounds:
-                raise BridgeError(
-                    "invalid map_cell response: in-bounds coordinates exceed map dimensions"
-                )
-            if value is None or not -1 <= value <= 100:
-                raise BridgeError(
-                    "invalid map_cell response: in-bounds occupancy must be between -1 and 100"
-                )
-            if free != (value == 0):
-                raise BridgeError(
-                    "invalid map_cell response: free flag contradicts occupancy value"
-                )
-        else:
-            if coordinates_in_bounds:
-                raise BridgeError(
-                    "invalid map_cell response: out-of-bounds coordinates are inside the map"
-                )
-            if free or value is not None:
-                raise BridgeError(
-                    "invalid map_cell response: out-of-bounds cells cannot be free or occupied"
-                )
-
+        """Validate bounded occupancy evidence without coercing wire types."""
+        operation = "map_cell"
+        in_bounds = _require_bool(result, "in_bounds", operation)
+        free = _require_bool(result, "free", operation)
+        value = _nullable_int(result, "value", operation)
+        cell_x = _require_int(result, "cell_x", operation)
+        cell_y = _require_int(result, "cell_y", operation)
+        width = _require_int(result, "width", operation)
+        height = _require_int(result, "height", operation)
+        resolution = _require_finite_float(result, "resolution", operation)
+        origin_x = _require_finite_float(result, "origin_x", operation)
+        origin_y = _require_finite_float(result, "origin_y", operation)
+        frame_id = _require_text(result, "frame_id", operation)
+        source = _require_text(result, "source", operation)
+        _validate_map_cell_evidence(
+            in_bounds=in_bounds,
+            free=free,
+            value=value,
+            cell_x=cell_x,
+            cell_y=cell_y,
+            width=width,
+            height=height,
+            resolution=resolution,
+        )
         return cls(
             in_bounds=in_bounds,
             free=free,
@@ -515,55 +531,58 @@ class RosBridgeClient:
         return f" Bridge stderr: {text}"
 
     async def _read_loop(self) -> None:
-        # Capture the process stream for this task's lifetime. stop() clears
-        # self._proc before cancelling us so a concurrent teardown cannot turn
-        # the next read into an AttributeError while cancellation unwinds.
+        """Route sidecar frames until cancellation or a terminal transport failure."""
         proc = self._proc
         if proc is None or proc.stdout is None:
             self._fail_pending(BridgeError("ROS bridge stdout pipe is unavailable"))
             return
-        stdout = proc.stdout
         try:
             while True:
-                line = await stdout.readline()
+                line = await proc.stdout.readline()
                 if not line:
                     raise BridgeError("bridge process exited")
-                frame = decode_frame(line)
-                if frame is None:
-                    logger.warning("Ignoring a malformed JSON frame from the ROS bridge.")
-                    continue
-                if isinstance(frame, EventFrame):
-                    self._dispatch_event(frame.payload)
-                    continue
-                if not isinstance(frame, ResponseFrame):
-                    raise BridgeError("bridge emitted an unsupported frame type")
-                future = self._pending.pop(frame.request_id, None)
-                if future is not None and not future.done():
-                    if frame.ok:
-                        future.set_result(frame.result)
-                    else:
-                        future.set_exception(BridgeError(frame.error or "bridge error"))
+                self._route_frame(decode_frame(line))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # A dead stdout reader makes the process unusable even if the OS
-            # still reports it alive.  Terminate and reap it so request() can
-            # safely start a fresh, watchdog-armed sidecar next time.
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(OSError):
-                    await proc.wait()
-            stderr_task = self._stderr_task
-            if stderr_task is not None and not stderr_task.done():
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(asyncio.shield(stderr_task), 1.0)
-            message = str(exc) + self._diagnostic_suffix()
-            error = BridgeError(message)
-            self._fail_pending(error)
-            if self._proc is proc:
-                self._proc = None
-            logger.warning("ROS bridge reader stopped: %s", error)
+            await self._close_failed_reader(proc, exc)
+
+    def _route_frame(self, frame: EventFrame | ResponseFrame | None) -> None:
+        """Route one decoded frame without coupling transport and consumers."""
+        if frame is None:
+            logger.warning("Ignoring a malformed JSON frame from the ROS bridge.")
+            return
+        if isinstance(frame, EventFrame):
+            self._dispatch_event(frame.payload)
+            return
+        if not isinstance(frame, ResponseFrame):
+            raise BridgeError("bridge emitted an unsupported frame type")
+        future = self._pending.pop(frame.request_id, None)
+        if future is None or future.done():
+            return
+        if frame.ok:
+            future.set_result(frame.result)
+        else:
+            future.set_exception(BridgeError(frame.error or "bridge error"))
+
+    async def _close_failed_reader(
+        self, proc: asyncio.subprocess.Process, failure: Exception
+    ) -> None:
+        """Reap a failed sidecar and fail every request owned by its stream."""
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(OSError):
+                await proc.wait()
+        stderr_task = self._stderr_task
+        if stderr_task is not None and not stderr_task.done():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(stderr_task), 1.0)
+        error = BridgeError(str(failure) + self._diagnostic_suffix())
+        self._fail_pending(error)
+        if self._proc is proc:
+            self._proc = None
+        logger.warning("ROS bridge reader stopped: %s", error)
 
     def _fail_pending(self, error: BridgeError) -> None:
         """Fail and forget every request owned by the current bridge."""

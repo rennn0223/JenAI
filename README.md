@@ -8,6 +8,18 @@ JenAI 讓 LLM 理解任務並選擇已註冊的高階 Workflow；確定性流程
 產品文件原始碼位於 [`website/`](website/)，穩定文字入口從
 [`docs/QUICKSTART.md`](docs/QUICKSTART.md) 開始；網站的新可分享部署完成前不再提供 owner-only 連結。
 
+本地文件網站可用以下方式啟動：
+
+```bash
+cd website
+npm ci
+npm run build
+npm start -- --host 127.0.0.1 --port 4173
+```
+
+然後開啟 `http://127.0.0.1:4173/`；QuickStart 亦可直接使用
+`http://127.0.0.1:4173/docs/quickstart`。
+
 ---
 
 ## 核心能力
@@ -266,7 +278,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v2.3.0，2026-07）
+## 狀態（v2.4.0，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >

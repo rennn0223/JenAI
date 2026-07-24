@@ -58,107 +58,131 @@ class _ServerResources:
         return load_locations_tolerant(path)
 
 
-def _register_ros_tools(mcp: FastMCP, resources: _ServerResources) -> None:
-    config = resources.config
+async def _ros_topics(resources: _ServerResources) -> str:
+    try:
+        out = await ros2_core.ros_topics(resources.config)
+    except Ros2NotAvailableError as exc:
+        return f"unavailable: {exc}"
+    if not out.topics:
+        return "No topics on the graph (is ROS2 running?)."
+    return "\n".join(f"{topic.name} ({topic.kind_hint})" for topic in out.topics)
 
+
+async def _ros_topic_info(resources: _ServerResources, topic: str) -> str:
+    try:
+        out = await ros2_core.ros_topic_info(resources.config, topic)
+    except Ros2NotAvailableError as exc:
+        return f"unavailable: {exc}"
+    return (
+        f"type: {out.message_type}\npublishers: {out.publisher_count}\n"
+        f"subscribers: {out.subscriber_count}"
+    )
+
+
+async def _ros_echo(resources: _ServerResources, topic: str, count: int) -> str:
+    try:
+        out = await ros2_core.ros_echo(resources.config, topic, limit=count)
+    except Ros2NotAvailableError as exc:
+        return f"unavailable: {exc}"
+    if not out.messages:
+        return "No messages received."
+    return "\n---\n".join(
+        json.dumps(message, ensure_ascii=False, default=str) for message in out.messages
+    )
+
+
+def _list_locations(resources: _ServerResources) -> str:
+    locations, error = resources.locations()
+    if error:
+        return error
+    if not locations:
+        return "No locations saved yet."
+    return "\n".join(
+        f"{location.name} ({location.pose.x:.2f}, {location.pose.y:.2f}, {location.frame_id})"
+        f"{' aka ' + ', '.join(location.aliases) if location.aliases else ''}"
+        for location in locations
+    )
+
+
+async def _stop_robot(resources: _ServerResources) -> str:
+    try:
+        client = await resources.bridge()
+        return await halt_robot(resources.config, client)
+    except BridgeError as exc:
+        return f"unavailable: {exc}"
+
+
+async def _robot_pose(resources: _ServerResources) -> str:
+    try:
+        client = await resources.bridge()
+        pose = await client.get_pose(timeout=3.0)
+    except BridgeError as exc:
+        return f"unavailable: {exc}"
+    return f"x={pose.x:.3f} y={pose.y:.3f} yaw={pose.yaw:.3f} ({pose.frame_id}, from {pose.source})"
+
+
+async def _camera_look(resources: _ServerResources, topic: str) -> str:
+    config = resources.config
+    try:
+        client = await resources.bridge()
+        output = await capture_and_analyze(
+            config, client, topic or config.vehicle.camera_topic, timeout=5.0
+        )
+    except BridgeError as exc:
+        return f"unavailable: {exc}"
+    except VisionError as exc:
+        return f"vision error: {exc}"
+    parts = [output.summary]
+    if output.objects:
+        parts.append("objects: " + ", ".join(output.objects))
+    if output.anomalies:
+        parts.append("anomalies: " + ", ".join(output.anomalies))
+    if output.next_action_suggestions:
+        parts.append("suggested next: " + "; ".join(output.next_action_suggestions))
+    return "\n".join(parts)
+
+
+def _register_ros_tools(mcp: FastMCP, resources: _ServerResources) -> None:
     @mcp.tool()
     async def ros_topics() -> str:
         """List ROS2 topics currently on the graph, with a kind hint each."""
-        try:
-            out = await ros2_core.ros_topics(config)
-        except Ros2NotAvailableError as exc:
-            return f"unavailable: {exc}"
-        if not out.topics:
-            return "No topics on the graph (is ROS2 running?)."
-        return "\n".join(f"{t.name} ({t.kind_hint})" for t in out.topics)
+        return await _ros_topics(resources)
 
     @mcp.tool()
     async def ros_topic_info(topic: str) -> str:
         """Show a topic's message type, publishers, and subscribers."""
-        try:
-            out = await ros2_core.ros_topic_info(config, topic)
-        except Ros2NotAvailableError as exc:
-            return f"unavailable: {exc}"
-        return (
-            f"type: {out.message_type}\npublishers: {out.publisher_count}\n"
-            f"subscribers: {out.subscriber_count}"
-        )
+        return await _ros_topic_info(resources, topic)
 
     @mcp.tool()
     async def ros_echo(topic: str, count: int = 3) -> str:
         """Snapshot up to `count` recent messages from a topic."""
-        try:
-            out = await ros2_core.ros_echo(config, topic, limit=count)
-        except Ros2NotAvailableError as exc:
-            return f"unavailable: {exc}"
-        if not out.messages:
-            return "No messages received."
-        return "\n---\n".join(json.dumps(m, ensure_ascii=False, default=str) for m in out.messages)
+        return await _ros_echo(resources, topic, count)
 
     @mcp.tool()
     async def list_locations() -> str:
         """List the robot's saved named locations (for navigate_to)."""
-        locations, error = resources.locations()
-        if error:
-            return error
-        if not locations:
-            return "No locations saved yet."
-        return "\n".join(
-            f"{loc.name} ({loc.pose.x:.2f}, {loc.pose.y:.2f}, {loc.frame_id})"
-            f"{' aka ' + ', '.join(loc.aliases) if loc.aliases else ''}"
-            for loc in locations
-        )
+        return _list_locations(resources)
 
 
 def _register_robot_tools(mcp: FastMCP, resources: _ServerResources) -> None:
-    config = resources.config
-
     @mcp.tool()
     async def stop() -> str:
         """EMERGENCY STOP: cancel navigation and command zero velocity.
 
         Always available (even read-only servers) — stopping is always safe.
         """
-        try:
-            client = await resources.bridge()
-            return await halt_robot(config, client)
-        except BridgeError as exc:
-            return f"unavailable: {exc}"
+        return await _stop_robot(resources)
 
     @mcp.tool()
     async def robot_pose() -> str:
         """The robot's current position (x, y, yaw) from AMCL or odometry."""
-        try:
-            client = await resources.bridge()
-            pose = await client.get_pose(timeout=3.0)
-        except BridgeError as exc:
-            return f"unavailable: {exc}"
-        return (
-            f"x={pose.x:.3f} y={pose.y:.3f} yaw={pose.yaw:.3f} "
-            f"({pose.frame_id}, from {pose.source})"
-        )
+        return await _robot_pose(resources)
 
     @mcp.tool()
     async def camera_look(topic: str = "") -> str:
         """Capture one camera frame and describe it with the vision model.
         Omit `topic` to use the vehicle's configured camera."""
-        try:
-            client = await resources.bridge()
-            output = await capture_and_analyze(
-                config, client, topic or config.vehicle.camera_topic, timeout=5.0
-            )
-        except BridgeError as exc:
-            return f"unavailable: {exc}"
-        except VisionError as exc:
-            return f"vision error: {exc}"
-        parts = [output.summary]
-        if output.objects:
-            parts.append("objects: " + ", ".join(output.objects))
-        if output.anomalies:
-            parts.append("anomalies: " + ", ".join(output.anomalies))
-        if output.next_action_suggestions:
-            parts.append("suggested next: " + "; ".join(output.next_action_suggestions))
-        return "\n".join(parts)
+        return await _camera_look(resources, topic)
 
 
 def _register_navigation_tool(mcp: FastMCP, resources: _ServerResources) -> None:

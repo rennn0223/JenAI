@@ -8,6 +8,7 @@ which keeps wire compatibility testable without importing rclpy.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -183,100 +184,106 @@ class BridgeNodeProtocol(Protocol):
     def unwatch(self, watch_id: int) -> WirePayload: ...
 
 
+OperationHandler = Callable[[BridgeNodeProtocol, WirePayload, WatchdogState], WirePayload]
+
+
+def _drive_to_pose(
+    node: BridgeNodeProtocol, req: WirePayload, _watchdog: WatchdogState
+) -> WirePayload:
+    """Validate the complete direct-drive policy before crossing into ROS."""
+    return node.drive_to_pose(
+        _number(req, "x"),
+        _number(req, "y"),
+        _number(req, "yaw", 0.0),
+        tag=_text(req, "tag", "", allow_empty=True),
+        cmd_vel_topic=_text(req, "cmd_vel_topic", "/cmd_vel"),
+        stamped=_boolean(req, "stamped", False),
+        max_linear=_number(req, "max_linear", 1.0, positive=True),
+        max_angular=_number(req, "max_angular", 2.0, positive=True),
+        tolerance=_number(req, "tolerance", 0.3, positive=True),
+        odom_timeout_s=_number(req, "odom_timeout_s", 1.0, positive=True),
+        timeout=_number(req, "timeout", 600.0, positive=True),
+        avoidance=_avoidance(req),
+    )
+
+
+def _configure_watchdog(
+    node: BridgeNodeProtocol, req: WirePayload, watchdog: WatchdogState
+) -> WirePayload:
+    """Atomically configure localization and dead-client safety guards."""
+    normalized = {
+        "timeout": _number(req, "timeout", 0.0, positive=True),
+        "cmd_vel_topic": _text(req, "cmd_vel_topic", "/cmd_vel"),
+        "stamped": _boolean(req, "stamped", False),
+    }
+    result = watchdog.configure(normalized)
+    node.configure_pose_jump_guard(
+        _number(req, "pose_jump_threshold_m", 5.0, positive=True),
+        _number(req, "pose_jump_window_s", 2.0, positive=True),
+        watchdog.cmd_vel_topic,
+        watchdog.stamped,
+    )
+    with node._halt_lock:
+        node.ensure_halt_publisher(watchdog.cmd_vel_topic, watchdog.stamped)
+    return result
+
+
+_OPERATIONS: dict[str, OperationHandler] = {
+    "ping": lambda _node, _req, _watchdog: {"pong": True},
+    "pose": lambda node, req, _watchdog: node.get_pose(_number(req, "timeout", 2.0, positive=True)),
+    "map_cell": lambda node, req, _watchdog: node.map_cell(
+        _number(req, "x"), _number(req, "y"), _number(req, "timeout", 3.0, positive=True)
+    ),
+    "map_identity": lambda node, req, _watchdog: node.map_identity(
+        _number(req, "timeout", 3.0, positive=True)
+    ),
+    "nav_send": lambda node, req, _watchdog: node.nav_send(
+        _number(req, "x"),
+        _number(req, "y"),
+        _number(req, "yaw", 0.0),
+        _text(req, "frame_id", "map"),
+        _text(req, "tag", "", allow_empty=True),
+    ),
+    "nav_plan": lambda node, req, _watchdog: node.nav_plan(
+        _number(req, "x"),
+        _number(req, "y"),
+        _number(req, "yaw", 0.0),
+        _text(req, "frame_id", "map"),
+        _number(req, "timeout", 5.0, positive=True),
+    ),
+    "drive_to_pose": _drive_to_pose,
+    "nav_cancel": lambda node, _req, _watchdog: node.nav_cancel(),
+    "halt": lambda node, req, _watchdog: node.halt(
+        _text(req, "cmd_vel_topic", "/cmd_vel"), _boolean(req, "stamped", False)
+    ),
+    "watchdog": _configure_watchdog,
+    "capture_frame": lambda node, req, _watchdog: node.capture_frame(
+        _text(req, "topic"), _number(req, "timeout", 5.0, positive=True)
+    ),
+    "avoid_snapshot": lambda node, req, _watchdog: node.avoid_snapshot(
+        _text(req, "depth_topic", "/depth"),
+        _text(req, "path"),
+        _integer(req, "frames", 5, minimum=1),
+        _number(req, "timeout", 10.0, positive=True),
+    ),
+    "watch": lambda node, req, _watchdog: node.watch(
+        _integer(req, "watch_id", minimum=1),
+        _text(req, "topic"),
+        _text(req, "msg_type"),
+        _number(req, "throttle", 1.0, nonnegative=True),
+    ),
+    "unwatch": lambda node, req, _watchdog: node.unwatch(_integer(req, "watch_id", minimum=1)),
+}
+
+
 def dispatch_request(
     node: BridgeNodeProtocol,
     op: str,
     req: WirePayload,
     watchdog: WatchdogState,
 ) -> WirePayload:
-    """Dispatch one already-decoded bridge request or reject an unknown op."""
-    if op == "ping":
-        return {"pong": True}
-    if op == "pose":
-        return node.get_pose(_number(req, "timeout", 2.0, positive=True))
-    if op == "map_cell":
-        return node.map_cell(
-            _number(req, "x"),
-            _number(req, "y"),
-            _number(req, "timeout", 3.0, positive=True),
-        )
-    if op == "map_identity":
-        return node.map_identity(_number(req, "timeout", 3.0, positive=True))
-    if op == "nav_send":
-        return node.nav_send(
-            _number(req, "x"),
-            _number(req, "y"),
-            _number(req, "yaw", 0.0),
-            _text(req, "frame_id", "map"),
-            _text(req, "tag", "", allow_empty=True),
-        )
-    if op == "nav_plan":
-        return node.nav_plan(
-            _number(req, "x"),
-            _number(req, "y"),
-            _number(req, "yaw", 0.0),
-            _text(req, "frame_id", "map"),
-            _number(req, "timeout", 5.0, positive=True),
-        )
-    if op == "drive_to_pose":
-        return node.drive_to_pose(
-            _number(req, "x"),
-            _number(req, "y"),
-            _number(req, "yaw", 0.0),
-            tag=_text(req, "tag", "", allow_empty=True),
-            cmd_vel_topic=_text(req, "cmd_vel_topic", "/cmd_vel"),
-            stamped=_boolean(req, "stamped", False),
-            max_linear=_number(req, "max_linear", 1.0, positive=True),
-            max_angular=_number(req, "max_angular", 2.0, positive=True),
-            tolerance=_number(req, "tolerance", 0.3, positive=True),
-            odom_timeout_s=_number(req, "odom_timeout_s", 1.0, positive=True),
-            timeout=_number(req, "timeout", 600.0, positive=True),
-            avoidance=_avoidance(req),
-        )
-    if op == "nav_cancel":
-        return node.nav_cancel()
-    if op == "halt":
-        return node.halt(
-            _text(req, "cmd_vel_topic", "/cmd_vel"),
-            _boolean(req, "stamped", False),
-        )
-    if op == "watchdog":
-        normalized_watchdog = {
-            "timeout": _number(req, "timeout", 0.0, positive=True),
-            "cmd_vel_topic": _text(req, "cmd_vel_topic", "/cmd_vel"),
-            "stamped": _boolean(req, "stamped", False),
-        }
-        result = watchdog.configure(normalized_watchdog)
-        node.configure_pose_jump_guard(
-            _number(req, "pose_jump_threshold_m", 5.0, positive=True),
-            _number(req, "pose_jump_window_s", 2.0, positive=True),
-            watchdog.cmd_vel_topic,
-            watchdog.stamped,
-        )
-        # Pre-create the zero-velocity publisher now so DDS discovery is done
-        # long before an emergency halt needs it.
-        with node._halt_lock:
-            node.ensure_halt_publisher(watchdog.cmd_vel_topic, watchdog.stamped)
-        return result
-    if op == "capture_frame":
-        return node.capture_frame(
-            _text(req, "topic"),
-            _number(req, "timeout", 5.0, positive=True),
-        )
-    if op == "avoid_snapshot":
-        return node.avoid_snapshot(
-            _text(req, "depth_topic", "/depth"),
-            _text(req, "path"),
-            _integer(req, "frames", 5, minimum=1),
-            _number(req, "timeout", 10.0, positive=True),
-        )
-    if op == "watch":
-        return node.watch(
-            _integer(req, "watch_id", minimum=1),
-            _text(req, "topic"),
-            _text(req, "msg_type"),
-            _number(req, "throttle", 1.0, nonnegative=True),
-        )
-    if op == "unwatch":
-        return node.unwatch(_integer(req, "watch_id", minimum=1))
-    raise RuntimeError(f"unknown op '{op}'")
+    """Validate and dispatch one already-decoded bridge request."""
+    handler = _OPERATIONS.get(op)
+    if handler is None:
+        raise RuntimeError(f"unknown op '{op}'")
+    return handler(node, req, watchdog)

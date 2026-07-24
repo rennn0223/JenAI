@@ -610,24 +610,56 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return data
 
+    def _handle_emergency_stop(self) -> None:
+        if self.pending is not None:
+            self.pending.clear()
+        result = _do_stop(self.config, self.pose_cache)
+        self._send(
+            json.dumps(result, ensure_ascii=False),
+            "application/json; charset=utf-8",
+        )
+        self._drain_body()
+
+    def _dispatch_post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        if path == "/api/command":
+            return self._run_command(body)
+        if path == "/api/confirm":
+            return self._run_confirm(body)
+        return {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
+
+    def _run_command(self, body: dict[str, Any]) -> dict[str, Any]:
+        result = asyncio.run(run_web_command(self.config, self.config_path, body.get("text", "")))
+        if result.get("kind") == "confirm" and self.pending is not None:
+            result["confirm_id"] = self.pending.put(result.pop("action", {}))
+        return result
+
+    def _run_confirm(self, body: dict[str, Any]) -> dict[str, Any]:
+        acquired = self.action_lock is None or self.action_lock.acquire(blocking=False)
+        if not acquired:
+            return {
+                "kind": "error",
+                "html": (
+                    "<p>Another robot action is already running. Try again when it finishes.</p>"
+                ),
+            }
+        try:
+            action = self.pending.pop(body.get("confirm_id", "")) if self.pending else None
+            if action is None:
+                return {
+                    "kind": "error",
+                    "html": (
+                        "<p>This confirmation expired or was already used. Re-run the command.</p>"
+                    ),
+                }
+            return asyncio.run(run_web_confirm(self.config, action, config_path=self.config_path))
+        finally:
+            if self.action_lock is not None:
+                self.action_lock.release()
+
     def do_POST(self) -> None:  # noqa: N802 (http.server naming)
         path = self._route()
-        # EMERGENCY STOP is the one unauthenticated endpoint: stopping is
-        # always safe, and a phone with a stale/lost cookie must still be able
-        # to halt the robot. Worst case for an attacker is stopping it too.
         if path == "/api/stop":
-            # A stop also revokes every preview created before it. Otherwise an
-            # old confirmation card could restart motion after the emergency.
-            if self.pending is not None:
-                self.pending.clear()
-            result = _do_stop(self.config, self.pose_cache)
-            self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
-            # Drain a bounded body only AFTER the halt ran: closing the socket
-            # with unread bytes RSTs the connection, and the browser would show
-            # a network error for a stop that actually executed. An oversized
-            # claim is left unread — stalling the thread for an attacker-sized
-            # body is worse than one client-side error message.
-            self._drain_body()
+            self._handle_emergency_stop()
             return
         if not self._authorized():
             self._reject()
@@ -635,44 +667,7 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if body is None:
             return
-        if path == "/api/command":
-            result = asyncio.run(
-                run_web_command(self.config, self.config_path, body.get("text", ""))
-            )
-            # A previewed actuation is held server-side under a one-time id; the
-            # browser never gets (or gets to alter) the raw action it confirms.
-            if result.get("kind") == "confirm" and self.pending is not None:
-                result["confirm_id"] = self.pending.put(result.pop("action", {}))
-        elif path == "/api/confirm":
-            acquired = self.action_lock is None or self.action_lock.acquire(blocking=False)
-            if not acquired:
-                result = {
-                    "kind": "error",
-                    "html": (
-                        "<p>Another robot action is already running. "
-                        "Try again when it finishes.</p>"
-                    ),
-                }
-            else:
-                try:
-                    action = self.pending.pop(body.get("confirm_id", "")) if self.pending else None
-                    if action is None:
-                        result = {
-                            "kind": "error",
-                            "html": (
-                                "<p>This confirmation expired or was already used. "
-                                "Re-run the command.</p>"
-                            ),
-                        }
-                    else:
-                        result = asyncio.run(
-                            run_web_confirm(self.config, action, config_path=self.config_path)
-                        )
-                finally:
-                    if self.action_lock is not None:
-                        self.action_lock.release()
-        else:
-            result = {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
+        result = self._dispatch_post(path, body)
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
 
 

@@ -22,6 +22,7 @@ from jenai.agent import build_run_agent, orchestrator, review_plan, run_plan
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.fast_paths import start_capability_card_run
 from jenai.agent.instructions import CHAT_INSTRUCTIONS
+from jenai.agent.intent_routing import RunAgentRoute, route_run_request
 from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
 from jenai.capability_reporting import is_capability_card_request
@@ -547,35 +548,30 @@ class JenAITuiApp(
         elif value.startswith("/"):
             await self._handle_command(value)
         else:
-            self._scroll_to_bottom()
-            # Plain language is mode-routed: the point of the modes is that a
-            # bare sentence DOES something (plans or acts) instead of the model
-            # telling you which command to type. Wrapped like _handle_command so
-            # a provider error or non-conforming model output (run_plan does not
-            # catch these) surfaces as a clean message instead of an unhandled
-            # task exception — the exception net the removed chat stream had.
-            try:
-                if is_capability_card_request(value):
-                    await self._show_capability_card(value)
-                elif is_casual_greeting(value):
-                    # A greeting needs neither robot state nor an agent handoff.
-                    # Keep it structurally tool-free so weak local models cannot
-                    # turn "hi" into a visible specialist/tool call.
-                    await self._stream_chat_reply(value)
-                elif self._mode == "plan":
-                    await self._show_plan(value)
-                elif orchestrator.is_read_only_state_request(value):
-                    await self._show_state_inspection(value)
-                elif await self._try_explicit_route_reflex(value):
-                    # Exact one-place imperatives are reflexes: preserve the
-                    # approval + Nav2 feedback boundary without spending a
-                    # model turn to rediscover a saved location.
-                    pass
-                else:  # approve / auto — the run agent answers questions too
-                    await self._show_run(value)
-            except Exception as exc:
-                await self._mount_event(TimelineItem("error", f"Failed: {escape(str(exc))}"))
+            await self._handle_plain_language(value)
         self._scroll_to_bottom()
+
+    async def _handle_plain_language(self, value: str) -> None:
+        """Route one natural-language turn without mixing command dispatch policy."""
+        self._scroll_to_bottom()
+        try:
+            if is_capability_card_request(value):
+                await self._show_capability_card(value)
+            elif is_casual_greeting(value):
+                await self._stream_chat_reply(value)
+            elif self._mode == "plan":
+                await self._show_plan(value)
+            elif orchestrator.is_read_only_state_request(value):
+                await self._show_state_inspection(value)
+            elif route_run_request(value) is RunAgentRoute.AREA_PATROL:
+                # A compound coverage mission may mention its final dock/home.
+                # Keep it intact instead of taking the one-location reflex.
+                await self._show_run(value)
+            elif not await self._try_explicit_route_reflex(value):
+                # approve / auto — the run agent answers questions too.
+                await self._show_run(value)
+        except Exception as exc:
+            await self._mount_event(TimelineItem("error", f"Failed: {escape(str(exc))}"))
 
     async def _stream_chat_reply(self, prompt: str) -> None:
         """Stream a tool-free chat reply into one timeline item."""
@@ -927,65 +923,79 @@ class JenAITuiApp(
         await self._render_live_tool_updates(run)
 
         if run.status == "awaiting_approval":
-            pending_approvals = [a for a in run.interruptions if a.status == "pending"]
-            if agent is not None and pending_approvals:
-                entry = {
-                    "agent": agent,
-                    "ctx": ctx,
-                    "decisions": {},
-                    "expected": {a.tool_call_id for a in pending_approvals},
-                }
-                self._pending_approvals[run.run_id] = entry
-                mounted_card = False
-                for approval in pending_approvals:
-                    remembered = bool(
-                        approval.tool_name and approval.tool_name in self._auto_approved
+            if await self._render_run_approvals(ctx, run, agent=agent):
+                return
+        else:
+            await self._render_terminal_run_state(run)
+
+        self._scroll_to_bottom()
+
+    async def _render_run_approvals(
+        self,
+        ctx: JenAIRunContext,
+        run: RunRecord,
+        *,
+        agent: Any | None,
+    ) -> bool:
+        """Render pending approvals and report whether auto-approval resumed the run."""
+
+        pending = [approval for approval in run.interruptions if approval.status == "pending"]
+        if agent is None or not pending:
+            for approval in pending:
+                await self._mount_event(ApprovalCard(approval))
+            return False
+
+        entry = {
+            "agent": agent,
+            "ctx": ctx,
+            "decisions": {},
+            "expected": {approval.tool_call_id for approval in pending},
+        }
+        self._pending_approvals[run.run_id] = entry
+        mounted_card = False
+        for approval in pending:
+            remembered = bool(approval.tool_name and approval.tool_name in self._auto_approved)
+            if may_auto_approve(
+                approval,
+                auto_mode=self._mode == "auto",
+                remembered=remembered,
+            ):
+                entry["decisions"][approval.tool_call_id] = True
+                if self._mode == "auto":
+                    await self._mount_event(
+                        TimelineItem("warn", f"自動模式:已批准 {approval.title}")
                     )
-                    if may_auto_approve(
-                        approval,
-                        auto_mode=self._mode == "auto",
-                        remembered=remembered,
-                    ):
-                        entry["decisions"][approval.tool_call_id] = True
-                        if self._mode == "auto":
-                            await self._mount_event(
-                                TimelineItem("warn", f"自動模式:已批准 {approval.title}")
-                            )
-                    else:
-                        await self._mount_event(ApprovalCard(approval))
-                        mounted_card = True
-                if not mounted_card and set(entry["decisions"]) >= entry["expected"]:
-                    await self._finalize_agent_approvals(run.run_id)
-                    return
-            else:
-                for approval in pending_approvals:
-                    await self._mount_event(ApprovalCard(approval))
-        elif run.status == "completed":
+                continue
+            await self._mount_event(ApprovalCard(approval))
+            mounted_card = True
+
+        if mounted_card or set(entry["decisions"]) < entry["expected"]:
+            return False
+        await self._finalize_agent_approvals(run.run_id)
+        return True
+
+    async def _render_terminal_run_state(self, run: RunRecord) -> None:
+        """Render one terminal run state without duplicating approval policy."""
+
+        if run.status == "completed":
             if run.final_output:
-                # Normalize model-authored paragraph gaps; all transcript
-                # entries otherwise use the same one-row line spacing. Agent
-                # and tool output is untrusted text, never Rich markup.
                 await self._mount_event(
                     OutputPanel("Result", run.final_output, spaced=True, body_markup=False)
                 )
             await self._mount_event(TimelineItem("success", "Done."))
-        elif run.status == "failed":
-            if run.error:
-                await self._mount_event(ErrorBlock(run.error))
-            else:
-                await self._mount_event(TimelineItem("error", "Run failed."))
-        elif run.status == "blocked":
-            # The orchestrator writes WHY into final_output (e.g. the model-loop
-            # stop with a suggested manual command) — swallowing it would hide
-            # an honest report behind a four-word warning.
-            if run.final_output:
-                await self._mount_event(
-                    OutputPanel("Run blocked", run.final_output, spaced=True, body_markup=False)
-                )
-            else:
-                await self._mount_event(TimelineItem("warn", "Run blocked."))
-
-        self._scroll_to_bottom()
+            return
+        if run.status == "failed":
+            event = ErrorBlock(run.error) if run.error else TimelineItem("error", "Run failed.")
+            await self._mount_event(event)
+            return
+        if run.status != "blocked":
+            return
+        if run.final_output:
+            await self._mount_event(
+                OutputPanel("Run blocked", run.final_output, spaced=True, body_markup=False)
+            )
+        else:
+            await self._mount_event(TimelineItem("warn", "Run blocked."))
 
     async def _render_live_tool_updates(self, run: RunRecord) -> None:
         """Mount tool calls as they start and refresh their terminal outcome in place."""

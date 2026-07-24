@@ -256,6 +256,59 @@ def purge_data(
     return removed
 
 
+class _PruneCandidateFinder:
+    """Apply one retention cutoff consistently across every managed store."""
+
+    def __init__(self, paths: DataPaths, cutoff: datetime) -> None:
+        self._paths = paths
+        self._cutoff = cutoff
+        self._protected = {
+            paths.config.absolute(),
+            paths.credentials.absolute(),
+            paths.locations.absolute(),
+            *(backup.absolute() for backup in paths.config_backups),
+        }
+        self._candidates: list[PruneCandidate] = []
+
+    def find(self) -> list[PruneCandidate]:
+        self._add_files("sessions", _safe_glob(self._paths.sessions, "*.json"))
+        self._add_files("pending_runs", _safe_glob(self._paths.pending_runs, "*.json"))
+        self._add_files("reports", _managed_report_files(self._paths.reports))
+        self._add_trace_records()
+        self._add_audit_records()
+        return self._candidates
+
+    def _add_files(self, category: str, files: Iterator[Path]) -> None:
+        for path in files:
+            if self._is_stale_file(path):
+                self._candidates.append(PruneCandidate(category, path))
+
+    def _is_stale_file(self, path: Path) -> bool:
+        if path.absolute() in self._protected:
+            return False
+        try:
+            modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+        except OSError:
+            return False
+        return modified < self._cutoff
+
+    def _add_trace_records(self) -> None:
+        for path in _safe_glob(self._paths.traces, "*.jsonl"):
+            if path.absolute() in self._protected:
+                continue
+            stale = _count_stale_trace_records(path, self._cutoff)
+            if stale:
+                self._candidates.append(PruneCandidate("traces", path, stale_records=stale))
+
+    def _add_audit_records(self) -> None:
+        path = self._paths.audit
+        if path.absolute() in self._protected:
+            return
+        stale = _count_stale_audit_records(path, self._cutoff)
+        if stale:
+            self._candidates.append(PruneCandidate("audit", path, stale_records=stale))
+
+
 def find_prune_candidates(
     paths: DataPaths,
     *,
@@ -269,48 +322,7 @@ def find_prune_candidates(
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
     cutoff = moment - timedelta(days=older_than_days)
-    protected = {
-        paths.config.absolute(),
-        paths.credentials.absolute(),
-        paths.locations.absolute(),
-        *(backup.absolute() for backup in paths.config_backups),
-    }
-    candidates: list[PruneCandidate] = []
-    for category, directory, pattern in (
-        ("sessions", paths.sessions, "*.json"),
-        ("pending_runs", paths.pending_runs, "*.json"),
-    ):
-        for path in _safe_glob(directory, pattern):
-            if path.absolute() in protected:
-                continue
-            try:
-                modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
-            except OSError:
-                continue
-            if modified < cutoff:
-                candidates.append(PruneCandidate(category, path))
-    for path in _managed_report_files(paths.reports):
-        if path.absolute() in protected:
-            continue
-        try:
-            modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
-        except OSError:
-            continue
-        if modified < cutoff:
-            candidates.append(PruneCandidate("reports", path))
-
-    for path in _safe_glob(paths.traces, "*.jsonl"):
-        if path.absolute() in protected:
-            continue
-        stale = _count_stale_trace_records(path, cutoff)
-        if stale:
-            candidates.append(PruneCandidate("traces", path, stale_records=stale))
-
-    if paths.audit.absolute() not in protected:
-        stale_audit = _count_stale_audit_records(paths.audit, cutoff)
-        if stale_audit:
-            candidates.append(PruneCandidate("audit", paths.audit, stale_records=stale_audit))
-    return candidates
+    return _PruneCandidateFinder(paths, cutoff).find()
 
 
 def prune_data(
