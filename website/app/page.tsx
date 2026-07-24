@@ -40,7 +40,7 @@ export default function Home() {
     <DocsShell>
       <section className="home-hero">
         <div className="hero-copy">
-          <div className="eyebrow">JENAI 2.2 · SIMULATION-FIRST ROBOTICS</div>
+          <div className="eyebrow">JENAI 2.3 · SIMULATION-FIRST ROBOTICS</div>
           <h1>A decision layer for robots—without replacing their controls.</h1>
           <p>
             Let the LLM select a bounded robot workflow, then execute it through registered ROS 2

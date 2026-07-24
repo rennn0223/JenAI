@@ -38,7 +38,7 @@ export default async function DocumentationPage({
         </header>
         <div className="article-body">{page.body}</div>
         <footer className="article-footer">
-          <span>JenAI v2.2.0</span>
+          <span>JenAI v2.3.0</span>
           <span>Evidence-aware · ROS 2 Jazzy · Isaac Sim 5.1</span>
         </footer>
       </article>
