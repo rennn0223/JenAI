@@ -5,7 +5,7 @@
 
 ## 產品定位與邊界
 
-JenAI v2.2.0 正式版是一個**受監督、具執行邊界的 ROS2 高階決策與工作流代理**。它使用自然語言
+JenAI v2.3.0 正式版是一個**受監督、具執行邊界的 ROS2 高階決策與工作流代理**。它使用自然語言
 或 Slash 指令理解任務、查詢 live ROS graph、選擇已註冊能力、經批准與可選 Twin Gate
 驗證後呼叫 Nav2／ROS2 API，最後以 odom、Nav2 result 與 audit 回報結果。
 
@@ -13,7 +13,7 @@ JenAI v2.2.0 正式版是一個**受監督、具執行邊界的 ROS2 高階決�
 `perceive → decide → rehearse → act → feedback` 自主迴圈。`/explore` 是已知儲存點位的
 有界巡遊，不是 SLAM 探索。
 
-目前 repository 是 public；v2.2.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+目前 repository 是 public；v2.3.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
 
 下表以 v2.0.1 tag 指向的 main@`79a295a` 為固定 revision；[PR #106](https://github.com/rennn0223/JenAI/pull/106)、
 [main CI](https://github.com/rennn0223/JenAI/actions/runs/29654418747)、[Supply Chain](https://github.com/rennn0223/JenAI/actions/runs/29654418730) 與
@@ -25,15 +25,15 @@ JenAI v2.2.0 正式版是一個**受監督、具執行邊界的 ROS2 高階決�
 
 | ID | 角色 | 驗收條件 | 目前證據 | 狀態 | 關閉條件 |
 |---|---|---|---|---|---|
-| ENG-1 | 工程師 | 無 ROS 的單元／整合測試、lint、三版本 CI、wheel 冒煙全綠 | [PR #116](https://github.com/rennn0223/JenAI/pull/116) 的 Python 3.12／3.13／3.14、build 與 audit/SBOM 全綠；v2.2.0 Release 又從合併後 main 重跑完整 coverage 與 wheel lifecycle | PASS | 後續每個 PR／main revision 持續維持三版本 CI 與 safety-chain gate |
+| ENG-1 | 工程師 | 無 ROS 的單元／整合測試、lint、三版本 CI、wheel 冒煙全綠 | [PR #118](https://github.com/rennn0223/JenAI/pull/118) 的 Python 3.12／3.13／3.14、build 與 audit/SBOM 全綠；[v2.3.0 Release run](https://github.com/rennn0223/JenAI/actions/runs/30124399612) 又從合併後 main 重跑完整 coverage 與 wheel lifecycle | PASS | 後續每個 PR／main revision 持續維持三版本 CI 與 safety-chain gate |
 | ENG-2 | 工程師 | ROS／Isaac 關鍵路徑可自動回歸，不只人工 TUI 實測 | clean `d942130…855` HIL 通過完整 scan metadata gate、兩條 route、Nav2 cancel acknowledgement 與 zero-drift software halt；clean `cc6d217…f6e` 另保留 0-goal fail-closed 與 10/10 固定 route legs；Twin 同 domain 明記 skip | PASS | 每個候選 release 維持同 protocol 回歸；separated-domain Twin verdict 另由安全／部署 gate 驗收 |
 | ENG-3 | 工程師 | 核心模組職責可維護 | `app.py` 1,789→1,245；批准生命週期抽為 `approval_flow.py`，已批准工具執行抽為 `direct_execution.py`，另有 `catalog.py`、location mixin 與 stdlib-only bridge protocol；完整回歸全綠 | PASS | 新功能維持 approval policy／execution／rendering 邊界與行為測試 |
-| ENG-4 | 工程師 | 依賴與供應鏈可稽核 | v2.2.0 已發布 wheel、sdist、matching constraints、CycloneDX SBOM、`SHA256SUMS` 與兩份 Sigstore bundles；實際下載的六個被列資產均通過 checksum，Release workflow 全綠 | PASS | 每週持續掃描；每版維持 immutable tag/source 與 public attestation gate |
+| ENG-4 | 工程師 | 依賴與供應鏈可稽核 | v2.3.0 已發布 wheel、sdist、matching constraints、CycloneDX SBOM、`SHA256SUMS` 與兩份 Sigstore bundles；七個被列資產均由 Release workflow 完成 checksum 與資產集合驗證 | PASS | 每週持續掃描；每版維持 immutable tag/source 與 public attestation gate |
 | PM-1 | PM | ICP 與主要任務明確 | 主要 ICP：已有 ROS2/Nav2 的研究室與機器人開發團隊；主要任務：高階任務觸發與 ROS 開發輔助 | PASS | 新功能必須服務主要任務之一 |
-| PM-2 | PM | v2 與 post-v2 承諾分開 | v2.2.0 正式版仍是受監督工作流代理；唯讀快速路徑不等於 M6 常駐決策迴圈，後者仍移至 post-v2（候選 v3） | PASS | README、論文、demo 不得把 M6 當現有能力 |
+| PM-2 | PM | v2 與 post-v2 承諾分開 | v2.3.0 正式版是 Workflow-first 的受監督代理；語意區域覆蓋不等於未知空間探索，常駐事件重入仍移至後續版本 | PASS | README、論文、demo 不得把未驗證能力當成現有能力 |
 | PM-3 | PM | 新手可從安裝走到第一個成功任務 | ONBOARDING、doctor 與 responsive TUI 已有；三位使用者曾在指導下試用，但未做純冷啟動計時 | PARTIAL | ≥5 位新手只看文件完成任務並保存時間／卡點 |
 | PM-4 | PM | TUI 資訊層級、鍵盤流程與窄螢幕可用 | Claude Code 風格雙欄 welcome、平面 transcript／approval、composer 與 3 級 responsive 已實作；70 項 TUI 測試全綠；使用者於 2026-07-19 明確接受目前 120×30／80×30 SVG 樣本（「UI 先這樣」） | PASS | 本版視覺封版；未來若改外觀，仍須先提供獨立樣本取得使用者批准 |
-| BIZ-1 | 經營者 | 授權與發布可供外部採用 | Apache-2.0、public repository 與公開 v2.2.0 signed Release 已就緒；匿名使用者可下載並驗 checksum | PASS | 後續啟用適當 main／tag 保護並維持公開交付 |
+| BIZ-1 | 經營者 | 授權與發布可供外部採用 | Apache-2.0、public repository 與公開 v2.3.0 signed Release 已就緒；匿名使用者可下載並驗 checksum | PASS | 後續啟用適當 main／tag 保護並維持公開交付 |
 | BIZ-2 | 經營者 | 有商業模式、成本與責任邊界 | `ADOPTION_MODEL`：Apache 核心＋整合／訓練／維護服務、TCO 輸入表、責任分界；現在明示無付費 SLA | PASS | 報價前以真實 pilot 工時填成本，不先造 ROI |
 | BIZ-3 | 經營者 | 不依賴單一維護者 | 文件、CI 與 HANDOFF 的第二維護者 release／rollback／Isaac 故障演練已具可執行步驟與 artifact 欄位，但尚未由第二人獨立完成 | PARTIAL | 第二位維護者在作者介入 0 次下完成一次 release、rollback 與 Isaac 故障演練 |
 | RES-1 | 教授 | 研究問題、方法、證據與限制一致 | `EVIDENCE_LEDGER` 分開 E2 derived／observed、B4、clean HIL-FS2、Hero10 與 dirty TUI-NL1；Hero 首次 pose-feed fail-closed 亦保留。較早 E1、E2-C、E3、E4、B4 仍缺 execution revision／歷史 doctor，B4 也無 incident 欄或獨立觀察者 | PARTIAL | 重跑或找回歷史 metadata；補獨立事件觀察。新結果只能追加且保留失敗，模擬 HIL 不外推實體 |
@@ -42,8 +42,8 @@ JenAI v2.2.0 正式版是一個**受監督、具執行邊界的 ROS2 高階決�
 | SALES-1 | 業務 | 三分鐘內可穩定展示核心價值 | clean Hero 固定序列為 10/10 Nav2 route legs，另有 1 次自然語言單-goal 成功；但前者不是 10 次完整三分鐘 demo／LLM 試驗，後者執行時 dirty，且最慢單 leg 111.668 s | PARTIAL | 同 clean commit／模型／場景跑 10 次完整 demo 序列，≥9 次在三分鐘內成功並保留所有失敗 |
 | SALES-2 | 業務 | 有可引用的 ROI／案例 | 效率研究 protocol 與分析工具已可執行，但仍沒有受試資料、節省時間、導入成本或客戶案例 | OPEN | 完成效率研究並寫一頁案例研究 |
 | SALES-3 | 業務 | 不過度承諾 | 誠實回報與限制文件已有 | PASS | 不說「通用實體安全」「認證」「未知空間自主探索」 |
-| BUY-1 | 買家 | 能直接安裝、啟動、診斷與移除 | v2.2.0 public Release 可匿名下載；維護者已重驗全部 checksums，workflow 以 matching constraints 完成大小寫入口、version／help、無設定 doctor 與 uninstall。尚缺非維護者 fresh-machine 冷啟動 | PARTIAL | 由非維護者在 fresh machine 只照 README 完成下載、驗證、onboard、doctor 與移除 |
-| BUY-2 | 買家 | 資安與部署邊界清楚 | `SECURITY`、`THREAT_MODEL`、`SUPPORT` 已明示 `/shell`、DDS、雲端資料外送與功能安全限制；v2.2.0 已發布逐版 CycloneDX SBOM／checksum 及 build／SBOM Sigstore bundles | PASS | 每個企業場域仍須另做 deployment threat review |
+| BUY-1 | 買家 | 能直接安裝、啟動、診斷與移除 | v2.3.0 public Release 可匿名下載；Release workflow 以 matching constraints 完成大小寫入口、version／help、無設定 doctor 與 uninstall。尚缺非維護者 fresh-machine 冷啟動 | PARTIAL | 由非維護者在 fresh machine 只照 README 完成下載、驗證、onboard、doctor 與移除 |
+| BUY-2 | 買家 | 資安與部署邊界清楚 | `SECURITY`、`THREAT_MODEL`、`SUPPORT` 已明示 `/shell`、DDS、雲端資料外送與功能安全限制；v2.3.0 已發布逐版 CycloneDX SBOM／checksum 及 build／SBOM Sigstore bundles | PASS | 每個企業場域仍須另做 deployment threat review |
 | BUY-3 | 買家 | 有支援載具／ROS／模型矩陣與驗收方式 | `SUPPORT_MATRIX` 分 Validated／Supported／Experimental／Planned；`VEHICLE_POC` 固定驗收 | PASS | 新組合有 artifact 才能升級等級 |
 | BUY-4 | 買家 | 有 SLA、升級、回滾與事故處理 | `SUPPORT` 明示目前 best-effort／無 SLA；`ROLLBACK` 涵蓋 wheel、source、Isaac 與實體回歸；安全通報另見 `SECURITY` | PASS | 若推出付費方案，須另簽回應時段與嚴重度 SLA |
 | BUY-5 | 買家 | 本機敏感資料有可稽核的生命週期與最小權限 | `JenAI data status／harden／export／prune／purge`、symlink／hardlink 防護、0600 atomic write 與秘密遮罩已有測試；只讀盤點仍發現既有資料需要 harden，因權限調整可能影響既有群組分享，尚未在使用者未同意下改動 | PARTIAL | 使用者明確 opt-in 後執行 harden，再以只讀 status 證明無不安全項目並保存不含秘密的摘要 |
@@ -64,17 +64,17 @@ constraints、逐版 SBOM 或 provenance，也不能取代不同 revision 的 HI
 |---|---|---|---|
 | 工程師 | `SATISFIED_WITH_EXTERNAL_GATES` | PR #108 三版本 CI／build／audit-SBOM、本機 wheel smoke、clean `d942130…855` 完整 FullScan／cancel evidence，以及 clean Hero 10/10 legs | separated-domain Twin verdict；每版 self-hosted workflow artifact |
 | PM | `SATISFIED_WITH_EXTERNAL_GATES` | `README.md`、`docs/product/PRODUCT_BRIEF.md`、`docs/design/UX.md`、responsive TUI 測試與已接受的 120×30／80×30 樣本 | ≥5 位新手冷啟動紀錄；未來視覺變更仍須先看樣本 |
-| 經營者 | `SATISFIED_WITH_EXTERNAL_GATES` | `LICENSE`、`SUPPORT.md`、`docs/product/HANDOFF.md`、`docs/operations/ROLLBACK.md`、public v2.2.0 Release 與 published-release mutation guard | main／tag 保護仍待確認；第二維護者零介入演練 |
+| 經營者 | `SATISFIED_WITH_EXTERNAL_GATES` | `LICENSE`、`SUPPORT.md`、`docs/product/HANDOFF.md`、`docs/operations/ROLLBACK.md`、public v2.3.0 Release 與 published-release mutation guard | main／tag 保護仍待確認；第二維護者零介入演練 |
 | 教授 | `SATISFIED_WITH_EXTERNAL_GATES` | `EVIDENCE_LEDGER`、`USABILITY_STUDY`、`SAFETY_CASE`、HIL-FS2 與 Hero10；derived／observed／sim-only 限制已對齊 | prospective 使用者研究、獨立事件觀察與非 Ackermann 實體 PoC；歷史 metadata 缺口仍在 |
 | 業務 | `SATISFIED_WITH_EXTERNAL_GATES` | `PRODUCT_BRIEF`、`DEMO_SCRIPT`、HIL-FS2 與 Hero 10/10 固定 route legs；核心 route／Dock／cancel 已有正式模擬樣本 | 10 次完整三分鐘 demo／NL 試驗尚未執行；效率結果與可引用案例 |
-| 買家 | `SATISFIED_WITH_EXTERNAL_GATES` | `docs/QUICKSTART.md`、`docs/operations/ROLLBACK.md`、`docs/operations/SUPPORT_MATRIX.md`、`docs/operations/DATA_LIFECYCLE.md`、public v2.2.0 Release 與實際下載 wheel lifecycle | 非維護者 fresh-machine 驗收；本機 data harden 仍等待使用者 opt-in |
+| 買家 | `SATISFIED_WITH_EXTERNAL_GATES` | `docs/QUICKSTART.md`、`docs/operations/ROLLBACK.md`、`docs/operations/SUPPORT_MATRIX.md`、`docs/operations/DATA_LIFECYCLE.md`、public v2.3.0 Release 與 clean wheel lifecycle | 非維護者 fresh-machine 驗收；本機 data harden 仍等待使用者 opt-in |
 
 本輪沒有已知、可由目前 worktree 繼續修正的內部 blocker；這不是 product-ready 宣告。
 目前外部事實更新為：clean `d942130…855` 已在合法 Dock 起點完成現行 FullScan gate、兩條
 Isaac/Nav2 route 與 acknowledged cancel／software halt；clean `cc6d217…f6e` 的固定 Hero
 序列為 10/10 route legs，且保留先前 0-goal fail-closed。Twin 同 domain 0 仍為 `skip`。
 這不是 10 次完整 demo／NL 試驗、實體安全或跨載具證據。UI 樣本已獲接受並封版；v2.0.1
-歷史發布證據仍保留；v2.2.0 已於 public repository 發布 signed assets。本機資料尚未獲准
+歷史發布證據仍保留；v2.3.0 已於 public repository 發布 signed assets。本機資料尚未獲准
 harden，main／tag 保護仍待確認。受試者、第二維護者、獨立觀察者、separated-domain Twin
 與另一載具的 artifact 仍未取得。
 
