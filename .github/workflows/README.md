@@ -6,7 +6,7 @@
 | `release.yml` | 推 `v*` tag；或人工 dispatch | 驗 tag、trigger SHA、remote tag 與 pyproject 版本一致 → lint／完整測試／整體及安全 branch coverage／dependency audit → reproducible build → sdist 敏感檔掃描 → matching constraints、CycloneDX SBOM、SHA256SUMS；public repo 另強制 provenance 與 SBOM attestations → fresh wheel lifecycle → draft／人工發布 |
 | `isaac-hil.yml` | 人工 `workflow_dispatch`，只在 `self-hosted+jenai-isaac` runner | 精確確認字串後才允許 live route；預設 source Isaac 的 Jazzy workspace（可由 `ROS_SETUP_PATH` repository variable 覆寫）；驗 route、cancel、hard stop、可選 Twin verdict，永遠上傳 JSON artifact。push／PR／schedule 不會觸發 |
 
-目前 repository 是 public；v2.2.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+目前 repository 是 public；v2.3.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
 
 Release consumer 應同時下載同一版的 `jenai-X.Y.Z-py3-none-any.whl`、
 `jenai-X.Y.Z-constraints.txt` 與 `SHA256SUMS`，驗證後才執行 `uv tool install --constraints`；
