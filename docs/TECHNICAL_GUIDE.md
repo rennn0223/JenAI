@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v2.4.0(2026-07)。專案方向見 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md),前瞻主圖見 [ROADMAP.md](product/ROADMAP.md);逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v2.4.0(2026-07)。架構單一事實來源見 [ARCHITECTURE.md](ARCHITECTURE.md)，前瞻主圖見 [ROADMAP.md](product/ROADMAP.md)；逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -279,7 +279,7 @@ uv run pytest --cov=jenai --cov-branch
 
 ## 5. 後續建議(接下來值得做)
 
-Roadmap 的正式版在 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md)(必做 M1–M5、可做、考慮做);已完成與剩餘:
+Roadmap 的正式版在 [ROADMAP.md](product/ROADMAP.md)；已完成與剩餘:
 
 1. ~~MCP server 化~~(v0.6)、~~急停 + watchdog(M1)~~、~~vehicle profile(M2)~~、~~任務技能 patrol/dock(M4)~~(以上 v0.7 系列完成)
 2. ~~M5 onboarding~~ ✅([ONBOARDING.md](ONBOARDING.md):裸 ROS2 → 建圖 → 定位 → Nav2 → 首航;doctor nav 檢查即進度條)
@@ -292,4 +292,4 @@ Roadmap 的正式版在 [PROJECT_DIRECTION.md](product/PROJECT_DIRECTION.md)(必
 9. **M6 常駐迴圈**(post-v2／候選 v3 研究方向):決策腦與 eval 已備(`decision_core`/`decision_eval`),但 perceive→decide→rehearse→act 尚未接成常駐迴圈；v2.0 不宣稱已完成(ROADMAP 軌道 1)
 
 ---
-*其他現行文件：[PROJECT_DIRECTION](product/PROJECT_DIRECTION.md)（方向與 roadmap）、[COMMANDS](COMMANDS.md)（指令規格）、[UX](design/UX.md)（介面基準）。v0.1 規劃文件已集中至 [設計歸檔](archive/design/README.md)，現況以本指南與程式碼為準。*
+*其他現行文件：[ARCHITECTURE](ARCHITECTURE.md)（模組責任與依賴規則）、[ROADMAP](product/ROADMAP.md)（後續方向）、[COMMANDS](COMMANDS.md)（指令規格）、[UX](design/UX.md)（介面基準）。初始設計需追溯時使用 Git history；現況以 ARCHITECTURE、本指南與程式碼為準。*

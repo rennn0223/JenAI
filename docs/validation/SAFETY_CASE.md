@@ -1,6 +1,6 @@
 # SAFETY_CASE — 危害分析與防護對應(HARA-lite 草稿)
 
-> V1_GATE A7。輕量版危害分析:每個危害 → 成因 → 防護層 → 驗證證據 → 殘餘風險。
+> 輕量版危害分析：每個危害 → 成因 → 防護層 → 驗證證據 → 殘餘風險。
 > 防護層代號:**R** 反射層(不經 LLM/網路)、**G** Twin Gate、**H** HITL 批准、**P** 程序(人的規範)。
 > 狀態：**研究草稿／PARTIAL**。2026-07-19 證據稽核後，模擬任務完成紀錄與
 > 安全事件觀測分開處理；尚無獨立安全觀察者、正式 HARA/FMEA 審查或實體場域驗證。
@@ -53,7 +53,7 @@ domain 42 fixture；E1/E4 不以 ROS/Twin 為 gate。純模擬 domain 0 的
 `twin_isolation` 不適用於場次通過，也不得因此宣稱虛實隔離已驗證。正式事件率研究另須
 獨立觀察者與明確 incident 欄；一般 patrol report 不能代替安全事件量測。
 
-## 完稿條件(對應 V1_GATE)
+## 安全證據關閉條件
 
 - 🟩 HIL-FS2-20260719：clean `d942130…855` 在 Isaac Sim 完成現行完整 scan gate、兩條 route、Nav2 cancel acknowledgement／software halt；Hero 在 clean `cc6d217…f6e` 保留 0-goal fail-closed 並完成 10/10 固定 route legs。Twin 同 domain 0 仍為 skip；此項只關閉模擬執行鏈，不關閉實體安全、隔離或事件率研究
 - 🟨 B4 任務結果可重建：本機 subset manifest 固定 102 份 reports、407/408 waypoint succeeded、唯一 unavailable 的 goal 未送出；約 20 h 僅為歷史 driver task-time 摘要，reports 橫跨約 25.4 h wall time 且缺 per-report duration/run ID；無 incident 欄與獨立觀察者，故安全事件狀態仍為 OPEN

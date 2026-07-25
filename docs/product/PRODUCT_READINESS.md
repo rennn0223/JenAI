@@ -95,6 +95,6 @@ harden，main／tag 保護仍待確認。受試者、第二維護者、獨立觀
 
 1. 所有 `OPEN` 關閉，`PARTIAL` 不是轉成 `PASS` 就是明確移到未來版本且不再行銷。
 2. fresh-machine、Isaac HIL、效率研究與跨載具 PoC 都保存原始 artifact。
-3. README、論文、V1_GATE、SAFETY_CASE、ROADMAP 使用同一組版本與實驗數字。
+3. README、論文、ARCHITECTURE、SAFETY_CASE、ROADMAP 使用同一組版本與實驗數字。
 4. UI 改版需先以獨立樣本取得使用者批准，再做程式實作與鍵盤工作流回歸。
 5. 最終由六角色依本表逐項重新審查；任何角色提出可驗證的新阻擋條件，就加入本表而非口頭略過。

@@ -63,7 +63,7 @@
 
 ### 路線 A 直接當驗證載具(sim-first 的捷徑,已實測可行)
 
-Carter 倉庫場景本身就能當 V1_GATE 的「載具側」用——RViz goal 能導航避障
+Carter 倉庫場景可作為 Isaac HIL 的「載具側」——RViz goal 能導航避障
 = B1 的 `/navigate_to_pose` 確認完成。接 JenAI 只要對齊 vehicle profile:
 
 ```toml

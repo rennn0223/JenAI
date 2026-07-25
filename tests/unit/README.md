@@ -6,7 +6,7 @@
 |---|---|
 | `fake_bridge.py` | **不是測試**:純 stdlib 的 bridge 假程序,講與 `ros_bridge.py` 相同的 JSON/stdio 協定 —— bridge/daemon 測試不需要 ROS 的關鍵 |
 | `test_architecture.py` | 架構鐵律(反射層禁 LLM import、技能層以上禁載具字眼)—— 違反 = CI 紅 |
-| `test_bridge_client.py` / `test_daemon.py` / `test_twin_gate.py` | 含**故障注入**(V1_GATE A4):啟動失敗、預演中斷、halt 失敗 → 全部驗證誠實降級 |
+| `test_bridge_client.py` / `test_daemon.py` / `test_twin_gate.py` | 含**故障注入**:啟動失敗、預演中斷、halt 失敗 → 全部驗證誠實降級 |
 | `test_review_fixes.py` | 歷次 review findings 的回歸鎖 |
 | `test_tui.py` | Textual `app.run_test()` + `handle_user_text()` 驅動真 App |
 

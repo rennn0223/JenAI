@@ -259,11 +259,12 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 |---|---|
 | [docs/README.md](docs/README.md) | **完整文件庫索引**：依開始使用、ROS 2、開發、驗證、產品與歷史分類 |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | **零基礎上手手冊**：從安裝、設定到第一句對話；尚未以正式冷啟動研究保證完成時間 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **現行架構單一事實來源**：決策邊界、Workflow、Robot Runtime seam 與依賴規則 |
 | [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md) | **從零到有技術指南**：建置、架構、每個模組做什麼、擴充方式（開發新人先讀這份） |
 | [docs/ONBOARDING.md](docs/ONBOARDING.md) | **機器人上線手把手**：裸 ROS2 → 建圖 → 定位 → Nav2 → 第一次 `/route`（`jenai doctor` 的 nav 檢查就是進度條） |
 | [docs/COMMANDS.md](docs/COMMANDS.md) | CLI + slash 命令完整規格 |
 | [docs/validation/EVIDENCE_LEDGER.md](docs/validation/EVIDENCE_LEDGER.md) | **單一證據表**：論文、README 與簡報共用的正式數字與限制 |
-| [docs/archive/design/](docs/archive/design/README.md) | **設計歸檔**：v0.1 規劃文件，只供歷史追溯 |
+| [docs/product/QUALITY_REVIEW_2026-07-25.md](docs/product/QUALITY_REVIEW_2026-07-25.md) | **v2.4.0 品質報告**：重構、測試、HIL 與剩餘風險 |
 
 ---
 

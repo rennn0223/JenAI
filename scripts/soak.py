@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""24h soak harness for the JenAI daemon (V1_GATE A6). Stdlib only.
+"""24h soak harness for the JenAI daemon. Stdlib only.
 
 Launches the daemon (or any --command), samples the RSS of the whole process
 tree on an interval, and writes a CSV + verdict report. The pass criterion is
