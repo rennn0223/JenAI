@@ -34,7 +34,7 @@
 1. **CLAUDE.md** 每個 session 自動載入:DoD(review→CI→實測→注釋→結構→文件→
    PR+merge+tag+release)、環境三組合、架構鐵律
 2. **版本化文件保存跨 session 事實**：以 HANDOFF、EVIDENCE_LEDGER、PRODUCT_READINESS 與 `docs/releases/<tag>.md` 為準
-3. **docs/ 是單一事實來源**:新 session 先讀 README 索引 → ROADMAP → V1_GATE
+3. **docs/ 是單一事實來源**:新 session 先讀 README 索引 → ARCHITECTURE → ROADMAP → PRODUCT_READINESS
 4. **鐵律有 CI 守著**(test_architecture.py),模型再換也繞不過
 5. 對任何 AI 的驗收永遠是:**測試綠 + 實測過 + 誠實回報** —— 這套標準比模型重要
 
@@ -77,7 +77,7 @@ PASS／FAIL、卡點、作者介入次數與 artifact 路徑。只有作者介�
    第 4、7 篇最重要）
 2. 照 [ISAAC_NAV2_SETUP](../ISAAC_NAV2_SETUP.md) 把場景跑起來(B1/B5)
 3. `JenAI eval` 跑齊 E1(擴充情境庫到每族 ≥15 條)
-4. ~~照 V1_RELEASE_CHECKLIST 打 v1.0~~(✅ 2026-07-16 完成)
+4. ~~完成 v1.0 正式發布~~(✅ 2026-07-16；歷史程序見 release notes／Git history)
 5. M6 常駐迴圈(post-v2／候選 v3)—— 完成前不得把 v2.0 描述成常駐自治
 
 平台會一直在,方法已經寫下來了。去把車開起來。🤖

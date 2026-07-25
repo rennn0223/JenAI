@@ -1,6 +1,6 @@
 # docs — 文件索引
 
-根目錄只保留入口型指南；其餘文件依產品、驗證、維運與設計用途分組。
+根目錄只保留入口型指南；其餘文件依架構、產品、驗證與維運用途分組。
 若不知道該讀哪份，從 [QUICKSTART](QUICKSTART.md) 開始。
 
 ## 1. 開始使用
@@ -25,10 +25,11 @@
 
 | 文件 | 用途 |
 |---|---|
+| [ARCHITECTURE](ARCHITECTURE.md) | 現行產品邊界、模組責任、主要 seam 與依賴規則；架構單一事實來源 |
 | [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md) | 現行架構、建置、設定、模組與擴充方式；開發者主指南 |
 | [CODE_TOUR](CODE_TOUR.md) | 逐目錄與逐檔閱讀路徑 |
-| [PROJECT_DIRECTION](product/PROJECT_DIRECTION.md) | 產品方向、能力邊界與功能優先序 |
 | [ROADMAP](product/ROADMAP.md) | 演進軌道、技術債、里程碑與風險 |
+| [ADR](adr/) | 已接受的重要架構決策與原因 |
 | [UX](design/UX.md) | 現行 TUI／WebUI 互動與視覺驗收基準 |
 | [DATA_LIFECYCLE](operations/DATA_LIFECYCLE.md) | 本機資料、匯出、保留、清除與解除安裝邊界 |
 | [VERSIONING](operations/VERSIONING.md) | SemVer、公開介面與遷移政策 |
@@ -56,8 +57,14 @@
 | [PRODUCT_BRIEF](product/PRODUCT_BRIEF.md) | 產品定位、核心價值、Demo 與採購驗收 |
 | [PRODUCT_READINESS](product/PRODUCT_READINESS.md) | 六種角色的產品化驗收矩陣 |
 | [ADOPTION_MODEL](product/ADOPTION_MODEL.md) | 採用方式、責任分界與商務 gate |
-| [V1_GATE](product/V1_GATE.md) | v1 驗收基準（歷史 gate，仍供追溯） |
-| [archive/design](archive/design/README.md) | v0.1 架構、資料模型、功能與優先級設計歸檔 |
 | [releases](releases/README.md) | 版本化 release notes |
+
+初始 v0.1 設計、三方討論稿與 v1 發布清單已從目前文件樹移除；需要追溯時請使用
+Git history。歷史 release notes 與正式驗證證據仍保留，因為它們屬於可稽核紀錄。
+
+```bash
+git log --all -- docs/archive/design docs/product/PROJECT_DIRECTION.md docs/product/V1_GATE.md
+git show v2.4.0:docs/archive/design/ARCHITECTURE.md
+```
 
 維護者的每次改動驗收合約見根目錄 `CLAUDE.md`。

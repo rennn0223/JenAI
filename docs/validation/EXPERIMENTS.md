@@ -27,7 +27,7 @@ uv run JenAI eval scenarios.e1.toml --json > artifacts/experiments/e1/e1-$(date 
 - 看五個數:accuracy、**unsafe_rate(安全論文最重要的數)**、refer_rate、agreement_rate、tie_rate
 - 回填:THESIS_DRAFT 5.3 正式結果
 
-## E2|Twin Gate 消融(論文 5.4;V1_GATE B5)
+## E2|Twin Gate 消融(論文 5.4)
 
 ```bash
 pkill -f b4_driver.sh
@@ -45,7 +45,7 @@ uv run python scripts/e2_ablation.py --per-class 20 --conditions A,B,C --out "$O
 - 輸出:`trials.jsonl`(逐趟)、`targets.json`(配對目標)、`run.json`(run ID/seed/git revision/環境)
 - `ROS_DOMAIN_ID=0` 是本機 Isaac Sim/Nav2 共圖開發模式;不得在同一 graph 接入實體車
 - `artifacts/experiments/e2/e2-20260715c/` 是 v1 舊協議的單一 full-twin 結果,可作前導資料,不可稱為 A/B/C 消融
-- 回填:THESIS_DRAFT 5.4、V1_GATE B5、SAFETY_CASE(H2/完稿條件)
+- 回填:THESIS_DRAFT 5.4、EVIDENCE_LEDGER、SAFETY_CASE(H2/關閉條件)
 
 ## E3|自然語言 ROS2 發現—執行—驗證閉環
 
@@ -117,7 +117,7 @@ uv run python scripts/isaac_hil_acceptance.py \
 - artifact 位於被忽略的 `artifacts/`，只留本機封存；每次用新檔名，失敗樣本不得覆寫。
 
 
-## B4|模擬里程掛機(V1_GATE B4)
+## B4|模擬里程掛機
 
 ```bash
 tmux new-session -d -s jenai-b4 -x 200 -y 50
@@ -140,7 +140,7 @@ grep ' lap=' /tmp/b4_mileage.log | grep -v 'status=completed' # partial / timeou
 - driver 預設最多 102 圈或 72000 秒,路線可用 `B4_PATROL_ROUTE` 覆寫；同一 log 以
   `flock` 保證單實例;正常結束或收到 HUP/INT/TERM 時會向同一 TUI 送 `/stop`
 - `SIGKILL`、主機故障或外部程序仍可能略過清理;每次 Isaac Sim Play 前都要重新清查 `b4_driver`、活動 Nav2 goal 與非零 `/cmd_vel`,不能只依賴 EXIT trap
-- 回填:V1_GATE B4;非預期實體行為照 SAFETY_CASE「事件記錄」程序開 issue
+- 回填:EVIDENCE_LEDGER B4；非預期實體行為照 SAFETY_CASE「事件記錄」程序開 issue
 
 ## A6|24h soak
 
@@ -156,12 +156,12 @@ python3 scripts/soak.py --rules rules.example.toml   # 24h;Ctrl-C 提前結束�
 | 實驗 | 原始數據 | 回填位置 |
 |---|---|---|
 | E1 | `artifacts/experiments/e1/e1-<date>.json` | THESIS_DRAFT 5.3 |
-| E2 | `artifacts/experiments/e2/e2-<date>/trials.jsonl` | THESIS_DRAFT 5.4、V1_GATE B5、SAFETY_CASE |
+| E2 | `artifacts/experiments/e2/e2-<date>/trials.jsonl` | THESIS_DRAFT 5.4、EVIDENCE_LEDGER、SAFETY_CASE |
 | E3 | `artifacts/experiments/e3/e3-agent-boundary-*.jsonl` | THESIS_DRAFT 5.3 |
 | E4 | `artifacts/experiments/e4/e4-*.jsonl` | THESIS_DRAFT 5.6 素材 |
 | HIL-FS | `artifacts/isaac-hil-*.json`（本機） | EVIDENCE_LEDGER、ISAAC_HIL_ACCEPTANCE、SAFETY_CASE |
-| B4 | `/tmp/b4_mileage.log` + reports | V1_GATE B4、SAFETY_CASE 事件表 |
-| A6 | `artifacts/experiments/soak/soak-*/report.md` | V1_GATE A6 |
+| B4 | `/tmp/b4_mileage.log` + reports | EVIDENCE_LEDGER B4、SAFETY_CASE 事件表 |
+| A6 | `artifacts/experiments/soak/soak-*/report.md` | PRODUCT_READINESS 工程穩定性證據 |
 
 > 實驗輸出根目錄(`artifacts/`，其中 E1–E4 與 soak 位於 `artifacts/experiments/`)不入版控(.gitignore);
 > 結論數字入文件,原始檔留本機。

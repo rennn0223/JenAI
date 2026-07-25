@@ -8,7 +8,7 @@
 - **使用者 = 客戶端**:負責驗測與使用回饋,不寫程式。驗證以 **Isaac Sim 為主**
   (DGX Spark 工作站 GUI);實體操作(車邊、場域)屬選配/交接下一屆。
   需要人工操作的事項一律交給使用者,列清楚步驟。
-- 分層待辦見 `docs/product/V1_GATE.md`。
+- 現行架構與依賴規則見 `docs/ARCHITECTURE.md`；前瞻待辦見 `docs/product/ROADMAP.md`。
 
 ## 驗收標準(Definition of Done)— 每次改動都要走完
 
@@ -26,7 +26,7 @@
 - 跑 app:`source /opt/ros/jazzy/setup.bash` 後直接 `uv run JenAI …`(**保留** PYTHONPATH)
 - 壞組合:source ROS 又 unset PYTHONPATH → ros2 CLI 會 exit 1
 
-## 鐵律(見 docs/product/PROJECT_DIRECTION.md)
+## 鐵律(見 docs/ARCHITECTURE.md)
 
 - LLM 永不進即時迴路;反射層永不依賴 LLM 與網路
 - 技能層以上不得出現載具字眼;載具差異全收在 vehicle profile

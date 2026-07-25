@@ -2,8 +2,8 @@
 
 > 對應版本:**v2.4.0**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
 > 六條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
-> 方向收斂邏輯見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md);v1.0 驗收與兩層分工見
-> [V1_GATE](V1_GATE.md);每次改動的驗收標準見根目錄 `CLAUDE.md`。
+> 現行模組與決策邊界見 [ARCHITECTURE](../ARCHITECTURE.md)；外部驗收 gate 見
+> [PRODUCT_READINESS](PRODUCT_READINESS.md)；每次改動的驗收標準見根目錄 `CLAUDE.md`。
 
 ---
 
@@ -31,11 +31,11 @@
   但歷史約 20 h driver 摘要不能證明精確暴露量或零事件；E2 只有 C observed，A／B 是
   對同目標的 derived 政策輸出，不是前瞻性三條件消融。guided onboarding 有 ≥3 人，但尚缺純文件
   冷啟動計時與手動 ROS2／Slash／自然語言的正式效率比較。實體驗證選配／交接下一屆
-  (見 V1_GATE P 項)。
+  (見 PRODUCT_READINESS 的跨載具與實體證據 gate)。
 
 ### 一句話定位
 > **JenAI = 具執行邊界的 AI Decision Agent,坐在載具原生導航堆疊之上**(2026-07 定調,
-> 見 [PROJECT_DIRECTION](PROJECT_DIRECTION.md) 方向定調章):不寫一行運動控制,
+> 見 [ARCHITECTURE](../ARCHITECTURE.md) 的產品邊界：不寫一行運動控制，
 > 高階決策、能力觸發、結果驗證與稽核才是本體;scaffold(development copilot)為第二身分。
 > v1.0 已於 2026-07-16 歷史簽字；後續稽核已把 E2／B4 限定為描述性重分析與
 > 可重建固定任務 subset（見 EVIDENCE_LEDGER），不可延伸為前瞻消融、精確 20 h 暴露或零事件。
@@ -73,7 +73,7 @@
 ### 軌道 3 — 原生導航對接(v1.0 關鍵路徑;2026-07 改向)
 - **價值**:兩台載具(阿克曼、四足)**皆自帶 SLAM+Nav**——JenAI 對接,不重建。
 - **關鍵步驟**:
-  1. **接口確認**(B1 新定義):先於 Isaac twin 車跑 `ros2 action list | grep -i navigate`、`ros2 topic list | grep -iE "map|amcl|odom"`;有 `NavigateToPose` → bridge 現成直通,否則寫薄 adapter(接線,非控制)。實車清點降為選配(V1_GATE P1)。
+  1. **接口確認**:先於 Isaac twin 車跑 `ros2 action list | grep -i navigate`、`ros2 topic list | grep -iE "map|amcl|odom"`;有 `NavigateToPose` → bridge 現成直通,否則寫薄 adapter(接線,非控制)。實車清點由 PRODUCT_READINESS 的跨載具 gate 管理。
   2. 載具檔補 **nav 後端欄位**(per-vehicle 原生堆疊描述)。
   3. **GPS datum 校正工具**:`/loc add gps` 後第一次導航的偏移 → 反推修正 `[map_datum]`(半自動)。
   4. doctor nav 區段從 WARN 升級為「可操作的下一步」引導(偵測原生堆疊)。
@@ -150,7 +150,7 @@
 ### 3.5 文件可持續性
 - 20+ 份 doc:靠 **單一事實來源**紀律(TECHNICAL_GUIDE 模組表為準,README 各目錄一句話)+ doc 索引([README](../README.md))。
 - 版本快照(TEST.md、本檔)隨 release 更新;`CLAUDE.md` DoD 強制「文件修齊」在每次改動。
-- 設計期文件(ARCHITECTURE/MOSCOW/UX 等)標歷史,不當現況。
+- 初始設計由 Git history 保存；`ARCHITECTURE.md`、UX 與本 Roadmap 為現行文件。
 
 ---
 
@@ -164,13 +164,13 @@
 | ~~v0.22~~ ✅ | 權限三模式 | Shift+Tab 審批/規劃/自動 + 自然語言路由例外網 |
 | ~~v0.23~~ ✅ | 終章收整 | 全庫注釋/文件對齊、HANDOFF 終章;程式凍結,轉入數據期 |
 | **v0.24+** | 原規劃回補(數據期擋修) | 軌道 3 導航工具 + D1 sibling 抽取 + 軌道 2 depth→Nav2 costmap(僅在實測需要時做) |
-| **v1.0** | **監督式操作平台定稿** | V1_GATE 歷史簽字；安全相關 coverage、daemon 24h soak、B4 固定 102-report subset 與 E2 固定目標描述性比較已有 artifact；B4 不證明精確 20 h／零事件，E2 A／B 非 live；實體驗證選配不擋版 |
+| **v1.0** | **監督式操作平台定稿** | 歷史簽字保留於 v1.0 release notes 與 Git history；安全 coverage、daemon soak、B4 subset 與 E2 描述性比較已有 artifact，但不證明精確 20 h／零事件或實體安全 |
 | **v2.0** | **執行邊界與產品化基線** | P2／HOST 每次明確批准、可取消 subprocess 與兩階段停止、資料生命週期 CLI、responsive TUI、HIL 起點 guard、可稽核供應鏈產物；M6 未實作 |
 | **v2.1** | **可用性與回應延遲** | Claude 風格 TUI 視覺封版；明確唯讀自然語言狀態查詢採確定性快速路徑；ROS 快照並行、session prompt 有界化與地點自然語言容錯；決策／致動安全語意不變 |
 | **post-v2（候選 v3）** | **常駐自主決策研究** | 軌道 1:M6 DecisionLoop 完整迴圈與邊緣延遲研究；只有完整實作與實驗後才能升級主張 |
 | **後續** | 多機 / 平台 | 軌道 4/5:多載具、語音、costmap 疊圖、檔案定義技能 |
 
-> 節奏原則:feature 累積成 minor,patch 只留 bug/安全;每個 minor 對照 V1_GATE / 本 ROADMAP 打勾。
+> 節奏原則:feature 累積成 minor,patch 只留 bug/安全;每個 minor 對照 PRODUCT_READINESS 與本 ROADMAP 驗收。
 
 ---
 
@@ -187,14 +187,14 @@
 
 ---
 
-## 6. 兩層執行對照(承 V1_GATE)
+## 6. 兩層執行與證據責任
 
 - **層一(agent 可獨力,現在就能推)**:軌道 1 核心、軌道 2 接線、軌道 3 工具、軌道 5 多數、全部 D1–D5 償還。
-- **層二(客戶下場,全數於 Isaac Sim)**:場景建置 + 固定目標政策比較(B5)、接口確認(B1)、固定模擬導航任務紀錄(B4)、guided onboarding 回饋(B6)、場景家族標註(軌道 1 的 E1);實體驗證選配(V1_GATE P1–P3)。
+- **層二(使用者／場域驗收,主要於 Isaac Sim)**:場景建置、固定目標政策比較、接口確認、模擬導航任務紀錄、guided onboarding 回饋與場景家族標註；實體與跨載具證據另由 PRODUCT_READINESS 管理。
 
 **優先建議**:先關閉 v2.0 的外部證據閘（合法起點 HIL／10-run、使用者研究、第二維護者演練），
 再決定是否將 **軌道 1(M6)** 納入 post-v2（候選 v3）研究；完成前維持受監督工作流代理定位。
 
 ---
 
-*本文件為前瞻主圖,隨重大能力落地更新;細節分散於 PROJECT_DIRECTION / V1_GATE / THESIS_* / TECHNICAL_GUIDE。*
+*本文件為前瞻主圖，隨重大能力落地更新；現行架構看 ARCHITECTURE，操作細節看 TECHNICAL_GUIDE，研究證據看 validation/。*

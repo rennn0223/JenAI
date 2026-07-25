@@ -1,4 +1,4 @@
-"""Patrol logs on disk + rendered reports (V1_GATE A8 / C2).
+"""Patrol logs on disk and rendered reports.
 
 Every finished patrol is persisted as one JSON file under
 ``<config dir>/reports/``; ``/report`` renders the latest into a
