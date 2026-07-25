@@ -373,10 +373,10 @@ def test_tui_shows_slash_command_palette() -> None:
 
             palette = app.query_one("#palette")
             assert palette.display is True
-            assert app._command_matches
+            assert app._palette_state.view.matches
 
             await pilot.press("s")
-            assert app._command_matches[0].name == "/status"
+            assert app._palette_state.view.matches[0].name == "/status"
 
             await pilot.press("tab")
             assert app.query_one("#composer").value == "/status "
@@ -1267,7 +1267,7 @@ def test_tui_palette_completes_name_only_and_hints_format() -> None:
             for ch in "ros pub":
                 await pilot.press(ch)
 
-            assert app._command_matches[0].name == "/ros pub"
+            assert app._palette_state.view.matches[0].name == "/ros pub"
 
             await pilot.press("tab")
 

@@ -95,107 +95,117 @@ _CATEGORY_PATTERNS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 
 def build_hardening_plan(paths: DataPathsLike) -> HardenPlan:
     """Audit allow-listed operational paths without changing filesystem state."""
-    protected_paths = {paths.config.absolute(), paths.credentials.absolute()}
-    protected_identities = frozenset(_file_identities(paths.config, paths.credentials))
-    candidates: list[HardenCandidate] = []
-    refusals: list[HardenRefusal] = []
-    audits: list[PermissionAudit] = []
+    return _HardeningPlanBuilder(paths).build()
 
-    location_entries, location_refusals = _inspect_location(
-        paths.locations,
-        protected_paths=protected_paths,
-        protected_identities=protected_identities,
-    )
-    refusals.extend(location_refusals)
-    candidates.extend(_candidates("locations", location_entries))
-    audits.append(
-        _audit(
-            "locations",
-            paths.locations,
-            location_entries,
-            location_refusals,
+
+class _HardeningPlanBuilder:
+    """Collect one immutable hardening plan through a single build interface."""
+
+    def __init__(self, paths: DataPathsLike) -> None:
+        self._paths = paths
+        self._protected_paths = {paths.config.absolute(), paths.credentials.absolute()}
+        self._protected_identities = frozenset(_file_identities(paths.config, paths.credentials))
+        self._audits: list[PermissionAudit] = []
+        self._candidates: list[HardenCandidate] = []
+        self._refusals: list[HardenRefusal] = []
+
+    def build(self) -> HardenPlan:
+        self._add_location()
+        audit_paths = (
+            self._paths.audit,
+            *(
+                self._paths.audit.with_name(self._paths.audit.name + suffix)
+                for suffix in ("-journal", "-wal", "-shm")
+            ),
         )
-    )
-
-    audit_paths = (
-        paths.audit,
-        *(
-            paths.audit.with_name(paths.audit.name + suffix)
-            for suffix in ("-journal", "-wal", "-shm")
-        ),
-    )
-    audit_entries, audit_refusals = _inspect_files(
-        "audit",
-        audit_paths,
-        protected_paths=protected_paths,
-        protected_identities=protected_identities,
-    )
-    refusals.extend(audit_refusals)
-    candidates.extend(_candidates("audit", audit_entries))
-    audits.append(_audit_collection("audit", paths.audit, audit_entries, audit_refusals))
-
-    backup_entries, backup_refusals = _inspect_files(
-        "config_backups",
-        paths.config_backups,
-        protected_paths=protected_paths,
-        protected_identities=protected_identities,
-    )
-    refusals.extend(backup_refusals)
-    candidates.extend(_candidates("config_backups", backup_entries))
-    backup_pattern = paths.config.parent / f"{paths.config.name}.bak-*"
-    audits.append(
-        _audit_collection(
-            "config_backups",
-            backup_pattern,
-            backup_entries,
-            backup_refusals,
+        self._add_file_collection("audit", self._paths.audit, audit_paths)
+        backup_pattern = self._paths.config.parent / f"{self._paths.config.name}.bak-*"
+        self._add_file_collection("config_backups", backup_pattern, self._paths.config_backups)
+        for category, attribute, patterns in _CATEGORY_PATTERNS:
+            self._add_directory(category, getattr(self._paths, attribute), patterns)
+        self._add_reports()
+        return HardenPlan(
+            audits=tuple(self._audits),
+            candidates=tuple(self._candidates),
+            refusals=tuple(self._refusals),
+            protected_file_identities=self._protected_identities,
         )
-    )
 
-    for category, attribute, patterns in _CATEGORY_PATTERNS:
-        root = getattr(paths, attribute)
-        entries, category_refusals = _inspect_directory(
+    def _add_location(self) -> None:
+        entries, refusals = _inspect_location(
+            self._paths.locations,
+            protected_paths=self._protected_paths,
+            protected_identities=self._protected_identities,
+        )
+        self._record("locations", self._paths.locations, entries, refusals)
+
+    def _add_file_collection(
+        self, category: str, display_path: Path, paths: tuple[Path, ...]
+    ) -> None:
+        entries, refusals = _inspect_files(
+            category,
+            paths,
+            protected_paths=self._protected_paths,
+            protected_identities=self._protected_identities,
+        )
+        self._record(category, display_path, entries, refusals, collection=True)
+
+    def _add_directory(
+        self,
+        category: str,
+        root: Path,
+        patterns: tuple[str, ...],
+        *,
+        recursive: bool = True,
+    ) -> None:
+        entries, refusals = _inspect_directory(
             category,
             root,
             patterns,
-            protected_paths=protected_paths,
-            protected_identities=protected_identities,
+            protected_paths=self._protected_paths,
+            protected_identities=self._protected_identities,
+            recursive=recursive,
         )
-        refusals.extend(category_refusals)
-        candidates.extend(_candidates(category, entries))
-        audits.append(_audit(category, root, entries, category_refusals))
+        self._record(category, root, entries, refusals)
 
-    # Reports is user-visible, so harden only JenAI-owned formats instead of
-    # recursively adopting every JSON document placed below this directory.
-    report_entries, report_refusals = _inspect_directory(
-        "reports",
-        paths.reports,
-        ("patrol-*.json", "area-patrol-*.json", "evidence-*.png"),
-        protected_paths=protected_paths,
-        protected_identities=protected_identities,
-        recursive=False,
-    )
-    task_entries, task_refusals = _inspect_directory(
-        "reports",
-        paths.reports / "tasks",
-        ("task-*.json",),
-        protected_paths=protected_paths,
-        protected_identities=protected_identities,
-        recursive=False,
-    )
-    report_entries_by_path = {entry.path: entry for entry in (*report_entries, *task_entries)}
-    all_report_refusals = [*report_refusals, *task_refusals]
-    managed_report_entries = list(report_entries_by_path.values())
-    refusals.extend(all_report_refusals)
-    candidates.extend(_candidates("reports", managed_report_entries))
-    audits.append(_audit("reports", paths.reports, managed_report_entries, all_report_refusals))
+    def _add_reports(self) -> None:
+        report_entries, report_refusals = _inspect_directory(
+            "reports",
+            self._paths.reports,
+            ("patrol-*.json", "area-patrol-*.json", "evidence-*.png"),
+            protected_paths=self._protected_paths,
+            protected_identities=self._protected_identities,
+            recursive=False,
+        )
+        task_entries, task_refusals = _inspect_directory(
+            "reports",
+            self._paths.reports / "tasks",
+            ("task-*.json",),
+            protected_paths=self._protected_paths,
+            protected_identities=self._protected_identities,
+            recursive=False,
+        )
+        entries_by_path = {entry.path: entry for entry in (*report_entries, *task_entries)}
+        self._record(
+            "reports",
+            self._paths.reports,
+            list(entries_by_path.values()),
+            [*report_refusals, *task_refusals],
+        )
 
-    return HardenPlan(
-        audits=tuple(audits),
-        candidates=tuple(candidates),
-        refusals=tuple(refusals),
-        protected_file_identities=protected_identities,
-    )
+    def _record(
+        self,
+        category: str,
+        display_path: Path,
+        entries: list[_Entry],
+        refusals: list[HardenRefusal],
+        *,
+        collection: bool = False,
+    ) -> None:
+        self._refusals.extend(refusals)
+        self._candidates.extend(_candidates(category, entries))
+        audit = _audit_collection if collection else _audit
+        self._audits.append(audit(category, display_path, entries, refusals))
 
 
 def apply_hardening(plan: HardenPlan) -> HardenResult:

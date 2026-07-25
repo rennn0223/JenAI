@@ -71,13 +71,13 @@ uv run JenAI web
 
 ### 在新機器上安裝（建議：不可變 Release wheel）
 
-目前 repository 是 public；v2.4.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+目前 repository 是 public；v2.4.1 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
 
 請選定正式版本，同時下載該版本的 wheel、constraints 與 `SHA256SUMS`。
 三者必須是**同一個 release**；constraints 固定該版通過發布閘的依賴解析，checksum 用來
 確認下載資產與同一份 manifest 一致。只有 asset 清單實際包含這三項的 release 才適用；
 例如既有 `v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證；
-目前穩定版請使用 `v2.4.0` 或後續資產完整版本。
+目前穩定版請使用 `v2.4.1` 或後續資產完整版本。
 
 下列已驗證的 copy-paste 流程以 Linux／Ubuntu 為目標，使用系統提供的 GNU
 `sha256sum`。macOS 在 [SUPPORT_MATRIX](docs/operations/SUPPORT_MATRIX.md) 仍是 Experimental；可自行
@@ -279,7 +279,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v2.4.0，2026-07）
+## 狀態（v2.4.1，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >

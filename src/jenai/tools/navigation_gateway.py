@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.bridge import BridgeError, MapIdentityInfo, RosBridgeClient
 from jenai.capabilities import has_registered_capability
 from jenai.config.models import AppConfig
 from jenai.schemas import GateReport, RouteOutput
@@ -41,6 +41,21 @@ def _blocked_capability(outgoing_action: dict[str, Any], capability_id: str) -> 
         outgoing_action=outgoing_action,
         approval_status="approved",
         execution_status="blocked",
+    )
+
+
+def _site_verdict(
+    outgoing_action: dict[str, Any],
+    message: str,
+    *,
+    status: str = "blocked",
+) -> RouteOutput:
+    return RouteOutput(
+        input_text="",
+        route_preview=message,
+        outgoing_action=outgoing_action,
+        approval_status="approved",
+        execution_status=status,
     )
 
 
@@ -88,7 +103,28 @@ class NavigationGateway:
         run_id: str | None,
         session_id: str | None,
     ) -> RouteOutput | None:
-        """Fail closed before motion when the active site's map is not present."""
+        """Fail closed before motion when the active site or map is invalid."""
+        block = self._configured_site_block(outgoing_action, run_id=run_id, session_id=session_id)
+        if block is not None:
+            return block
+
+        expected_digest = self._config.site.map_sha256
+        if expected_digest is None:  # Defensive if an unchecked config mutates mid-call.
+            return _site_verdict(outgoing_action, "Active site has no map identity.")
+        return await self._verify_live_map(
+            outgoing_action,
+            expected_digest,
+            run_id=run_id,
+            session_id=session_id,
+        )
+
+    def _configured_site_block(
+        self,
+        outgoing_action: dict[str, Any],
+        *,
+        run_id: str | None,
+        session_id: str | None,
+    ) -> RouteOutput | None:
         site = self._config.site
         if not site.active:
             message = (
@@ -96,107 +132,85 @@ class NavigationGateway:
                 "validate and explicitly activate the site before using saved coordinates."
             )
             self._audit_site_map(
-                "blocked",
-                site.map_sha256,
-                None,
-                run_id=run_id,
-                session_id=session_id,
+                "blocked", site.map_sha256, None, run_id=run_id, session_id=session_id
             )
-            return RouteOutput(
-                input_text="",
-                route_preview=message,
-                outgoing_action=outgoing_action,
-                approval_status="approved",
-                execution_status="blocked",
-            )
+            return _site_verdict(outgoing_action, message)
+
         if not site.execution_ready:
             message = (
                 f"Active site '{site.display_name}' is not execution-ready. "
                 "Navigation was blocked; run 'JenAI site validate --repair' "
                 "with the validated map active."
             )
-            self._audit_site_assets(
-                "blocked",
-                message,
-                run_id=run_id,
-                session_id=session_id,
-            )
-            return RouteOutput(
-                input_text="",
-                route_preview=message,
-                outgoing_action=outgoing_action,
-                approval_status="approved",
-                execution_status="blocked",
-            )
+            self._audit_site_assets("blocked", message, run_id=run_id, session_id=session_id)
+            return _site_verdict(outgoing_action, message)
 
-        expected_digest = site.map_sha256
-        if expected_digest is None:  # Defensive against unchecked model construction.
-            return RouteOutput(
-                input_text="",
-                route_preview=f"Active site '{site.display_name}' has no map identity.",
-                outgoing_action=outgoing_action,
-                approval_status="approved",
-                execution_status="blocked",
+        if site.map_sha256 is None:  # Defensive against unchecked model construction.
+            return _site_verdict(
+                outgoing_action,
+                f"Active site '{site.display_name}' has no map identity.",
             )
+        return None
 
-        observed_digest: str | None = None
+    async def _verify_live_map(
+        self,
+        outgoing_action: dict[str, Any],
+        expected_digest: str,
+        *,
+        run_id: str | None,
+        session_id: str | None,
+    ) -> RouteOutput | None:
         try:
             identity = await (await self._get_bridge()).map_identity(timeout=3.0)
-            observed_digest = identity.digest
-            if identity.frame_id != site.map_frame:
-                message = (
-                    f"Site '{site.display_name}' expects map frame '{site.map_frame}', "
-                    f"but ROS reported '{identity.frame_id}'. Navigation was blocked."
-                )
-            elif observed_digest != expected_digest:
-                message = (
-                    f"Map identity mismatch for site '{site.display_name}': expected "
-                    f"{expected_digest[:12]}, observed {observed_digest[:12]}. "
-                    "Navigation was blocked; validate and activate the correct Site Profile."
-                )
-            else:
-                self._audit_site_map(
-                    "pass",
-                    expected_digest,
-                    observed_digest,
-                    run_id=run_id,
-                    session_id=session_id,
-                )
-                return None
         except BridgeError as exc:
             message = (
-                f"Could not verify the active map for site '{site.display_name}': {exc}. "
+                f"Could not verify the active map for site "
+                f"'{self._config.site.display_name}': {exc}. "
                 "Navigation is temporarily unavailable."
             )
             self._audit_site_map(
                 "unavailable",
                 expected_digest,
-                observed_digest,
+                None,
                 run_id=run_id,
                 session_id=session_id,
             )
-            return RouteOutput(
-                input_text="",
-                route_preview=message,
-                outgoing_action=outgoing_action,
-                approval_status="approved",
-                execution_status="unavailable",
+            return _site_verdict(outgoing_action, message, status="unavailable")
+
+        mismatch_message = self._map_mismatch_message(identity, expected_digest)
+        if mismatch_message is None:
+            self._audit_site_map(
+                "pass",
+                expected_digest,
+                identity.digest,
+                run_id=run_id,
+                session_id=session_id,
             )
+            return None
 
         self._audit_site_map(
             "blocked",
             expected_digest,
-            observed_digest,
+            identity.digest,
             run_id=run_id,
             session_id=session_id,
         )
-        return RouteOutput(
-            input_text="",
-            route_preview=message,
-            outgoing_action=outgoing_action,
-            approval_status="approved",
-            execution_status="blocked",
-        )
+        return _site_verdict(outgoing_action, mismatch_message)
+
+    def _map_mismatch_message(self, identity: MapIdentityInfo, expected_digest: str) -> str | None:
+        site = self._config.site
+        if identity.frame_id != site.map_frame:
+            return (
+                f"Site '{site.display_name}' expects map frame '{site.map_frame}', "
+                f"but ROS reported '{identity.frame_id}'. Navigation was blocked."
+            )
+        if identity.digest != expected_digest:
+            return (
+                f"Map identity mismatch for site '{site.display_name}': expected "
+                f"{expected_digest[:12]}, observed {identity.digest[:12]}. "
+                "Navigation was blocked; validate and activate the correct Site Profile."
+            )
+        return None
 
     def _audit_site_map(
         self,

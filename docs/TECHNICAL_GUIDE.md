@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v2.4.0(2026-07)。架構單一事實來源見 [ARCHITECTURE.md](ARCHITECTURE.md)，前瞻主圖見 [ROADMAP.md](product/ROADMAP.md)；逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v2.4.1(2026-07)。架構單一事實來源見 [ARCHITECTURE.md](ARCHITECTURE.md)，前瞻主圖見 [ROADMAP.md](product/ROADMAP.md)；逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -178,61 +178,63 @@ jenai daemon                                        # Ctrl-C 停止
 
 ### 4.2 模組導覽(每個檔案做什麼)
 
-> 行數為 2026-07-18 工作樹快照,僅供量級參考——以 `wc -l` 實測為準。
+> 本表刻意不記行數；行數會隨重構快速過期，責任與邊界才是維護契約。
 
-| 模組 | 行數 | 職責 |
-|---|---|---|
-| `cli/main.py` | 668 | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、**`eval`**、**`onboard`**(重跑設定精靈,自動備份)、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
-| `tui/app.py` | 1,311 | App 殼:輸入分發、**權限三模式(Shift+Tab)與裸自然語言路由**、串流、spinner、Esc 中斷、`/stop` 搶佔與共用 UI 生命週期 |
-| `tui/approval_flow.py` | 159 | 批准決策、remember、agent/direct interruption 恢復；與實際工具執行分離 |
-| `tui/direct_execution.py` | 250 | 已批准 direct action 的 handler map、audit/run 收尾與結果渲染；不以巨型 if/elif 分派 |
-| `tui/catalog.py` | 403 | Slash palette、help 分組的單一資料來源、standalone greeting 判斷與 Claude Code 風格 responsive CSS |
-| `tui/robot_commands.py` | 940 | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/vision` + bridge 生命週期(含 watchdog 佈署) |
-| `tui/location_commands.py` | 303 | Mixin:`/loc` persistence、AMCL/odom pose 與 GPS→map 儲存；不執行導航 |
-| `tui/info_commands.py` | 341 | Mixin:`/help` `/status` `/doctor` `/model` `/provider` 等資訊類 |
-| `tui/panels.py` | 442 | 純視覺:雙欄 WelcomePanel、TimelineItem、OutputPanel、CommandPalette |
-| `tui/widgets/` | ~200 | ApprovalCard(依風險顯示 2/3 個選項；HOST_COMMAND/P2 不可 remember；P2、host command 與 robot control 預選 No)、Plan/Tool/Error blocks |
-| `bridge/ros_bridge.py` | 999 | **系統 Python** 下的 rclpy I/O 節點:pose、nav_send/feedback/cancel、**halt(急停)**、**watchdog(斷線自主停車)**、capture_frame、watch；控制演算法與協定迴圈已拆至 stdlib-only 模組 |
-| `bridge/_protocol.py` | — | stdlib-only JSON op dispatcher；request defaults 與精確型別／finite／範圍驗證可不靠 rclpy 單測，無效請求不會進入 ROS node |
-| `bridge/_wire.py` / `_server.py` | — | newline-JSON frame 驗證與 stdin server；畸形 frame、callback 失敗與慢速唯讀操作皆有隔離測試 |
-| `bridge/_drive_control.py` | — | 純狀態機的 odom→cmd_vel 控制、深度 freshness、detour/replan；ROS I/O 只套用輸出 |
-| `bridge/client.py` | — | venv 側非同步 client:安全 argv spawn、request future 清理、reader 故障傳播、事件隔離；致動／watchdog 輸入與 pose/map/plan/cancel/halt 回應皆採嚴格 wire 驗證，拒絕 truthiness、非 finite 值、無效範圍與矛盾安全證據 |
-| `tools/*_core.py` | — | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
-| `workflows/area_patrol.py` | — | 純 Python 深模組：不可變 area／mission model、合法狀態轉移、確定性 coverage plan、有限重試、取消、return-home 與完成判定；不 import ROS、LLM、UI |
-| `tools/area_patrol_service.py` | — | 產品介面中立的 application service 與 WorkflowRuntime adapter；解析 active Site Profile、共用 NavigationGateway、抓取獨立照片、保存原子報告；不 import Agent SDK 或 UI |
-| `tools/area_patrol_agent_tools.py` | — | 薄 OpenAI Agents SDK adapter：轉交最小 run context、宣告批准需求並註冊 tool；不承載任務流程 |
-| `site_profiles.py` / `site_assets.py` | — | 不信任匯入檔自我宣稱；重算 locations SHA-256、驗 route／dock／home／area 引用，明確 activation 後才可導航 |
-| `cli/site.py` | — | `site status/map-identity/activate/validate/deactivate` 維運介面；map-identity 是 activation 前可用的唯讀 bootstrap |
-| `task_results.py` / `state/reports.py` | — | 單一 outcome 映射與 durable evidence serializer；run 結束、任務成功與報告落盤是不同事實 |
-| `tools/nav_live.py` | 313 | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback` 只接受受監督 bridge，bridge/watchdog 不可用即 fail-closed，絕不降級成 CLI goal** |
-| `tools/skills.py` | 145 | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
-| `tools/ros2_pkg_core.py` | 286 | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋;`--build` 生成即 colcon 驗證(失敗餵錯誤回 LLM 修一輪)。從 control agent 邁向 development copilot |
-| `tools/decision_core.py` | 104 | **M6 決策腦**(v0.21):`ContextSnapshot`(六欄位情境快照)→ 單次 `ask_json` 於封閉動作集單選 `Decision`;越界動作/幻覺目的地/解析失敗一律降級 refer_to_human,無自由文字可達致動 |
-| `tools/decision_eval.py` | 133 | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate;標註 `action:target` 綁定目標、gold 優先於 unsafe、未知動作名 fail-loud(論文工具鏈) |
-| `tools/user_skills.py` | 85 | **檔案定義技能**(v0.20):`skills/*.toml` → 新 slash 指令;與內建指令同一張批准卡;保留字拒載 |
-| `tools/safety.py` | 32 | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
-| `tools/navigation_gateway.py` | 138 | **NavigationGateway(v0.25)**:所有導航的唯一出口——CLI/TUI/WebUI/MCP/daemon/任務/agent 工具全部經此;Twin Gate 與 watchdog 政策無法被直呼 route 執行繞過 |
-| `twin/gate.py` | 302 | **Twin Gate**:G1 碰撞/G2 逾時/G3 禁區/G4 終點偏差/G5 規劃失敗 → pass/block/refer;非有限 pose 不算有效樣本、缺孿生遙測回 refer(fail-closed) |
-| `state/`(runs/audit/reports/task_receipts/history/session) | — | run 記錄、SQLite audit（run/批准/工具/Gate/daemon event）、每個終止 TUI run 的原子 JSON task receipt（耗時、工具、批准、結果、標準失敗代碼）、巡邏報告與輸入歷史。audit 不落盤 prompt/raw payload；task receipt 是本機操作報告，依 data lifecycle 管理 |
-| `config/setup.py` | 223 | **Setup Wizard**:橘色主題三步設定;誤貼金鑰自動安全搬遷至 `.env`(0600) |
-| `tools/perception.py` | ~180 | **PerceptionLoop**:持續相機→VLM→結構化 `SceneAnalysis`(場景/物件/affordances/建議動作);TUI `/perception`、daemon `@perception` 規則共用;只觀察不動作 |
-| `mcp_server/server.py` | 208 | FastMCP stdio server:共享資源生命週期與 ROS／狀態／導航註冊器分離；唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |
-| `agent/orchestrator.py` 等 | ~700 | /run 代理:規劃、specialist 工具、批准中斷、guardrails、tracing；純唯讀 ROS 狀態要求走共用工具的確定性快速路徑，混合／動作要求保留完整 LLM 與批准流程；session 有項目與 UTF-8 位元組上限 |
-| `providers/chat.py` | 337 | OpenAI 相容呼叫:`ask_provider`、**`stream_provider`(串流)**、`ask_json`、`ask_vision_json`、`list_provider_models`;`_provider_errors` 共用例外映射;`parse_json_reply`(寬容解析,thinking 模型必備) |
-| `adapters/ros2_adapter.py` | 304 | `ros2` CLI subprocess 包裝(有 timeout、錯誤分類) |
-| `adapters/locations.py` | ~200 | locations.toml 載入/儲存/模糊搜尋;`load_locations_tolerant`(全介面共用的容錯載入) |
-| `adapters/route_adapter.py` | 91 | 舊 RouteAdapter 相容層與 stub；產品導航入口不得直接呼叫。`nav2` 的正式路徑只走 `NavigationGateway` + watchdog bridge；`odom` 只保留為 legacy bring-up 介面，gateway 會拒絕高階任務，失效時不送 goal |
-| `bridge` `drive_to_pose` | — | **(deprecated,bring-up fallback)無 Nav2 的點對點直驅**:閉環 /odom → /cmd_vel(目標視為 odom 座標,map≈odom 時成立);餵同一套 nav_feedback/nav_result,navigate_live 無縫共用 |
-| `bridge/_avoidance.py` + drive_loop | — | **(deprecated,maintenance mode)局部避障**:Isaac 實測單 depth 反應式避障不可行——只修 bug 不加能力,終局=對接載具原生 nav。原敘述::depth camera(32FC1)→ 偽雷射 → 目標方向走廊判定 → stop-and-go detour。反射層不經 LLM;深度畫面逾時立即歸零並回報 `sensor_unavailable`,不使用陳舊影像繼續移動。**局部反應,非全域規劃**——複雜地圖仍需 Nav2 |
-| `daemon/engine.py` | 165 | 規則引擎純邏輯:條件、冷卻、安全 gating;動作 notify/goto/**halt**(可單測) |
-| `daemon/runner.py` | 307 | bridge watch → queue → engine → (獲准才)NavigationGateway；perception、decision audit、navigation worker 與 halt 各自封裝，halt 決策優先搶佔 |
-| `webui/server.py` | 717 | http.server:`/api/status` `/api/command` `/api/confirm` `/api/map` **`/api/stop`**;PoseCache(退避重試) |
-| `webui/render.py` | 699 | 純渲染:儀表板 HTML/CSS/JS(含 SVG 地圖、紅色 STOP 鈕) |
-| `webui/commands.py` | 303 | Web 版指令執行 + confirm 動作封存 |
-| `config/models.py` | 220 | AppConfig + **VehicleProfile(`[vehicle]`:cmd_vel/限速/相機)** |
-| `config/store.py` | ~210 | config/.env 載入(`JENAI_CONFIG`/XDG/APPDATA;shell 優先於 .env) |
-| `doctor/checks.py` | 519 | 健檢:python/uv/venv/config/env_file/ros2/provider/locations/webui |
-| `schemas/` | ~500 | 全部 pydantic 模型(`extra="forbid"`):Location、RouteOutput、DoctorResult… |
+| 模組 | 職責 |
+|---|---|
+| `cli/main.py` | Typer 進入點:TUI(預設)、`doctor`、`web`、`mcp`、`daemon`、`loc`、`route`、**`scaffold`**、**`eval`**、**`onboard`**(重跑設定精靈,自動備份)、`help`、`version`;callback 統一載入 `.env`;診斷一律走 `err_console`(stderr,保護 MCP stdout) |
+| `tui/app.py` | Textual 組裝殼：事件轉接、**權限三模式(Shift+Tab)與裸自然語言路由**、串流、spinner、Esc 中斷、`/stop` 搶佔與共用 UI 生命週期 |
+| `tui/command_palette.py` | 純 palette 狀態：slash 比對、參數提示、選取與補完；不依賴 Textual |
+| `tui/command_dispatch.py` | 純 slash grammar：將命令解析成 handler 名稱與參數；不執行 UI 或機器人行為 |
+| `tui/approval_flow.py` | 批准決策、remember、agent/direct interruption 恢復；與實際工具執行分離 |
+| `tui/direct_execution.py` | 已批准 direct action 的 handler map、audit/run 收尾與結果渲染；不以巨型 if/elif 分派 |
+| `tui/catalog.py` | Slash palette、help 分組的單一資料來源、standalone greeting 判斷與 Claude Code 風格 responsive CSS |
+| `tui/robot_commands.py` | Mixin:`/stop` `/ros` `/route` `/mission` `/patrol` `/dock` `/drive` `/vision` + bridge 生命週期(含 watchdog 佈署) |
+| `tui/location_commands.py` | Mixin:`/loc` persistence、AMCL/odom pose 與 GPS→map 儲存；不執行導航 |
+| `tui/info_commands.py` | Mixin:`/help` `/status` `/doctor` `/model` `/provider` 等資訊類 |
+| `tui/panels.py` | 純視覺:雙欄 WelcomePanel、TimelineItem、OutputPanel、CommandPalette |
+| `tui/widgets/` | ApprovalCard(依風險顯示 2/3 個選項；HOST_COMMAND/P2 不可 remember；P2、host command 與 robot control 預選 No)、Plan/Tool/Error blocks |
+| `bridge/ros_bridge.py` | **系統 Python** 下的 rclpy I/O 節點:pose、nav_send/feedback/cancel、**halt(急停)**、**watchdog(斷線自主停車)**、capture_frame、watch；控制演算法與協定迴圈已拆至 stdlib-only 模組 |
+| `bridge/_protocol.py` | stdlib-only JSON op dispatcher；request defaults 與精確型別／finite／範圍驗證可不靠 rclpy 單測，無效請求不會進入 ROS node |
+| `bridge/_wire.py` / `_server.py` | newline-JSON frame 驗證與 stdin server；畸形 frame、callback 失敗與慢速唯讀操作皆有隔離測試 |
+| `bridge/_drive_control.py` | 純狀態機的 odom→cmd_vel 控制、深度 freshness、detour/replan；ROS I/O 只套用輸出 |
+| `bridge/client.py` | venv 側非同步 client:安全 argv spawn、request future 清理、reader 故障傳播、事件隔離；致動／watchdog 輸入與 pose/map/plan/cancel/halt 回應皆採嚴格 wire 驗證，拒絕 truthiness、非 finite 值、無效範圍與矛盾安全證據 |
+| `tools/*_core.py` | 各能力純邏輯(可單測):route 解析與執行、mission 步進、drive 解析、vision、shell 風險評估 |
+| `workflows/area_patrol.py` | 純 Python 深模組：不可變 area／mission model、合法狀態轉移、確定性 coverage plan、有限重試、取消、return-home 與完成判定；不 import ROS、LLM、UI |
+| `tools/area_patrol_service.py` | 產品介面中立的 application service 與 WorkflowRuntime adapter；解析 active Site Profile、共用 NavigationGateway、抓取獨立照片、保存原子報告；不 import Agent SDK 或 UI |
+| `tools/area_patrol_agent_tools.py` | 薄 OpenAI Agents SDK adapter：轉交最小 run context、宣告批准需求並註冊 tool；不承載任務流程 |
+| `site_profiles.py` / `site_assets.py` | 不信任匯入檔自我宣稱；重算 locations SHA-256、驗 route／dock／home／area 引用，明確 activation 後才可導航 |
+| `cli/site.py` | `site status/map-identity/activate/validate/deactivate` 維運介面；map-identity 是 activation 前可用的唯讀 bootstrap |
+| `task_results.py` / `state/reports.py` | 單一 outcome 映射與 durable evidence serializer；run 結束、任務成功與報告落盤是不同事實 |
+| `tools/nav_live.py` | bridge 版導航:回饋串流、逾時、取消、心跳餵 watchdog;**`navigate_with_fallback` 只接受受監督 bridge，bridge/watchdog 不可用即 fail-closed，絕不降級成 CLI goal** |
+| `tools/skills.py` | 任務技能:`parse_patrol`/`run_patrol`(循環+觀察+失敗續行)、`find_dock` |
+| `tools/ros2_pkg_core.py` | **自然語言 → ROS2 套件**(`JenAI scaffold`):`render_package` 純確定性 boilerplate(可單測、永遠 build)+ LLM 寫 node 主體;name/dep 驗證、拒絕覆蓋;`--build` 生成即 colcon 驗證(失敗餵錯誤回 LLM 修一輪)。從 control agent 邁向 development copilot |
+| `tools/decision_core.py` | **M6 決策腦**(v0.21):`ContextSnapshot`(六欄位情境快照)→ 單次 `ask_json` 於封閉動作集單選 `Decision`;越界動作/幻覺目的地/解析失敗一律降級 refer_to_human,無自由文字可達致動 |
+| `tools/decision_eval.py` | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate;標註 `action:target` 綁定目標、gold 優先於 unsafe、未知動作名 fail-loud(論文工具鏈) |
+| `tools/user_skills.py` | **檔案定義技能**(v0.20):`skills/*.toml` → 新 slash 指令;與內建指令同一張批准卡;保留字拒載 |
+| `tools/safety.py` | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
+| `tools/navigation_gateway.py` | **NavigationGateway(v0.25)**:所有導航的唯一出口——CLI/TUI/WebUI/MCP/daemon/任務/agent 工具全部經此;Twin Gate 與 watchdog 政策無法被直呼 route 執行繞過 |
+| `twin/gate.py` | **Twin Gate**:G1 碰撞/G2 逾時/G3 禁區/G4 終點偏差/G5 規劃失敗 → pass/block/refer;非有限 pose 不算有效樣本、缺孿生遙測回 refer(fail-closed) |
+| `state/`(runs/audit/reports/task_receipts/history/session) | run 記錄、SQLite audit（run/批准/工具/Gate/daemon event）、每個終止 TUI run 的原子 JSON task receipt（耗時、工具、批准、結果、標準失敗代碼）、巡邏報告與輸入歷史。audit 不落盤 prompt/raw payload；task receipt 是本機操作報告，依 data lifecycle 管理 |
+| `config/setup.py` | **Setup Wizard**:橘色主題三步設定;誤貼金鑰自動安全搬遷至 `.env`(0600) |
+| `tools/perception.py` | **PerceptionLoop**:持續相機→VLM→結構化 `SceneAnalysis`(場景/物件/affordances/建議動作);TUI `/perception`、daemon `@perception` 規則共用;只觀察不動作 |
+| `mcp_server/server.py` | FastMCP stdio server:共享資源生命週期與 ROS／狀態／導航註冊器分離；唯讀工具 + stop;`--allow-actions` 才有 navigate_to(單飛鎖) |
+| `agent/orchestrator.py` 等 | /run 代理:規劃、specialist 工具、批准中斷、guardrails、tracing；純唯讀 ROS 狀態要求走共用工具的確定性快速路徑，混合／動作要求保留完整 LLM 與批准流程；session 有項目與 UTF-8 位元組上限 |
+| `providers/chat.py` | OpenAI 相容呼叫:`ask_provider`、**`stream_provider`(串流)**、`ask_json`、`ask_vision_json`、`list_provider_models`;`_provider_errors` 共用例外映射;`parse_json_reply`(寬容解析,thinking 模型必備) |
+| `adapters/ros2_adapter.py` | `ros2` CLI subprocess 包裝(有 timeout、錯誤分類) |
+| `adapters/locations.py` | locations.toml 載入/儲存/模糊搜尋;`load_locations_tolerant`(全介面共用的容錯載入) |
+| `adapters/route_adapter.py` | 舊 RouteAdapter 相容層與 stub；產品導航入口不得直接呼叫。`nav2` 的正式路徑只走 `NavigationGateway` + watchdog bridge；`odom` 只保留為 legacy bring-up 介面，gateway 會拒絕高階任務，失效時不送 goal |
+| `bridge` `drive_to_pose` | **(deprecated,bring-up fallback)無 Nav2 的點對點直驅**:閉環 /odom → /cmd_vel(目標視為 odom 座標,map≈odom 時成立);餵同一套 nav_feedback/nav_result,navigate_live 無縫共用 |
+| `bridge/_avoidance.py` + drive_loop | **(deprecated,maintenance mode)局部避障**:Isaac 實測單 depth 反應式避障不可行——只修 bug 不加能力,終局=對接載具原生 nav。原敘述::depth camera(32FC1)→ 偽雷射 → 目標方向走廊判定 → stop-and-go detour。反射層不經 LLM;深度畫面逾時立即歸零並回報 `sensor_unavailable`,不使用陳舊影像繼續移動。**局部反應,非全域規劃**——複雜地圖仍需 Nav2 |
+| `daemon/engine.py` | 規則引擎純邏輯:條件、冷卻、安全 gating;動作 notify/goto/**halt**(可單測) |
+| `daemon/runner.py` | bridge watch → queue → engine → (獲准才)NavigationGateway；perception、decision audit、navigation worker 與 halt 各自封裝，halt 決策優先搶佔 |
+| `webui/server.py` | http.server:`/api/status` `/api/command` `/api/confirm` `/api/map` **`/api/stop`**;PoseCache(退避重試) |
+| `webui/render.py` | 純渲染:儀表板 HTML/CSS/JS(含 SVG 地圖、紅色 STOP 鈕) |
+| `webui/commands.py` | Web 版指令執行 + confirm 動作封存 |
+| `config/models.py` | AppConfig + **VehicleProfile(`[vehicle]`:cmd_vel/限速/相機)** |
+| `config/store.py` | config/.env 載入(`JENAI_CONFIG`/XDG/APPDATA;shell 優先於 .env) |
+| `doctor/checks.py` | 健檢:python/uv/venv/config/env_file/ros2/provider/locations/webui |
+| `schemas/` | 全部 pydantic 模型(`extra="forbid"`):Location、RouteOutput、DoctorResult… |
 
 ### 4.3 關鍵設計決策(為什麼長這樣)
 
