@@ -7,7 +7,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -48,13 +48,14 @@ from jenai.tools.user_skills import load_user_skills
 from jenai.tui.approval_flow import ApprovalFlowMixin
 from jenai.tui.approval_policy import may_auto_approve
 from jenai.tui.catalog import SLASH_COMMANDS, TUI_CSS, is_casual_greeting
+from jenai.tui.command_dispatch import resolve_command
+from jenai.tui.command_palette import CommandPaletteState, PaletteMode, SlashCommand
 from jenai.tui.direct_execution import DirectExecutionMixin
 from jenai.tui.info_commands import InfoCommandsMixin
 from jenai.tui.panels import (
     CommandPalette,
     OutputPanel,
     PromptPill,
-    SlashCommand,
     TimelineItem,
     WelcomePanel,
     _short_cwd,
@@ -133,11 +134,18 @@ class JenAITuiApp(
         # Startup checks intentionally skip slow Nav2/Twin probes. The flag
         # becomes true only after the user explicitly runs /doctor.
         self._doctor_is_full = False
-        self._command_matches: list[SlashCommand] = []
-        self._selected_command_index = 0
         # File-defined skills (skills/*.toml): loaded once at startup; /skills
         # lists them (and any load warnings) without restarting.
         self._user_skills, self._skill_warnings = load_user_skills(config_path)
+        self._palette_state = CommandPaletteState(
+            [
+                *SLASH_COMMANDS,
+                *(
+                    SlashCommand(f"/{skill.name}", f"Skill: {skill.description}")
+                    for skill in self._user_skills.values()
+                ),
+            ]
+        )
         self._mode = "approve"  # shift+tab cycles; see PERMISSION_MODES
 
         self.session = create_session(config, working_directory=str(Path.cwd()))
@@ -276,10 +284,14 @@ class JenAITuiApp(
             # The normal 16-row menu is unchanged on common terminals.  On
             # short screens cap it so the composer and status line stay visible.
             palette.styles.max_height = max(3, min(16, height - 8))
-            if palette.display and self._command_matches:
+            palette_view = self._palette_state.view
+            if palette.display and palette_view.matches:
                 # ``CommandPalette`` derives its visible window from the live
                 # screen height, so redraw an open palette after a resize.
-                palette.update_matches(self._command_matches, self._selected_command_index)
+                palette.update_matches(
+                    list(palette_view.matches),
+                    palette_view.selected_index,
+                )
         except NoMatches:
             pass
 
@@ -631,103 +643,41 @@ class JenAITuiApp(
 
     def _sync_command_palette(self, value: str) -> None:
         palette = self.query_one("#palette", CommandPalette)
-        raw = value.lstrip()
-        if not raw.startswith("/"):
-            self._hide_command_palette()
-            return
-
-        # Match against the full (possibly multi-word, e.g. "ros pub") command
-        # name so a space mid-command ("/ros ") keeps narrowing subcommands
-        # instead of being treated as "done, now typing free-form args" — that
-        # only kicks in once the query is no longer a prefix of any command.
-        query = raw[1:].lower()
-        commands = self._all_slash_commands()
-        name_matches = [
-            command for command in commands if command.name[1:].lower().startswith(query)
-        ]
-        description_matches = [
-            command
-            for command in commands
-            if command not in name_matches and query in command.description.lower()
-        ]
-        matches = name_matches + description_matches
-
-        if not matches:
-            # Typing arguments of a known command → show its format as a dim,
-            # non-interactive hint (the completion inserts only the name, so
-            # the palette carries the "what goes next" knowledge instead).
-            hint = self._argument_hint(raw)
-            if hint is None:
-                self._hide_command_palette()
-                return
-            self._command_matches = []
-            self._selected_command_index = 0
-            palette.display = True
-            palette.update_hint(hint)
-            return
-
-        self._command_matches = matches
-        self._selected_command_index = min(self._selected_command_index, max(len(matches) - 1, 0))
-        palette.display = True
-        palette.update_matches(matches, self._selected_command_index)
-
-    def _argument_hint(self, raw: str) -> SlashCommand | None:
-        """The command whose arguments are being typed, if it has a template.
-
-        Longest name wins so "/loc add …" hints /loc add, not a shorter
-        prefix command.
-        """
-        lowered = raw.lower()
-        candidates = [
-            command
-            for command in self._all_slash_commands()
-            if "<" in command.template and lowered.startswith(command.name.lower() + " ")
-        ]
-        return max(candidates, key=lambda command: len(command.name), default=None)
+        view = self._palette_state.update(value)
+        palette.display = view.visible
+        if view.mode is PaletteMode.MATCHES:
+            palette.update_matches(list(view.matches), view.selected_index)
+        elif view.mode is PaletteMode.HINT and view.hint is not None:
+            palette.update_hint(view.hint)
 
     def _hide_command_palette(self) -> None:
         self.query_one("#palette", CommandPalette).display = False
-        self._command_matches = []
-        self._selected_command_index = 0
+        self._palette_state.hide()
 
     def _palette_is_visible(self) -> bool:
-        return bool(self.query_one("#palette", CommandPalette).display)
+        return self._palette_state.view.visible
 
     def _move_command_selection(self, delta: int) -> None:
-        if not self._command_matches:
+        view = self._palette_state.move(delta)
+        if view.mode is not PaletteMode.MATCHES:
             return
-
-        # Wrap over the full match list (not just the visible window); the
-        # palette's scroll window follows this index, so every command is
-        # reachable by holding up/down.
-        self._selected_command_index = (self._selected_command_index + delta) % len(
-            self._command_matches
-        )
         self.query_one("#palette", CommandPalette).update_matches(
-            self._command_matches,
-            self._selected_command_index,
+            list(view.matches),
+            view.selected_index,
         )
 
     def _should_complete_command(self, value: str) -> bool:
-        if not self._palette_is_visible() or not self._command_matches:
-            return False
-        known_values = {command.name for command in self._all_slash_commands()}
-        known_values.update(command.completion for command in self._all_slash_commands())
-        return value not in known_values
+        return self._palette_state.should_complete(value)
 
     def _complete_selected_command(self) -> None:
-        if not self._command_matches:
+        completion = self._palette_state.selected_completion()
+        if completion is None:
             return
-
-        command = self._command_matches[self._selected_command_index]
         composer = self.query_one("#composer", Input)
-        # Complete the command NAME only, never the "<placeholder>" template —
-        # an inserted template had to be deleted before typing real arguments.
-        # The argument format shows as a dim palette HINT instead (see the
-        # hint branch in _sync_command_palette).
-        composer.value = f"{command.name} "
+        # Complete the command name only; the palette carries the argument hint.
+        composer.value = completion
         composer.cursor_position = len(composer.value)
-        self._sync_command_palette(composer.value)  # command list → format hint
+        self._sync_command_palette(composer.value)
         composer.focus()
 
     # A submitted "<placeholder>" must never reach a handler (it once saved the
@@ -769,13 +719,17 @@ class JenAITuiApp(
             )
 
     def _all_slash_commands(self) -> list[SlashCommand]:
-        """Built-ins plus file-defined skills, so user skills get the same
-        palette/completion treatment as native commands."""
-        extras = [
-            SlashCommand(f"/{s.name}", f"Skill: {s.description}")
-            for s in self._user_skills.values()
-        ]
-        return SLASH_COMMANDS + extras
+        """Built-ins plus file-defined skills used by completion and help."""
+        return list(self._palette_state.commands)
+
+    @property
+    def _command_matches(self) -> list[SlashCommand]:
+        """Compatibility view for live UI diagnostics and legacy tests."""
+        return list(self._palette_state.view.matches)
+
+    @property
+    def _selected_command_index(self) -> int:
+        return self._palette_state.view.selected_index
 
     async def _show_skills(self, _: str = "") -> None:
         from jenai.tools.user_skills import skills_dir
@@ -808,71 +762,11 @@ class JenAITuiApp(
         await self._show_mission(skill.steps)
 
     def _resolve_command_handler(self, command: str, arg: str) -> tuple[SlashHandler | None, str]:
-        if command == "/ros":
-            subcommand, _, rest = arg.partition(" ")
-            ros_handlers: dict[str, SlashHandler] = {
-                "topics": self._show_ros_topics,
-                "topic-info": self._show_ros_topic_info,
-                "schema": self._show_ros_schema,
-                "echo": self._show_ros_echo,
-                "pub": self._show_ros_pub,
-                "drive": self._show_ros_drive,
-            }
-            return ros_handlers.get(subcommand), rest.strip()
-
-        if command == "/loc":
-            subcommand, _, rest = arg.partition(" ")
-            loc_handlers: dict[str, SlashHandler] = {
-                "list": self._show_loc_list,
-                "add": self._show_loc_add,
-                "show": self._show_loc_show,
-                "rm": self._show_loc_rm,
-                "rename": self._show_loc_rename,
-                "move": self._show_loc_move,
-            }
-            return loc_handlers.get(subcommand), rest.strip()
-
-        handlers: dict[str, SlashHandler] = {
-            "/stop": self._show_stop,
-            "/help": self._show_help,
-            "/status": self._show_status,
-            "/doctor": self._show_doctor,
-            "/providers": self._show_providers,
-            "/models": self._show_models,
-            "/model": self._show_model,
-            "/provider": self._show_provider,
-            "/permissions": self._show_permissions,
-            "/mode": self._show_mode,
-            "/config": self._show_config,
-            "/plan": self._show_plan,
-            "/run": self._show_run,
-            "/why": self._show_why,
-            "/review": self._show_review,
-            "/abort": self._show_abort,
-            "/queue": self._show_queue,
-            "/route": self._show_route,
-            "/drive": self._show_drive,
-            "/mission": self._show_mission,
-            "/patrol": self._show_patrol,
-            "/explore": self._show_explore,
-            "/dock": self._show_dock,
-            "/report": self._show_report,
-            "/skills": self._show_skills,
-            "/vision": self._show_vision,
-            "/perception": self._show_perception,
-            "/shell": self._show_shell,
-            "/quit": self._quit_from_command,
-            "/exit": self._quit_from_command,
-        }
-        handler = handlers.get(command)
-        if handler is not None:
-            return handler, arg
-        # File-defined skills: /name runs the skill's mission steps. Built-ins
-        # always win (checked first), and loading already refused reserved names.
-        skill_name = command[1:].lower()
-        if skill_name in self._user_skills:
-            return self._run_user_skill, skill_name
-        return None, arg
+        resolved = resolve_command(command, arg, user_skills=self._user_skills)
+        if resolved is None:
+            return None, arg
+        handler = cast(SlashHandler, getattr(self, resolved.handler_name))
+        return handler, resolved.argument
 
     async def on_unmount(self) -> None:
         if self._perception is not None:

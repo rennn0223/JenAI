@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from jenai.tui.panels import SlashCommand
+from jenai.tui.command_palette import SlashCommand
 
 _CASUAL_GREETING = re.compile(
     r"(?:hi|hello|hey)(?:\s+(?:there|jenai))?"

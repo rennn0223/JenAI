@@ -8,7 +8,9 @@ Agent 執行時即時更新階段與 ToolBlock，但只呈現可驗證的過程�
 
 | 檔案 | 職責 |
 |---|---|
-| `app.py` | App 殼:輸入分發(裸語言依權限模式路由 / `!` shell / slash)、串流、spinner、active task 與共用掛載／狀態列生命週期 |
+| `app.py` | App 組裝殼：Textual 事件、裸語言模式路由、串流、spinner、active task 與共用掛載／狀態列生命週期 |
+| `command_palette.py` | 純狀態模組：slash 比對、參數提示、選取與補完規則；不依賴 Textual |
+| `command_dispatch.py` | 純分派模組：將 slash grammar 解析成 handler 名稱與參數；不執行 UI 或機器人行為 |
 | `approval_policy.py` / `approval_flow.py` | 統一 agent/direct 的 auto/remember 邊界；HOST_COMMAND/P2 逐次批准；決策、恢復與取消收尾 |
 | `direct_execution.py` | 已批准的 ROS pub/drive/route/mission/patrol/explore/shell 執行、稽核狀態與結果渲染 |
 | `catalog.py` | 穩定的 `SLASH_COMMANDS` palette 資料源、standalone greeting 判斷與 Claude Code 風格 responsive CSS |

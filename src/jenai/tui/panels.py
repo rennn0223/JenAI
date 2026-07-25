@@ -10,7 +10,6 @@ from base64 import b64decode
 from functools import lru_cache
 from importlib.resources import files
 from pathlib import Path
-from typing import NamedTuple
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -20,17 +19,7 @@ from textual.markup import escape
 from textual.widgets import Static
 
 from jenai.schemas import DoctorCheckItem, DoctorStatus
-
-
-class SlashCommand(NamedTuple):
-    name: str
-    description: str
-    template: str = ""
-
-    @property
-    def completion(self) -> str:
-        return self.template or self.name
-
+from jenai.tui.command_palette import SlashCommand
 
 ACCENT = "#e8683f"
 ACCENT_DARK = "#e8683f"

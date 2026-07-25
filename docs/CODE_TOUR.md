@@ -1,4 +1,4 @@
-# CODE_TOUR — v2.4.0 程式碼閱讀指南
+# CODE_TOUR — v2.4.1 程式碼閱讀指南
 
 > 本指南用「執行路徑」帶你讀程式，不記容易過期的行數。先讀
 > [ARCHITECTURE](ARCHITECTURE.md)，需要安裝與設定細節再看
@@ -101,7 +101,9 @@ Provider 位於：
 
 TUI：
 
-- `src/jenai/tui/app.py`: composition 與事件路由
+- `src/jenai/tui/app.py`: Textual composition 與事件轉接
+- `src/jenai/tui/command_palette.py`: 可單測的 slash palette 狀態與補完規則
+- `src/jenai/tui/command_dispatch.py`: 可單測的 slash grammar 與 handler 分派
 - `approval_flow.py`: Agent 暫停／恢復的批准生命週期
 - `approval_policy.py`: 權限模式判斷
 - `direct_execution.py`: 已批准的直接能力執行
