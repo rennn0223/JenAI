@@ -26,6 +26,7 @@
 | 文件 | 用途 |
 |---|---|
 | [ARCHITECTURE](ARCHITECTURE.md) | 現行產品邊界、模組責任、主要 seam 與依賴規則；架構單一事實來源 |
+| [CURRENT_WORKFLOW](workflow/CURRENT_WORKFLOW.md) | 啟動、TUI、批准、Capability、ROS/Nav2、HIL、ownership 與錯誤流程 |
 | [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md) | 現行架構、建置、設定、模組與擴充方式；開發者主指南 |
 | [CODE_TOUR](CODE_TOUR.md) | 逐目錄與逐檔閱讀路徑 |
 | [ROADMAP](product/ROADMAP.md) | 演進軌道、技術債、里程碑與風險 |
@@ -68,4 +69,5 @@ git log --all -- docs/archive/design docs/product/PROJECT_DIRECTION.md docs/prod
 git show v2.4.0:docs/archive/design/ARCHITECTURE.md
 ```
 
-維護者的每次改動驗收合約見根目錄 `CLAUDE.md`。
+所有 AI 開發工具的共同規範與每次改動驗收合約見根目錄 `AGENTS.md`；
+`CLAUDE.md` 只保留 Claude Code 的角色補充。

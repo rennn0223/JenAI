@@ -163,6 +163,8 @@ acceptance, and release supply-chain checks.
 ## Where to read next
 
 - [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md): installation, configuration, runtime details, extension
+- [CURRENT_WORKFLOW](workflow/CURRENT_WORKFLOW.md): startup, runtime, approval, ownership, HIL state
+  machine, error recovery, and replay policy
 - [CODE_TOUR](CODE_TOUR.md): code-reading path by module and execution trace
 - [ADR](adr/): accepted architectural decisions
 - [ROADMAP](product/ROADMAP.md): future work and remaining evidence gates

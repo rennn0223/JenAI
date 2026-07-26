@@ -3,7 +3,7 @@
 > 對應版本:**v2.5.1**(2026-07)。本文件是專案的前瞻主圖:誠實的現況快照、
 > 六條演進軌道、工程健康度與可維護性規劃、版本里程碑序列、風險登記。
 > 現行模組與決策邊界見 [ARCHITECTURE](../ARCHITECTURE.md)；外部驗收 gate 見
-> [PRODUCT_READINESS](PRODUCT_READINESS.md)；每次改動的驗收標準見根目錄 `CLAUDE.md`。
+> [PRODUCT_READINESS](PRODUCT_READINESS.md)；每次改動的驗收標準見根目錄 `AGENTS.md`。
 
 ---
 
@@ -73,11 +73,11 @@
 ### 軌道 3 — 原生導航對接(v1.0 關鍵路徑;2026-07 改向)
 - **價值**:兩台載具(阿克曼、四足)**皆自帶 SLAM+Nav**——JenAI 對接,不重建。
 - **關鍵步驟**:
-  1. **接口確認**:先於 Isaac twin 車跑 `ros2 action list | grep -i navigate`、`ros2 topic list | grep -iE "map|amcl|odom"`;有 `NavigateToPose` → bridge 現成直通,否則寫薄 adapter(接線,非控制)。實車清點由 PRODUCT_READINESS 的跨載具 gate 管理。
+  1. **介面確認**:先於 Isaac twin 車跑 `ros2 action list | grep -i navigate`、`ros2 topic list | grep -iE "map|amcl|odom"`;有 `NavigateToPose` → bridge 現成直通,否則寫薄 adapter(接線,非控制)。實車清點由 PRODUCT_READINESS 的跨載具 gate 管理。
   2. 載具檔補 **nav 後端欄位**(per-vehicle 原生堆疊描述)。
   3. **GPS datum 校正工具**:`/loc add gps` 後第一次導航的偏移 → 反推修正 `[map_datum]`(半自動)。
   4. doctor nav 區段從 WARN 升級為「可操作的下一步」引導(偵測原生堆疊)。
-- **依賴**:客戶 B1(接口確認,twin 上隨 B5 場景完成)。
+- **依賴**:客戶 B1(介面確認,twin 上隨 B5 場景完成)。
 - **論文**:第三章平台、附錄參數表。
 - **層別**:B 為主(車邊作業),A 陪跑除錯 + 工具。
 
@@ -149,7 +149,7 @@
 
 ### 3.5 文件可持續性
 - 20+ 份 doc:靠 **單一事實來源**紀律(TECHNICAL_GUIDE 模組表為準,README 各目錄一句話)+ doc 索引([README](../README.md))。
-- 版本快照(TEST.md、本檔)隨 release 更新;`CLAUDE.md` DoD 強制「文件修齊」在每次改動。
+- 版本快照(TEST.md、本檔)隨 release 更新;`AGENTS.md` DoD 強制「文件修齊」在每次改動。
 - 初始設計由 Git history 保存；`ARCHITECTURE.md`、UX 與本 Roadmap 為現行文件。
 
 ---
@@ -190,7 +190,7 @@
 ## 6. 兩層執行與證據責任
 
 - **層一(agent 可獨力,現在就能推)**:軌道 1 核心、軌道 2 接線、軌道 3 工具、軌道 5 多數、全部 D1–D5 償還。
-- **層二(使用者／場域驗收,主要於 Isaac Sim)**:場景建置、固定目標政策比較、接口確認、模擬導航任務紀錄、guided onboarding 回饋與場景家族標註；實體與跨載具證據另由 PRODUCT_READINESS 管理。
+- **層二(使用者／場域驗收,主要於 Isaac Sim)**:場景建置、固定目標政策比較、介面確認、模擬導航任務紀錄、guided onboarding 回饋與場景家族標註；實體與跨載具證據另由 PRODUCT_READINESS 管理。
 
 **優先建議**:先關閉 v2.0 的外部證據閘（合法起點 HIL／10-run、使用者研究、第二維護者演練），
 再決定是否將 **軌道 1(M6)** 納入 post-v2（候選 v3）研究；完成前維持受監督工作流代理定位。
