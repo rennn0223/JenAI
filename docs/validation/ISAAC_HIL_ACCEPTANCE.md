@@ -16,7 +16,7 @@
   `halted=true` 都視為失敗，不做 truthiness 強制轉型。
 - live route 一律經 `NavigationGateway`、watchdog、Nav2 cancel 與 software halt；這不是硬體緊急停止。
 - Nav2 回報 `SUCCEEDED` 後，JenAI 先等待 0.5 秒，再要求一筆晚於驗證請求的新
-  `map → base_link` TF 作為 post-stop pose，計算位置與 wrap-around yaw 誤差。
+  `map → <robot_base_frame>` TF 作為 post-stop pose，計算位置與 wrap-around yaw 誤差。
   terminal feedback 只作進度顯示；舊快取、停止後 frame 不同、證據缺失／畸形或超過
   `[vehicle]` 到點上限時，route 必須 fail closed 並 halt。
   action status 或抵達前 feedback 本身不等於「精準到點」。
@@ -84,6 +84,15 @@ workflow 預設 source `/home/nvidia/IsaacSim-ros_workspaces/jazzy_ws/install/se
 有 repository write 權限的人啟動 workflow，仍需經指定操作員核准才會接觸 runner。
 workflow 永遠上傳 `isaac-hil-<run>-<attempt>` artifact；無檔時也會在 summary 誠實
 標示 setup／confirmation 在 runner 開始前失敗。
+
+## 發佈證據契約
+
+發佈說明、README、論文或簡報若列出精確 HIL 數字，必須同時能在
+`EVIDENCE_LEDGER.md` 找到：原始 artifact 路徑、完整 SHA-256、execution revision、
+工作樹 clean/dirty 狀態、場景/地圖識別與設定摘要。缺少任一項時，只能標為
+`UNVERIFIED_SESSION_OBSERVATION`，並明寫「不可作為正式可稽核 HIL 證據」；不得用
+操作員記憶、終端截圖、鄰近 commit 或 tag 回填。GitHub 已發佈內容不可變更時，應在
+目前分支的同版 release 文件加勘誤，並於下一版 release notes 連回勘誤。
 
 ## Artifact 判讀
 

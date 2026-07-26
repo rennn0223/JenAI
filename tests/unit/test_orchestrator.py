@@ -149,6 +149,112 @@ def test_status_only_run_uses_deterministic_measured_report() -> None:
     assert "未送出任何移動指令" in report
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "幫我檢查現在機器人的位置，然後停止機器人",
+        "Check the robot position, then stop the robot.",
+        "查看 Nav2 狀態後取消導航",
+    ],
+)
+def test_state_request_with_stop_intent_is_not_read_only(query: str) -> None:
+    assert orchestrator.is_read_only_state_request(query) is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "幫我檢查現在機器人的位置，不要移動機器人",
+        "Check the current robot position without moving the robot.",
+    ],
+)
+def test_state_request_with_non_actuation_constraint_remains_read_only(query: str) -> None:
+    assert orchestrator.is_read_only_state_request(query) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "停止機器人",
+        "請立刻停車",
+        "取消目前的導航",
+        "Stop the robot.",
+        "Cancel the active navigation goal.",
+        "幫我檢查現在機器人的位置，然後停止機器人",
+    ],
+)
+def test_explicit_stop_request_uses_emergency_stop_reflex(query: str) -> None:
+    assert orchestrator.is_emergency_stop_request(query) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "不要停止機器人",
+        "請檢查位置，但不要取消導航",
+        "Check the robot without stopping it.",
+        "How does the emergency stop work?",
+        "前往 dock",
+    ],
+)
+def test_negated_or_informational_stop_text_does_not_trigger_reflex(query: str) -> None:
+    assert orchestrator.is_emergency_stop_request(query) is False
+
+
+def test_emergency_stop_run_halts_before_optional_state_snapshot(monkeypatch) -> None:
+    events: list[str] = []
+
+    class FakeBridge:
+        async def start(self) -> None:
+            events.append("start")
+
+        async def stop(self) -> None:
+            events.append("close")
+
+    async def fake_arm(config, bridge) -> None:
+        events.append("arm")
+
+    async def fake_halt(config, bridge) -> str:
+        events.append("halt")
+        return "Robot halted (zero velocity sent)."
+
+    async def fake_inspect(wrapper) -> dict:
+        events.append("inspect")
+        call = ToolCallRecord(
+            tool_name="ros_state_tool",
+            category=ToolCallCategory.ROS2,
+            input_summary="read robot state",
+            status="succeeded",
+            raw_output={
+                "pose_summary": {"frame_id": "map", "x": 1.0, "y": 2.0, "yaw_rad": 0.0},
+                "scan_summary": {},
+                "availability": {},
+                "nav2": {"ready": True, "checks": {}},
+            },
+        )
+        wrapper.context.run_store.add_tool_call(wrapper.context.run, call)
+        return call.raw_output or {}
+
+    monkeypatch.setattr(orchestrator, "RosBridgeClient", FakeBridge)
+    monkeypatch.setattr(orchestrator, "arm_watchdog", fake_arm)
+    monkeypatch.setattr(orchestrator, "halt_robot", fake_halt)
+    monkeypatch.setattr(orchestrator, "inspect_robot_state", fake_inspect)
+
+    ctx = _ctx(monkeypatch)
+    ctx.run.user_input = "幫我檢查現在機器人的位置，然後停止機器人"
+    result = asyncio.run(orchestrator.start_emergency_stop_run(ctx))
+
+    assert events == ["arm", "start", "halt", "inspect", "close"]
+    assert [call.tool_name for call in result.tool_calls] == [
+        "emergency_stop",
+        "ros_state_tool",
+    ]
+    assert result.status == "completed"
+    assert result.outcome == "succeeded"
+    assert "已執行停止" in (result.final_output or "")
+    assert "停止後才擷取上述狀態" in (result.final_output or "")
+
+
 def test_ros_developer_cannot_complete_after_unverified_actuation(monkeypatch) -> None:
     ctx = _ctx(monkeypatch)
     ctx.run.tool_calls.append(

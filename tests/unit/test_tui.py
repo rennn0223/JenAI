@@ -2148,9 +2148,13 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
     async def fake_state(self, arg):
         calls.append(("state", arg))
 
+    async def fake_stop(self, arg):
+        calls.append(("stop", arg))
+
     monkeypatch.setattr(JenAITuiApp, "_show_plan", fake_plan)
     monkeypatch.setattr(JenAITuiApp, "_show_run", fake_run)
     monkeypatch.setattr(JenAITuiApp, "_show_state_inspection", fake_state)
+    monkeypatch.setattr(JenAITuiApp, "_show_emergency_stop", fake_stop)
 
     async def run() -> None:
         app = _app()
@@ -2158,6 +2162,7 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
             await app.handle_user_text("帶我去機械系館")  # approve → agent
             await app.handle_user_text("檢查位置、雷射與 Nav2 狀態，不要移動機器人。")
             await app.handle_user_text("檢查 Nav2 狀態，然後回到 dock。")
+            await app.handle_user_text("幫我檢查現在機器人的位置，然後停止機器人")
             app._mode = "plan"
             await app.handle_user_text("帶我去機械系館")  # plan → planner
 
@@ -2166,6 +2171,7 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
         ("run", "帶我去機械系館"),
         ("state", "檢查位置、雷射與 Nav2 狀態，不要移動機器人。"),
         ("run", "檢查 Nav2 狀態，然後回到 dock。"),
+        ("stop", "幫我檢查現在機器人的位置，然後停止機器人"),
         ("plan", "帶我去機械系館"),
     ]
 

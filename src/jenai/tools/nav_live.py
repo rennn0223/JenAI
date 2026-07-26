@@ -191,14 +191,6 @@ async def _verify_nav2_arrival(
     }
     evidence_source = f"post-stop {pose.source}"
 
-    if not isinstance(observed, dict):
-        halt = await _halt_quietly(bridge)
-        return (
-            "failed",
-            "Nav2 reported success, but its terminal-pose evidence was malformed; "
-            f"success was not accepted. {_halt_detail(halt, cancellation_expected=False)}",
-        )
-
     x = _finite_pose_value(observed, "x")
     y = _finite_pose_value(observed, "y")
     yaw = _finite_pose_value(observed, "yaw")

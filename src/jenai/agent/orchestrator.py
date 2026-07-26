@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from typing import Any
@@ -20,6 +21,7 @@ from agents import (
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.session import JenAIFileSession
 from jenai.agent.tracing import install_local_tracing
+from jenai.bridge import RosBridgeClient
 from jenai.language import normalize_user_visible_text, output_language_for
 from jenai.providers.agent_model import ModelGenerationTimeoutError
 from jenai.schemas import (
@@ -32,12 +34,16 @@ from jenai.schemas import (
     RunRecord,
     RunStatus,
     TaskOutcome,
+    ToolCallCategory,
+    ToolCallRecord,
+    ToolCallStatus,
 )
 from jenai.schemas.models import new_id
 from jenai.task_results import agent_completion_outcome, run_status_for_outcome
 from jenai.tools.approval_formatters import format_approval
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tools.ros2_agent_tools import inspect_robot_state
+from jenai.tools.safety import arm_watchdog, halt_robot
 
 _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
 logger = logging.getLogger(__name__)
@@ -122,6 +128,65 @@ async def start_read_only_state_run(ctx: JenAIRunContext) -> RunRecord:
         status=RunStatus.COMPLETED,
         outcome=TaskOutcome.SUCCEEDED,
         final_output=final_output,
+    )
+    return run
+
+
+async def start_emergency_stop_run(ctx: JenAIRunContext) -> RunRecord:
+    """Immediately halt the robot without waiting for model inference.
+
+    Natural-language stop requests are safety reflexes: they use the same
+    bridge-level cancel-and-zero primitive as ``/stop`` and remain fully
+    recorded.  A requested state snapshot is taken only after halt delivery.
+    """
+
+    run, run_store = ctx.run, ctx.run_store
+    run_store.set_status(run, RunStatus.UNDERSTANDING)
+    run_store.set_status(run, RunStatus.RUNNING)
+    call = ToolCallRecord(
+        tool_name="emergency_stop",
+        category=ToolCallCategory.ROS2,
+        input_summary="cancel navigation and deliver zero velocity",
+        status=ToolCallStatus.RUNNING,
+        risk_level=RiskLevel.P0,
+        effect_scope=EffectScope.SIM_CONTROL,
+    )
+    run_store.add_tool_call(run, call)
+    bridge = RosBridgeClient()
+    try:
+        await arm_watchdog(ctx.config, bridge)
+        await bridge.start()
+        message = await halt_robot(ctx.config, bridge)
+        run_store.update_tool_call(
+            run,
+            call.tool_call_id,
+            status=ToolCallStatus.SUCCEEDED,
+            output_summary=message,
+            raw_output={"halted": True, "message": message},
+        )
+        if requests_state_inspection(run.user_input):
+            await inspect_robot_state(RunContextWrapper(ctx))
+    except Exception as exc:
+        error = _error_from_exc(exc)
+        run_store.update_tool_call(
+            run,
+            call.tool_call_id,
+            status=ToolCallStatus.FAILED,
+            output_summary=f"Emergency stop unavailable: {exc}",
+            error=error,
+        )
+        run_store.finish(run, status=RunStatus.FAILED, error=error)
+        return run
+    finally:
+        with contextlib.suppress(Exception):
+            await bridge.stop()
+
+    final_output = _deterministic_state_report(run) or message
+    run_store.finish(
+        run,
+        status=RunStatus.COMPLETED,
+        outcome=TaskOutcome.SUCCEEDED,
+        final_output=normalize_user_visible_text(final_output, output_language_for(run.user_input)),
     )
     return run
 
@@ -318,7 +383,73 @@ _STATE_ACTIONS = (
     "巡邏",
     "探索",
     "停靠",
+    "stop",
+    "halt",
+    "cancel",
+    "停止",
+    "停車",
+    "急停",
+    "取消導航",
+    "停下",
 )
+
+
+_STOP_VERBS = ("stop", "halt", "cancel", "停止", "停車", "急停", "停下", "取消")
+_STOP_TARGETS = ("robot", "vehicle", "navigation", "nav2", "goal", "機器人", "車", "導航", "任務")
+_STOP_NEGATIONS = (
+    "do not stop",
+    "don.t stop",
+    "don't stop",
+    "without stopping",
+    "do not cancel",
+    "don.t cancel",
+    "don't cancel",
+    "without canceling",
+    "不要停止",
+    "不要停車",
+    "不要停下",
+    "不要取消",
+    "別停止",
+    "別停車",
+    "別停下",
+    "別取消",
+)
+_STOP_INFORMATIONAL = ("how does", "how do", "what is", "explain", "如何", "怎麼", "什麼是")
+
+
+def requests_state_inspection(text: str) -> bool:
+    """Whether the user explicitly asks for a live state snapshot."""
+
+    lowered = text.lower()
+    return any(term in lowered for term in _STATE_SUBJECTS) and any(
+        term in lowered for term in _STATE_INSPECTION
+    )
+
+
+def is_emergency_stop_request(text: str) -> bool:
+    """Recognize an explicit safety stop without treating discussion as actuation."""
+
+    lowered = " ".join(text.lower().strip().split())
+    if any(term in lowered for term in _STOP_NEGATIONS):
+        return False
+    if any(term in lowered for term in _STOP_INFORMATIONAL):
+        return False
+    has_stop = any(term in lowered for term in _STOP_VERBS)
+    if not has_stop:
+        return False
+    if any(term in lowered for term in _STOP_TARGETS):
+        return True
+    return lowered.strip(" .!。！") in {
+        "stop",
+        "halt",
+        "cancel",
+        "停止",
+        "停車",
+        "急停",
+        "停下",
+        "請立刻停車",
+        "立刻停車",
+    }
 
 
 def is_read_only_state_request(text: str) -> bool:
@@ -326,8 +457,7 @@ def is_read_only_state_request(text: str) -> bool:
 
     lowered = text.lower()
     return (
-        any(term in lowered for term in _STATE_SUBJECTS)
-        and any(term in lowered for term in _STATE_INSPECTION)
+        requests_state_inspection(text)
         and not any(term in lowered for term in _STATE_DECISION)
         and not any(term in lowered for term in _STATE_ACTIONS)
     )
@@ -337,9 +467,17 @@ def _deterministic_state_report(run: RunRecord) -> str:
     """Render factual status-only observations without letting an LLM alter measurements."""
 
     calls = [call for call in run.tool_calls if call.tool_name == "ros_state_tool"]
-    if len(run.tool_calls) != 1 or len(calls) != 1 or calls[0].raw_output is None:
-        return ""
-    if not is_read_only_state_request(run.user_input):
+    stops = [call for call in run.tool_calls if call.tool_name == "emergency_stop"]
+    read_only_report = (
+        len(run.tool_calls) == 1 and len(calls) == 1 and is_read_only_state_request(run.user_input)
+    )
+    stopped_report = (
+        len(run.tool_calls) == 2
+        and len(calls) == 1
+        and len(stops) == 1
+        and is_emergency_stop_request(run.user_input)
+    )
+    if not (read_only_report or stopped_report) or calls[0].raw_output is None:
         return ""
 
     payload = calls[0].raw_output
@@ -349,6 +487,7 @@ def _deterministic_state_report(run: RunRecord) -> str:
     checks = nav2.get("checks") or {}
     availability = payload.get("availability") or {}
     zh = any("\u4e00" <= char <= "\u9fff" for char in run.user_input)
+    stop_message = stops[0].output_summary if stopped_report else None
 
     def _number(value: object, digits: int = 2) -> str:
         return f"{value:.{digits}f}" if isinstance(value, (int, float)) else "not measured"
@@ -391,7 +530,11 @@ def _deterministic_state_report(run: RunRecord) -> str:
             "Odom\n"
             f"  {'有快照' if availability.get('odom') else '本次未取得快照'}\n\n"
             "安全性\n"
-            "  本次查詢未送出任何移動指令。"
+            + (
+                f"  已執行停止：{stop_message}\n  停止後才擷取上述狀態。"
+                if stopped_report
+                else "  本次查詢未送出任何移動指令。"
+            )
         )
     sample_suffix = " (truncated)" if scan.get("ranges_truncated") else ""
     return (
@@ -414,7 +557,11 @@ def _deterministic_state_report(run: RunRecord) -> str:
         "Odom\n"
         f"  {'Snapshot available' if availability.get('odom') else 'Not captured'}\n\n"
         "Safety\n"
-        "  This query issued no motion command."
+        + (
+            f"  Stop delivered: {stop_message}\n  The state above was captured after stopping."
+            if stopped_report
+            else "  This query issued no motion command."
+        )
     )
 
 

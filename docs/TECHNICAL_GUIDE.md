@@ -79,6 +79,7 @@ vision = "qwen3.6:35b"             # 要挑有 vision capability 的模型;pin �
 
 [vehicle]                          # 載具差異唯一的家(v0.7+)
 type = "ackermann"                 # ackermann | diff | quadruped
+robot_base_frame = "base_link"      # 停車後終點複核使用的 TF 車體 frame
 cmd_vel_topic = "/cmd_vel"
 cmd_vel_stamped = false            # true 時發 TwistStamped
 camera_topic = "/camera/image_raw" # /vision camera、patrol photo、MCP camera_look 預設
@@ -89,6 +90,10 @@ arrival_yaw_tolerance_rad = 0.25    # Isaac 精準 profile:0.05 m / 0.15 rad
 odom_timeout_s = 1.0               # odom 逾時立即歸零；不沿用舊位姿繼續直驅
 nav_timeout_s = 240.0       # 單次 live Nav2 任務最長秒數；逾時會取消並送出零速度
 ```
+
+Nav2 一鍵 profile 會把 `general_goal_checker.stateful` 固定為 `false`，使無法原地旋轉的
+底盤在對齊朝向時持續重驗 XY；若設為 `true`，車輛曾進入位置容差後再次駛離仍可能
+被 Nav2 判成功。
 
 NavigationGateway 不把 action status 當成幾何證據。bridge 會把 Nav2 feedback 的最後
 `current_pose` 放入 terminal event，`navigate_live` 再計算平面距離與 wrap-around yaw

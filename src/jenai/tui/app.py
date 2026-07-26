@@ -572,7 +572,9 @@ class JenAITuiApp(
         """Route one natural-language turn without mixing command dispatch policy."""
         self._scroll_to_bottom()
         try:
-            if is_capability_card_request(value):
+            if orchestrator.is_emergency_stop_request(value):
+                await self._show_emergency_stop(value)
+            elif is_capability_card_request(value):
                 await self._show_capability_card(value)
             elif is_casual_greeting(value):
                 await self._stream_chat_reply(value)
@@ -961,6 +963,14 @@ class JenAITuiApp(
         ctx = self._new_run_context(arg)
         self._scroll_to_bottom()
         run = await self._run_with_agent_progress(ctx, orchestrator.start_read_only_state_run(ctx))
+        await self._render_run_update(ctx, run)
+
+    async def _show_emergency_stop(self, arg: str) -> None:
+        """Immediate natural-language stop using the recorded safety reflex."""
+
+        ctx = self._new_run_context(arg)
+        self._scroll_to_bottom()
+        run = await self._run_with_agent_progress(ctx, orchestrator.start_emergency_stop_run(ctx))
         await self._render_run_update(ctx, run)
 
     async def _show_why(self, _: str = "") -> None:

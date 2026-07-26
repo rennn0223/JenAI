@@ -222,6 +222,7 @@ Vehicle Profile 是載具差異的第一個設定邊界。若新平台已提供�
 [vehicle]
 type = "ackermann"          # ackermann | diff | quadruped
 domain_id = 20              # 實體載具部署 domain；目前程序仍由 ROS_DOMAIN_ID 決定控制哪側
+robot_base_frame = "base_link" # 停車後終點複核使用的 TF 車體 frame（例：base_footprint）
 cmd_vel_topic = "/cmd_vel"
 cmd_vel_stamped = false     # true 時發 TwistStamped
 camera_topic = "/camera/image_raw"   # /vision camera 與 MCP camera_look 預設
@@ -235,9 +236,11 @@ nav_timeout_s = 240.0       # 單次 live Nav2 任務最長秒數；逾時會取
 ```
 
 `Nav2 SUCCEEDED` 只代表進入 Nav2 自己的 goal-checker 容差。JenAI 會等待車體停止後，
-要求一筆晚於驗證請求的新 `map → base_link` TF，再核對上述兩個上限；舊快取、frame
+要求一筆晚於驗證請求的新 `map → <robot_base_frame>` TF，再核對上述兩個上限；舊快取、frame
 不符、證據缺失或超出上限時，即使 Nav2 回報成功仍會停止並誠實回報失敗。模擬器可使用較嚴格的
-`0.05 m / 0.15 rad`；實車應依定位雜訊與機構能力校準。
+`0.05 m / 0.15 rad`；實車應依定位雜訊與機構能力校準。一鍵 Nav2 profile 另固定
+`general_goal_checker.stateful=false`，使對齊朝向期間仍持續重驗位置，避免 Ackermann 類
+底盤曾靠近目標後又駛離卻被回報成功。
 
 純 Isaac Sim 使用預設 `deployment_mode = "simulation"`；任何實體車可能上線前，將頂層
 設定改為 `deployment_mode = "physical"`。physical 模式若 `[twin].domain_id` 與目前

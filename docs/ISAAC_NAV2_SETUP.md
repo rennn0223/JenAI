@@ -69,6 +69,7 @@ Carter 倉庫場景可作為 Isaac HIL 的「載具側」——RViz goal 能導�
 ```toml
 [vehicle]
 type = "diff"                 # Nova Carter 是差速,不是阿克曼
+robot_base_frame = "base_link" # 停車後以 map → 此 frame 做終點複核
 cmd_vel_topic = "/cmd_vel"    # 以 `ros2 topic list` 實際看到的為準
 camera_topic = "/front_stereo_camera/left/image_raw"   # 同上,以實際 topic 為準
 max_linear = 0.8              # 倉庫內保守值
@@ -103,7 +104,7 @@ controller_server:
       movement_time_allowance: 20.0
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      stateful: true
+      stateful: false
       xy_goal_tolerance: 0.05
       yaw_goal_tolerance: 0.15
     FollowPath:
@@ -113,8 +114,11 @@ controller_server:
       trans_stopped_velocity: 0.05
 ```
 
-`general_goal_checker.xy_goal_tolerance` 與 `FollowPath.xy_goal_tolerance` 必須相同。JenAI 的
-一鍵啟動預設將 Nav2 內部位置／朝向門檻設為 0.05 m／0.15 rad，與 JenAI 的對外終點契約
+`general_goal_checker.xy_goal_tolerance` 與 `FollowPath.xy_goal_tolerance` 必須相同。對無法
+原地旋轉的底盤，`general_goal_checker.stateful` 必須為 `false`：若設為 `true`，Nav2
+曾進入位置容差後就只檢查朝向，車輛在對齊 yaw 時再次駛離目標仍可能被判成功。
+JenAI 的
+一鍵啟動會先複製原始參數檔、在副本同步寫入 goal checker 與 DWB 容差，再用該完整副本啟動 Nav2；原始 vendor 設定不會被修改。副本預設將 Nav2 內部位置／朝向門檻設為 0.05 m／0.15 rad，與 JenAI 的對外終點契約
 一致；Nav2 成功後仍必須由 JenAI 取得新鮮的停車後 TF 獨立複核。2026-07-26 實測顯示，
 將內部門檻縮至 0.03 m／0.10 rad 會讓 Nova Carter 在距離約 0.04 m 或僅剩朝向誤差時
 持續 recovery 直到逾時，因此不得把過嚴門檻誤當成精度保證。若 goal checker 為 0.05、
@@ -129,7 +133,7 @@ progress checker 誤判卡住。Nova Carter 模擬底盤實測對約 0.04 rad/s 
 profile，不應直接複製到其他底盤。若改用實體車，必須依底盤死區、打滑與安全速度重新量測。
 
 Nav2 action 的 terminal feedback 只是控制期間的進度證據。JenAI 在 `SUCCEEDED` 後會先等
-車體停止，再要求一筆晚於驗證請求的新 `map → base_link` TF，以這份 post-stop pose
+車體停止，再要求一筆晚於驗證請求的新 `map → <robot_base_frame>` TF，以這份 post-stop pose
 驗證位置與 wrap-around yaw；舊快取、pose 缺失、frame 錯誤或超出 `[vehicle]` 門檻都必須
 fail closed。Dock 通過只表示
 已到達儲存 pose，不代表已完成充電接點對位或取得充電回授。若場域需要低於 5 cm 的充電
@@ -213,7 +217,7 @@ LaserScan message 都是同一值。
 | 車不動、RViz 能規劃 | `/cmd_vel` 沒接到車(Isaac 端 topic 名對齊;或 controller 輸出 remap) |
 | AMCL 不收斂 | 先 2D Pose Estimate;雷射高度帶與佔位圖 Z 帶不一致也會 |
 | `/scan` 有頻率但 AMCL 跳位／資料忽空忽有 | RTX Helper 仍在逐幀發布旋轉 wedge；頻率不能代表視野完整 | 設 `Publish Full Scan=True`，10 Hz full cloud 時令 converter `scan_time=0.1`，再跑 HIL scan-quality preflight |
-| Nav2 可規劃但 JenAI 到點誤差約 0.2–0.25 m | Nav2 goal checker／DWB 仍採寬鬆預設，或模擬底盤無法執行過小角速度 | 同步設定兩個 xy tolerance、`PoseProgressChecker` 與經量測的 `min_speed_theta`，完整重啟 Nav2；JenAI 以停止後新發布的 `map → base_link` TF 二次核對 |
+| Nav2 可規劃但 JenAI 到點誤差約 0.2–0.25 m | Nav2 goal checker／DWB 仍採寬鬆預設，或模擬底盤無法執行過小角速度 | 同步設定兩個 xy tolerance、`PoseProgressChecker` 與經量測的 `min_speed_theta`，完整重啟 Nav2；JenAI 以停止後新發布的 `map → <robot_base_frame>` TF 二次核對 |
 | `/doctor` 顯示 Nav2 action 存在但里程計警告 | Carter 發 `/chassis/odom`，controller 卻仍聽預設 `/odom` | 設 `controller_server.ros__parameters.odom_topic: /chassis/odom` 後重啟 Nav2 |
 | topics 看不到 | Isaac 沒按 Play;或兩邊 ROS_DOMAIN_ID 不同 |
 | Isaac 用了內建 ROS 庫 | 開 Isaac 前忘了 source(24.04 沒 source 會自動載內建 Jazzy 庫,通常也能通,但版本混用問題難查) |

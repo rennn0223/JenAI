@@ -31,4 +31,8 @@ def build_run_agent(config: AppConfig, task: str | None = None) -> Agent[JenAIRu
 
 
 async def run_task(ctx: JenAIRunContext, task: str) -> RunRecord:
+    if orchestrator.is_emergency_stop_request(task):
+        return await orchestrator.start_emergency_stop_run(ctx)
+    if orchestrator.is_read_only_state_request(task):
+        return await orchestrator.start_read_only_state_run(ctx)
     return await orchestrator.start_run(build_run_agent(ctx.config, task), ctx, task)

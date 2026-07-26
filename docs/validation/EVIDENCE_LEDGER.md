@@ -23,6 +23,7 @@
 | HERO10-20260719 | `cc6d21756d572cc73432c2d26baf80d48baffe6e` | 不適用 | clean source；保留一次 0-goal pose-feed fail-closed、恢復 preflight 與後續 10 個固定 route legs |
 | TUI-NL1-20260719 | `cc6d21756d572cc73432c2d26baf80d48baffe6e`＋dirty patch；後續 matching commit `d942130…855` | 不適用 | 一次監督式自然語言 TUI；因執行當下 dirty，只作補充，不作 clean-revision 成功率 |
 | HIL-PREC0-20260724 | `3826d3c9ba94ada3ebb61b1e07edd7e0585fd7c5`＋dirty | 不適用 | 工程調參補充：同步 0.05 m DWB／goal-checker 後 terminal feedback 0.04 m；yaw 0.15 rad 在場次中調整，且早於 JenAI terminal-pose 二次核對，不能升格為正式主證據 |
+| V2.5-SESSION-OBS（已降級） | `not recorded` | 不適用 | v2.5.0 發佈說明曾抄錄兩個終點的四個精度數字，但沒有對應 artifact、SHA-256 與 execution revision；只可作操作紀錄，不可作正式 HIL 證據 |
 | HIL-SITE1-20260724 | `3826d3c9ba94ada3ebb61b1e07edd7e0585fd7c5`＋dirty | 不適用 | 工程驗收補充：正式 Site Profile／map identity gate、terminal-pose 二次核對、兩條 route、Nav2 cancel acknowledgement 與 zero-drift halt 全數實際執行；dirty source，不能取代 clean HIL-FS2 |
 
 ### Protocol-specific preflight

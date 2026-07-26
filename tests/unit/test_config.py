@@ -51,6 +51,7 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     # Defaults: an existing config without [vehicle] behaves like before.
     assert config.vehicle.type == "ackermann"
     assert config.vehicle.domain_id is None
+    assert config.vehicle.robot_base_frame == "base_link"
     assert config.vehicle.cmd_vel_topic == "/cmd_vel"
     assert config.vehicle.cmd_vel_stamped is False
     assert config.vehicle.pose_jump_threshold_m == 5.0
@@ -62,6 +63,7 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     assert config.deployment_mode == "simulation"
 
     config.vehicle.cmd_vel_topic = "/leatherback/cmd_vel"
+    config.vehicle.robot_base_frame = "/base_footprint"
     config.vehicle.domain_id = 20
     config.vehicle.max_linear = 1.2
     config.vehicle.pose_jump_threshold_m = 6.5
@@ -76,6 +78,7 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     loaded = load_config(path)
 
     assert loaded.vehicle.cmd_vel_topic == "/leatherback/cmd_vel"
+    assert loaded.vehicle.robot_base_frame == "base_footprint"
     assert loaded.vehicle.domain_id == 20
     assert loaded.vehicle.max_linear == 1.2
     assert loaded.vehicle.pose_jump_threshold_m == 6.5
