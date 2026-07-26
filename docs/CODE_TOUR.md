@@ -1,4 +1,4 @@
-# CODE_TOUR — v2.4.1 程式碼閱讀指南
+# CODE_TOUR — v2.5.0 程式碼閱讀指南
 
 > 本指南用「執行路徑」帶你讀程式，不記容易過期的行數。先讀
 > [ARCHITECTURE](ARCHITECTURE.md)，需要安裝與設定細節再看
