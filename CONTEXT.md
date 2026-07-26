@@ -5,6 +5,14 @@ operator intent, selects registered robot capabilities, calls existing ROS 2 or
 robot APIs, and verifies the observable result. It does not replace low-level
 motion control, localization, collision avoidance, or the robot's safety system.
 
+## User-visible language
+
+All Chinese text shown to an operator uses Taiwan Traditional Chinese. Model
+output is treated as untrusted presentation data and normalized at the product
+boundary. Program identifiers, ROS 2 names, tool names, paths, numbers, and
+units remain unchanged. Simplified Chinese may appear only in hidden input
+aliases or regression fixtures used to verify compatibility and conversion.
+
 ## Ubiquitous language
 
 ### High-level decision agent

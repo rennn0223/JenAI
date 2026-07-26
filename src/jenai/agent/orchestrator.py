@@ -20,6 +20,7 @@ from agents import (
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.session import JenAIFileSession
 from jenai.agent.tracing import install_local_tracing
+from jenai.language import normalize_user_visible_text, output_language_for
 from jenai.providers.agent_model import ModelGenerationTimeoutError
 from jenai.schemas import (
     ApprovalRequest,
@@ -203,6 +204,9 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
         final_output = (
             _deterministic_state_report(run) or _final_text(result) or _tool_result_summary(run)
         )
+        final_output = normalize_user_visible_text(
+            final_output, output_language_for(run.user_input)
+        )
         outcome = agent_completion_outcome(run)
         run_store.finish(
             run,
@@ -247,15 +251,22 @@ def _process_result(ctx: JenAIRunContext, result: Any) -> RunRecord:
         )
 
     if all_repeats:
-        run_store.finish(
-            run,
-            status=RunStatus.BLOCKED,
-            final_output=_final_text(result)
-            or (
+        language = output_language_for(run.user_input)
+        fallback = (
+            "已停止：Agent 重複要求執行本次任務中已請求批准的動作（模型循環）。"
+            "請建立新的 /run 執行下一個高階步驟；底層診斷移動仍須由操作員明確下令。"
+            if language == "zh-TW"
+            else (
                 "Stopped: the agent kept re-requesting an action it had already asked to "
                 "approve this run (a model loop). Start a new /run for the next high-level "
                 "step. Low-level diagnostic motion remains an explicit operator command."
-            ),
+            )
+        )
+        final_output = normalize_user_visible_text(_final_text(result) or fallback, language)
+        run_store.finish(
+            run,
+            status=RunStatus.BLOCKED,
+            final_output=final_output,
         )
         return run
 

@@ -53,6 +53,35 @@ def test_analyze_image_maps_vlm_json(monkeypatch, tmp_path) -> None:
     assert output.next_action_suggestions == ["avoid spill"]
 
 
+def test_analyze_image_uses_and_enforces_traditional_chinese(monkeypatch, tmp_path) -> None:
+    image = tmp_path / "frame.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n fake pixels")
+    captured_prompts: list[str] = []
+
+    async def fake_vision_json(config, prompt, data_url, **kw):
+        captured_prompts.append(prompt)
+        return {
+            "summary": "机器人位于仓库区域。",
+            "objects": ["机器人", "货架"],
+            "anomalies": ["通道发现纸箱"],
+            "relevance_to_task": "巡检任务",
+            "next_action_suggestions": ["请求人工确认"],
+        }
+
+    monkeypatch.setattr(vision_core, "ask_vision_json", fake_vision_json)
+
+    output = asyncio.run(
+        vision_core.analyze_image(_config(), str(image), task_context="巡檢整個場域")
+    )
+
+    assert "Traditional Chinese (Taiwan)" in captured_prompts[0]
+    assert output.summary == "機器人位於倉庫區域。"
+    assert output.objects == ["機器人", "貨架"]
+    assert output.anomalies == ["通道發現紙箱"]
+    assert output.relevance_to_task == "巡檢任務"
+    assert output.next_action_suggestions == ["請求人工確認"]
+
+
 def test_analyze_image_discards_normal_state_prose_from_anomalies(monkeypatch, tmp_path) -> None:
     image = tmp_path / "frame.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n fake pixels")
@@ -94,7 +123,6 @@ def test_analyze_image_preserves_deviation_qualified_by_normal_state(monkeypatch
 
 
 def test_analyze_image_degrades_when_model_unavailable(monkeypatch, tmp_path) -> None:
-
     image = tmp_path / "frame.jpg"
     image.write_bytes(b"fake jpeg")
 
@@ -104,5 +132,22 @@ def test_analyze_image_degrades_when_model_unavailable(monkeypatch, tmp_path) ->
     monkeypatch.setattr(vision_core, "ask_vision_json", fake_vision_json)
 
     output = asyncio.run(vision_core.analyze_image(_config(), str(image)))
+    assert output.analysis_status == "unavailable"
     assert "unavailable" in output.summary.lower()
     assert output.source.endswith("frame.jpg")
+
+
+def test_analyze_image_degrades_when_structured_result_is_empty(monkeypatch, tmp_path) -> None:
+    image = tmp_path / "frame.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n fake pixels")
+
+    async def fake_vision_json(config, prompt, data_url, **kw):
+        return {}
+
+    monkeypatch.setattr(vision_core, "ask_vision_json", fake_vision_json)
+
+    output = asyncio.run(
+        vision_core.analyze_image(_config(), str(image), task_context="巡檢整個場域")
+    )
+    assert output.analysis_status == "unavailable"
+    assert output.summary == "視覺模型無法使用或未回傳結構化結果。"

@@ -134,7 +134,14 @@ class BridgeNodeProtocol(Protocol):
 
     _halt_lock: Any
 
-    def get_pose(self, timeout: float) -> WirePayload: ...
+    def get_pose(
+        self,
+        timeout: float,
+        *,
+        fresh: bool,
+        frame_id: str,
+        base_frame: str,
+    ) -> WirePayload: ...
 
     def map_cell(self, x: float, y: float, timeout: float) -> WirePayload: ...
 
@@ -230,7 +237,12 @@ def _configure_watchdog(
 
 _OPERATIONS: dict[str, OperationHandler] = {
     "ping": lambda _node, _req, _watchdog: {"pong": True},
-    "pose": lambda node, req, _watchdog: node.get_pose(_number(req, "timeout", 2.0, positive=True)),
+    "pose": lambda node, req, _watchdog: node.get_pose(
+        _number(req, "timeout", 2.0, positive=True),
+        fresh=_boolean(req, "fresh", False),
+        frame_id=_text(req, "frame_id", "map"),
+        base_frame=_text(req, "base_frame", "base_link"),
+    ),
     "map_cell": lambda node, req, _watchdog: node.map_cell(
         _number(req, "x"), _number(req, "y"), _number(req, "timeout", 3.0, positive=True)
     ),

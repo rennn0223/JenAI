@@ -85,9 +85,17 @@ class FakeTwinBridge:
         self.canceled = True
         return True
 
-    async def get_pose(self, timeout: float = 3.0):
+    async def get_pose(
+        self,
+        timeout: float = 3.0,
+        *,
+        fresh: bool = False,
+        frame_id: str = "map",
+        base_frame: str = "base_link",
+    ):
+        assert timeout > 0.0
         return SimpleNamespace(
-            x=self._pose[0], y=self._pose[1], yaw=0.0, frame_id="map", source="/amcl_pose"
+            x=self._pose[0], y=self._pose[1], yaw=0.0, frame_id=frame_id, source="/tf"
         )
 
 

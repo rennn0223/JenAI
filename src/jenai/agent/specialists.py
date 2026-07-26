@@ -30,6 +30,7 @@ from jenai.agent.orchestrator import is_read_only_state_request
 from jenai.agent.runtime import build_model
 from jenai.capabilities import capability_prompt, registered_capability_ids
 from jenai.config.models import AppConfig
+from jenai.language import model_language_instruction
 from jenai.providers.agent_model import make_agent_client
 from jenai.tools.area_patrol_agent_tools import area_patrol_workflow_tool
 from jenai.tools.ros2_agent_tools import (
@@ -53,6 +54,10 @@ from jenai.tools.vision_agent_tools import vision_image_tool
 # Supervisor `Agent` lists specialist `Agent`s in `handoffs=[...]`, and the model
 # transfers control to whichever specialist fits the request. Each specialist
 # carries only its own focused toolset, which keeps tool-selection reliable.
+
+
+def _with_language_policy(instructions: str) -> str:
+    return f"{instructions}\n\n{model_language_instruction()}"
 
 
 def _finish_read_only_state(
@@ -118,7 +123,7 @@ def build_ros_explorer_agent(
     return Agent[JenAIRunContext](
         name="ROS Explorer",
         handoff_description="Look up ROS2 topics, message types and formats (read-only).",
-        instructions=ROS_EXPLORER_INSTRUCTIONS,
+        instructions=_with_language_policy(ROS_EXPLORER_INSTRUCTIONS),
         model=build_model(config, binding="chat", client=client),
         tool_use_behavior=_finish_read_only_state,
         tools=[
@@ -140,7 +145,7 @@ def build_ros_developer_agent(
         handoff_description=(
             "Discover and validate a ROS2 interface without publishing or moving the robot."
         ),
-        instructions=ROS_DEVELOPER_INSTRUCTIONS,
+        instructions=_with_language_policy(ROS_DEVELOPER_INSTRUCTIONS),
         model=build_model(config, binding="chat", client=client),
         tools=_ros_developer_tools(config),
     )
@@ -155,7 +160,7 @@ def build_navigation_agent(
             "Navigate to a named location or run bounded known-location exploration "
             "(needs approval)."
         ),
-        instructions=NAVIGATION_AGENT_INSTRUCTIONS,
+        instructions=_with_language_policy(NAVIGATION_AGENT_INSTRUCTIONS),
         model=build_model(config, binding="route", client=client),
         tools=_navigation_tools(config),
     )
@@ -181,7 +186,7 @@ def build_area_patrol_selector_agent(
     )
     return Agent[JenAIRunContext](
         name="Area Patrol Workflow Selector",
-        instructions=AREA_PATROL_SELECTOR_INSTRUCTIONS,
+        instructions=_with_language_policy(AREA_PATROL_SELECTOR_INSTRUCTIONS),
         model=build_model(config, binding="route", client=client),
         model_settings=ModelSettings(
             temperature=0.0,
@@ -200,7 +205,7 @@ def build_perception_agent(
     return Agent[JenAIRunContext](
         name="Perception",
         handoff_description="Analyze an image from the robot's camera.",
-        instructions=PERCEPTION_AGENT_INSTRUCTIONS,
+        instructions=_with_language_policy(PERCEPTION_AGENT_INSTRUCTIONS),
         model=build_model(config, binding="vision", client=client),
         tools=[vision_image_tool],
     )
@@ -224,7 +229,7 @@ def build_supervisor_agent(config: AppConfig) -> Agent[JenAIRunContext]:
     handoffs.append(build_perception_agent(config, client))
     return Agent[JenAIRunContext](
         name="JenAI",
-        instructions=f"{SUPERVISOR_INSTRUCTIONS}\n\n{capability_prompt(config)}",
+        instructions=f"{_with_language_policy(SUPERVISOR_INSTRUCTIONS)}\n\n{capability_prompt(config)}",
         model=build_model(config, binding="chat", client=client),
         tool_use_behavior=_finish_read_only_state,
         # Mirror the complete bounded navigation workflow on the supervisor.

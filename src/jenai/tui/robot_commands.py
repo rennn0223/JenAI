@@ -701,7 +701,8 @@ class RobotCommandsMixin(LocationCommandsMixin):
                     continue
                 failure = f" · {receipt.failure_code}" if receipt.failure_code else ""
                 rows.append(
-                    f"{index}. {receipt.status}{failure} · "
+                    f"{index}. {receipt.outcome}{failure} · "
+                    f"lifecycle {receipt.status} · "
                     f"{receipt.duration_ms / 1000:.2f}s · {escape(receipt.request)}"
                 )
             body = "\n".join(rows) or "No readable task receipts."

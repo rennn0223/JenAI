@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from jenai.bridge import BridgeError, NavPlanInfo, RosBridgeClient
+from jenai.bridge import BridgeError, NavPlanInfo, PoseInfo, RosBridgeClient
 from jenai.bridge import client as client_module
 from jenai.config.models import VehicleProfile
 from jenai.schemas import GateReport, Location, Pose2D, RouteOutput
@@ -38,6 +38,65 @@ def _feasible_plan() -> NavPlanInfo:
     )
 
 
+class _SuccessfulNavBridge:
+    """Controllable Nav2 success fixture with an independent settled pose."""
+
+    def __init__(self, *, feedback_x: float, post_stop_x: float) -> None:
+        self.feedback_x = feedback_x
+        self.post_stop_x = post_stop_x
+        self.handlers: dict[str, list] = {}
+        self.halted = 0
+
+    def on_event(self, event: str, handler) -> None:
+        self.handlers.setdefault(event, []).append(handler)
+
+    def off_event(self, event: str, handler) -> None:
+        self.handlers[event].remove(handler)
+
+    async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+        return _feasible_plan()
+
+    async def nav_send(self, **kwargs) -> None:
+        event = {
+            "event": "nav_result",
+            "tag": kwargs["tag"],
+            "status": "succeeded",
+            "final_pose": {
+                "x": self.feedback_x,
+                "y": 1.5,
+                "yaw": 0.0,
+                "frame_id": "map",
+                "source": "nav2_feedback",
+            },
+        }
+        for handler in self.handlers["nav_result"]:
+            handler(event)
+
+    async def get_pose(
+        self,
+        timeout: float,
+        *,
+        fresh: bool = False,
+        frame_id: str = "map",
+        base_frame: str = "base_link",
+    ) -> PoseInfo:
+        assert timeout == 4.0
+        return PoseInfo(
+            x=self.post_stop_x,
+            y=1.5,
+            yaw=0.0,
+            frame_id="map",
+            source="/amcl_pose",
+        )
+
+    async def halt(self) -> bool:
+        self.halted += 1
+        return True
+
+    async def ping(self) -> bool:
+        return True
+
+
 def test_navigate_live_success_with_progress(fake_bridge) -> None:
     async def run() -> None:
         client = RosBridgeClient()
@@ -53,45 +112,8 @@ def test_navigate_live_success_with_progress(fake_bridge) -> None:
 
 
 def test_navigate_live_rejects_nav2_success_outside_endpoint_tolerance() -> None:
-    class InexactBridge:
-        def __init__(self) -> None:
-            self.handlers: dict[str, list] = {}
-            self.halted = 0
-
-        def on_event(self, event: str, handler) -> None:
-            self.handlers.setdefault(event, []).append(handler)
-
-        def off_event(self, event: str, handler) -> None:
-            self.handlers[event].remove(handler)
-
-        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
-            return _feasible_plan()
-
-        async def nav_send(self, **kwargs) -> None:
-            event = {
-                "event": "nav_result",
-                "tag": kwargs["tag"],
-                "status": "succeeded",
-                "final_pose": {
-                    "x": 2.08,
-                    "y": 1.5,
-                    "yaw": 0.0,
-                    "frame_id": "map",
-                    "source": "nav2_feedback",
-                },
-            }
-            for handler in self.handlers["nav_result"]:
-                handler(event)
-
-        async def halt(self) -> bool:
-            self.halted += 1
-            return True
-
-        async def ping(self) -> bool:
-            return True
-
     async def run() -> None:
-        bridge = InexactBridge()
+        bridge = _SuccessfulNavBridge(feedback_x=2.08, post_stop_x=2.08)
         vehicle = VehicleProfile(
             arrival_position_tolerance_m=0.05,
             arrival_yaw_tolerance_rad=0.15,
@@ -101,7 +123,64 @@ def test_navigate_live_rejects_nav2_success_outside_endpoint_tolerance() -> None
         assert output.execution_status == "endpoint_mismatch"
         assert "Nav2 reported success" in output.route_preview
         assert "position error 0.080 m (limit 0.050 m)" in output.route_preview
+        assert "Post-stop zero-velocity halt was delivered." in output.route_preview
+        assert "cancellation" not in output.route_preview
         assert bridge.halted == 1
+
+    asyncio.run(run())
+
+
+def test_navigate_live_prefers_post_stop_pose_over_optimistic_feedback() -> None:
+    async def run() -> None:
+        bridge = _SuccessfulNavBridge(feedback_x=2.0, post_stop_x=2.08)
+        vehicle = VehicleProfile(
+            arrival_position_tolerance_m=0.05,
+            arrival_yaw_tolerance_rad=0.15,
+        )
+
+        output = await navigate_live(bridge, ACTION, vehicle=vehicle)
+
+        assert output.execution_status == "endpoint_mismatch"
+        assert "position error 0.080 m (limit 0.050 m)" in output.route_preview
+        assert bridge.halted == 1
+
+    asyncio.run(run())
+
+
+def test_navigate_live_requires_fresh_map_pose_after_nav2_success() -> None:
+    class FreshPoseBridge(_SuccessfulNavBridge):
+        async def get_pose(
+            self,
+            timeout: float,
+            *,
+            fresh: bool = False,
+            frame_id: str = "map",
+            base_frame: str = "base_link",
+        ) -> PoseInfo:
+            assert timeout == 4.0
+            assert fresh is True
+            assert frame_id == "map"
+            assert base_frame == "base_link"
+            return PoseInfo(
+                x=2.0,
+                y=1.5,
+                yaw=0.0,
+                frame_id="map",
+                source="/tf(map->base_link)",
+            )
+
+    async def run() -> None:
+        bridge = FreshPoseBridge(feedback_x=2.0, post_stop_x=99.0)
+        vehicle = VehicleProfile(
+            arrival_position_tolerance_m=0.05,
+            arrival_yaw_tolerance_rad=0.15,
+        )
+
+        output = await navigate_live(bridge, ACTION, vehicle=vehicle)
+
+        assert output.execution_status == "succeeded"
+        assert "post-stop /tf(map->base_link)" in output.route_preview
+        assert bridge.halted == 0
 
     asyncio.run(run())
 
@@ -380,6 +459,39 @@ def test_navigate_with_fallback_odom_dispatches_direct(fake_bridge, monkeypatch)
         await client.stop()
 
     asyncio.run(run())
+
+
+def test_navigate_with_fallback_uses_configured_live_timeout(monkeypatch) -> None:
+    import jenai.tools.nav_live as nav_live_module
+    from jenai.config.store import build_minimal_config
+    from jenai.schemas import RouteOutput
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "nav2"
+    config.vehicle.nav_timeout_s = 12.5
+    seen: dict[str, float] = {}
+
+    async def fake_navigate_live(_bridge, _action, **kwargs):
+        seen["timeout"] = kwargs["timeout"]
+        return RouteOutput(
+            input_text="",
+            outgoing_action=ACTION,
+            approval_status="approved",
+            execution_status="succeeded",
+            route_preview="done",
+        )
+
+    async def get_bridge():
+        return object()
+
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+    monkeypatch.setattr(nav_live_module, "navigate_live", fake_navigate_live)
+    output = asyncio.run(nav_live_module.navigate_with_fallback(config, get_bridge, ACTION))
+
+    assert output.execution_status == "succeeded"
+    assert seen["timeout"] == 12.5
 
 
 def test_navigate_with_fallback_fails_closed_when_bridge_cannot_start(monkeypatch) -> None:

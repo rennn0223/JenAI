@@ -64,6 +64,23 @@ def test_parse_scene_analysis_degrades_safely() -> None:
     assert clamped.confidence == 1.0
 
 
+def test_parse_scene_analysis_normalizes_prose_but_preserves_affordance_ids() -> None:
+    analysis = parse_scene_analysis(
+        {
+            "scene_context": "机器人位于默认网络区域。",
+            "objects": ["激光扫描器", "鼠标"],
+            "affordances": ["path_clear"],
+            "suggested_action": "发送视频",
+        }
+    )
+
+    assert analysis is not None
+    assert analysis.scene_context == "機器人位於預設網路區域。"
+    assert analysis.objects == ["雷射掃描器", "滑鼠"]
+    assert analysis.affordances == ["path_clear"]
+    assert analysis.suggested_action == "傳送影片"
+
+
 # -- rule matching --------------------------------------------------------------
 
 

@@ -47,6 +47,20 @@ def _context(tmp_path: Path) -> JenAIRunContext:
     )
 
 
+def _gateway_for(execute):
+    class FakeGateway:
+        def __init__(self, config, **kwargs) -> None:
+            self._config = config
+
+        async def execute(self, action, **kwargs) -> RouteOutput:
+            return await execute(self._config, action, **kwargs)
+
+        async def close(self) -> None:
+            return None
+
+    return FakeGateway
+
+
 @pytest.mark.parametrize(
     ("adapter_status", "expected"),
     [
@@ -111,8 +125,8 @@ def test_navigation_progress_is_forwarded_to_workflow_status(
         )
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_service.execute_navigation",
-        fake_execute_navigation,
+        "jenai.tools.area_patrol_service.NavigationGateway",
+        _gateway_for(fake_execute_navigation),
     )
     runtime = AgentAreaPatrolRuntime(
         context,
@@ -126,6 +140,54 @@ def test_navigation_progress_is_forwarded_to_workflow_status(
     assert updates[0] == "Navigating to Dock"
     assert any("1.2 m remaining" in update for update in updates)
     assert updates[-1] == "Reached Dock · succeeded"
+
+
+def test_runtime_reuses_and_closes_one_navigation_gateway(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    locations = [
+        Location(name="Inspection", pose=Pose2D(x=1.0, y=2.0, yaw=0.0)),
+        Location(name="Dock", pose=Pose2D(x=0.0, y=0.0, yaw=0.0)),
+    ]
+    instances: list[object] = []
+
+    class FakeGateway:
+        def __init__(self, *args, **kwargs) -> None:
+            self.actions: list[dict[str, object]] = []
+            self.close_calls = 0
+            instances.append(self)
+
+        async def execute(self, action, **kwargs) -> RouteOutput:
+            self.actions.append(action)
+            return RouteOutput(
+                input_text="",
+                route_preview="Arrived at the goal.",
+                execution_status="succeeded",
+            )
+
+        async def close(self) -> None:
+            self.close_calls += 1
+
+    monkeypatch.setattr(
+        "jenai.tools.area_patrol_service.NavigationGateway",
+        FakeGateway,
+    )
+    runtime = AgentAreaPatrolRuntime(context, locations)
+
+    async def run() -> None:
+        await runtime.navigate(InspectionPoint("Inspection"))
+        await runtime.return_home("Dock")
+        await runtime.close()
+        await runtime.close()
+
+    asyncio.run(run())
+
+    assert len(instances) == 1
+    gateway = instances[0]
+    assert [action["goal"]["name"] for action in gateway.actions] == ["Inspection", "Dock"]
+    assert gateway.close_calls == 1
 
 
 def test_inspection_preserves_image_evidence_and_requires_review_for_anomaly(

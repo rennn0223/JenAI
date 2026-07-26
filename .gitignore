@@ -41,3 +41,7 @@ usability-*.csv
 usability-*.jsonl
 usability-*.md
 .usability-active.json
+
+# Local previews and conflict/patch backup files
+.preview/
+*.orig

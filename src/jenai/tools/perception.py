@@ -20,6 +20,7 @@ from typing import Any
 
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig
+from jenai.language import model_language_instruction, normalize_user_visible_text
 from jenai.providers.chat import ask_vision_json
 from jenai.schemas import SceneAnalysis
 from jenai.tools.vision_core import _to_data_url  # same encoding as one-shot vision
@@ -35,7 +36,8 @@ PERCEPTION_PROMPT = (
     '"confidence": 0.0, '
     '"requires_approval": true}\n'
     "confidence is your 0-1 certainty about the affordances. "
-    "requires_approval must be true unless the suggestion is purely informational."
+    "requires_approval must be true unless the suggestion is purely informational. "
+    + model_language_instruction()
 )
 
 
@@ -67,13 +69,16 @@ def parse_scene_analysis(parsed: Any, *, ts: float | None = None) -> SceneAnalys
     if not isinstance(requires, bool):
         requires = True  # unknown → keep the human gate
 
+    def _prose(value: object) -> str:
+        return normalize_user_visible_text(str(value).strip(), "zh-TW")
+
     return SceneAnalysis(
-        scene_context=str(parsed.get("scene_context", "")).strip(),
-        objects=_as_list(parsed.get("objects")),
+        scene_context=_prose(parsed.get("scene_context", "")),
+        objects=[_prose(item) for item in _as_list(parsed.get("objects"))],
         affordances=[
             a.strip().lower().replace(" ", "_") for a in _as_list(parsed.get("affordances"))
         ],
-        suggested_action=str(parsed.get("suggested_action", "")).strip(),
+        suggested_action=_prose(parsed.get("suggested_action", "")),
         confidence=confidence,
         requires_approval=requires,
         ts=time.time() if ts is None else ts,

@@ -231,11 +231,13 @@ max_angular = 2.0           # rad/s — 以上為安全預設;依你的車實測
 arrival_position_tolerance_m = 0.25 # Nav2 success 後 JenAI 獨立核對的最大位置誤差
 arrival_yaw_tolerance_rad = 0.25    # 最大朝向誤差；Isaac 精準 profile 用 0.05 / 0.15
 odom_timeout_s = 1.0        # odom 超過此秒數未更新，直驅立即歸零並失敗
+nav_timeout_s = 240.0       # 單次 live Nav2 任務最長秒數；逾時會取消並送出零速度
 ```
 
-`Nav2 SUCCEEDED` 只代表進入 Nav2 自己的 goal-checker 容差。JenAI 會再以終端
-feedback 位姿核對上述兩個上限；超出時即使 Nav2 回報成功，JenAI 仍會停止並誠實回報
-失敗。模擬器可使用較嚴格的 `0.05 m / 0.15 rad`；實車應依定位雜訊與機構能力校準。
+`Nav2 SUCCEEDED` 只代表進入 Nav2 自己的 goal-checker 容差。JenAI 會等待車體停止後，
+要求一筆晚於驗證請求的新 `map → base_link` TF，再核對上述兩個上限；舊快取、frame
+不符、證據缺失或超出上限時，即使 Nav2 回報成功仍會停止並誠實回報失敗。模擬器可使用較嚴格的
+`0.05 m / 0.15 rad`；實車應依定位雜訊與機構能力校準。
 
 純 Isaac Sim 使用預設 `deployment_mode = "simulation"`；任何實體車可能上線前，將頂層
 設定改為 `deployment_mode = "physical"`。physical 模式若 `[twin].domain_id` 與目前

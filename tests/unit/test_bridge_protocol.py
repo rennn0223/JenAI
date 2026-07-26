@@ -64,8 +64,18 @@ def test_protocol_ping_pose_and_map_cell_defaults() -> None:
 
     assert dispatch_request(node, "ping", {}, watchdog) == {"pong": True}
     assert dispatch_request(node, "pose", {"timeout": 3.5}, watchdog) == {"op": "pose"}
+    assert dispatch_request(
+        node,
+        "pose",
+        {"timeout": 1.0, "fresh": True, "frame_id": "world", "base_frame": "robot"},
+        watchdog,
+    ) == {"op": "pose"}
     assert dispatch_request(node, "map_cell", {"x": 1, "y": 2}, watchdog) == {"op": "map_cell"}
-    assert node.calls == [("pose", (3.5,), {}), ("map_cell", (1, 2, 3.0), {})]
+    assert node.calls == [
+        ("pose", (3.5,), {"fresh": False, "frame_id": "map", "base_frame": "base_link"}),
+        ("pose", (1.0,), {"fresh": True, "frame_id": "world", "base_frame": "robot"}),
+        ("map_cell", (1, 2, 3.0), {}),
+    ]
 
 
 def test_protocol_maps_nav_and_drive_parameters() -> None:

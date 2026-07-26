@@ -7,6 +7,7 @@ from agents import Runner
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.runtime import build_plan_agent, build_review_agent
 from jenai.agent.tracing import install_local_tracing
+from jenai.language import normalize_user_visible_text, output_language_for
 from jenai.schemas import PlanOutput, PlanStep, PlanStepStatus, RunRecord, RunStatus, TaskOutcome
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 
@@ -29,6 +30,35 @@ def _steps_with_approval_flags(plan_output: PlanOutput) -> list[PlanStep]:
     return steps
 
 
+def _normalize_plan_output(plan_output: PlanOutput, language_hint: str) -> PlanOutput:
+    """Normalize every user-visible model field before persistence or rendering."""
+
+    language = output_language_for(language_hint)
+
+    def normalized(text: str) -> str:
+        return normalize_user_visible_text(text, language)
+
+    steps = [
+        step.model_copy(
+            update={
+                "title": normalized(step.title),
+                "description": normalized(step.description),
+                "reason": normalized(step.reason),
+            }
+        )
+        for step in plan_output.plan_steps
+    ]
+    return plan_output.model_copy(
+        update={
+            "task_summary": normalized(plan_output.task_summary),
+            "assumptions": [normalized(item) for item in plan_output.assumptions],
+            "plan_steps": steps,
+            "approval_checkpoints": [normalized(item) for item in plan_output.approval_checkpoints],
+            "expected_output": normalized(plan_output.expected_output),
+        }
+    )
+
+
 async def run_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
     # Replace the SDK's hosted exporter before the first Runner call.  Planning
     # may be the first Agent SDK operation in a process, before /run installs it.
@@ -40,7 +70,7 @@ async def run_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
 
     agent = build_plan_agent(ctx.config)
     result = await Runner.run(agent, task, context=ctx)
-    plan_output = result.final_output_as(PlanOutput)
+    plan_output = _normalize_plan_output(result.final_output_as(PlanOutput), task)
 
     run_store.add_plan_steps(run, _steps_with_approval_flags(plan_output))
     run.task_summary = plan_output.task_summary
@@ -69,7 +99,7 @@ async def review_plan(ctx: JenAIRunContext, task: str) -> RunRecord:
 
     agent = build_review_agent(ctx.config)
     result = await Runner.run(agent, prompt, context=ctx)
-    plan_output = result.final_output_as(PlanOutput)
+    plan_output = _normalize_plan_output(result.final_output_as(PlanOutput), task)
 
     run_store.add_plan_steps(run, _steps_with_approval_flags(plan_output))
     run.task_summary = plan_output.task_summary

@@ -15,9 +15,11 @@
   例如字串 `"false"`、非有限座標、`free=true` 卻 occupancy=100，或未明確確認
   `halted=true` 都視為失敗，不做 truthiness 強制轉型。
 - live route 一律經 `NavigationGateway`、watchdog、Nav2 cancel 與 software halt；這不是硬體緊急停止。
-- Nav2 回報 `SUCCEEDED` 後，JenAI 仍以 terminal feedback 的 `current_pose` 計算位置與
-  wrap-around yaw 誤差；frame 不同、證據缺失／畸形或超過 `[vehicle]` 到點上限時，
-  route 必須 fail closed 並 halt。action status 本身不再等於「精準到點」。
+- Nav2 回報 `SUCCEEDED` 後，JenAI 先等待 0.5 秒，再要求一筆晚於驗證請求的新
+  `map → base_link` TF 作為 post-stop pose，計算位置與 wrap-around yaw 誤差。
+  terminal feedback 只作進度顯示；舊快取、停止後 frame 不同、證據缺失／畸形或超過
+  `[vehicle]` 到點上限時，route 必須 fail closed 並 halt。
+  action status 或抵達前 feedback 本身不等於「精準到點」。
 - 任一 live route／Twin verdict 失敗後，後續 route 與 cancel exercise 一律標示 `skip` 且不再送
   motion goal；runner 進入 fail-fast 收尾。
 - runner 結束時不論成功或失敗都再次呼叫 halt，並把 `final_halt` 與
@@ -119,15 +121,25 @@ sent；恢復後 `map_left_down`／Dock 交替 10 legs 全數 succeeded。它是
 [EVIDENCE_LEDGER.md](EVIDENCE_LEDGER.md)。
 
 2026-07-24 另保存一筆**工程補充、非正式主證據**的精度調校 run：同步把
-`general_goal_checker.xy_goal_tolerance` 與 `FollowPath.xy_goal_tolerance` 設為 0.05 m，
+`scripts/isaac_nav2.sh` 當時曾把 `general_goal_checker.xy_goal_tolerance` 與
+`FollowPath.xy_goal_tolerance` 設為 0.03 m，並把內部 yaw tolerance 設為 0.10 rad；
+JenAI 對外終點驗收仍維持 0.05 m／0.15 rad。較早工程樣本曾設為 0.05 m，
 並把 yaw tolerance 調為 0.15 rad 後，Dock route 最後 Nav2 feedback 為 0.04 m、action
 succeeded；run 為 dirty source，且 yaw 門檻在場次中調整，耗時 164.219 s、5 recoveries，
 因此只證明參數耦合與 5 cm 位置門檻可達，不取代 clean HIL-FS2，也不是效能基準。原始檔
 `artifacts/isaac-hil-live-precision-loaded-20260724.json`，SHA-256
 `ba71af2a25b80f6e8db46f06c931129b8f42d1fc81fa94627c7ecda828cc4925`。該場次早於
-terminal-pose 二次核對程式碼；完成後須另跑 clean run 才能把新成功語意升格為正式證據。
+post-stop 新鮮 TF 二次核對程式碼；完成後須另跑 clean run 才能把新成功語意升格為正式證據。
 
-同日完成現行 Site Profile 與 terminal-pose 二次核對的整合工程驗收。唯讀 preflight
+2026-07-26 的失敗重播否定了上述內縮門檻作為預設值：正式 HIL 的
+`map_left_down` 最後停在距離約 0.04 m，但 0.03 m 內部門檻使 Nav2 累積 7 recoveries 並於
+600 s 逾時；同日 TUI `/dock` 也曾在距離 0.0 m 時因 0.10 rad 朝向門檻持續 recovery。
+改回與對外契約一致的 0.05 m／0.15 rad 後，真實 TUI `/dock` 正常結束，停車後新鮮 TF
+量得位置誤差 0.049 m、朝向誤差 0.002 rad。故目前預設為 0.05 m／0.15 rad，並保留
+post-stop TF 獨立複核；低於 5 cm 的真正充電座對位列為專用 docking controller 與感測
+回授需求，不以縮小一般 Nav2 tolerance 取代。
+
+同日完成當時的 Site Profile 與 terminal-feedback 二次核對整合工程驗收。唯讀 preflight
 先確認 active site `Isaac Warehouse — Nova Carter` 的 `/map` identity
 `0bbe99c7be3c7eae05b7872e0945c95f8f71bf88c763e4ad12d8aefed82d22e3`
 一致，再執行兩條 route 與 cancel-stop。live artifact 為 `pass_with_skips`：
@@ -139,7 +151,8 @@ valid-finite coverage 46.989%。原始檔
 `47b2dc45a4b77fba3a6efce96b3fc4d12f946617d5ef603d94b378408b85c1e3`；
 對應 preflight SHA-256
 `4839840c5927f281a006d1406b74043cbed753f8a7cb3c180992b7178e0af3de`。
-此場次仍是 dirty source 工程證據，不取代 clean HIL-FS2。多次 recovery 與 0.149 rad
+此場次仍是 dirty source 工程證據，不取代 clean HIL-FS2，且早於現行 post-stop 新鮮 TF
+二次核對。多次 recovery 與 0.149 rad
 Dock yaw 誤差必須保留為待改善事項；`pass` 不代表充電對位或充電狀態已驗證。
 
 所有本機 artifact 均不進 Git 且不取代失敗樣本；上述結果也不支持實體安全、sim-to-real、

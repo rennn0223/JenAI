@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jenai.config.models import AppConfig
+from jenai.language import (
+    model_language_instruction,
+    normalize_user_visible_text,
+    output_language_for,
+)
 from jenai.providers.chat import ask_vision_json
 from jenai.schemas import VisionOutput
 from jenai.secure_files import atomic_write_bytes
@@ -84,8 +89,13 @@ def _to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-def _build_prompt(task_context: str) -> str:
+def _build_prompt(task_context: str, language_hint: str = "") -> str:
     context_line = f"Current task context: {task_context}\n" if task_context.strip() else ""
+    language_line = (
+        f"{model_language_instruction()}\n"
+        if output_language_for(language_hint, task_context) == "zh-TW"
+        else ""
+    )
     return (
         "You are JenAI's vision analyst for a ROS2 robot. Analyze the image and respond "
         "with ONLY JSON matching: "
@@ -97,11 +107,18 @@ def _build_prompt(task_context: str) -> str:
         "or the image's simulated/rendered appearance in anomalies. Do not call an object "
         "unexpected without a supplied baseline. Put uncertainty in summary and suggest "
         "human review instead of inventing evidence.\n"
+        f"{language_line}"
         f"{context_line}"
     )
 
 
-async def analyze_image(config: AppConfig, source: str, *, task_context: str = "") -> VisionOutput:
+async def analyze_image(
+    config: AppConfig,
+    source: str,
+    *,
+    task_context: str = "",
+    language_hint: str = "",
+) -> VisionOutput:
     """Analyze a local image with the configured vision model.
 
     Raises VisionError for a missing path or a non-image file. Degrades to a
@@ -115,21 +132,42 @@ async def analyze_image(config: AppConfig, source: str, *, task_context: str = "
             f"'{path.name}' is not a supported image ({', '.join(sorted(_IMAGE_SUFFIXES))})."
         )
 
-    parsed = await ask_vision_json(config, _build_prompt(task_context), _to_data_url(path))
-    if not isinstance(parsed, dict):
+    language = output_language_for(language_hint, task_context)
+
+    def normalized(text: str) -> str:
+        return normalize_user_visible_text(text, language)
+
+    def normalized_list(value: object) -> list[str]:
+        return [normalized(item) for item in _as_str_list(value)]
+
+    def unavailable_output() -> VisionOutput:
         return VisionOutput(
+            analysis_status="unavailable",
             source=str(path),
-            summary="Vision model is unavailable or returned no structured result.",
+            summary=(
+                "視覺模型無法使用或未回傳結構化結果。"
+                if language == "zh-TW"
+                else "Vision model is unavailable or returned no structured result."
+            ),
             relevance_to_task=task_context,
         )
 
+    parsed = await ask_vision_json(
+        config, _build_prompt(task_context, language_hint), _to_data_url(path)
+    )
+    if not isinstance(parsed, dict):
+        return unavailable_output()
+    summary = parsed.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return unavailable_output()
+
     return VisionOutput(
         source=str(path),
-        summary=str(parsed.get("summary", "")),
-        objects=_as_str_list(parsed.get("objects")),
-        anomalies=_normalize_anomalies(parsed.get("anomalies")),
-        relevance_to_task=str(parsed.get("relevance_to_task", task_context)),
-        next_action_suggestions=_as_str_list(parsed.get("next_action_suggestions")),
+        summary=normalized(summary),
+        objects=normalized_list(parsed.get("objects")),
+        anomalies=[normalized(item) for item in _normalize_anomalies(parsed.get("anomalies"))],
+        relevance_to_task=normalized(str(parsed.get("relevance_to_task", task_context))),
+        next_action_suggestions=normalized_list(parsed.get("next_action_suggestions")),
     )
 
 
@@ -160,6 +198,10 @@ async def capture_and_analyze(
         analysis_path = frame_path
         if preserve_to is not None:
             analysis_path = atomic_write_bytes(preserve_to, frame_path.read_bytes())
-        return await analyze_image(config, str(analysis_path), task_context=task_context)
+        return await analyze_image(
+            config,
+            str(analysis_path),
+            task_context=task_context,
+        )
     finally:
         frame_path.unlink(missing_ok=True)  # one-shot capture; don't litter /tmp

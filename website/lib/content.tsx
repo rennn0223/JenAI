@@ -516,6 +516,7 @@ max_linear = 0.8
 max_angular = 1.0
 arrival_position_tolerance_m = 0.05
 arrival_yaw_tolerance_rad = 0.15
+nav_timeout_s = 240.0
 
 [twin]
 enabled = true

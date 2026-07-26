@@ -32,6 +32,7 @@ import rclpy
 if TYPE_CHECKING:
     # Relative imports give mypy the real helper signatures. Runtime uses the
     # bare siblings below because this file is launched as a system-Python script.
+    from ._latched_observation import LatchedObservation
     from ._nav_plan import path_plan_payload
     from ._navigation_state import (
         NavigationGenerations,
@@ -43,11 +44,13 @@ if TYPE_CHECKING:
         resolve_navigation_terminal,
         wait_for_cancel_acknowledgement,
     )
+    from ._node_identity import bridge_node_name
     from ._occupancy import occupancy_grid_identity, sample_occupancy_cell
     from ._protocol import dispatch_request
     from ._server import serve_requests
     from ._watchdog import WatchdogState
 else:
+    from _latched_observation import LatchedObservation
     from _nav_plan import path_plan_payload
     from _navigation_state import (
         NavigationGenerations,
@@ -59,6 +62,7 @@ else:
         resolve_navigation_terminal,
         wait_for_cancel_acknowledgement,
     )
+    from _node_identity import bridge_node_name
     from _occupancy import occupancy_grid_identity, sample_occupancy_cell
     from _protocol import dispatch_request
     from _server import serve_requests
@@ -127,7 +131,10 @@ class _NavigationFeedbackRecorder:
 
 class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
     def __init__(self) -> None:
-        super().__init__("jenai_bridge")
+        # A TUI may keep a read-only bridge alive while a workflow starts its
+        # own navigation/camera sidecars. Reusing one ROS node name makes
+        # diagnostics ambiguous and can hide which process owns a publisher.
+        super().__init__(bridge_node_name())
         self._nav_client: ActionClient | None = None
         self._plan_client: ActionClient | None = None
         self._nav_goal_handle = None
@@ -157,6 +164,11 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         self._localization_fault_tokens: set[NavigationGoalToken] = set()
         self._pose_jump_cmd_vel_topic = "/cmd_vel"
         self._pose_jump_stamped = False
+        self._map_observation: LatchedObservation[Any] = LatchedObservation()
+        self._map_subscription = None
+        self._tf_buffer = None
+        self._tf_listener = None
+        self._ensure_tf_listener()
 
     def configure_pose_jump_guard(
         self,
@@ -246,8 +258,91 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
 
     # -- pose ---------------------------------------------------------------
 
-    def get_pose(self, timeout: float = 2.0) -> WirePayload:
-        """Current robot pose from /amcl_pose, falling back to /odom."""
+    def _ensure_tf_listener(self) -> None:
+        """Start buffering TF before a short navigation goal can finish."""
+        from tf2_ros import Buffer, TransformListener
+
+        if self._tf_buffer is None:
+            self._tf_buffer = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
+
+    def _fresh_tf_pose(self, frame_id: str, base_frame: str, timeout: float) -> WirePayload:
+        """Return the latest transform used by Nav2 for terminal-pose checks."""
+        from rclpy.duration import Duration
+        from rclpy.time import Time
+
+        self._ensure_tf_listener()
+        tf_buffer = self._tf_buffer
+        if tf_buffer is None:
+            raise RuntimeError("TF listener initialization did not provide a buffer")
+
+        deadline = time.monotonic() + timeout
+
+        def _stamp_ns(value: Any) -> int:
+            stamp = value.header.stamp
+            return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+        try:
+            initial = tf_buffer.lookup_transform(
+                frame_id,
+                base_frame,
+                Time(),
+                timeout=Duration(seconds=timeout),
+            )
+            initial_stamp_ns = _stamp_ns(initial)
+            if initial_stamp_ns <= 0:
+                raise RuntimeError("TF transform did not contain a positive timestamp")
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    raise RuntimeError(
+                        f"No fresh TF transform from {frame_id} to {base_frame} arrived "
+                        f"after the request within {timeout:.1f}s"
+                    )
+                transform = tf_buffer.lookup_transform(
+                    frame_id,
+                    base_frame,
+                    Time(),
+                    timeout=Duration(seconds=min(remaining, 0.1)),
+                )
+                stamp_ns = _stamp_ns(transform)
+                if stamp_ns > initial_stamp_ns:
+                    break
+                time.sleep(min(0.02, remaining))
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"No current TF transform from {frame_id} to {base_frame}: {exc}"
+            ) from exc
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        return {
+            "x": float(translation.x),
+            "y": float(translation.y),
+            "yaw": _yaw_from_quaternion(rotation),
+            "frame_id": frame_id,
+            "source": f"/tf({frame_id}->{base_frame})",
+            "stamp_ns": stamp_ns,
+            "fresh_after_request": True,
+        }
+
+    def get_pose(
+        self,
+        timeout: float = 2.0,
+        *,
+        fresh: bool = False,
+        frame_id: str = "map",
+        base_frame: str = "base_link",
+    ) -> WirePayload:
+        """Read pose without mislabeling a latched AMCL sample as fresh.
+
+        ``fresh=True`` is fail-closed and uses Nav2's current TF chain. The
+        observation path keeps the historical AMCL/odom fallback for status
+        views where the last known stationary pose is still useful.
+        """
+        if fresh:
+            return self._fresh_tf_pose(frame_id, base_frame, timeout)
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from nav_msgs.msg import Odometry
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -291,32 +386,37 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
             raise RuntimeError("No pose received on /amcl_pose or /odom (are they publishing?)")
         return result
 
-    def map_cell(self, x: float, y: float, timeout: float = 3.0) -> WirePayload:
-        """Read the latched static-map cell at one map-frame coordinate."""
+    def _ensure_map_subscription(self) -> None:
+        if self._map_subscription is not None:
+            return
         from nav_msgs.msg import OccupancyGrid
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
-
-        got: list[Any] = []
-        event = threading.Event()
-
-        def _cb(msg: Any) -> None:
-            if not got:
-                got.append(msg)
-                event.set()
 
         qos = QoSProfile(
             depth=1,
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
-        sub = self.create_subscription(OccupancyGrid, "/map", _cb, qos)
-        try:
-            if not event.wait(timeout):
-                raise RuntimeError("No latched OccupancyGrid received on /map")
-        finally:
-            self.destroy_subscription(sub)
+        self._map_subscription = self.create_subscription(
+            OccupancyGrid,
+            "/map",
+            self._map_observation.observe,
+            qos,
+        )
 
-        message = got[0]
+    def _map_message(self, timeout: float) -> Any:
+        self._ensure_map_subscription()
+        try:
+            message = self._map_observation.wait(timeout)
+        except TimeoutError as exc:
+            raise RuntimeError("No latched OccupancyGrid received on /map") from exc
+        if self.count_publishers("/map") < 1:
+            raise RuntimeError("No active OccupancyGrid publisher on /map")
+        return message
+
+    def map_cell(self, x: float, y: float, timeout: float = 3.0) -> WirePayload:
+        """Read the latched static-map cell at one map-frame coordinate."""
+        message = self._map_message(timeout)
         result = sample_occupancy_cell(
             message.data,
             width=int(message.info.width),
@@ -333,30 +433,7 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
 
     def map_identity(self, timeout: float = 3.0) -> WirePayload:
         """Read and fingerprint the complete latched static map."""
-        from nav_msgs.msg import OccupancyGrid
-        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
-
-        got: list[Any] = []
-        event = threading.Event()
-
-        def _cb(msg: Any) -> None:
-            if not got:
-                got.append(msg)
-                event.set()
-
-        qos = QoSProfile(
-            depth=1,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-        )
-        sub = self.create_subscription(OccupancyGrid, "/map", _cb, qos)
-        try:
-            if not event.wait(timeout):
-                raise RuntimeError("No latched OccupancyGrid received on /map")
-        finally:
-            self.destroy_subscription(sub)
-
-        message = got[0]
+        message = self._map_message(timeout)
         origin = message.info.origin
         frame_id = message.header.frame_id or "map"
         resolution = float(message.info.resolution)

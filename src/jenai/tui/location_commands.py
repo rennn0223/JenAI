@@ -11,6 +11,8 @@ import asyncio
 import math
 import re
 
+from textual.markup import escape
+
 from jenai.adapters.locations import (
     LocationNotFoundError,
     LocationsFileError,
@@ -27,9 +29,9 @@ from jenai.tui.panels import MUTED, OutputPanel, TimelineItem
 
 
 def _format_location_row(location: Location) -> str:
-    aliases = ", ".join(location.aliases)
+    aliases = ", ".join(escape(alias) for alias in location.aliases)
     suffix = f" · {aliases}" if aliases else ""
-    return f"[bold #f2ede1]{location.name}[/]{suffix}"
+    return f"[bold #f2ede1]{escape(location.name)}[/]{suffix}"
 
 
 class LocationCommandsMixin(TuiHostContract):
@@ -41,7 +43,7 @@ class LocationCommandsMixin(TuiHostContract):
             )
             return
         rows = [_format_location_row(loc) for loc in locations]
-        await self._mount_event(OutputPanel("Locations", "\n".join(rows)))
+        await self._mount_event(OutputPanel("Locations", "\n".join(rows), body_markup=True))
 
     async def _show_loc_add(self, arg: str) -> None:
         name = arg.strip()

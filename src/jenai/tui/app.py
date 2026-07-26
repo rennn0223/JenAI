@@ -27,6 +27,11 @@ from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
 from jenai.capability_reporting import is_capability_card_request
 from jenai.config.models import AppConfig, ProviderProfile
+from jenai.language import (
+    model_language_instruction,
+    normalize_user_visible_text,
+    output_language_for,
+)
 from jenai.providers import (
     ProviderChatError,
     chat_model_name,
@@ -587,12 +592,13 @@ class JenAITuiApp(
 
     async def _stream_chat_reply(self, prompt: str) -> None:
         """Stream a tool-free chat reply into one timeline item."""
+        language = output_language_for(prompt)
         item = TimelineItem("assistant", "…")
         await self._mount_event(item)
         parts: list[str] = []
 
         def _paint() -> None:
-            item.set_body(escape("".join(parts)))
+            item.set_body(escape(normalize_user_visible_text("".join(parts), language)))
 
         async def _keep_or_drop() -> None:
             if parts:
@@ -603,7 +609,9 @@ class JenAITuiApp(
         last_paint = 0.0
         try:
             async for delta in stream_provider(
-                self.config, prompt, system_prompt=CHAT_INSTRUCTIONS
+                self.config,
+                prompt,
+                system_prompt=f"{CHAT_INSTRUCTIONS}\n\n{model_language_instruction()}",
             ):
                 parts.append(delta)
                 now = time.monotonic()
@@ -627,13 +635,14 @@ class JenAITuiApp(
             await item.remove()
             await self._mount_event(TimelineItem("error", "Provider returned an empty response."))
             return
+        final_text = normalize_user_visible_text("".join(parts), language)
         _paint()
         # This turn bypassed the run agent, so persist it ourselves — otherwise
         # the agent's next run would have no memory the exchange ever happened.
         await JenAIFileSession(self.session.session_id).add_items(
             [
                 {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "".join(parts)},
+                {"role": "assistant", "content": final_text},
             ]
         )
 
@@ -717,19 +726,6 @@ class JenAITuiApp(
             await self._mount_event(
                 TimelineItem("error", f"{escape(command)} failed: {escape(str(exc))}")
             )
-
-    def _all_slash_commands(self) -> list[SlashCommand]:
-        """Built-ins plus file-defined skills used by completion and help."""
-        return list(self._palette_state.commands)
-
-    @property
-    def _command_matches(self) -> list[SlashCommand]:
-        """Compatibility view for live UI diagnostics and legacy tests."""
-        return list(self._palette_state.view.matches)
-
-    @property
-    def _selected_command_index(self) -> int:
-        return self._palette_state.view.selected_index
 
     async def _show_skills(self, _: str = "") -> None:
         from jenai.tools.user_skills import skills_dir
@@ -1245,7 +1241,7 @@ class JenAITuiApp(
     def _format_profile(self, profile: ProviderProfile | None) -> str:
         if profile is None:
             return "[#cb6250]missing[/]"
-        return f"[bold #f2ede1]{profile.name}[/] · {profile.provider}"
+        return f"[bold #f2ede1]{escape(profile.name)}[/] · {escape(profile.provider)}"
 
     def _format_status(self, value: str) -> str:
-        return f"[bold {status_color(value)}]{value}[/]"
+        return f"[bold {status_color(value)}]{escape(value)}[/]"

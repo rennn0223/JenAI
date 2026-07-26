@@ -63,6 +63,7 @@ class VehicleProfile(BaseModel):
     # documents isolation only; command routing still follows the environment
     # JenAI was launched in.
     domain_id: int | None = Field(default=None, ge=0, le=232)
+    robot_base_frame: str = "base_link"
     cmd_vel_topic: str = "/cmd_vel"
     cmd_vel_stamped: bool = False  # publish TwistStamped instead of Twist
     camera_topic: str = "/camera/image_raw"  # default for /vision camera & MCP camera_look
@@ -80,6 +81,10 @@ class VehicleProfile(BaseModel):
     # feedback freezes after its first sample; a global route timeout is far too
     # slow for that failure mode.
     odom_timeout_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    # Bound every live Nav2 action independently from the LLM or UI lifetime.
+    # A stalled controller must fail closed instead of occupying the robot
+    # indefinitely; site profiles may increase this for genuinely long routes.
+    nav_timeout_s: float = Field(default=240.0, gt=0, allow_inf_nan=False)
     # Fail-closed AMCL discontinuity guard for Nav2 goals. A displacement over
     # this threshold between two samples no more than `pose_jump_window_s`
     # apart cancels navigation and pulses zero velocity. Five metres in two
@@ -95,6 +100,15 @@ class VehicleProfile(BaseModel):
         if not stripped:
             raise ValueError("robot identity text must not be blank")
         return stripped
+
+    @field_validator("robot_base_frame")
+    @classmethod
+    def robot_base_frame_must_not_be_blank(cls, value: str) -> str:
+        """Normalize the TF frame used for independent terminal-pose evidence."""
+        normalized = value.strip().lstrip("/")
+        if not normalized:
+            raise ValueError("robot_base_frame must not be blank")
+        return normalized
 
 
 class AvoidanceProfile(BaseModel):
