@@ -15,6 +15,7 @@ from jenai.schemas import EffectScope, RiskLevel, RunRecord, ToolCallCategory, T
 from jenai.state.runs import RunStore
 from jenai.state.session import create_session
 from jenai.tools.registry import TOOL_RISK_REGISTRY, ToolRiskInfo
+from jenai.tools.safety import NavigationCancelStatus
 
 
 class _FakeApprovalItem:
@@ -194,6 +195,10 @@ def test_explicit_stop_request_uses_emergency_stop_reflex(query: str) -> None:
         "請檢查位置，但不要取消導航",
         "Check the robot without stopping it.",
         "How does the emergency stop work?",
+        "停止機器人是否安全？",
+        "停止服務的文件",
+        "請停下來思考這個問題",
+        "Is it safe to stop the robot?",
         "前往 dock",
     ],
 )
@@ -201,22 +206,45 @@ def test_negated_or_informational_stop_text_does_not_trigger_reflex(query: str) 
     assert orchestrator.is_emergency_stop_request(query) is False
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "導航到停車場",
+        "停車場在哪裡？",
+        "請前往停車位",
+        "Tell me where the robot stop is.",
+    ],
+)
+def test_stop_nouns_do_not_trigger_emergency_stop(query: str) -> None:
+    assert orchestrator.is_emergency_stop_request(query) is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "先停車，再回報機器人狀態",
+        "停止機器人後檢查位置",
+        "Stop the robot, then report its status.",
+        "停止機器人並說明目前狀態",
+        "Stop the robot and explain its current state.",
+    ],
+)
+def test_stop_then_state_phrasings_request_post_stop_inspection(query: str) -> None:
+    assert orchestrator.is_emergency_stop_request(query) is True
+    assert orchestrator.requests_state_inspection(query) is True
+
+
 def test_emergency_stop_run_halts_before_optional_state_snapshot(monkeypatch) -> None:
     events: list[str] = []
 
-    class FakeBridge:
-        async def start(self) -> None:
-            events.append("start")
-
-        async def stop(self) -> None:
-            events.append("close")
-
-    async def fake_arm(config, bridge) -> None:
-        events.append("arm")
-
-    async def fake_halt(config, bridge) -> str:
+    async def fake_execute(config):
         events.append("halt")
-        return "Robot halted (zero velocity sent)."
+        return SimpleNamespace(
+            navigation_cancel_status=NavigationCancelStatus.NOT_ACTIVE,
+            navigation_goal_canceled=False,
+            zero_velocity_delivered=True,
+            message="Robot halted (no active navigation goal, zero velocity sent).",
+        )
 
     async def fake_inspect(wrapper) -> dict:
         events.append("inspect")
@@ -235,16 +263,14 @@ def test_emergency_stop_run_halts_before_optional_state_snapshot(monkeypatch) ->
         wrapper.context.run_store.add_tool_call(wrapper.context.run, call)
         return call.raw_output or {}
 
-    monkeypatch.setattr(orchestrator, "RosBridgeClient", FakeBridge)
-    monkeypatch.setattr(orchestrator, "arm_watchdog", fake_arm)
-    monkeypatch.setattr(orchestrator, "halt_robot", fake_halt)
+    monkeypatch.setattr(orchestrator, "execute_emergency_stop", fake_execute)
     monkeypatch.setattr(orchestrator, "inspect_robot_state", fake_inspect)
 
     ctx = _ctx(monkeypatch)
     ctx.run.user_input = "幫我檢查現在機器人的位置，然後停止機器人"
     result = asyncio.run(orchestrator.start_emergency_stop_run(ctx))
 
-    assert events == ["arm", "start", "halt", "inspect", "close"]
+    assert events == ["halt", "inspect"]
     assert [call.tool_name for call in result.tool_calls] == [
         "emergency_stop",
         "ros_state_tool",
@@ -253,6 +279,57 @@ def test_emergency_stop_run_halts_before_optional_state_snapshot(monkeypatch) ->
     assert result.outcome == "succeeded"
     assert "已執行停止" in (result.final_output or "")
     assert "停止後才擷取上述狀態" in (result.final_output or "")
+
+
+def test_emergency_stop_run_preserves_success_when_state_inspection_fails(monkeypatch) -> None:
+    async def fake_execute(config):
+        return SimpleNamespace(
+            navigation_cancel_status=NavigationCancelStatus.NOT_ACTIVE,
+            navigation_goal_canceled=False,
+            zero_velocity_delivered=True,
+            message="Robot halted (no active navigation goal, zero velocity sent).",
+        )
+
+    async def fake_inspect(wrapper) -> None:
+        raise RuntimeError("state bridge unavailable")
+
+    monkeypatch.setattr(orchestrator, "execute_emergency_stop", fake_execute)
+    monkeypatch.setattr(orchestrator, "inspect_robot_state", fake_inspect)
+    ctx = _ctx(monkeypatch)
+    ctx.run.user_input = "停止機器人並回報目前狀態"
+
+    result = asyncio.run(orchestrator.start_emergency_stop_run(ctx))
+
+    assert result.status == "completed"
+    assert result.outcome == "partial"
+    assert result.tool_calls[0].status == "succeeded"
+    assert result.tool_calls[0].raw_output["zero_velocity_delivered"] is True
+    assert "停止指令已送達" in (result.final_output or "")
+    assert "無法取得停止後狀態" in (result.final_output or "")
+
+
+def test_emergency_stop_run_does_not_report_unconfirmed_cancel_as_success(monkeypatch) -> None:
+    async def fake_execute(config):
+        return SimpleNamespace(
+            navigation_cancel_status=NavigationCancelStatus.UNCONFIRMED,
+            navigation_goal_canceled=False,
+            zero_velocity_delivered=True,
+            message="Zero velocity delivered; navigation cancellation unconfirmed.",
+        )
+
+    monkeypatch.setattr(orchestrator, "execute_emergency_stop", fake_execute)
+    ctx = _ctx(monkeypatch)
+    ctx.run.user_input = "停止機器人"
+
+    result = asyncio.run(orchestrator.start_emergency_stop_run(ctx))
+
+    assert result.status == "completed"
+    assert result.outcome == "partial"
+    assert result.tool_calls[0].status == "failed"
+    assert result.tool_calls[0].raw_output["navigation_cancel_status"] == "unconfirmed"
+    assert result.tool_calls[0].raw_output["zero_velocity_delivered"] is True
+    assert "導航取消尚未獲得確認" in (result.final_output or "")
+    assert "Zero velocity" not in (result.final_output or "")
 
 
 def test_ros_developer_cannot_complete_after_unverified_actuation(monkeypatch) -> None:

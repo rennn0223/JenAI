@@ -15,8 +15,16 @@ PARAMS_FILE="${JENAI_NAV2_PARAMS:-$CARTER_SHARE/params/carter_navigation_params.
 START_TIMEOUT_S="${JENAI_NAV2_START_TIMEOUT_S:-45}"
 XY_GOAL_TOLERANCE="${JENAI_NAV2_XY_GOAL_TOLERANCE:-0.05}"
 YAW_GOAL_TOLERANCE="${JENAI_NAV2_YAW_GOAL_TOLERANCE:-0.15}"
+MIN_VEL_X="${JENAI_NAV2_MIN_VEL_X:-0.0}"
+VTHETA_SAMPLES="${JENAI_NAV2_VTHETA_SAMPLES:-15}"
+AMCL_ALPHA="${JENAI_NAV2_AMCL_ALPHA:-0.01}"
+AMCL_UPDATE_MIN_A="${JENAI_NAV2_AMCL_UPDATE_MIN_A:-0.02}"
+AMCL_UPDATE_MIN_D="${JENAI_NAV2_AMCL_UPDATE_MIN_D:-0.02}"
 STATE_DIR="${JENAI_NAV2_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/jenai-nav2-${UID}}"
 OVERRIDE_PARAMS_FILE="${JENAI_NAV2_OVERRIDE_PARAMS:-$STATE_DIR/$SESSION-params.yaml}"
+OVERRIDE_PARAMS_STATE_FILE="$STATE_DIR/$SESSION-override-path"
+SESSION_OWNED=0
+OVERRIDE_PARAMS_OWNED=0
 
 die() {
     printf 'isaac-nav2: %s\n' "$*" >&2
@@ -45,7 +53,7 @@ numeric_parameter_equals() {
 
     [ "$output" != "$value" ] \
         && awk -v value="$value" -v expected="$expected" 'BEGIN {
-            exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value + 0 == expected + 0)
+            exit !(value ~ /^-?[0-9]+([.][0-9]+)?$/ && value + 0 == expected + 0)
         }'
 }
 
@@ -55,12 +63,16 @@ controller_parameters_are_expected() {
     local plugin="${plugin_output#*: }"
     local stateful_output="$3"
     local stateful="${stateful_output#*: }"
+    local min_vel_x_output="$4"
+    local vtheta_samples_output="$5"
 
     [ "$plugin_output" != "$plugin" ] \
         && [ "$plugin" = "nav2_controller::PoseProgressChecker" ] \
         && numeric_parameter_equals "$min_theta_output" "0.1" \
         && [ "$stateful_output" != "$stateful" ] \
-        && [ "$stateful" = "False" ]
+        && [ "$stateful" = "False" ] \
+        && numeric_parameter_equals "$min_vel_x_output" "$MIN_VEL_X" \
+        && numeric_parameter_equals "$vtheta_samples_output" "$VTHETA_SAMPLES"
 }
 
 render_nav2_params_override() {
@@ -71,21 +83,43 @@ render_nav2_params_override() {
         "$source" "$target" \
         --xy "$XY_GOAL_TOLERANCE" \
         --yaw "$YAW_GOAL_TOLERANCE" \
+        --min-vel-x "$MIN_VEL_X" \
+        --vtheta-samples "$VTHETA_SAMPLES" \
+        --amcl-alpha "$AMCL_ALPHA" \
+        --amcl-update-min-a "$AMCL_UPDATE_MIN_A" \
+        --amcl-update-min-d "$AMCL_UPDATE_MIN_D" \
         || die "failed to render Nav2 parameter override"
     OVERRIDE_PARAMS_FILE="$target"
 }
 
+remove_recorded_override() {
+    local recorded_override=""
+    if [ -f "$OVERRIDE_PARAMS_STATE_FILE" ]; then
+        IFS= read -r recorded_override < "$OVERRIDE_PARAMS_STATE_FILE" || true
+    fi
+    if [ -n "$recorded_override" ]; then
+        rm -f "$recorded_override"
+    fi
+    rm -f "$OVERRIDE_PARAMS_STATE_FILE"
+}
+
 cleanup_failed_start() {
     local status="$1"
-    if session_exists; then
-        tmux kill-session -t "$SESSION" 2>/dev/null || true
+    if [ "$SESSION_OWNED" -eq 1 ]; then
+        if session_exists; then
+            tmux kill-session -t "$SESSION" 2>/dev/null || true
+        fi
+        rm -f "$OVERRIDE_PARAMS_STATE_FILE"
     fi
-    rm -f "$OVERRIDE_PARAMS_FILE"
+    if [ "$OVERRIDE_PARAMS_OWNED" -eq 1 ]; then
+        rm -f "$OVERRIDE_PARAMS_FILE"
+    fi
     return "$status"
 }
 
 stop_stack() {
     if ! session_exists; then
+        remove_recorded_override
         rm -f "$OVERRIDE_PARAMS_FILE"
         printf 'isaac-nav2: session %s is not running.\n' "$SESSION"
         return
@@ -102,12 +136,12 @@ stop_stack() {
     if session_exists; then
         tmux kill-session -t "$SESSION"
     fi
+    remove_recorded_override
     rm -f "$OVERRIDE_PARAMS_FILE"
     printf 'isaac-nav2: stopped session %s.\n' "$SESSION"
 }
 
 start_stack() {
-    trap 'cleanup_failed_start $?' EXIT
 
     source_environment
     [ -f "$MAP_FILE" ] || die "map not found: $MAP_FILE"
@@ -116,8 +150,11 @@ start_stack() {
         *[!A-Za-z0-9_.-]*) die "invalid tmux session name: $SESSION" ;;
     esac
     session_exists && die "session $SESSION is already running; use restart"
-    render_nav2_params_override "$PARAMS_FILE" "$OVERRIDE_PARAMS_FILE"
+    local start_override="$OVERRIDE_PARAMS_FILE.$BASHPID"
+    render_nav2_params_override "$PARAMS_FILE" "$start_override"
+    OVERRIDE_PARAMS_OWNED=1
 
+    trap 'cleanup_failed_start $?' EXIT
     # tmux accepts one shell-command string. Each window sources ROS itself
     # because a long-lived tmux server retains an older PATH than its caller.
     printf -v nav_inner \
@@ -129,29 +166,51 @@ start_stack() {
     printf -v nav_command 'exec /bin/bash -lc %q' "$nav_inner"
     printf -v scan_command 'exec /bin/bash -lc %q' "$scan_inner"
 
-    tmux new-session -d -s "$SESSION" -n navigation "$nav_command"
+    if ! tmux new-session -d -s "$SESSION" -n navigation "$nav_command"; then
+        die "failed to create tmux session $SESSION; another start may have won the race"
+    fi
+    SESSION_OWNED=1
     if ! tmux new-window -d -t "$SESSION" -n scan "$scan_command"; then
-        tmux kill-session -t "$SESSION" 2>/dev/null || true
         die "failed to start the LaserScan converter"
     fi
+    mkdir -p "$STATE_DIR"
+    printf '%s\n' "$OVERRIDE_PARAMS_FILE" > "$OVERRIDE_PARAMS_STATE_FILE"
 
     elapsed=0
     while [ "$elapsed" -lt "$START_TIMEOUT_S" ]; do
         if ros2 lifecycle get /controller_server 2>/dev/null | grep -q '^active '; then
             plugin_output="$(ros2 param get /controller_server progress_checker.plugin 2>/dev/null || true)"
             min_theta_output="$(ros2 param get /controller_server FollowPath.min_speed_theta 2>/dev/null || true)"
+            min_vel_x_output="$(ros2 param get /controller_server FollowPath.min_vel_x 2>/dev/null || true)"
+            vtheta_samples_output="$(ros2 param get /controller_server FollowPath.vtheta_samples 2>/dev/null || true)"
             stateful_output="$(ros2 param get /controller_server general_goal_checker.stateful 2>/dev/null || true)"
             xy_output="$(ros2 param get /controller_server general_goal_checker.xy_goal_tolerance 2>/dev/null || true)"
             yaw_output="$(ros2 param get /controller_server general_goal_checker.yaw_goal_tolerance 2>/dev/null || true)"
             dwb_xy_output="$(ros2 param get /controller_server FollowPath.xy_goal_tolerance 2>/dev/null || true)"
-            if ! controller_parameters_are_expected "$plugin_output" "$min_theta_output" "$stateful_output" \
+            alpha1_output="$(ros2 param get /amcl alpha1 2>/dev/null || true)"
+            alpha2_output="$(ros2 param get /amcl alpha2 2>/dev/null || true)"
+            alpha3_output="$(ros2 param get /amcl alpha3 2>/dev/null || true)"
+            alpha4_output="$(ros2 param get /amcl alpha4 2>/dev/null || true)"
+            alpha5_output="$(ros2 param get /amcl alpha5 2>/dev/null || true)"
+            update_min_a_output="$(ros2 param get /amcl update_min_a 2>/dev/null || true)"
+            update_min_d_output="$(ros2 param get /amcl update_min_d 2>/dev/null || true)"
+            if ! controller_parameters_are_expected "$plugin_output" "$min_theta_output" "$stateful_output" "$min_vel_x_output" "$vtheta_samples_output" \
                 || ! numeric_parameter_equals "$xy_output" "$XY_GOAL_TOLERANCE" \
                 || ! numeric_parameter_equals "$yaw_output" "$YAW_GOAL_TOLERANCE" \
-                || ! numeric_parameter_equals "$dwb_xy_output" "$XY_GOAL_TOLERANCE"; then
+                || ! numeric_parameter_equals "$dwb_xy_output" "$XY_GOAL_TOLERANCE" \
+                || ! numeric_parameter_equals "$alpha1_output" "$AMCL_ALPHA" \
+                || ! numeric_parameter_equals "$alpha2_output" "$AMCL_ALPHA" \
+                || ! numeric_parameter_equals "$alpha3_output" "$AMCL_ALPHA" \
+                || ! numeric_parameter_equals "$alpha4_output" "$AMCL_ALPHA" \
+                || ! numeric_parameter_equals "$alpha5_output" "$AMCL_ALPHA" \
+                || ! numeric_parameter_equals "$update_min_a_output" "$AMCL_UPDATE_MIN_A" \
+                || ! numeric_parameter_equals "$update_min_d_output" "$AMCL_UPDATE_MIN_D"; then
                 stop_stack
-                die "unexpected precision parameters after startup"
+                die "unexpected navigation precision parameters after startup"
             fi
-            printf 'isaac-nav2: active in tmux session %s (xy=%s m, yaw=%s rad).\n' "$SESSION" "$XY_GOAL_TOLERANCE" "$YAW_GOAL_TOLERANCE"
+            printf 'isaac-nav2: active in tmux session %s (xy=%s m, yaw=%s rad, min_vel_x=%s m/s, vtheta_samples=%s, amcl_alpha=%s, amcl_update=%s m/%s rad).\n' \
+                "$SESSION" "$XY_GOAL_TOLERANCE" "$YAW_GOAL_TOLERANCE" "$MIN_VEL_X" "$VTHETA_SAMPLES" \
+                "$AMCL_ALPHA" "$AMCL_UPDATE_MIN_D" "$AMCL_UPDATE_MIN_A"
             trap - EXIT
             return
         fi
@@ -169,7 +228,12 @@ status_stack() {
     ros2 lifecycle get /controller_server
     ros2 param get /controller_server progress_checker.plugin
     ros2 param get /controller_server FollowPath.min_speed_theta
+    ros2 param get /controller_server FollowPath.min_vel_x
+    ros2 param get /controller_server FollowPath.vtheta_samples
     ros2 param get /controller_server general_goal_checker.stateful
+    ros2 param get /amcl alpha1
+    ros2 param get /amcl update_min_d
+    ros2 param get /amcl update_min_a
     ros2 action info /navigate_to_pose
 }
 main() {

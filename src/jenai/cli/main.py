@@ -26,6 +26,7 @@ from jenai.config import ConfigError, default_config_path, load_config, load_env
 from jenai.config.models import AppConfig
 from jenai.config.setup import run_setup_wizard
 from jenai.doctor import run_doctor
+from jenai.ros_environment import bootstrap_ros_environment
 from jenai.schemas import DoctorResult, DoctorStatus, Location
 from jenai.secure_files import atomic_write_bytes
 from jenai.task_results import navigation_output_result, navigation_receipt_text
@@ -87,6 +88,11 @@ def main(
         err_console.print(
             f"[yellow]JENAI_ENV_FILE points to a missing file: {env_result.path}[/yellow]"
         )
+
+    # Give packaged commands the same ROS bootstrap contract as the source
+    # launcher. Missing ROS remains non-fatal; Doctor reports the remedy while
+    # provider-only features continue to work.
+    bootstrap_ros_environment()
 
     if ctx.invoked_subcommand is not None:
         return

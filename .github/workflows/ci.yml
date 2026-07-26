@@ -34,10 +34,10 @@ jobs:
         run: uv sync --frozen
 
       - name: Formatting (ruff)
-        run: uv run ruff format --check src tests
+        run: uv run ruff format --check src tests scripts
 
       - name: Lint (ruff)
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests scripts
 
       - name: Typecheck all production code (mypy strict)
         run: uv run mypy
@@ -61,14 +61,14 @@ jobs:
 
       - name: Safety-chain coverage gate (no regressions)
         # Reuses the .coverage data from the test step. The safety chain
-        # (estop/watchdog/bridge/gate/rules) sits at 93% branch coverage as of
-        # v2.1.0 — this
+        # (estop/watchdog/bridge/gate/rules) sits at 94% branch coverage as of
+        # v2.5.1 — this
         # gate only ever ratchets up, never down (see docs/product/V1_GATE.md A3).
         run: |
           # Exclude ros_bridge.py itself: the rclpy sidecar needs hardware.
           # Its stdlib-only sibling state modules are included and unit-tested.
           uv run coverage report --fail-under=90 \
-            --include="*/jenai/bridge/client.py,*/jenai/bridge/_*.py,*/jenai/daemon/*,*/jenai/twin/*,*/jenai/tools/safety.py"
+            --include="*/jenai/bridge/client.py,*/jenai/bridge/_*.py,*/jenai/daemon/*,*/jenai/twin/*,*/jenai/tools/safety.py,*/jenai/tools/emergency_stop.py"
 
   build:
     runs-on: ubuntu-latest

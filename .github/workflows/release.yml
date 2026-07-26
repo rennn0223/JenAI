@@ -153,8 +153,8 @@ jobs:
 
       - name: Gate the tag (lint + full suite with coverage)
         run: |
-          uv run ruff format --check src tests
-          uv run ruff check src tests
+          uv run ruff format --check src tests scripts
+          uv run ruff check src tests scripts
           uv run mypy
           uv run pytest -q --cov=jenai --cov-branch --cov-report=term
 
@@ -164,7 +164,7 @@ jobs:
       - name: Safety-chain coverage gate (same threshold as PR CI)
         run: |
           uv run coverage report --fail-under=90 \
-            --include="*/jenai/bridge/client.py,*/jenai/bridge/_*.py,*/jenai/daemon/*,*/jenai/twin/*,*/jenai/tools/safety.py"
+            --include="*/jenai/bridge/client.py,*/jenai/bridge/_*.py,*/jenai/daemon/*,*/jenai/twin/*,*/jenai/tools/safety.py,*/jenai/tools/emergency_stop.py"
 
       - name: Audit locked runtime dependencies
         run: |

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 from typing import Any
@@ -21,7 +20,6 @@ from agents import (
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.session import JenAIFileSession
 from jenai.agent.tracing import install_local_tracing
-from jenai.bridge import RosBridgeClient
 from jenai.language import normalize_user_visible_text, output_language_for
 from jenai.providers.agent_model import ModelGenerationTimeoutError
 from jenai.schemas import (
@@ -41,9 +39,15 @@ from jenai.schemas import (
 from jenai.schemas.models import new_id
 from jenai.task_results import agent_completion_outcome, run_status_for_outcome
 from jenai.tools.approval_formatters import format_approval
+from jenai.tools.emergency_stop import (
+    execute_emergency_stop,
+)
+from jenai.tools.emergency_stop import (
+    is_emergency_stop_request as is_emergency_stop_request,
+)
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tools.ros2_agent_tools import inspect_robot_state
-from jenai.tools.safety import arm_watchdog, halt_robot
+from jenai.tools.safety import NavigationCancelStatus
 
 _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
 logger = logging.getLogger(__name__)
@@ -133,12 +137,7 @@ async def start_read_only_state_run(ctx: JenAIRunContext) -> RunRecord:
 
 
 async def start_emergency_stop_run(ctx: JenAIRunContext) -> RunRecord:
-    """Immediately halt the robot without waiting for model inference.
-
-    Natural-language stop requests are safety reflexes: they use the same
-    bridge-level cancel-and-zero primitive as ``/stop`` and remain fully
-    recorded.  A requested state snapshot is taken only after halt delivery.
-    """
+    """Halt immediately and report optional observation failures separately."""
 
     run, run_store = ctx.run, ctx.run_store
     run_store.set_status(run, RunStatus.UNDERSTANDING)
@@ -152,20 +151,8 @@ async def start_emergency_stop_run(ctx: JenAIRunContext) -> RunRecord:
         effect_scope=EffectScope.SIM_CONTROL,
     )
     run_store.add_tool_call(run, call)
-    bridge = RosBridgeClient()
     try:
-        await arm_watchdog(ctx.config, bridge)
-        await bridge.start()
-        message = await halt_robot(ctx.config, bridge)
-        run_store.update_tool_call(
-            run,
-            call.tool_call_id,
-            status=ToolCallStatus.SUCCEEDED,
-            output_summary=message,
-            raw_output={"halted": True, "message": message},
-        )
-        if requests_state_inspection(run.user_input):
-            await inspect_robot_state(RunContextWrapper(ctx))
+        receipt = await execute_emergency_stop(ctx.config)
     except Exception as exc:
         error = _error_from_exc(exc)
         run_store.update_tool_call(
@@ -177,15 +164,56 @@ async def start_emergency_stop_run(ctx: JenAIRunContext) -> RunRecord:
         )
         run_store.finish(run, status=RunStatus.FAILED, error=error)
         return run
-    finally:
-        with contextlib.suppress(Exception):
-            await bridge.stop()
 
+    cancel_unconfirmed = receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED
+    if output_language_for(run.user_input) == "zh-TW":
+        message = {
+            NavigationCancelStatus.ACKNOWLEDGED: "機器人已停止（導航目標已取消，已送出零速度）。",
+            NavigationCancelStatus.UNCONFIRMED: ("零速度已送達，但導航取消尚未獲得確認。"),
+            NavigationCancelStatus.NOT_ACTIVE: (
+                "機器人已停止（沒有進行中的導航目標，已送出零速度）。"
+            ),
+        }[receipt.navigation_cancel_status]
+    else:
+        message = receipt.message
+    run_store.update_tool_call(
+        run,
+        call.tool_call_id,
+        status=(ToolCallStatus.FAILED if cancel_unconfirmed else ToolCallStatus.SUCCEEDED),
+        output_summary=message,
+        raw_output={
+            "navigation_cancel_status": receipt.navigation_cancel_status.value,
+            "navigation_goal_canceled": receipt.navigation_goal_canceled,
+            "zero_velocity_delivered": receipt.zero_velocity_delivered,
+            "message": message,
+        },
+    )
+
+    inspection_error: Exception | None = None
+    if requests_state_inspection(run.user_input):
+        try:
+            await inspect_robot_state(RunContextWrapper(ctx))
+        except Exception as exc:
+            inspection_error = exc
+
+    outcome = (
+        TaskOutcome.PARTIAL
+        if cancel_unconfirmed or inspection_error is not None
+        else TaskOutcome.SUCCEEDED
+    )
     final_output = _deterministic_state_report(run) or message
+    if inspection_error is not None:
+        zh = output_language_for(run.user_input) == "zh-TW"
+        suffix = (
+            f"停止指令已送達，但無法取得停止後狀態：{inspection_error}"
+            if zh
+            else f"The stop was delivered, but post-stop state was unavailable: {inspection_error}"
+        )
+        final_output = f"{message}\n\n{suffix}"
     run_store.finish(
         run,
         status=RunStatus.COMPLETED,
-        outcome=TaskOutcome.SUCCEEDED,
+        outcome=outcome,
         final_output=normalize_user_visible_text(final_output, output_language_for(run.user_input)),
     )
     return run
@@ -365,7 +393,18 @@ def _tool_result_summary(run: RunRecord) -> str:
 
 
 _STATE_SUBJECTS = ("state", "status", "position", "pose", "scan", "nav2", "位置", "雷射", "狀態")
-_STATE_INSPECTION = ("check", "inspect", "show", "current", "檢查", "查看", "現在", "目前")
+_STATE_INSPECTION = (
+    "check",
+    "inspect",
+    "show",
+    "current",
+    "report",
+    "檢查",
+    "查看",
+    "現在",
+    "目前",
+    "回報",
+)
 _STATE_DECISION = ("should", "recommend", "是否應該", "建議", "該不該")
 _STATE_ACTIONS = (
     "drive",
@@ -394,29 +433,6 @@ _STATE_ACTIONS = (
 )
 
 
-_STOP_VERBS = ("stop", "halt", "cancel", "停止", "停車", "急停", "停下", "取消")
-_STOP_TARGETS = ("robot", "vehicle", "navigation", "nav2", "goal", "機器人", "車", "導航", "任務")
-_STOP_NEGATIONS = (
-    "do not stop",
-    "don.t stop",
-    "don't stop",
-    "without stopping",
-    "do not cancel",
-    "don.t cancel",
-    "don't cancel",
-    "without canceling",
-    "不要停止",
-    "不要停車",
-    "不要停下",
-    "不要取消",
-    "別停止",
-    "別停車",
-    "別停下",
-    "別取消",
-)
-_STOP_INFORMATIONAL = ("how does", "how do", "what is", "explain", "如何", "怎麼", "什麼是")
-
-
 def requests_state_inspection(text: str) -> bool:
     """Whether the user explicitly asks for a live state snapshot."""
 
@@ -424,32 +440,6 @@ def requests_state_inspection(text: str) -> bool:
     return any(term in lowered for term in _STATE_SUBJECTS) and any(
         term in lowered for term in _STATE_INSPECTION
     )
-
-
-def is_emergency_stop_request(text: str) -> bool:
-    """Recognize an explicit safety stop without treating discussion as actuation."""
-
-    lowered = " ".join(text.lower().strip().split())
-    if any(term in lowered for term in _STOP_NEGATIONS):
-        return False
-    if any(term in lowered for term in _STOP_INFORMATIONAL):
-        return False
-    has_stop = any(term in lowered for term in _STOP_VERBS)
-    if not has_stop:
-        return False
-    if any(term in lowered for term in _STOP_TARGETS):
-        return True
-    return lowered.strip(" .!。！") in {
-        "stop",
-        "halt",
-        "cancel",
-        "停止",
-        "停車",
-        "急停",
-        "停下",
-        "請立刻停車",
-        "立刻停車",
-    }
 
 
 def is_read_only_state_request(text: str) -> bool:

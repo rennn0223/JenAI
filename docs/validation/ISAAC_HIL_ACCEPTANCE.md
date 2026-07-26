@@ -164,5 +164,82 @@ valid-finite coverage 46.989%。原始檔
 二次核對。多次 recovery 與 0.149 rad
 Dock yaw 誤差必須保留為待改善事項；`pass` 不代表充電對位或充電狀態已驗證。
 
-所有本機 artifact 均不進 Git 且不取代失敗樣本；上述結果也不支持實體安全、sim-to-real、
+2026-07-26 另保留三個 v2.5.1 候選碼失敗／診斷樣本。第一次 route 在終點附近無
+Nav2 terminal result；第二次在約 0.04 m 位置附近仍未完成朝向；短距離同目標重送則以
+停止後新鮮 TF 通過 0.029 m／0.149 rad，證明「確認取消後有限重送」可作為恢復策略，
+但不構成完整 HIL 通過。加入全程 `min_vel_x=-0.1` 的後續完整路線，在
+`(-6.66, -2.29)` 進入碰撞區，DWB 回報 440/440 軌跡撞障礙並於 22 次 recovery 後
+abort；runner 正確停止後續 Dock／cancel 並完成 final halt。由於目前 `/scan` 只覆蓋前方
+約 180°，負向速度不升格為預設，正式 profile 恢復 `min_vel_x=0.0`。失敗 live artifact
+`isaac-hil-live-v251-endpoint-recovery-20260726.json` SHA-256
+`cf42db1e18e8a47999e3bb6f9675dc88cfa24e4154573a9a30773abbead91648`；短距離診斷
+SHA-256 `6175774df64e9f1bf33ba18f44f83c805e532768055275457e3404fc07a01550`。
+
+### v2.5.1 候選碼通過場次（2026-07-26）
+
+恢復安全預設 `min_vel_x=0.0`，並將 DWB `vtheta_samples` 設為奇數 15，使取樣集合包含
+零角速度後，重啟 Nav2 並從 Dock 起點重跑完整 protocol。preflight 為
+`preflight_pass`；live run 為 `pass_with_skips`：scan 10/10 筆、每筆 362 bins、
+valid-finite coverage 52.1823%；`map_left_down` 在 92.869 s 完成，停止後 TF 誤差
+0.039 m／0.143 rad；Dock 在 50.503 s 完成，誤差 0.045 m／0.144 rad；Nav2 cancel
+acknowledged=`true`、停止漂移 0.0000 m、final halt 與 bridge shutdown 均通過。
+
+- preflight：`artifacts/isaac-hil-preflight-v251-vtheta15-20260726.json`
+  SHA-256 `f99a54ddf1ca9f80748261b72af60563798dcaab99667128b43391ac7005b553`
+- live：`artifacts/isaac-hil-live-v251-vtheta15-20260726.json`
+  SHA-256 `d2d1aee262a77fa05d84d355da26d8f2e0b5487998e500bd37817bdfc6b7f66a`
+
+該場次的 execution revision 是
+`81f935da9560b5326032df51c8a588bae80e1b05` 加 dirty candidate；因此是目前候選碼的正式
+protocol 結果，但不升格為 clean release 主證據。target 與 Twin 都在 domain 0，
+`twin_isolation` 明確為 `skip`，不能解讀成虛實隔離或 Twin verdict 通過。
+
+同日另以真正 TUI 驗證乾淨程序環境自動載入 ROS、Doctor、自然語言唯讀檢查、可讀
+`/route` 批准卡、移動中 `/stop` 與 `/dock`；最後一輪 Dock 誤差為 0.022 m／0.123 rad。
+此互動紀錄沒有不可變 transcript，只列為工程補充，詳見
+[TUI_LIVE_ACCEPTANCE_2026-07-26.md](TUI_LIVE_ACCEPTANCE_2026-07-26.md)，不得用較佳 TUI
+數字覆蓋上述正式 HIL artifact。
+
+### AMCL 模擬精度 profile 再驗證（2026-07-26）
+
+審查後的重播先保留三種誠實失敗：一輪在距離約 0.21 m 處到 240 s 仍無法完成；把近端
+停滯半徑暫時放寬至 0.25 m 的診斷因 Nav2 回報零 pose 計畫而失敗；只降低 AMCL
+`alpha1..5` 的 route 雖由 Nav2 成功，停止後二次核對仍以 0.066 m 超限拒絕。這些樣本均
+未計為通過，也沒有用放寬 0.05 m 產品上限掩蓋。
+
+進一步確認 AMCL 位姿協方差已漂移至約 2 m²後，一鍵模擬 profile 改為
+`alpha1..5=0.01`、`update_min_a/update_min_d=0.02`。在車輛未卡牆、舊 goal 已清除且定位
+重新收斂時，直接 `/dock` 而不重新 Play，停止後 TF 通過 0.039 m／0.143 rad；這證明健康
+工作階段可用 Dock＋Nav2 restart 恢復，不代表所有故障都能省略重播。
+
+產品腳本載入上述 profile 並重新啟動 Nav2 後，最終 preflight 為 `preflight_pass`，live
+為 `pass_with_skips`：scan 10/10、finite coverage 46.9%；`map_left_down` 與 Dock 均在一次
+有界端點恢復後通過，停止後 TF 分別為 0.047 m／0.145 rad與 0.018 m／0.144 rad；取消獲
+Nav2 確認、停止漂移 0.0071 m、final halt 與 bridge shutdown 均通過。target 與 Twin 同為
+domain 0，`twin_isolation` 仍明確為 `skip`。
+
+- preflight：`artifacts/isaac-hil-preflight-v251-product-amcl-20260726.json`
+  SHA-256 `4d683ec4f5d243b4c6537b780ea5bc374d4d7fc829067541934c1b0f9f965dfa`
+- live：`artifacts/isaac-hil-live-v251-product-amcl-20260726.json`
+  SHA-256 `80f7ac8efc9b9975cb4db5e7a2467e0f3c3159095a210aaa964b28b065c7f819`
+
+執行來源仍是 `81f935da9560b5326032df51c8a588bae80e1b05` 加 dirty candidate；這是目前
+產品 profile 的最新候選證據，但不取代 clean HIL-FS2，也不支援實體校正、充電回授或
+separated-domain Twin 主張。
+
+PR 前從重新 Play 後的已知起點再重啟 Nav2，使用相同產品 profile 重跑。preflight 為
+`preflight_pass`，live 為 `pass_with_skips`：scan 10/10、valid-finite 51.7%；
+`map_left_down` 在一次有界端點恢復後以 85.911 s、0.032 m／0.143 rad 通過；Dock 以
+57.447 s、0.036 m／0.142 rad 通過；取消獲 Nav2 確認、停止漂移 0.0031 m、final halt 與
+bridge shutdown 均通過。target 與 Twin 同為 domain 0，`twin_isolation` 仍明確為 `skip`。
+
+- preflight：`artifacts/isaac-hil-preflight-v251-prepr-20260726.json`
+  SHA-256 `f04466957baeca24a9c131e6ec5deaee12d078c526ffc42a5639cf9784be8787`
+- live：`artifacts/isaac-hil-live-v251-prepr-20260726.json`
+  SHA-256 `98f2a8a22d5cd72c8f626328a429609e0935cbec3f43d24b82f9a44d115a5dfc`
+
+這仍是 dirty candidate 的 PR 前工程證據，不取代 clean HIL-FS2，也不擴張為實體、充電、
+跨載具或 separated-domain Twin 主張。
+
+所有本機 artifact 均不進 Git 且不取代失敗樣本；上述結果也不支援實體安全、sim-to-real、
 跨載具泛化或 Twin 隔離。正式 separated-domain Twin verdict 仍須另跑。

@@ -34,7 +34,11 @@ from jenai.doctor import run_doctor
 from jenai.schemas import Location
 from jenai.tools.nav_live import NavigationCancelled
 from jenai.tools.navigation_gateway import NavigationGateway
-from jenai.tools.safety import arm_watchdog, halt_robot
+from jenai.tools.safety import (
+    NavigationCancelStatus,
+    arm_watchdog,
+    halt_robot_with_receipt,
+)
 
 EXECUTION_CONFIRMATION = "I-CONFIRM-ISAAC-SIM-MAY-MOVE"
 REQUIRED_NAV_CHECKS = {"ros2_cli", "map", "localization", "laser", "nav2", "cmd_vel"}
@@ -1168,7 +1172,7 @@ async def _finalize_live_run(
     """Always halt motion and close the bridge, recording both outcomes."""
     checks: list[Check] = []
     try:
-        halt_message = await halt_robot(execution_config, bridge)
+        halt_receipt = await halt_robot_with_receipt(execution_config, bridge)
     except Exception as exc:
         checks.append(
             _check(
@@ -1178,7 +1182,12 @@ async def _finalize_live_run(
             )
         )
     else:
-        checks.append(_check("final_halt", "pass", detail=halt_message))
+        halt_status = (
+            "fail"
+            if halt_receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED
+            else "pass"
+        )
+        checks.append(_check("final_halt", halt_status, detail=halt_receipt.message))
     try:
         await bridge.stop()
     except Exception as exc:
@@ -1281,11 +1290,16 @@ async def _run_cancel_and_stop(
             # A bare cancellation proves only that the local asyncio task
             # stopped. It carries no evidence that Nav2 canceled its goal.
             canceled = True
-        halt_message = await halt_robot(config, bridge)
+        halt_receipt = await halt_robot_with_receipt(config, bridge)
         await asyncio.sleep(options.settle_s)
         pose_after = await bridge.get_pose(timeout=3.0)
         drift = math.hypot(pose_after.x - pose_before.x, pose_after.y - pose_before.y)
-        passed = canceled and nav_cancel_acknowledged and drift <= options.max_stop_drift_m
+        passed = (
+            canceled
+            and nav_cancel_acknowledged
+            and halt_receipt.navigation_cancel_status is not NavigationCancelStatus.UNCONFIRMED
+            and drift <= options.max_stop_drift_m
+        )
         if passed:
             detail = (
                 "Task cancellation propagated, Nav2 acknowledged the active-goal "
@@ -1297,6 +1311,8 @@ async def _run_cancel_and_stop(
                 failures.append("task cancellation did not propagate")
             if not nav_cancel_acknowledged:
                 failures.append("Nav2 did not acknowledge active-goal cancellation")
+            if halt_receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED:
+                failures.append("final halt could not confirm navigation cancellation")
             if drift > options.max_stop_drift_m:
                 failures.append(
                     f"post-stop drift {drift:.4f} m exceeded {options.max_stop_drift_m:.4f} m"
@@ -1308,7 +1324,7 @@ async def _run_cancel_and_stop(
             detail=detail,
             task_cancelled=canceled,
             nav_cancel_acknowledged=nav_cancel_acknowledged,
-            halt_message=halt_message,
+            halt_message=halt_receipt.message,
             drift_m=round(drift, 6),
             max_stop_drift_m=options.max_stop_drift_m,
             elapsed_s=round(time.perf_counter() - started, 3),

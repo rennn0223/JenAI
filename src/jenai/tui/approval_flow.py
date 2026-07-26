@@ -90,6 +90,44 @@ class ApprovalFlowMixin(TuiHostContract):
         else:
             app.query_one("#composer", Input).focus()
 
+    async def _reject_pending_approvals_for_emergency_stop(self) -> int:
+        """Reject every paused action so a pre-stop card can never resume it."""
+        rejected = 0
+        for run_id, pending in list(self._pending_approvals.items()):
+            self._pending_approvals.pop(run_id, None)
+            ctx: JenAIRunContext = pending["ctx"]
+            for tool_call_id in pending["expected"]:
+                await self._remove_approval_card(tool_call_id)
+                self.run_store.resolve_interruption(ctx.run, tool_call_id, ApprovalStatus.REJECTED)
+                rejected += 1
+            self.run_store.discard_pending_state(run_id)
+            if ctx.run.status not in TERMINAL_STATUSES:
+                self.run_store.finish(
+                    ctx.run,
+                    status=RunStatus.BLOCKED,
+                    final_output="Superseded by an emergency stop. No pending action was executed.",
+                )
+
+        for tool_call_id, pending in list(self._pending_direct_approvals.items()):
+            self._pending_direct_approvals.pop(tool_call_id, None)
+            ctx = pending["ctx"]
+            await self._remove_approval_card(tool_call_id)
+            self.run_store.resolve_interruption(ctx.run, tool_call_id, ApprovalStatus.REJECTED)
+            self._finish_direct_tool(
+                pending,
+                ok=False,
+                summary="superseded by emergency stop",
+                status=ToolCallStatus.REJECTED,
+            )
+            if ctx.run.status not in TERMINAL_STATUSES:
+                self.run_store.finish(
+                    ctx.run,
+                    status=RunStatus.BLOCKED,
+                    final_output="Superseded by an emergency stop. No pending action was executed.",
+                )
+            rejected += 1
+        return rejected
+
     async def _resolve_direct_approval(self, tool_call_id: str, approved: bool) -> None:
         pending = self._pending_direct_approvals.pop(tool_call_id)
         ctx: JenAIRunContext = pending["ctx"]

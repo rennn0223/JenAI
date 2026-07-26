@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from jenai.config import ConfigError, load_config, save_config
-from jenai.config.models import AppConfig, ForbiddenZone
+from jenai.config.models import AppConfig, ForbiddenZone, VehicleProfile
 from jenai.config.store import build_minimal_config
 
 
@@ -58,8 +58,12 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     assert config.vehicle.pose_jump_window_s == 2.0
     assert config.vehicle.odom_timeout_s == 1.0
     assert config.vehicle.nav_timeout_s == 240.0
-    assert config.vehicle.arrival_position_tolerance_m == 0.25
-    assert config.vehicle.arrival_yaw_tolerance_rad == 0.25
+    assert config.vehicle.nav_endpoint_retry_limit == 1
+    assert config.vehicle.nav_endpoint_stall_radius_m == 0.10
+    assert config.vehicle.nav_endpoint_stall_timeout_s == 20.0
+    assert config.vehicle.nav_endpoint_retry_timeout_s == 60.0
+    assert config.vehicle.arrival_position_tolerance_m == 0.05
+    assert config.vehicle.arrival_yaw_tolerance_rad == 0.15
     assert config.deployment_mode == "simulation"
 
     config.vehicle.cmd_vel_topic = "/leatherback/cmd_vel"
@@ -70,6 +74,10 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     config.vehicle.pose_jump_window_s = 1.5
     config.vehicle.odom_timeout_s = 0.8
     config.vehicle.nav_timeout_s = 12.5
+    config.vehicle.nav_endpoint_retry_limit = 1
+    config.vehicle.nav_endpoint_stall_radius_m = 0.08
+    config.vehicle.nav_endpoint_stall_timeout_s = 3.0
+    config.vehicle.nav_endpoint_retry_timeout_s = 8.0
     config.vehicle.arrival_position_tolerance_m = 0.05
     config.vehicle.arrival_yaw_tolerance_rad = 0.15
     config.deployment_mode = "physical"
@@ -85,10 +93,39 @@ def test_vehicle_profile_defaults_and_round_trip(tmp_path: Path) -> None:
     assert loaded.vehicle.pose_jump_window_s == 1.5
     assert loaded.vehicle.odom_timeout_s == 0.8
     assert loaded.vehicle.nav_timeout_s == 12.5
+    assert loaded.vehicle.nav_endpoint_retry_limit == 1
+    assert loaded.vehicle.nav_endpoint_stall_radius_m == 0.08
+    assert loaded.vehicle.nav_endpoint_stall_timeout_s == 3.0
+    assert loaded.vehicle.nav_endpoint_retry_timeout_s == 8.0
     assert loaded.vehicle.arrival_position_tolerance_m == 0.05
     assert loaded.vehicle.arrival_yaw_tolerance_rad == 0.15
     assert loaded.deployment_mode == "physical"
     assert loaded.vehicle.type == "ackermann"
+
+
+def test_vehicle_profile_requires_shorter_endpoint_retry_timeout() -> None:
+    with pytest.raises(ValueError, match="must be shorter than nav_timeout_s"):
+        VehicleProfile(
+            nav_timeout_s=60.0,
+            nav_endpoint_retry_limit=1,
+            nav_endpoint_retry_timeout_s=60.0,
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("arrival_position_tolerance_m", 0.051),
+        ("arrival_yaw_tolerance_rad", 0.151),
+    ],
+)
+def test_vehicle_profile_rejects_weakened_arrival_contract(field: str, value: float) -> None:
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+
+    with pytest.raises(ValidationError):
+        config.vehicle.__class__(**{**config.vehicle.model_dump(), field: value})
 
 
 def test_config_round_trip_preserves_every_nested_safety_section(tmp_path: Path) -> None:
@@ -122,6 +159,10 @@ def test_config_round_trip_preserves_every_nested_safety_section(tmp_path: Path)
         ("vehicle", "pose_jump_window_s = -1.0"),
         ("vehicle", "odom_timeout_s = 0.0"),
         ("vehicle", "nav_timeout_s = 0.0"),
+        ("vehicle", "nav_endpoint_retry_limit = 2"),
+        ("vehicle", "nav_endpoint_stall_radius_m = 0.26"),
+        ("vehicle", "nav_endpoint_stall_timeout_s = 0.0"),
+        ("vehicle", "nav_endpoint_retry_timeout_s = 0.0"),
         ("vehicle", "arrival_position_tolerance_m = 0.0"),
         ("vehicle", "arrival_yaw_tolerance_rad = 3.2"),
         ("vehicle", "max_angular = 0.0"),
@@ -173,6 +214,9 @@ def test_incomplete_config_can_be_saved_and_loaded(tmp_path: Path) -> None:
         {"vehicle": {"max_linear": float("inf")}},
         {"vehicle": {"odom_timeout_s": float("nan")}},
         {"vehicle": {"nav_timeout_s": float("nan")}},
+        {"vehicle": {"nav_endpoint_stall_radius_m": float("nan")}},
+        {"vehicle": {"nav_endpoint_stall_timeout_s": float("inf")}},
+        {"vehicle": {"nav_endpoint_retry_timeout_s": -1}},
         {"deployment_mode": "possibly-physical"},
         {"twin": {"nav_timeout_s": -1}},
         {"twin": {"forbidden_zones": [{"x_min": 2, "x_max": 1, "y_min": 0, "y_max": 1}]}},

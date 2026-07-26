@@ -89,7 +89,7 @@ class _SuccessfulNavBridge:
             source="/amcl_pose",
         )
 
-    async def halt(self) -> bool:
+    async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
         self.halted += 1
         return True
 
@@ -247,6 +247,24 @@ def test_navigate_live_refuses_unplannable_goal_without_sending_it(
     asyncio.run(run())
 
 
+def test_navigate_live_ignores_untagged_terminal_event() -> None:
+    class UntaggedStaleBridge(_SuccessfulNavBridge):
+        async def nav_send(self, **kwargs) -> None:
+            for handler in self.handlers["nav_result"]:
+                handler({"event": "nav_result", "status": "aborted"})
+            await super().nav_send(**kwargs)
+
+    async def run() -> None:
+        bridge = UntaggedStaleBridge(feedback_x=2.0, post_stop_x=2.0)
+
+        output = await navigate_live(bridge, ACTION)
+
+        assert output.execution_status == "succeeded"
+        assert "endpoint verified" in output.route_preview
+
+    asyncio.run(run())
+
+
 def test_navigate_live_detaches_event_handlers(fake_bridge) -> None:
     async def run() -> None:
         client = RosBridgeClient()
@@ -254,6 +272,174 @@ def test_navigate_live_detaches_event_handlers(fake_bridge) -> None:
         assert client._event_handlers.get("nav_feedback", []) == []
         assert client._event_handlers.get("nav_result", []) == []
         await client.stop()
+
+    asyncio.run(run())
+
+
+def test_navigate_live_retries_one_confirmed_near_endpoint_stall() -> None:
+    class NearEndpointStallBridge(_SuccessfulNavBridge):
+        def __init__(self) -> None:
+            super().__init__(feedback_x=2.04, post_stop_x=2.0)
+            self.sent = 0
+            self.halt_arguments: list[tuple[str, bool]] = []
+
+        async def nav_send(self, **kwargs) -> None:
+            self.sent += 1
+            if self.sent == 1:
+                event = {
+                    "event": "nav_feedback",
+                    "tag": kwargs["tag"],
+                    "distance_remaining": 0.04,
+                    "recoveries": 0,
+                    "elapsed": 10.0,
+                }
+                for handler in self.handlers["nav_feedback"]:
+                    handler(event)
+                return
+            await super().nav_send(**kwargs)
+
+        async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
+            self.halt_arguments.append((cmd_vel_topic, stamped))
+            return await super().halt(cmd_vel_topic=cmd_vel_topic, stamped=stamped)
+
+    async def run() -> None:
+        bridge = NearEndpointStallBridge()
+        vehicle = VehicleProfile(
+            arrival_position_tolerance_m=0.05,
+            arrival_yaw_tolerance_rad=0.15,
+            nav_endpoint_retry_limit=1,
+            nav_endpoint_stall_radius_m=0.10,
+            nav_endpoint_stall_timeout_s=0.01,
+            nav_endpoint_retry_timeout_s=0.05,
+            cmd_vel_topic="/nova/cmd_vel",
+            cmd_vel_stamped=True,
+        )
+
+        output = await navigate_live(bridge, ACTION, timeout=0.10, vehicle=vehicle)
+
+        assert output.execution_status == "succeeded"
+        assert "Endpoint recovery retry 1/1" in output.route_preview
+        assert bridge.sent == 2
+        assert bridge.halted == 1
+        assert bridge.halt_arguments == [("/nova/cmd_vel", True)]
+        assert bridge.handlers["nav_feedback"] == []
+        assert bridge.handlers["nav_result"] == []
+
+    asyncio.run(run())
+
+
+def test_navigate_live_does_not_retry_without_confirmed_nav2_cancellation() -> None:
+    class UnacknowledgedStallBridge(_SuccessfulNavBridge):
+        def __init__(self) -> None:
+            super().__init__(feedback_x=2.04, post_stop_x=2.0)
+            self.sent = 0
+
+        async def nav_send(self, **kwargs) -> None:
+            self.sent += 1
+            event = {
+                "event": "nav_feedback",
+                "tag": kwargs["tag"],
+                "distance_remaining": 0.04,
+                "recoveries": 0,
+                "elapsed": 10.0,
+            }
+            for handler in self.handlers["nav_feedback"]:
+                handler(event)
+
+        async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
+            self.halted += 1
+            return False
+
+    async def run() -> None:
+        bridge = UnacknowledgedStallBridge()
+        vehicle = VehicleProfile(
+            nav_endpoint_retry_limit=1,
+            nav_endpoint_stall_timeout_s=0.01,
+            nav_endpoint_retry_timeout_s=0.10,
+        )
+
+        output = await navigate_live(bridge, ACTION, timeout=0.10, vehicle=vehicle)
+
+        assert output.execution_status == "failed"
+        assert "cancellation was not acknowledged" in output.route_preview
+        assert "Endpoint recovery retry" not in output.route_preview
+        assert bridge.sent == 1
+        assert bridge.halted == 1
+
+    asyncio.run(run())
+
+
+def test_navigate_live_bounds_a_failed_endpoint_recovery_retry() -> None:
+    class RepeatedStallBridge(_SuccessfulNavBridge):
+        def __init__(self) -> None:
+            super().__init__(feedback_x=2.04, post_stop_x=2.0)
+            self.sent = 0
+
+        async def nav_send(self, **kwargs) -> None:
+            self.sent += 1
+            event = {
+                "event": "nav_feedback",
+                "tag": kwargs["tag"],
+                "distance_remaining": 0.04,
+                "recoveries": 0,
+                "elapsed": 10.0,
+            }
+            for handler in self.handlers["nav_feedback"]:
+                handler(event)
+
+    async def run() -> None:
+        bridge = RepeatedStallBridge()
+        vehicle = VehicleProfile(
+            nav_endpoint_retry_limit=1,
+            nav_endpoint_stall_timeout_s=0.01,
+            nav_endpoint_retry_timeout_s=0.10,
+        )
+
+        output = await navigate_live(bridge, ACTION, timeout=0.10, vehicle=vehicle)
+
+        assert output.execution_status == "failed"
+        assert "Endpoint recovery retry 1/1 failed" in output.route_preview
+        assert bridge.sent == 2
+        assert bridge.halted == 2
+        assert bridge.handlers["nav_feedback"] == []
+        assert bridge.handlers["nav_result"] == []
+
+    asyncio.run(run())
+
+
+def test_navigate_live_does_not_treat_zero_distance_sentinel_as_endpoint_stall() -> None:
+    class ZeroSentinelBridge(_SuccessfulNavBridge):
+        def __init__(self) -> None:
+            super().__init__(feedback_x=2.0, post_stop_x=2.0)
+            self.sent = 0
+
+        async def nav_send(self, **kwargs) -> None:
+            self.sent += 1
+            event = {
+                "event": "nav_feedback",
+                "tag": kwargs["tag"],
+                "distance_remaining": 0.0,
+                "recoveries": 0,
+                "elapsed": 0.0,
+            }
+            for handler in self.handlers["nav_feedback"]:
+                handler(event)
+
+    async def run() -> None:
+        bridge = ZeroSentinelBridge()
+        vehicle = VehicleProfile(
+            nav_endpoint_retry_limit=1,
+            nav_endpoint_stall_timeout_s=0.001,
+            nav_endpoint_retry_timeout_s=0.01,
+        )
+
+        output = await navigate_live(bridge, ACTION, timeout=0.01, vehicle=vehicle)
+
+        assert output.execution_status == "failed"
+        assert "timed out" in output.route_preview
+        assert "Endpoint recovery retry" not in output.route_preview
+        assert bridge.sent == 1
+        assert bridge.halted == 1
 
     asyncio.run(run())
 
@@ -277,7 +463,7 @@ def test_navigate_live_cancellation_preserves_nav2_acknowledgement(acknowledged:
         async def nav_plan(self, **_kwargs) -> NavPlanInfo:
             return _feasible_plan()
 
-        async def halt(self) -> bool:
+        async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
             return acknowledged
 
         async def ping(self) -> bool:
@@ -318,7 +504,7 @@ def test_navigate_live_timeout_reports_cancel_acknowledgement(acknowledged: bool
         async def nav_plan(self, **_kwargs) -> NavPlanInfo:
             return _feasible_plan()
 
-        async def halt(self) -> bool:
+        async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
             return acknowledged
 
         async def ping(self) -> bool:
@@ -355,7 +541,7 @@ def test_navigate_live_reports_when_ambiguous_dispatch_cannot_be_halted() -> Non
         async def nav_send(self, **_kwargs) -> None:
             raise BridgeError("response channel closed")
 
-        async def halt(self) -> bool:
+        async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
             raise BridgeError("halt channel unavailable")
 
         async def ping(self) -> bool:
@@ -449,7 +635,9 @@ def test_navigate_with_fallback_odom_dispatches_direct(fake_bridge, monkeypatch)
             import time
 
             time.sleep(0.2)
-            client._dispatch_event({"event": "nav_result", "tag": "", "status": "succeeded"})
+            client._dispatch_event(
+                {"event": "nav_result", "tag": seen["tag"], "status": "succeeded"}
+            )
 
         threading.Thread(target=_late_result, daemon=True).start()
         out = await navigate_with_fallback(config, get_bridge, ACTION)
@@ -662,11 +850,12 @@ def test_navigate_live_surfaces_localization_jump_reason(terminal_status: str) -
         def off_event(self, event: str, handler) -> None:
             self.handlers[event].remove(handler)
 
-        async def nav_send(self, **_kwargs) -> None:
+        async def nav_send(self, **kwargs) -> None:
             for handler in self.handlers["nav_result"]:
                 handler(
                     {
                         "event": "nav_result",
+                        "tag": kwargs["tag"],
                         "status": terminal_status,
                         "reason": (
                             "Localization safety stop: /amcl_pose jumped 24.00 m "

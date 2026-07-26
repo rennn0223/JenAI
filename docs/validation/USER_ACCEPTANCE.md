@@ -1,21 +1,25 @@
 # JenAI 使用者驗收目錄
 
-> 適用版本：v2.5.0。這份文件給使用者親自操作，不需要執行 pytest，也不需要修改程式碼。
+> 適用版本：v2.5.1。這份文件給使用者親自操作，不需要執行 pytest，也不需要修改程式碼。
 > 驗證以 Isaac Sim 為主；若接的是實體載具，請改用空曠場地並安排現場安全人員。
 
 ## 1. 開始前
 
-1. 將 Isaac Sim Stop 後重新 Play，並把車輛放在已知起點。
+1. 若要跑可重現的完整基準，將 Isaac Sim Stop 後重新 Play，並把車輛放在已知起點；日常試用若車輛未卡牆、定位正常且舊 goal 已清除，可先 `/dock`，不必重播。
 2. 確認車輛、LiDAR 與 ROS 2 Action Graph 正常運作。
-3. 保持畫面可見；導航時不要同時手動拖曳車輛。
+3. 每次重新 Play、變更導航 profile 或準備正式驗收後都要 restart Nav2。
+4. 保持畫面可見；導航時不要同時手動拖曳車輛。
 
 ```bash
 cd /home/nvidia/JenAI
-source /opt/ros/jazzy/setup.bash
-source /home/nvidia/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash
+./scripts/isaac_nav2.sh restart
 uv run JenAI doctor
 uv run JenAI
 ```
+
+一般 JenAI entry point 會在程序內自動載入 ROS 2 Jazzy 與預設 `jazzy_ws`；
+`isaac_nav2.sh` 仍會自行 source，且每次重新 Play 後必須先 restart Nav2。若安裝路徑不同，
+以 `ROS_SETUP` 與 `ROS_WORKSPACE_SETUP` 覆寫。
 
 `doctor` 不要求每項都是 `pass`。沒有獨立 Twin domain 時，
 `twin_isolation` 警告是預期結果；ROS 2、map、localization、laser 與 Nav2 應誠實反映現況。

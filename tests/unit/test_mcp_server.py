@@ -142,6 +142,33 @@ def test_navigate_to_refuses_concurrent_goals(tmp_path: Path, monkeypatch) -> No
     asyncio.run(run())
 
 
+def test_mcp_stop_labels_unconfirmed_navigation_cancel(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from jenai.mcp_server import server as server_module
+    from jenai.tools.safety import HaltReceipt, NavigationCancelStatus
+
+    config, _ = _setup(tmp_path)
+
+    async def bridge():
+        return object()
+
+    async def unconfirmed(_config, _bridge):
+        return HaltReceipt(
+            navigation_cancel_status=NavigationCancelStatus.UNCONFIRMED,
+            zero_velocity_delivered=True,
+            message="Zero velocity delivered; cancellation not acknowledged.",
+        )
+
+    monkeypatch.setattr(server_module, "halt_robot_with_receipt", unconfirmed)
+    resources = SimpleNamespace(config=config, bridge=bridge)
+
+    result = asyncio.run(server_module._stop_robot(resources))
+
+    assert result.startswith("unconfirmed:")
+    assert "not acknowledged" in result
+
+
 def test_stop_tool_is_always_available(tmp_path: Path) -> None:
     # Stopping is always safe — the tool exists even on read-only servers.
     config, config_path = _setup(tmp_path)

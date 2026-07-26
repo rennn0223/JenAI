@@ -82,7 +82,7 @@ def test_ros_state_snapshots_pose_odom_and_scan(monkeypatch) -> None:
         return [f"data from {topic}"]
 
     monkeypatch.setattr(ros2_adapter, "topic_echo", fake_echo)
-    state = asyncio.run(ros2_core.ros_state(_config()))
+    state = asyncio.run(ros2_core.ros_state(_config(), odom_topic="/odom"))
     assert state["pose"] == "data from /amcl_pose"
     assert state["odom"] == "data from /odom"
     assert state["scan"] == "data from /scan"
@@ -97,7 +97,7 @@ def test_ros_state_graceful_when_idle(monkeypatch) -> None:
         raise ros2_adapter.Ros2CommandError("idle")
 
     monkeypatch.setattr(ros2_adapter, "topic_echo", boom)
-    state = asyncio.run(ros2_core.ros_state(_config()))
+    state = asyncio.run(ros2_core.ros_state(_config(), odom_topic="/odom"))
     assert state["pose"] is None and state["odom"] is None and state["scan"] is None
 
 
@@ -116,7 +116,7 @@ def test_ros_state_snapshots_independent_topics_concurrently(monkeypatch) -> Non
         return [topic]
 
     monkeypatch.setattr(ros2_adapter, "topic_echo", fake_echo)
-    state = asyncio.run(ros2_core.ros_state(_config()))
+    state = asyncio.run(ros2_core.ros_state(_config(), odom_topic="/odom"))
 
     assert started == 3
     assert state["pose"] == "/amcl_pose"

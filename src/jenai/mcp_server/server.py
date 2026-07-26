@@ -22,7 +22,11 @@ from jenai.state.audit import AuditStore
 from jenai.task_results import navigation_receipt_text
 from jenai.tools import ros2_core
 from jenai.tools.navigation_gateway import NavigationGateway
-from jenai.tools.safety import arm_watchdog, halt_robot
+from jenai.tools.safety import (
+    NavigationCancelStatus,
+    arm_watchdog,
+    halt_robot_with_receipt,
+)
 from jenai.tools.vision_core import VisionError, capture_and_analyze
 
 
@@ -107,7 +111,10 @@ def _list_locations(resources: _ServerResources) -> str:
 async def _stop_robot(resources: _ServerResources) -> str:
     try:
         client = await resources.bridge()
-        return await halt_robot(resources.config, client)
+        receipt = await halt_robot_with_receipt(resources.config, client)
+        if receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED:
+            return f"unconfirmed: {receipt.message}"
+        return receipt.message
     except BridgeError as exc:
         return f"unavailable: {exc}"
 

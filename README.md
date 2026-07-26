@@ -160,12 +160,12 @@ CI／重播已鎖定環境時使用 `uv sync --frozen`。一般使用者不需�
 
 ### Repo 開發啟動腳本（非一般安裝方式）
 
-啟動腳本 [`scripts/jenai`](scripts/jenai) 是 source checkout 專用的開發便利工具，會在
-「還沒有可用的 ROS 環境」時 source ROS2，接著 source Isaac ROS Jazzy workspace
-（預設 `$HOME/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash`）、確保 uv，再用
-`uv run` 啟動。已啟用的其他 ROS 發行版不會被預設 Jazzy workspace 覆蓋。它不是
-wheel 的一部分。只在
-**未安裝 wheel tool** 時才可選擇連到 PATH：
+啟動腳本 [`scripts/jenai`](scripts/jenai) 是 source checkout 專用的開發便利工具；
+正式的 `JenAI`／`jenai` entry point 與 `uv run JenAI` 也會在尚無可用 ROS 環境時，自動
+source ROS 2（預設 `/opt/ros/jazzy/setup.bash`）與 Isaac ROS Jazzy workspace（預設
+`$HOME/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash`）。已啟用且可用的其他 ROS
+發行版不會被預設 Jazzy 環境覆蓋。腳本本身不在 wheel 內；只在**未安裝 wheel tool**
+時才可選擇連到 PATH：
 
 ```bash
 mkdir -p ~/.local/bin
@@ -179,8 +179,11 @@ ROS_WORKSPACE_SETUP=/path/to/ws/install/setup.bash jenai
 
 這個連結與 `uv tool install` 所管理的 `~/.local/bin/jenai` 同名。切換成 wheel 前先執行
 `ls -l ~/.local/bin/jenai`，確認它確實指向 repo 的 `scripts/jenai` 後再移除該 symlink；
-不要用 `ln -sf` 蓋掉 wheel entry point。wheel 使用者若要 ROS2，
-先在同一個 shell 執行 `source /opt/ros/<distro>/setup.bash`，再直接執行 `JenAI`。
+不要用 `ln -sf` 蓋掉 wheel entry point。wheel 使用者可直接執行 `JenAI`；若要
+覆寫自動載入路徑，使用 `ROS_SETUP=/path/to/setup.bash` 與
+`ROS_WORKSPACE_SETUP=/path/to/ws/install/setup.bash`。將 `ROS_WORKSPACE_SETUP` 設為空字串
+可停用 workspace 自動載入。需要直接使用 `ros2`、RViz2 或 HIL shell script 的終端仍應
+明確 source 對應環境，因為 JenAI 不會反向修改父 shell。
 
 ### 更新、回滾與解除安裝
 
@@ -229,18 +232,25 @@ camera_topic = "/camera/image_raw"   # /vision camera 與 MCP camera_look 預設
 max_linear = 1.0            # m/s — 執行期硬限速(LLM/使用者給再大都會被夾住)。
 max_angular = 2.0           # rad/s — 以上為安全預設;依你的車實測後再調
                             # (例:Leatherback 用 2.0 / 0.53)
-arrival_position_tolerance_m = 0.25 # Nav2 success 後 JenAI 獨立核對的最大位置誤差
-arrival_yaw_tolerance_rad = 0.25    # 最大朝向誤差；Isaac 精準 profile 用 0.05 / 0.15
+arrival_position_tolerance_m = 0.05 # Nav2 success 後 JenAI 獨立核對的最大位置誤差
+arrival_yaw_tolerance_rad = 0.15    # 最大朝向誤差；產品預設為 0.05 / 0.15
 odom_timeout_s = 1.0        # odom 超過此秒數未更新，直驅立即歸零並失敗
 nav_timeout_s = 240.0       # 單次 live Nav2 任務最長秒數；逾時會取消並送出零速度
+nav_endpoint_retry_limit = 1        # 近端停滯時最多受控重送一次同一目標
+nav_endpoint_stall_radius_m = 0.10  # 進入此半徑後才偵測近端停滯
+nav_endpoint_stall_timeout_s = 20.0 # 無 Nav2 終態的近端等待上限
+nav_endpoint_retry_timeout_s = 60.0 # 恢復目標的較短期限
 ```
 
 `Nav2 SUCCEEDED` 只代表進入 Nav2 自己的 goal-checker 容差。JenAI 會等待車體停止後，
 要求一筆晚於驗證請求的新 `map → <robot_base_frame>` TF，再核對上述兩個上限；舊快取、frame
-不符、證據缺失或超出上限時，即使 Nav2 回報成功仍會停止並誠實回報失敗。模擬器可使用較嚴格的
-`0.05 m / 0.15 rad`；實車應依定位雜訊與機構能力校準。一鍵 Nav2 profile 另固定
+不符、證據缺失或超出上限時，即使 Nav2 回報成功仍會停止並誠實回報失敗。0.05 m／0.15 rad
+是不可放寬的產品上限；特定場域可以收緊，無法達成者必須回報失敗或改用專用 docking controller，
+不可用調大容差掩蓋。近端停滯只在 halt 已送達且舊 Nav2 goal 取消獲確認後有限重送。一鍵 Nav2 profile 另固定
 `general_goal_checker.stateful=false`，使對齊朝向期間仍持續重驗位置，避免 Ackermann 類
-底盤曾靠近目標後又駛離卻被回報成功。
+底盤曾靠近目標後又駛離卻被回報成功。Isaac Sim profile 也會在暫存副本中套用
+AMCL `alpha1..5=0.01` 與 `update_min_a/update_min_d=0.02`，降低理想模擬里程計被過度加噪及
+小幅末端修正未更新定位的情形；這是 Nova Carter 模擬驗證值，不可直接當成實體車校正值。
 
 純 Isaac Sim 使用預設 `deployment_mode = "simulation"`；任何實體車可能上線前，將頂層
 設定改為 `deployment_mode = "physical"`。physical 模式若 `[twin].domain_id` 與目前
@@ -284,7 +294,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 
 ---
 
-## 狀態（v2.5.0，2026-07）
+## 狀態（v2.5.1，2026-07）
 
 > ✅ **安全鏈**：緊急停止（TUI `/stop`／WebUI STOP 鈕／MCP `stop`／daemon `halt`，免批准可搶佔、跨程序 cancel-all）、bridge watchdog（client 斷線自主停車）、執行期硬限速（`[vehicle]`）、HITL 編號審批卡、daemon 明確授權 gating、權限模式的自然語言路由例外網。
 >
@@ -304,7 +314,7 @@ Ollama 提供 OpenAI 相容端點，設定要點：
 >
 > - E2 是固定目標集的配對描述性再分析；A／B 為決定性政策推導，C 為舊 live observed。
 > - E3 僅驗證 ROS_DOMAIN_ID=42 的隔離 mock fixture。
-> - B4 是事後固定並可重建的 102 份 report subset，不支持精確 20 小時暴露量或零安全事件。
+> - B4 是事後固定並可重建的 102 份 report subset，不支援精確 20 小時暴露量或零安全事件。
 > - E1、E4 與 A6 另依 ledger 所列邊界解讀；跨載具物理泛化、實體 Sim-to-Real 與使用者效率比較仍是後續工作。
 
 ---

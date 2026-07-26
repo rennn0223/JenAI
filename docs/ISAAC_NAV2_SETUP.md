@@ -77,6 +77,10 @@ max_angular = 1.0
 arrival_position_tolerance_m = 0.05 # 模擬驗收:5 cm
 arrival_yaw_tolerance_rad = 0.15    # 模擬驗收:約8.6°
 nav_timeout_s = 240.0             # live Nav2 逾時後取消並急停
+nav_endpoint_retry_limit = 1         # 只允許一次受控的同目標端點恢復
+nav_endpoint_stall_radius_m = 0.10   # 進入此半徑後才開始判定近端停滯
+nav_endpoint_stall_timeout_s = 20.0  # 持續無終態才取消舊 goal
+nav_endpoint_retry_timeout_s = 60.0  # 恢復 goal 的較短期限
 
 route_adapter = "nav2"
 ```
@@ -94,6 +98,16 @@ RViz2 與 JenAI 最終都呼叫同一個 `/navigate_to_pose`；兩者看起來�
 Carter 發布輪速里程計在 `/chassis/odom`，且 DWB 有兩個必須同步的 xy 容差：
 
 ```yaml
+amcl:
+  ros__parameters:
+    alpha1: 0.01
+    alpha2: 0.01
+    alpha3: 0.01
+    alpha4: 0.01
+    alpha5: 0.01
+    update_min_a: 0.02
+    update_min_d: 0.02
+
 controller_server:
   ros__parameters:
     odom_topic: "/chassis/odom"
@@ -109,6 +123,7 @@ controller_server:
       yaw_goal_tolerance: 0.15
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
+      min_vel_x: 0.0
       xy_goal_tolerance: 0.05
       min_speed_theta: 0.1
       trans_stopped_velocity: 0.05
@@ -123,14 +138,34 @@ JenAI 的
 將內部門檻縮至 0.03 m／0.10 rad 會讓 Nova Carter 在距離約 0.04 m 或僅剩朝向誤差時
 持續 recovery 直到逾時，因此不得把過嚴門檻誤當成精度保證。若 goal checker 為 0.05、
 DWB 仍為 0.25，DWB 會在 25 cm 內停止平移並只修朝向，goal checker 卻仍等車進入 5 cm，
-同樣會形成 recovery／原地打轉。修改 plugin 參數後要完整重啟 Nav2；只做
-lifecycle transition 或 runtime `param set` 不保證 plugin 重新載入。`JenAI doctor` 會
-額外確認 controller_server 的 `odom_topic` 有 publisher 且 controller 已訂閱。
+同樣會形成 recovery／原地打轉。AMCL 的 `alpha1..5` 是里程計運動模型雜訊，
+`update_min_a/update_min_d` 則是觸發濾波更新的最小旋轉／平移量；上述 0.01／0.02 是
+Nova Carter 固定模擬場景的驗證值，用來避免理想里程計被預設雜訊過度擴散，並讓末端小幅
+修正能更新定位。實體平台必須依輪滑、感測器與里程計誤差重新校正，不可直接套用。參數語意
+見 [Nav2 AMCL 參數文件](https://docs.nav2.org/configuration/packages/configuring-amcl.html)。
+
+修改 plugin 或 AMCL profile 後要完整重啟 Nav2；只做 lifecycle transition 或 runtime
+`param set` 不保證所有 plugin 重新載入。`JenAI doctor` 會額外確認 controller_server 的
+`odom_topic` 有 publisher 且 controller 已訂閱。
+
+日常測試不必固定 Stop／Play。若車輛未卡牆、AMCL 收斂、沒有未確認取消的舊 goal，可先
+在 TUI 執行 `/dock`，再執行 `./scripts/isaac_nav2.sh restart`。只有車體卡牆、模擬時間重置、
+舊 goal 未清除、定位明顯漂移，或正式基準要求從同一 Dock 初始狀態重播時，才需要 Isaac Sim
+Stop／Play。重新 Play 之後仍須 restart Nav2，避免舊 lifecycle 與模擬時間狀態殘留。
 
 `PoseProgressChecker` 同時接受平移或旋轉進度，避免車已在原地修正 yaw 時被只看平移的
 progress checker 誤判卡住。Nova Carter 模擬底盤實測對約 0.04 rad/s 的微小角速度可能
 沒有可觀察轉動，因此 `min_speed_theta=0.1` 用來跨過模擬致動死區；這是該場景的 controller
-profile，不應直接複製到其他底盤。若改用實體車，必須依底盤死區、打滑與安全速度重新量測。
+profile。`min_vel_x` 維持 `0.0`，因目前 `/scan` 只覆蓋前方約 180°；全程允許負向速度會讓
+底盤可能在缺少後方感知時倒退。2026-07-26 曾以 `-0.1` 診斷短距離補位，雖可改善特定
+端點，後續完整路線出現碰撞區 abort，因此不升格為安全預設。需要倒退的場域必須先提供
+後方感知、碰撞驗證與獨立驗收；一般端點恢復採確認取消後的同目標 Nav2 重規劃。
+
+JenAI 不會因接近目標就自行宣告成功。若 Nav2 在 `nav_endpoint_stall_radius_m` 內持續
+`nav_endpoint_stall_timeout_s` 秒仍沒有 terminal result，JenAI 先送零速度並取消舊 goal；
+只有 halt 已送達且 Nav2 明確確認取消時，才會在 `nav_endpoint_retry_limit` 上限內對同一
+目標重送。最後仍須以停止後新鮮 TF 通過 0.05 m／0.15 rad，未確認取消、重試失敗或
+終點超限一律回報失敗。
 
 Nav2 action 的 terminal feedback 只是控制期間的進度證據。JenAI 在 `SUCCEEDED` 後會先等
 車體停止，再要求一筆晚於驗證請求的新 `map → <robot_base_frame>` TF，以這份 post-stop pose

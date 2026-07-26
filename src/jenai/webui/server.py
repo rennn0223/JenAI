@@ -26,7 +26,11 @@ from jenai.providers.chat import chat_model_name
 from jenai.schemas import DoctorResult
 from jenai.state.runs import RunStore
 from jenai.tools.ros2_core import _kind_hint
-from jenai.tools.safety import halt_robot
+from jenai.tools.safety import (
+    HaltReceipt,
+    NavigationCancelStatus,
+    halt_robot_with_receipt,
+)
 from jenai.webui.commands import WebAction, run_web_command, run_web_confirm
 from jenai.webui.render import render_dashboard_html, render_main
 
@@ -374,6 +378,16 @@ def build_status_payload(
     }
 
 
+def _halt_response(receipt: HaltReceipt) -> dict[str, Any]:
+    """Render cancellation uncertainty as an error instead of success."""
+    kind = (
+        "error"
+        if receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED
+        else "result"
+    )
+    return {"kind": kind, "html": f"<p>🛑 {receipt.message}</p>"}
+
+
 def _do_stop(config: AppConfig, pose_cache: PoseCache | None = None) -> dict[str, Any]:
     """Halt the robot from a sync HTTP handler.
 
@@ -381,15 +395,15 @@ def _do_stop(config: AppConfig, pose_cache: PoseCache | None = None) -> dict[str
     no cold start in the middle of an emergency. Fallback: fresh bridge.
     """
     if pose_cache is not None:
-        message = pose_cache.submit(lambda client: halt_robot(config, client))
+        message = pose_cache.submit(lambda client: halt_robot_with_receipt(config, client))
         if message is not None:
-            return {"kind": "result", "html": f"<p>🛑 {message}</p>"}
+            return _halt_response(message)
 
-    async def run() -> str:
+    async def run() -> HaltReceipt:
         bridge = RosBridgeClient()
         try:
             await bridge.start()
-            return await halt_robot(config, bridge)
+            return await halt_robot_with_receipt(config, bridge)
         finally:
             with contextlib.suppress(BridgeError):
                 await bridge.stop()
@@ -398,7 +412,7 @@ def _do_stop(config: AppConfig, pose_cache: PoseCache | None = None) -> dict[str
         message = asyncio.run(run())
     except BridgeError as exc:
         return {"kind": "error", "html": f"<p>Stop unavailable (no ROS bridge): {exc}</p>"}
-    return {"kind": "result", "html": f"<p>🛑 {message}</p>"}
+    return _halt_response(message)
 
 
 # -- HTML rendering -----------------------------------------------------------

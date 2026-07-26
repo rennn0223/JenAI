@@ -316,6 +316,22 @@ def test_web_route_refuses_unregistered_navigation_capability(tmp_path: Path) ->
     assert "not registered" in result["html"]
 
 
+def test_web_stop_marks_unconfirmed_navigation_cancel_as_error() -> None:
+    from jenai.tools.safety import HaltReceipt, NavigationCancelStatus
+    from jenai.webui.server import _halt_response
+
+    response = _halt_response(
+        HaltReceipt(
+            navigation_cancel_status=NavigationCancelStatus.UNCONFIRMED,
+            zero_velocity_delivered=True,
+            message="Zero velocity delivered; cancellation not acknowledged.",
+        )
+    )
+
+    assert response["kind"] == "error"
+    assert "not acknowledged" in response["html"]
+
+
 def test_web_command_unknown_is_error(tmp_path: Path) -> None:
     res = asyncio.run(run_web_command(_config(), tmp_path / "c.toml", "/frobnicate"))
     assert res["kind"] == "error"

@@ -46,7 +46,12 @@ from jenai.tools.ros2_core import (
     ros_topics,
 )
 from jenai.tools.route_core import explicit_route_goal, route_preview
-from jenai.tools.safety import arm_watchdog, halt_robot
+from jenai.tools.safety import (
+    HaltReceipt,
+    NavigationCancelStatus,
+    arm_watchdog,
+    halt_robot_with_receipt,
+)
 from jenai.tools.skills import (
     exploration_candidates,
     parse_explore,
@@ -568,13 +573,22 @@ class RobotCommandsMixin(LocationCommandsMixin):
         if not output.outgoing_action:
             await self._mount_event(TimelineItem("warn", output.route_preview))
             return
+        resolved_goal = output.resolved_goal
+        if resolved_goal is None:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    "Route preview did not resolve a saved destination; no goal was sent.",
+                )
+            )
+            return
 
         # "從 A 到 B" with BOTH ends known → visit A then B in order (先去A再去B),
         # run as a two-stop mission so each leg is navigated and reported. When
         # only the goal resolves, keep the single-goal "from current position".
         if output.resolved_start is not None and output.resolved_goal is not None:
             await self._start_ordered_route(
-                arg, output.resolved_start.name, output.resolved_goal.name, locations
+                arg, output.resolved_start.name, resolved_goal.name, locations
             )
             return
 
@@ -596,7 +610,12 @@ class RobotCommandsMixin(LocationCommandsMixin):
             tool_call_id=tool_call.tool_call_id,
             title="Send navigation route",
             summary=output.route_preview,
-            raw_action=str(output.outgoing_action),
+            raw_action=(
+                f"goto {resolved_goal.name} "
+                f"(x={resolved_goal.pose.x:.2f}, "
+                f"y={resolved_goal.pose.y:.2f}, "
+                f"yaw={resolved_goal.pose.yaw:.3f} rad)"
+            ),
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
             justification=justification,
@@ -941,18 +960,18 @@ class RobotCommandsMixin(LocationCommandsMixin):
             TimelineItem("muted", "Perception idle. Usage: /perception start [topic] [hz]")
         )
 
-    async def _halt_once(self) -> str:
-        """One bridge-level cancel + zero pulse, shared by both stop phases."""
+    async def _halt_once(self) -> HaltReceipt:
+        """One typed bridge stop receipt shared by both stop phases."""
 
         bridge = await self._get_bridge()
-        return await halt_robot(self.config, bridge)
+        return await halt_robot_with_receipt(self.config, bridge)
 
     async def _halt_before_cancel(self) -> None:
         """Brake first; the stop task then kills/reaps the stale action."""
 
         self._spinner_label = "STOPPING"
         try:
-            message = await self._halt_once()
+            receipt = await self._halt_once()
         except BridgeError as exc:
             # Still let the caller cancel/reap the predecessor and retry the
             # final halt. A failed first pulse must not strand a publisher.
@@ -961,7 +980,9 @@ class RobotCommandsMixin(LocationCommandsMixin):
             )
             return
         await self._mount_event(
-            TimelineItem("warn", f"Immediate stop pulse sent before task cancellation. {message}")
+            TimelineItem(
+                "warn", f"Immediate stop pulse sent before task cancellation. {receipt.message}"
+            )
         )
 
     async def _show_stop(self, _: str = "") -> None:
@@ -969,13 +990,18 @@ class RobotCommandsMixin(LocationCommandsMixin):
 
         self._spinner_label = "STOPPING"
         try:
-            message = await self._halt_once()
+            receipt = await self._halt_once()
         except BridgeError as exc:
             await self._mount_event(
                 TimelineItem("warn", f"Final stop unavailable (no ROS bridge): {exc}")
             )
             return
-        await self._mount_event(TimelineItem("success", message))
+        variant = (
+            "warn"
+            if receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED
+            else "success"
+        )
+        await self._mount_event(TimelineItem(variant, receipt.message))
 
     async def _execute_route_action(self, outgoing_action: dict[str, Any]) -> RouteOutput:
         """Execute a navigation action: live bridge (feedback + Esc cancel) when
