@@ -1,6 +1,6 @@
 # JenAI Architecture
 
-> Current architecture for JenAI v2.4.1. This document is the source of truth for module
+> Current architecture for JenAI v2.5.0. This document is the source of truth for module
 > responsibilities and dependency direction. Historical v0.1 design drafts were removed from
 > the current tree and remain available through Git history.
 

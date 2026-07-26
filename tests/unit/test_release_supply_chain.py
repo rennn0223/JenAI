@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 PUBLIC_RELEASE_TRUTH = (
-    "目前 repository 是 public；v2.4.1 Release 公開提供 wheel、matching constraints、"
+    "目前 repository 是 public；v2.5.0 Release 公開提供 wheel、matching constraints、"
     "CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。"
     "只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。"
 )

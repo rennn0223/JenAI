@@ -13,7 +13,7 @@ JenAI v2.4.0 正式版是一個**受監督、具執行邊界的 ROS2 高階決�
 `perceive → decide → rehearse → act → feedback` 自主迴圈。`/explore` 是已知儲存點位的
 有界巡遊，不是 SLAM 探索。
 
-目前 repository 是 public；v2.4.1 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+目前 repository 是 public；v2.5.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
 
 下表以 v2.4.0 tag 指向的 main@`90d0059` 為固定 revision；[PR #121](https://github.com/rennn0223/JenAI/pull/121)、
 [main CI](https://github.com/rennn0223/JenAI/actions/runs/30134562544)、[Supply Chain](https://github.com/rennn0223/JenAI/actions/runs/30134562570) 與

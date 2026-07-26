@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v2.4.1(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v2.5.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(DGX Spark 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -29,7 +29,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.4.1 在本機 1,076 項測試通過；全部 `src/jenai` production code 採 mypy strict；v2.4.1 PR 的 Python 3.12／3.13／3.14、build、audit/SBOM 與 Release workflow 均已通過 |
+| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.5.0 完整測試通過；全部 `src/jenai` production code 採 mypy strict；v2.5.0 PR 的 Python 3.12／3.13／3.14、build、audit/SBOM 與 Release workflow 均已通過 |
 | Isaac HIL（人工啟動） | Actions → `Isaac HIL Acceptance`，或依 `docs/validation/ISAAC_HIL_ACCEPTANCE.md` 執行 | 一般 CI 絕不動車；精確確認後在 self-hosted runner 驗 route、Nav2 cancel acknowledgement、software halt、完整 scan metadata gate 與可選 Twin verdict。任一 motion 失敗即停止後續 goal，artifact 必含 `final_halt`／`bridge_shutdown`；畸形 wire 回應不得算成功。clean `d942130…855` 本機 artifact 已通過，Twin 同 domain 明記 skip；這不等於已產生 GitHub workflow artifact |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | 最小 `contents: read` 權限；同 ref 新 run 取消舊 run；`test` job（30 分鐘上限）以 Python 3.12／3.13／3.14 matrix 跑 ruff format/lint、全 production code mypy strict、pytest branch coverage（整體 76% 與安全鏈 90% 退步閘）；`build` job（20 分鐘上限）以 `uv build` + 全新 tool 環境驗 wheel lifecycle |
