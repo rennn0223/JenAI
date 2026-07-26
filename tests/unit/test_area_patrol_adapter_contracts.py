@@ -84,6 +84,20 @@ def _context(tmp_path: Path, *, active_site: bool = True) -> JenAIRunContext:
     )
 
 
+def _gateway_for(execute):
+    class FakeGateway:
+        def __init__(self, config, **kwargs) -> None:
+            self._config = config
+
+        async def execute(self, action, **kwargs) -> RouteOutput:
+            return await execute(self._config, action, **kwargs)
+
+        async def close(self) -> None:
+            return None
+
+    return FakeGateway
+
+
 def _decode_tool_output(raw: object) -> dict[str, object]:
     value = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(value, dict):
@@ -122,8 +136,8 @@ def test_runtime_navigation_resolves_saved_locations_and_classifies_failures(
         )
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_service.execute_navigation",
-        fake_execute,
+        "jenai.tools.area_patrol_service.NavigationGateway",
+        _gateway_for(fake_execute),
     )
     runtime = AgentAreaPatrolRuntime(context, locations)
 
@@ -176,7 +190,10 @@ def test_agent_workflow_retries_temporarily_unavailable_navigation(
         return VisionOutput(source="image://inspection-a", summary="No anomaly observed.")
 
     monkeypatch.setattr("jenai.tools.area_patrol_service.RosBridgeClient", FakeBridge)
-    monkeypatch.setattr("jenai.tools.area_patrol_service.execute_navigation", fake_execute)
+    monkeypatch.setattr(
+        "jenai.tools.area_patrol_service.NavigationGateway",
+        _gateway_for(fake_execute),
+    )
     monkeypatch.setattr("jenai.tools.area_patrol_service.capture_and_analyze", fake_capture)
 
     async def invoke() -> dict[str, object]:
@@ -210,8 +227,9 @@ def test_runtime_verified_inspection_and_model_unavailable_are_distinct(
     outputs = [
         VisionOutput(source="image://verified", summary="No anomaly observed."),
         VisionOutput(
+            analysis_status="unavailable",
             source="image://unverified",
-            summary="Vision model is unavailable; image preserved.",
+            summary="視覺模型無法使用；影像已保存。",
         ),
     ]
 
@@ -275,8 +293,8 @@ def test_agent_workflow_tool_runs_one_complete_deterministic_mission(
         FakeBridge,
     )
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_service.execute_navigation",
-        fake_execute,
+        "jenai.tools.area_patrol_service.NavigationGateway",
+        _gateway_for(fake_execute),
     )
     monkeypatch.setattr(
         "jenai.tools.area_patrol_service.capture_and_analyze",
@@ -349,8 +367,8 @@ def test_cancelled_agent_workflow_persists_aborted_report_and_finishes_tool(
         raise AssertionError("cancelled navigation must not resume")
 
     monkeypatch.setattr(
-        "jenai.tools.area_patrol_service.execute_navigation",
-        blocking_execute,
+        "jenai.tools.area_patrol_service.NavigationGateway",
+        _gateway_for(blocking_execute),
     )
 
     async def scenario() -> dict[str, object]:

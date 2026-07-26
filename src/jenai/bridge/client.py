@@ -683,13 +683,49 @@ class RosBridgeClient:
         result = await self.request("ping", timeout=5.0)
         return _require_bool(result, "pong", "ping")
 
-    async def get_pose(self, timeout: float = 3.0) -> PoseInfo:
+    async def get_pose(
+        self,
+        timeout: float = 3.0,
+        *,
+        fresh: bool = False,
+        frame_id: str = "map",
+        base_frame: str = "base_link",
+    ) -> PoseInfo:
+        """Read robot pose, optionally requiring current map-frame TF evidence.
+
+        The regular observation path may use AMCL's transient-local last value
+        so a stationary robot remains inspectable. Completion checks set
+        ``fresh=True``; the sidecar then waits for a TF transform published
+        after that request and must not silently substitute older cached
+        evidence.
+        """
         # /amcl_pose then /odom are each given `timeout`, so wait for both.
         parsed_timeout = _require_finite_input("pose", "timeout", timeout)
         if parsed_timeout <= 0.0:
             raise BridgeError("invalid pose request: timeout must be positive")
-        result = await self.request("pose", timeout=timeout * 2 + 2.0, params={"timeout": timeout})
-        return PoseInfo.from_payload(result)
+        _require_bool_input("pose", "fresh", fresh)
+        _require_nonempty_input("pose", "frame_id", frame_id)
+        _require_nonempty_input("pose", "base_frame", base_frame)
+        result = await self.request(
+            "pose",
+            timeout=timeout * 2 + 2.0,
+            params={
+                "timeout": timeout,
+                "fresh": fresh,
+                "frame_id": frame_id,
+                "base_frame": base_frame,
+            },
+        )
+        pose = PoseInfo.from_payload(result)
+        if fresh:
+            if not _require_bool(result, "fresh_after_request", "pose"):
+                raise BridgeError(
+                    "invalid pose response: fresh_after_request must explicitly be true"
+                )
+            stamp_ns = _require_int(result, "stamp_ns", "pose")
+            if stamp_ns <= 0:
+                raise BridgeError("invalid pose response: stamp_ns must be positive")
+        return pose
 
     async def map_cell(self, x: float, y: float, *, timeout: float = 3.0) -> MapCellInfo:
         """Read one cell from the latched static map without commanding motion."""

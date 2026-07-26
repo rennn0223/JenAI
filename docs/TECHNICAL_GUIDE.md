@@ -87,6 +87,7 @@ max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherb
 arrival_position_tolerance_m = 0.25 # Nav2 terminal pose 的 JenAI 二次核對上限
 arrival_yaw_tolerance_rad = 0.25    # Isaac 精準 profile:0.05 m / 0.15 rad
 odom_timeout_s = 1.0               # odom 逾時立即歸零；不沿用舊位姿繼續直驅
+nav_timeout_s = 240.0       # 單次 live Nav2 任務最長秒數；逾時會取消並送出零速度
 ```
 
 NavigationGateway 不把 action status 當成幾何證據。bridge 會把 Nav2 feedback 的最後

@@ -120,6 +120,7 @@ class RunOutput(JenAIModel):
 
 
 class VisionOutput(JenAIModel):
+    analysis_status: Literal["completed", "unavailable"] = "completed"
     source: str
     summary: str = ""
     objects: list[str] = Field(default_factory=list)

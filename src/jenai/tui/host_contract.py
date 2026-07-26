@@ -43,6 +43,7 @@ class TuiHostContract:
         _pending_approvals: dict[str, dict[str, Any]]
         _auto_approved: set[str]
         _active_task: asyncio.Task[None] | None
+        _active_task_is_stop: bool
         _perception: PerceptionLoop | None
         _bridge: RosBridgeClient | None
         _spinner_timer: Timer | None
@@ -80,6 +81,8 @@ class TuiHostContract:
         def _start_spinner(self, label: str) -> None: ...
 
         def _stop_spinner(self) -> None: ...
+
+        async def _finalize_interrupted_run(self) -> None: ...
 
         async def _run_with_agent_progress(
             self,

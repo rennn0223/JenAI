@@ -136,6 +136,48 @@ def test_bridge_pose_rejects_malformed_evidence(monkeypatch, mutation) -> None:
     asyncio.run(run())
 
 
+def test_bridge_fresh_pose_requires_after_request_evidence(monkeypatch) -> None:
+    async def run() -> None:
+        client = RosBridgeClient()
+
+        async def request(*_args, **_kwargs):
+            return {
+                "x": 1.5,
+                "y": -2.0,
+                "yaw": 0.5,
+                "frame_id": "map",
+                "source": "/tf(map->base_link)",
+            }
+
+        monkeypatch.setattr(client, "request", request)
+        with pytest.raises(BridgeError, match="fresh_after_request"):
+            await client.get_pose(fresh=True)
+
+    asyncio.run(run())
+
+
+def test_bridge_fresh_pose_accepts_positive_after_request_evidence(monkeypatch) -> None:
+    async def run() -> None:
+        client = RosBridgeClient()
+
+        async def request(*_args, **_kwargs):
+            return {
+                "x": 1.5,
+                "y": -2.0,
+                "yaw": 0.5,
+                "frame_id": "map",
+                "source": "/tf(map->base_link)",
+                "stamp_ns": 123_000_000,
+                "fresh_after_request": True,
+            }
+
+        monkeypatch.setattr(client, "request", request)
+        pose = await client.get_pose(fresh=True)
+        assert (pose.x, pose.y, pose.source) == (1.5, -2.0, "/tf(map->base_link)")
+
+    asyncio.run(run())
+
+
 def test_bridge_map_cell_returns_typed_bounded_summary(fake_bridge) -> None:
     async def run() -> None:
         client = RosBridgeClient()

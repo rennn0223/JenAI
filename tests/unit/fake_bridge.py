@@ -35,7 +35,10 @@ def main() -> None:
         elif op == "watchdog":
             emit({"id": req_id, "ok": True, "result": {"watchdog_s": req.get("timeout", 0.0)}})
         elif op == "pose":
-            emit({"id": req_id, "ok": True, "result": dict(pose)})
+            result = dict(pose)
+            if req.get("fresh", False):
+                result.update(stamp_ns=time.monotonic_ns(), fresh_after_request=True)
+            emit({"id": req_id, "ok": True, "result": result})
         elif op == "map_identity":
             emit(
                 {

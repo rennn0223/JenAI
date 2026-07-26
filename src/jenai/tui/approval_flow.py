@@ -155,6 +155,22 @@ class ApprovalFlowMixin(TuiHostContract):
         """Resume a paused agent run once every interruption has a decision."""
         pending = self._pending_approvals.pop(run_id)
         self._scroll_to_bottom()
+        # Remembered approvals may be resolved while the original submission
+        # task is still active. In that case, keep using that task. A decision
+        # made from an approval card runs in Textual's message handler after
+        # the original task has ended, so it must be promoted to the active
+        # slot; otherwise Esc has no task to cancel.
+        if self._active_task is not None and not self._active_task.done():
+            await self._resume_agent_run(pending)
+            return
+        self._active_task = asyncio.create_task(self._run_resumed_agent_task(pending))
+        self._active_task_is_stop = False
+        cast(Any, self)._update_statusbar()
+        # Preserve the event-handler contract for fast resumptions: one event
+        # loop turn is enough for a non-blocking resume to update the UI.
+        await asyncio.sleep(0)
+
+    async def _resume_agent_run(self, pending: dict[str, Any]) -> None:
         run = await self._run_with_agent_progress(
             pending["ctx"],
             orchestrator.resume_with_approvals(
@@ -162,4 +178,22 @@ class ApprovalFlowMixin(TuiHostContract):
             ),
         )
         await self._render_run_update(pending["ctx"], run, agent=pending["agent"])
-        self._start_next_queued()
+
+    async def _run_resumed_agent_task(self, pending: dict[str, Any]) -> None:
+        """Own a resumed run so Esc and shutdown cancel its full tool chain."""
+        try:
+            await self._resume_agent_run(pending)
+        except asyncio.CancelledError:
+            await self._finalize_interrupted_run()
+            if self.is_running:
+                try:
+                    await self._mount_event(TimelineItem("warn", "Interrupted."))
+                    self._scroll_to_bottom()
+                except NoMatches:
+                    pass
+        finally:
+            if self._active_task is asyncio.current_task():
+                self._stop_spinner()
+                self._active_task = None
+                self._active_task_is_stop = False
+                self._start_next_queued()

@@ -297,40 +297,38 @@ def _short_cwd() -> str:
         return str(cwd)
 
 
-# Compact, original dachshund mascot designed for the terminal welcome panel.
-# The dark coat and cyan status collar echo the robot-dog direction without
-# turning the friendly mascot into a mechanical character.  A terminal cell
-# is roughly twice as tall as it is wide, so two square pixels are packed into
-# each half-block character below.  This 34×18 grid was sampled from candidate
-# C's source artwork and occupies only 34×9 terminal cells.
+# The welcome mascot is reconstructed from the original 80×58 dachshund SVG
+# bundled in the approved HTML design.  A terminal cell is roughly twice as
+# tall as it is wide, so this 24×18 square-pixel source is packed into 24×9
+# half-block cells.  Its size and whitespace match the HTML mock-up while the
+# original four-colour silhouette, brow, eye, floppy ear and short legs remain.
+# Periods are transparent pixels and make every source row explicitly 24 columns.
 _DESIGNED_DOG = (
-    "                                  ",
-    "     KDBBBBBK                     ",
-    "    KBBBDDDDBK                    ",
-    "    KBBBDDDDDBK               K   ",
-    "    DDTTTDKDDDB              KB   ",
-    " DKBDDDWKDDDDDBK             KBK  ",
-    " BDBBBBDDDDDDDDK             DD   ",
-    " DTTTTTTDKDDDDD             KBK   ",
-    "  DBBTTTDKDDDDKKK          DBDK   ",
-    "       KCKKDDKDDBBBBBBBBBBBDDK    ",
-    "       BCDDDKDDDDDDDDDDDDDDDK     ",
-    "       DCDDDDDDDDDDDDDDDDDDDD     ",
-    "       BTBDDDDDDDDDDDDDDDDDDD     ",
-    "       KTTDDDDDDDDDDDDDDDDDDDK    ",
-    "        KDKDDDKBBBBBBDDDKKDDBD    ",
-    "       KTDKBTBKKDDDDK  KBDKBTD    ",
-    "       DBKBTTK         DBKBTTK    ",
-    "                           K      ",
+    "...KBBBDKK..............",
+    "..KBBTBKDDK.............",
+    "..KBBBBKDDD.............",
+    "..KBBKBKDDK.............",
+    "KBBBBBBKDDK............K",
+    "KKTTTTBKDDD...........KK",
+    "KTTTTTDKDDK..........KDK",
+    ".KKTKBDDKKKKKKKKKKKKKDK.",
+    "....KBBDDBBBBBBBBBBBBKK.",
+    "....KBBBBBBBBBBBBBBBBBK.",
+    "....KBBBBBBBBBBBBBBBBBK.",
+    "....KBTBBBBBBBBBBBBBBBK.",
+    ".....KTTBBBBBBBBBBBBBBK.",
+    ".....KKBBBBBBBBBBDDKBBK.",
+    "......KKBKBBKDKKKKDKKBK.",
+    "......KKKKBBKK...KBB.TK.",
+    ".....KKBKTTK.....KKKKTT.",
+    "......KKKKTT........KKK.",
 )
 
 _DESIGNED_DOG_COLORS = {
-    "K": "#1f110a",  # outline / eye
-    "B": "#513d32",  # chocolate coat highlight
-    "D": "#3c2c26",  # coat / floppy ear
-    "T": "#ba773e",  # muzzle / chest / paws
-    "C": "#6ff8f9",  # robot status collar
-    "W": "#f2ede4",  # bright eye against the dark coat
+    "K": "#2b190d",  # outline / eye
+    "B": "#8c4c26",  # coat
+    "D": "#743b20",  # floppy ear / shadow
+    "T": "#d68742",  # muzzle / chest / paws
 }
 
 
@@ -361,18 +359,16 @@ def _animated_dog_cells(
         for x, token in enumerate(row.ljust(width)):
             cells[(x, y)] = _DESIGNED_DOG_COLORS.get(token)
 
-    # The sprite faces left. Its tail occupies the far-right pixels; alternate
-    # the tip without changing the 34×18 bounding box.
+    # The sprite faces left. Wag the far-right tail tip inside the fixed box.
     if frame % 2:
-        cells[(30, 3)] = None
-        cells[(30, 2)] = _DESIGNED_DOG_COLORS["K"]
+        cells[(23, 4)] = None
+        cells[(23, 3)] = _DESIGNED_DOG_COLORS["K"]
 
-    # Preserve the old status animation: blink occasionally while idle and
-    # lift alternating paws while a task is running.
+    # Blink the eye while idle; lift one paw while a task is running.
     if not running and frame % 8 == 6:
-        cells[(7, 5)] = _DESIGNED_DOG_COLORS["D"]
+        cells[(5, 3)] = _DESIGNED_DOG_COLORS["B"]
     if running:
-        lift = ((10, 16), (29, 16)) if frame % 2 else ((13, 15), (32, 15))
+        lift = ((10, 17), (11, 17)) if frame % 2 else ((20, 16), (21, 16))
         for point in lift:
             cells[point] = None
     return cells, width, height
@@ -414,8 +410,8 @@ def status_color(status: DoctorStatus | str) -> str:
 
 
 def format_doctor_item(item: DoctorCheckItem) -> str:
-    fix = f"\n[#9c9689]  fix:[/] {item.fix_suggestion}" if item.fix_suggestion else ""
+    fix = f"\n[#9c9689]  fix:[/] {escape(item.fix_suggestion)}" if item.fix_suggestion else ""
     return (
         f"[bold {status_color(item.status)}]{item.status}[/] "
-        f"{item.section}.{item.check_name}: {item.message}{fix}"
+        f"{escape(item.section)}.{escape(item.check_name)}: {escape(item.message)}{fix}"
     )

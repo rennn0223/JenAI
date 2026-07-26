@@ -29,7 +29,7 @@ from jenai.site_assets import SiteAssetError, load_site_patrol_areas, resolve_si
 from jenai.state.reports import area_patrol_report_payload, save_area_patrol_log
 from jenai.state.runs import RunStore
 from jenai.tools.nav_live import NavProgress
-from jenai.tools.navigation_gateway import execute_navigation
+from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.registry import ToolRiskInfo
 from jenai.tools.vision_core import capture_and_analyze
 from jenai.workflows.area_patrol import (
@@ -159,6 +159,11 @@ class AgentAreaPatrolRuntime:
         self._camera_bridge: RosBridgeClient | None = None
         self._inspection_sequence = 0
         self._last_nav_progress_at = 0.0
+        self._navigation_gateway: NavigationGateway | None = NavigationGateway(
+            run_ctx.config,
+            config_path=run_ctx.config_path,
+            audit_store=run_ctx.run_store.audit_store,
+        )
 
     async def navigate(self, point: InspectionPoint) -> NavigationResult:
         return await self._navigate_location(point.location, phase="Navigating to")
@@ -176,7 +181,10 @@ class AgentAreaPatrolRuntime:
                 self._run_ctx.config,
                 bridge,
                 self._run_ctx.config.vehicle.camera_topic,
-                task_context=f"Semantic patrol inspection at {point.location}",
+                task_context=(
+                    f"Semantic patrol inspection at {point.location}. "
+                    f"Operator request: {self._run_ctx.run.user_input}"
+                ),
                 preserve_to=evidence_path,
             )
         except Exception as exc:  # noqa: BLE001 - converted to an honest workflow result
@@ -192,7 +200,7 @@ class AgentAreaPatrolRuntime:
                 detail=f"reported anomalies: {', '.join(output.anomalies)}",
                 evidence=evidence,
             )
-        if output.summary.startswith("Vision model is unavailable"):
+        if output.analysis_status == "unavailable":
             return InspectionResult(
                 verdict=InspectionVerdict.REQUIRES_REVIEW,
                 detail=output.summary,
@@ -205,7 +213,11 @@ class AgentAreaPatrolRuntime:
         )
 
     async def close(self) -> None:
-        """Release the lazily-created camera bridge; repeated calls are safe."""
+        """Release workflow-owned bridges; repeated calls are safe."""
+
+        gateway, self._navigation_gateway = self._navigation_gateway, None
+        if gateway is not None:
+            await gateway.close()
 
         bridge, self._camera_bridge = self._camera_bridge, None
         if bridge is not None:
@@ -217,14 +229,14 @@ class AgentAreaPatrolRuntime:
         self._set_status(f"{phase} {reference}")
         try:
             location = resolve_site_location(self._locations, reference)
-            output = await execute_navigation(
-                self._run_ctx.config,
+            gateway = self._navigation_gateway
+            if gateway is None:
+                raise RuntimeError("navigation gateway is closed")
+            output = await gateway.execute(
                 {
                     "goal": location.model_dump(mode="json"),
                     "capability_id": "area_patrol",
                 },
-                config_path=self._run_ctx.config_path,
-                audit_store=self._run_ctx.run_store.audit_store,
                 run_id=self._run_ctx.run.run_id,
                 session_id=self._run_ctx.run.session_id,
                 on_progress=lambda progress: self._navigation_progress(reference, progress),

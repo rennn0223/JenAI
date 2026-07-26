@@ -75,6 +75,38 @@ def test_run_plan_produces_completed_run_with_tool_less_agent(monkeypatch) -> No
     assert captured_agents[0].tools == []
 
 
+def test_run_plan_uses_traditional_chinese_for_chinese_operator(monkeypatch) -> None:
+    captured_agents = []
+
+    async def fake_run(agent, task_input, *, context=None, **kwargs):
+        captured_agents.append(agent)
+        return _FakeResult(
+            PlanOutput(
+                task_summary="巡逻区域并检查机器人状态",
+                assumptions=["地图已经加载"],
+                plan_steps=[
+                    PlanStep(
+                        title="检查导航状态",
+                        description="确认机器人已经准备好",
+                        reason="避免发送无效任务",
+                    )
+                ],
+                expected_output="输出完整报告",
+            )
+        )
+
+    monkeypatch.setattr(Runner, "run", fake_run)
+
+    result = asyncio.run(run_plan(_ctx(monkeypatch), "巡檢整個區域並回報"))
+
+    assert result.task_summary == "巡邏區域並檢查機器人狀態"
+    assert result.plan_steps[0].title == "檢查導航狀態"
+    assert result.plan_steps[0].description == "確認機器人已經準備好"
+    assert result.plan_steps[0].reason == "避免傳送無效任務"
+    assert result.final_output == "輸出完整報告"
+    assert "Traditional Chinese (Taiwan)" in captured_agents[0].instructions
+
+
 def test_run_plan_flags_steps_that_use_approval_gated_tools(monkeypatch) -> None:
     TOOL_RISK_REGISTRY["__test_only_pub_tool__"] = ToolRiskInfo(
         risk_level=RiskLevel.P1,

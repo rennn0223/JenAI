@@ -40,6 +40,7 @@
 
 | 文件 | 用途 |
 |---|---|
+| [USER_ACCEPTANCE](validation/USER_ACCEPTANCE.md) | 使用者親自操作的 U01–U14 驗收目錄，不需要執行 pytest |
 | [TEST](validation/TEST.md) | 一般測試、CI 與驗收入口 |
 | [ISAAC_HIL_ACCEPTANCE](validation/ISAAC_HIL_ACCEPTANCE.md) | Isaac route／cancel／stop／Twin HIL 驗收 |
 | [EXPERIMENTS](validation/EXPERIMENTS.md) | E1–E4、HIL、B4 與 soak runbook |

@@ -161,38 +161,42 @@ async def _verify_nav2_arrival(
     """Independently verify a Nav2 success against JenAI's endpoint contract.
 
     Nav2's ``SUCCEEDED`` status means its own goal checker accepted the pose;
-    it does not prove that the profile used by JenAI was met.  Prefer the last
-    pose in Nav2 feedback because a latched ``/amcl_pose`` sample can be stale
-    after a short final movement.  Missing evidence falls back to a fresh pose
-    query for compatibility with older bridges, but malformed evidence fails
-    closed instead of being silently trusted.
+    it does not prove that the profile used by JenAI was met.  Wait briefly for
+    the localization estimate to settle, then query the bridge again.  The last
+    feedback pose can precede the physical stop and must not be accepted as
+    postcondition evidence.  Missing or malformed evidence fails closed.
     """
-    observed = terminal.get("final_pose")
-    evidence_source = "Nav2 feedback"
-    if observed is None:
-        try:
-            pose = await bridge.get_pose(timeout=2.0)
-        except (AttributeError, BridgeError) as exc:
-            halt = await _halt_quietly(bridge)
-            return (
-                "endpoint_mismatch",
-                "Nav2 reported success, but JenAI could not obtain a terminal pose "
-                f"({exc}); success was not accepted. {_halt_detail(halt)}",
-            )
-        observed = {
-            "x": pose.x,
-            "y": pose.y,
-            "yaw": pose.yaw,
-            "frame_id": pose.frame_id,
-        }
-        evidence_source = pose.source
+    await asyncio.sleep(0.5)
+    expected_frame = str(goal.get("frame_id", "map"))
+    base_frame = getattr(vehicle, "robot_base_frame", "base_link")
+    try:
+        pose = await bridge.get_pose(
+            timeout=4.0,
+            fresh=True,
+            frame_id=expected_frame,
+            base_frame=base_frame,
+        )
+    except (AttributeError, BridgeError) as exc:
+        halt = await _halt_quietly(bridge)
+        return (
+            "endpoint_mismatch",
+            "Nav2 reported success, but JenAI could not obtain a post-stop pose "
+            f"({exc}); success was not accepted. {_halt_detail(halt, cancellation_expected=False)}",
+        )
+    observed = {
+        "x": pose.x,
+        "y": pose.y,
+        "yaw": pose.yaw,
+        "frame_id": pose.frame_id,
+    }
+    evidence_source = f"post-stop {pose.source}"
 
     if not isinstance(observed, dict):
         halt = await _halt_quietly(bridge)
         return (
             "failed",
             "Nav2 reported success, but its terminal-pose evidence was malformed; "
-            f"success was not accepted. {_halt_detail(halt)}",
+            f"success was not accepted. {_halt_detail(halt, cancellation_expected=False)}",
         )
 
     x = _finite_pose_value(observed, "x")
@@ -210,17 +214,16 @@ async def _verify_nav2_arrival(
         return (
             "failed",
             "Nav2 reported success, but its terminal pose was incomplete or non-finite; "
-            f"success was not accepted. {_halt_detail(halt)}",
+            f"success was not accepted. {_halt_detail(halt, cancellation_expected=False)}",
         )
 
-    expected_frame = str(goal.get("frame_id", "map"))
     if _normalized_frame(frame_id) != _normalized_frame(expected_frame):
         halt = await _halt_quietly(bridge)
         return (
             "failed",
             "Nav2 reported success, but JenAI cannot compare terminal pose frame "
             f"'{frame_id}' with goal frame '{expected_frame}'; success was not accepted. "
-            f"{_halt_detail(halt)}",
+            f"{_halt_detail(halt, cancellation_expected=False)}",
         )
 
     goal_pose = goal.get("pose") or {}
@@ -239,7 +242,7 @@ async def _verify_nav2_arrival(
             "Nav2 reported success, but JenAI rejected the endpoint: "
             f"position error {position_error:.3f} m (limit {position_tolerance:.3f} m), "
             f"yaw error {yaw_error:.3f} rad (limit {yaw_tolerance:.3f} rad). "
-            f"{_halt_detail(halt)}",
+            f"{_halt_detail(halt, cancellation_expected=False)}",
         )
 
     return (
@@ -424,9 +427,15 @@ async def _halt_quietly(bridge: RosBridgeClient) -> _HaltOutcome:
     return _HaltOutcome(delivered=True, nav_cancel_acknowledged=acknowledged)
 
 
-def _halt_detail(outcome: _HaltOutcome) -> str:
+def _halt_detail(
+    outcome: _HaltOutcome,
+    *,
+    cancellation_expected: bool = True,
+) -> str:
     if not outcome.delivered:
         return "Emergency halt could not be delivered or confirmed."
+    if not cancellation_expected:
+        return "Post-stop zero-velocity halt was delivered."
     if outcome.nav_cancel_acknowledged:
         return "Emergency zero-velocity halt was delivered and Nav2 cancellation acknowledged."
     return (
@@ -531,6 +540,7 @@ async def navigate_with_fallback(
                 bridge,
                 outgoing_action,
                 on_progress=on_progress,
+                timeout=config.vehicle.nav_timeout_s,
                 direct=config.route_adapter == "odom",
                 vehicle=config.vehicle,
                 avoidance=config.avoidance.as_params(),

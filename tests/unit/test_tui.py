@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,12 +42,12 @@ def test_tui_uses_colored_dachshund_mascot() -> None:
     mascot = pixel_mark()
     styles = {str(span.style) for span in mascot.spans}
 
-    assert any("#513d32" in style for style in styles)
-    assert any("#ba773e" in style for style in styles)
-    assert any("#1f110a" in style for style in styles)
-    assert any("#6ff8f9" in style for style in styles)
-    assert any("#f2ede4" in style for style in styles)
-    assert 6 <= mascot.plain.count("\n") <= 9
+    assert any("#8c4c26" in style for style in styles)
+    assert any("#743b20" in style for style in styles)
+    assert any("#d68742" in style for style in styles)
+    assert any("#2b190d" in style for style in styles)
+    assert len(mascot.plain.splitlines()) == 9
+    assert {len(row) for row in mascot.plain.splitlines()} == {24}
     assert pixel_mark(0).plain != pixel_mark(1).plain
 
 
@@ -593,9 +594,11 @@ def test_tui_run_approval_remember_auto_approves(monkeypatch) -> None:
         app = _app()
         async with app.run_test():
             captured: dict = {}
+            resumed = asyncio.Event()
 
             async def fake_resume(agent, ctx, decisions, **kw):
                 captured["decisions"] = dict(decisions)
+                resumed.set()
                 return RunRecord(
                     session_id=app.session.session_id,
                     user_input="x",
@@ -610,8 +613,47 @@ def test_tui_run_approval_remember_auto_approves(monkeypatch) -> None:
 
             # Option 2 = approve + don't ask again.
             await app.on_approval_card_decision(ApprovalCard.Decision("c1", True, remember=True))
+            await asyncio.wait_for(resumed.wait(), 1.0)
             assert "ros_pub_execute_tool" in app._auto_approved
             assert captured["decisions"] == {"c1": True}
+
+    asyncio.run(run())
+
+
+def test_tui_agent_approval_resume_becomes_escape_cancellable_active_task(monkeypatch) -> None:
+    async def run() -> None:
+        app = _app()
+        async with app.run_test():
+            started = asyncio.Event()
+
+            async def blocking_resume(agent, ctx, decisions, **kw):
+                started.set()
+                await asyncio.Event().wait()
+
+            monkeypatch.setattr(
+                "jenai.tui.approval_flow.orchestrator.resume_with_approvals",
+                blocking_resume,
+            )
+            ctx, run_rec = _awaiting_run(app, "area_patrol_workflow_tool")
+            await app._render_run_update(ctx, run_rec, agent=object())
+
+            decision_task = asyncio.create_task(
+                app.on_approval_card_decision(ApprovalCard.Decision("c1", True, remember=False))
+            )
+            await asyncio.wait_for(started.wait(), 1.0)
+            try:
+                assert app._active_task is not None
+                assert not app._active_task.done()
+            finally:
+                active = app._active_task
+                if active is not None:
+                    active.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await active
+                if not decision_task.done():
+                    decision_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await decision_task
 
     asyncio.run(run())
 
@@ -624,9 +666,11 @@ def test_tui_run_remembered_tool_skips_card(monkeypatch) -> None:
         async with app.run_test():
             app._auto_approved.add("ros_pub_execute_tool")
             captured: dict = {}
+            resumed = asyncio.Event()
 
             async def fake_resume(agent, ctx, decisions, **kw):
                 captured["decisions"] = dict(decisions)
+                resumed.set()
                 return RunRecord(
                     session_id=app.session.session_id, user_input="x", status="completed"
                 )
@@ -637,6 +681,7 @@ def test_tui_run_remembered_tool_skips_card(monkeypatch) -> None:
 
             # No card shown — the remembered tool auto-approves and resumes.
             assert list(app.query(ApprovalCard)) == []
+            await asyncio.wait_for(resumed.wait(), 1.0)
             assert captured["decisions"] == {"c1": True}
 
     asyncio.run(run())
@@ -2035,13 +2080,16 @@ def test_mascot_frames_animate_but_keep_size() -> None:
     assert len(sizes) == 1  # identical bounding box across all poses
 
 
-def test_welcome_uses_compact_animated_artwork() -> None:
+def test_welcome_uses_proportional_animated_artwork() -> None:
     async def run() -> None:
         app = _app()
         async with app.run_test():
             mark = app.query_one("#pixel-mark")
             assert mark.render().spans
             assert not mark.has_class("full-mascot")
+            rows = mark.render().plain.splitlines()
+            assert len(rows) == 9
+            assert {len(row) for row in rows} == {24}
 
     asyncio.run(run())
 
@@ -2284,5 +2332,55 @@ def test_tui_report_task_and_event_records(tmp_path: Path) -> None:
             panels = [item for item in app.query_one("#events").children if hasattr(item, "title")]
             assert any("Event records" in item.title for item in panels)
             assert any("battery-low" in item.body for item in panels)
+
+    asyncio.run(run())
+
+
+def test_tui_task_list_leads_with_product_outcome_not_lifecycle(tmp_path: Path) -> None:
+    """A normally finished partial workflow must never look successful."""
+    from jenai.schemas import TaskOutcome
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        async with app.run_test():
+            task = app.run_store.create_run(app.session.session_id, "patrol every required area")
+            app.run_store.finish(
+                task,
+                status=RunStatus.COMPLETED,
+                outcome=TaskOutcome.PARTIAL,
+                final_output="coverage 100%; returned_home=False",
+            )
+
+            await app.handle_user_text("/report task list")
+
+            panels = [item for item in app.query_one("#events").children if hasattr(item, "title")]
+            task_list = next(
+                item for item in panels if item.title == "Task receipts (newest first)"
+            )
+            assert "partial · lifecycle completed" in task_list.body
+            assert "1. completed" not in task_list.body
+
+    asyncio.run(run())
+
+
+def test_tui_app_authored_markup_renders_without_exposing_tags(tmp_path: Path, monkeypatch) -> None:
+    """Trusted styles render, while user-controlled location text stays literal."""
+    from jenai.schemas import Location, Pose2D
+
+    location = Location(name="Dock [bold]literal[/]", pose=Pose2D(x=1.0, y=2.0, yaw=0.0))
+    monkeypatch.setattr(JenAITuiApp, "_load_locations", lambda _self: [location])
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        async with app.run_test() as pilot:
+            await app.handle_user_text("/status")
+            await app.handle_user_text("/loc list")
+            await pilot.pause()
+
+            panels = [item for item in app.query_one("#events").children if hasattr(item, "title")]
+            status = next(item for item in panels if item.title == "Status")
+            locations = next(item for item in panels if item.title == "Locations")
+            assert "[bold" not in status.render().plain
+            assert "Dock [bold]literal[/]" in locations.render().plain
 
     asyncio.run(run())

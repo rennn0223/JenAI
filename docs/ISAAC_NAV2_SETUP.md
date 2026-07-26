@@ -43,7 +43,7 @@
 2. **生成佔位圖**:**Tools → Robotics → Occupancy Map**:
    - Origin:`X=0, Y=0, Z=0`
    - **Lower bound Z = 0.1、Upper bound Z = 0.62**(= Carter 雷射高度;
-     换你自己的車就填你的 LiDAR/depth 感測高度帶)
+     換成你自己的車時，就填入該車的 LiDAR／depth 感測高度範圍)
    - 在 stage 選 `warehouse_with_forklifts` prim → **BOUND SELECTION**
    - **CALCULATE** → **VISUALIZE IMAGE**
    - Rotate Image = **180°**、Coordinate Type = **ROS Occupancy Map
@@ -75,6 +75,7 @@ max_linear = 0.8              # 倉庫內保守值
 max_angular = 1.0
 arrival_position_tolerance_m = 0.05 # 模擬驗收:5 cm
 arrival_yaw_tolerance_rad = 0.15    # 模擬驗收:約8.6°
+nav_timeout_s = 240.0             # live Nav2 逾時後取消並急停
 
 route_adapter = "nav2"
 ```
@@ -85,7 +86,7 @@ B2–B4。**代價要知道**:Carter 是差速車,阿克曼運動學(Smac Hybrid
 之後仍需路線 B 的 Leatherback 場景;架構層(決策/Gate/安全鏈)的驗證數據
 則載具無關,Carter 收的完全算數。
 
-### Carter 精準到點 profile（2026-07-24 實測）
+### Carter 精準到點 profile（2026-07-26 實測）
 
 RViz2 與 JenAI 最終都呼叫同一個 `/navigate_to_pose`；兩者看起來精度不同，通常不是
 傳輸介面造成，而是 Nav2 controller 的 goal tolerance 與上層是否複核終點不同。Nova
@@ -95,6 +96,11 @@ Carter 發布輪速里程計在 `/chassis/odom`，且 DWB 有兩個必須同步�
 controller_server:
   ros__parameters:
     odom_topic: "/chassis/odom"
+    progress_checker:
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.05
+      required_movement_angle: 0.05
+      movement_time_allowance: 20.0
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
@@ -103,13 +109,32 @@ controller_server:
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       xy_goal_tolerance: 0.05
+      min_speed_theta: 0.1
+      trans_stopped_velocity: 0.05
 ```
 
-`general_goal_checker.xy_goal_tolerance` 與 `FollowPath.xy_goal_tolerance` 必須相同。若前者
-為 0.05、後者仍為 0.25，DWB 會在 25 cm 內停止平移並只修朝向，goal checker 卻仍等
-車進入 5 cm，形成 recovery／原地打轉。修改 plugin 參數後要完整重啟 Nav2；只做
+`general_goal_checker.xy_goal_tolerance` 與 `FollowPath.xy_goal_tolerance` 必須相同。JenAI 的
+一鍵啟動預設將 Nav2 內部位置／朝向門檻設為 0.05 m／0.15 rad，與 JenAI 的對外終點契約
+一致；Nav2 成功後仍必須由 JenAI 取得新鮮的停車後 TF 獨立複核。2026-07-26 實測顯示，
+將內部門檻縮至 0.03 m／0.10 rad 會讓 Nova Carter 在距離約 0.04 m 或僅剩朝向誤差時
+持續 recovery 直到逾時，因此不得把過嚴門檻誤當成精度保證。若 goal checker 為 0.05、
+DWB 仍為 0.25，DWB 會在 25 cm 內停止平移並只修朝向，goal checker 卻仍等車進入 5 cm，
+同樣會形成 recovery／原地打轉。修改 plugin 參數後要完整重啟 Nav2；只做
 lifecycle transition 或 runtime `param set` 不保證 plugin 重新載入。`JenAI doctor` 會
 額外確認 controller_server 的 `odom_topic` 有 publisher 且 controller 已訂閱。
+
+`PoseProgressChecker` 同時接受平移或旋轉進度，避免車已在原地修正 yaw 時被只看平移的
+progress checker 誤判卡住。Nova Carter 模擬底盤實測對約 0.04 rad/s 的微小角速度可能
+沒有可觀察轉動，因此 `min_speed_theta=0.1` 用來跨過模擬致動死區；這是該場景的 controller
+profile，不應直接複製到其他底盤。若改用實體車，必須依底盤死區、打滑與安全速度重新量測。
+
+Nav2 action 的 terminal feedback 只是控制期間的進度證據。JenAI 在 `SUCCEEDED` 後會先等
+車體停止，再要求一筆晚於驗證請求的新 `map → base_link` TF，以這份 post-stop pose
+驗證位置與 wrap-around yaw；舊快取、pose 缺失、frame 錯誤或超出 `[vehicle]` 門檻都必須
+fail closed。Dock 通過只表示
+已到達儲存 pose，不代表已完成充電接點對位或取得充電回授。若場域需要低於 5 cm 的充電
+接點對位，應另加視覺／標記／充電座感測回授與專用低速 docking controller；不可只縮小
+一般 Nav2 goal tolerance 後宣稱具備該能力。
 
 ## 路線 B|你的 Leatherback 場景(接 JenAI 的正式路線)
 
@@ -188,7 +213,7 @@ LaserScan message 都是同一值。
 | 車不動、RViz 能規劃 | `/cmd_vel` 沒接到車(Isaac 端 topic 名對齊;或 controller 輸出 remap) |
 | AMCL 不收斂 | 先 2D Pose Estimate;雷射高度帶與佔位圖 Z 帶不一致也會 |
 | `/scan` 有頻率但 AMCL 跳位／資料忽空忽有 | RTX Helper 仍在逐幀發布旋轉 wedge；頻率不能代表視野完整 | 設 `Publish Full Scan=True`，10 Hz full cloud 時令 converter `scan_time=0.1`，再跑 HIL scan-quality preflight |
-| Nav2 可規劃但 JenAI 到點誤差約 0.2–0.25 m | Nav2 goal checker／DWB 仍採寬鬆預設，且只看 action `SUCCEEDED` | 同步設定兩個 xy tolerance，完整重啟 Nav2；`[vehicle]` 設 0.05 m／0.15 rad，讓 JenAI 二次核對 terminal pose |
+| Nav2 可規劃但 JenAI 到點誤差約 0.2–0.25 m | Nav2 goal checker／DWB 仍採寬鬆預設，或模擬底盤無法執行過小角速度 | 同步設定兩個 xy tolerance、`PoseProgressChecker` 與經量測的 `min_speed_theta`，完整重啟 Nav2；JenAI 以停止後新發布的 `map → base_link` TF 二次核對 |
 | `/doctor` 顯示 Nav2 action 存在但里程計警告 | Carter 發 `/chassis/odom`，controller 卻仍聽預設 `/odom` | 設 `controller_server.ros__parameters.odom_topic: /chassis/odom` 後重啟 Nav2 |
 | topics 看不到 | Isaac 沒按 Play;或兩邊 ROS_DOMAIN_ID 不同 |
 | Isaac 用了內建 ROS 庫 | 開 Isaac 前忘了 source(24.04 沒 source 會自動載內建 Jazzy 庫,通常也能通,但版本混用問題難查) |

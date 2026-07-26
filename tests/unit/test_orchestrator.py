@@ -91,6 +91,16 @@ def test_tool_result_summary_falls_back_to_recorded_outcomes(monkeypatch) -> Non
     assert "geometry_msgs/msg/Twist" in summary
 
 
+def test_process_result_normalizes_chinese_model_output(monkeypatch) -> None:
+    ctx = _ctx(monkeypatch)
+    ctx.run.user_input = "检查机器人状态"
+    result = _FakeResult(_FakeState([]), final_output="机器人位于仓库区域。")
+
+    processed = orchestrator._process_result(ctx, result)
+
+    assert processed.final_output == "機器人位於倉庫區域。"
+
+
 def test_status_only_run_uses_deterministic_measured_report() -> None:
     run = RunRecord(
         session_id="session-1",
@@ -252,14 +262,20 @@ def test_resume_stops_blocked_when_model_loops_same_action(monkeypatch) -> None:
 
     async def fake_run(agent, task_input, *, context=None, **kwargs):
         calls.append(task_input)
-        return _FakeResult(first) if len(calls) == 1 else _FakeResult(looped)
+        return (
+            _FakeResult(first)
+            if len(calls) == 1
+            else _FakeResult(looped, final_output="机器人重复请求批准。")
+        )
 
     monkeypatch.setattr(Runner, "run", fake_run)
     ctx = _ctx(monkeypatch)
-    asyncio.run(orchestrator.start_run(_agent(), ctx, "drive forward"))
+    ctx.run.user_input = "讓機器人往前"
+    asyncio.run(orchestrator.start_run(_agent(), ctx, "讓機器人往前"))
     result = asyncio.run(orchestrator.resume_with_approvals(_agent(), ctx, {"call_1": True}))
 
     assert result.status == "blocked"
+    assert result.final_output == "機器人重複請求批准。"
 
 
 def test_resume_asks_again_for_a_genuinely_new_action(monkeypatch) -> None:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
+from textual.markup import escape
+
 from jenai import __version__
 from jenai.config import save_config
 from jenai.doctor import run_doctor
@@ -72,14 +74,14 @@ class InfoCommandsMixin(TuiHostContract):
             )
 
         lines = [
-            f"Version: [bold #f2ede1]{__version__}[/]",
-            f"Config: [#9c9689]{self.config_path}[/]",
+            f"Version: [bold #f2ede1]{escape(__version__)}[/]",
+            f"Config: [#9c9689]{escape(str(self.config_path))}[/]",
             f"Provider: {self._format_profile(profile)}",
-            f"Chat model: [bold #f2ede1]{self._chat_model_display()}[/]",
+            f"Chat model: [bold #f2ede1]{escape(self._chat_model_display())}[/]",
             f"Doctor: {doctor_status}",
-            f"Route adapter: [bold #f2ede1]{self.config.route_adapter}[/]",
+            f"Route adapter: [bold #f2ede1]{escape(self.config.route_adapter)}[/]",
         ]
-        await self._mount_event(OutputPanel("Status", "\n".join(lines)))
+        await self._mount_event(OutputPanel("Status", "\n".join(lines), body_markup=True))
 
     async def _show_doctor(self, _: str = "") -> None:
         self.doctor_result = await asyncio.to_thread(run_doctor, self.config_path)
@@ -89,7 +91,7 @@ class InfoCommandsMixin(TuiHostContract):
             "",
         ]
         summary.extend(format_doctor_item(item) for item in self.doctor_result.items)
-        await self._mount_event(OutputPanel("Doctor", "\n".join(summary)))
+        await self._mount_event(OutputPanel("Doctor", "\n".join(summary), body_markup=True))
 
     async def _show_providers(self, _: str = "") -> None:
         if not self.config.provider_profiles:
