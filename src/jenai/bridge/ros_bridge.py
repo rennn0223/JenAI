@@ -1220,6 +1220,7 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         return {
             "halted": True,
             "nav_canceled": canceled,
+            "nav_cancel_requested": bool(cancel_result.get("cancel_requested")),
             "active_nav_canceled": bool(cancel_result.get("active_goal_canceled")),
         }
 

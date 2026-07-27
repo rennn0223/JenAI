@@ -530,6 +530,57 @@ def test_daemon_halt_rule_halts_and_reports(tmp_path: Path, monkeypatch) -> None
     assert any("estop-battery" in s for s in statuses)
 
 
+def test_daemon_halt_unconfirmed_is_audited_as_failed(monkeypatch) -> None:
+    import asyncio
+
+    import jenai.daemon.runner as runner_module
+    from jenai.config.store import build_minimal_config
+    from jenai.daemon.engine import Decision
+    from jenai.tools.safety import HaltReceipt, NavigationCancelStatus
+
+    async def unconfirmed(_config, _bridge):
+        return HaltReceipt(
+            navigation_cancel_status=NavigationCancelStatus.UNCONFIRMED,
+            zero_velocity_delivered=True,
+            message=(
+                "Zero-velocity command published, but navigation cancellation was not "
+                "acknowledged. Motion stop was not independently observed."
+            ),
+        )
+
+    class Worker:
+        def preempt(self, reason: str) -> None:
+            self.reason = reason
+
+    class Audit:
+        def record(self, _event_type, _decision, *, status, summary=None) -> None:
+            self.status = status
+            self.summary = summary
+
+    monkeypatch.setattr(runner_module, "halt_robot_with_receipt", unconfirmed)
+    decision = Decision(
+        rule=_halt_rule(),
+        value=0.1,
+        fired=True,
+        reason="battery low",
+        halt=True,
+    )
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    worker = Worker()
+    audit = Audit()
+    statuses: list[str] = []
+
+    asyncio.run(
+        runner_module._execute_halt(config, object(), decision, worker, statuses.append, audit)
+    )
+
+    assert audit.status == "failed"
+    assert "not acknowledged" in audit.summary
+    assert "not acknowledged" in statuses[-1]
+
+
 def test_daemon_halt_failure_is_reported_not_silent(tmp_path: Path, monkeypatch) -> None:
     """If even the halt fails, the operator must hear it immediately."""
     import jenai.daemon.runner as runner_module
@@ -538,7 +589,7 @@ def test_daemon_halt_failure_is_reported_not_silent(tmp_path: Path, monkeypatch)
     async def broken_halt(config, bridge):
         raise BridgeError("halt pipe broke")
 
-    monkeypatch.setattr(runner_module, "halt_robot", broken_halt)
+    monkeypatch.setattr(runner_module, "halt_robot_with_receipt", broken_halt)
 
     import asyncio
     import contextlib

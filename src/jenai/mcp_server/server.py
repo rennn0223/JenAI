@@ -19,10 +19,20 @@ from jenai.capabilities import has_registered_capability
 from jenai.config.models import AppConfig
 from jenai.schemas import Location
 from jenai.state.audit import AuditStore
+from jenai.state.emergency_stop import (
+    begin_emergency_stop_run,
+    finish_emergency_stop_run,
+)
+from jenai.state.runs import RunStore
+from jenai.state.task_receipts import TaskReceiptStore
 from jenai.task_results import navigation_receipt_text
 from jenai.tools import ros2_core
 from jenai.tools.navigation_gateway import NavigationGateway
-from jenai.tools.safety import arm_watchdog, halt_robot
+from jenai.tools.safety import (
+    NavigationCancelStatus,
+    arm_watchdog,
+    halt_robot_with_receipt,
+)
 from jenai.tools.vision_core import VisionError, capture_and_analyze
 
 
@@ -35,11 +45,16 @@ class _ServerResources:
         self._bridge = RosBridgeClient()
         self._bridge_lock = asyncio.Lock()
         self._safety_registered = False
+        audit_store = AuditStore.best_effort(config_path.parent / "audit.sqlite3")
+        self.run_store = RunStore(
+            audit_store=audit_store,
+            receipt_store=TaskReceiptStore(config_path.parent / "reports" / "tasks"),
+        )
         self.navigation = NavigationGateway(
             config,
             get_bridge=self.bridge,
             config_path=config_path,
-            audit_store=AuditStore.best_effort(config_path.parent / "audit.sqlite3"),
+            audit_store=audit_store,
         )
 
     async def bridge(self) -> RosBridgeClient:
@@ -105,10 +120,28 @@ def _list_locations(resources: _ServerResources) -> str:
 
 
 async def _stop_robot(resources: _ServerResources) -> str:
+    run_store: RunStore | None = getattr(resources, "run_store", None)
+    handle = (
+        begin_emergency_stop_run(
+            run_store,
+            resources.config,
+            session_id="mcp",
+            user_input="stop_robot",
+        )
+        if run_store is not None
+        else None
+    )
     try:
         client = await resources.bridge()
-        return await halt_robot(resources.config, client)
+        receipt = await halt_robot_with_receipt(resources.config, client)
+        if handle is not None and run_store is not None:
+            finish_emergency_stop_run(run_store, handle, receipt=receipt)
+        if receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED:
+            return f"unconfirmed: {receipt.message}"
+        return receipt.message
     except BridgeError as exc:
+        if handle is not None and run_store is not None:
+            finish_emergency_stop_run(run_store, handle, error=exc)
         return f"unavailable: {exc}"
 
 

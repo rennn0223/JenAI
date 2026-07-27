@@ -1,7 +1,7 @@
 # EXPERIMENTS — 實驗 runbook(照抄就能跑)
 
 > 對象:客戶自跑、或任何接手的 session。每個實驗:指令 → 輸出在哪 → 數據回填到哪。
-> 環境鐵則(CLAUDE.md):跑 app/實驗的 shell 先 `source /opt/ros/jazzy/setup.bash`，
+> 環境鐵則(`AGENTS.md`):跑 app/實驗的 shell 先 `source /opt/ros/jazzy/setup.bash`，
 > 再 `source /home/nvidia/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash`，且**保留**
 > PYTHONPATH;只有單元測試才 `env -u PYTHONPATH uv run pytest`。
 

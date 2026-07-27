@@ -1,6 +1,6 @@
 # JenAI 測試手冊(TEST.md)
 
-> 對應版本:v2.5.0(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
+> 對應版本:v2.5.1(快照隨 release 更新)。所有可測項目(CLI / Slash / 對話)與期望輸出的總表,
 > 附本機(DGX Spark 工作機)實測現況快照。自動化測試見「自動化測試」節;
 > 其餘為手動驗收項目。
 
@@ -19,17 +19,19 @@
 | 環境 | 用途 | 結果 |
 |---|---|---|
 | `env -u PYTHONPATH uv run pytest` | **跑測試套件的唯一正確方式** | ROS 的 PYTHONPATH 會遮蔽 venv 依賴,必須 unset |
-| 依序 source `/opt/ros/jazzy/setup.bash` 與 `/home/nvidia/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash` 後直接 `uv run JenAI …`(保留 PYTHONPATH) | **跑 Isaac app 的正確方式** | ros2 CLI 與 Jazzy overlay 可用,doctor nav 區段誠實回報 |
-| 沒 source ROS | app 照跑(誠實降級) | doctor 報 `ros2_cli fail`,ROS 相關指令回報 unavailable,不假裝成功 |
+| 直接執行 `JenAI …`、`jenai …` 或 `uv run JenAI …` | **一般 app／Isaac 操作** | 程序在尚無可用 ROS 時自動載入 `/opt/ros/jazzy` 與預設 `jazzy_ws`；可用 `ROS_SETUP`／`ROS_WORKSPACE_SETUP` 覆寫，空 workspace 值代表停用 |
+| 未安裝 ROS，或刻意停用／指定不存在的 setup | 非 ROS 功能與誠實降級驗收 | app 照跑；doctor 回報 ROS unavailable，ROS 相關指令不假裝成功 |
+| 明確 source ROS 與 workspace | 直接使用 `ros2`、RViz2、Nav2 啟動與 HIL scripts | JenAI 不會修改父 shell，這些 shell 工具仍須自行 source |
 
-> 注意:source ROS 但 unset PYTHONPATH 是**壞組合** —— ros2 CLI 自己需要 ROS 的
-> PYTHONPATH,會 `ros2 --help exit 1`。
+> 注意：跑 pytest 時應 unset ROS 的 `PYTHONPATH`，但直接使用 `ros2` CLI 時不可 unset；
+> ROS Python 路徑是 CLI 本身的依賴。2026-07-26 已用刻意未 source 的乾淨環境啟動
+> `uv run JenAI`，Doctor 的 ROS／Nav2 區段全數通過，證明 app entry point 的自動載入有效。
 
 ## 自動化測試
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.5.0 完整測試通過；全部 `src/jenai` production code 採 mypy strict；v2.5.0 PR 的 Python 3.12／3.13／3.14、build、audit/SBOM 與 Release workflow 均已通過 |
+| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.5.1 本機 1,175 項完整測試、Ruff 與 mypy strict 已通過；全專案 branch coverage 79%，安全鏈 branch coverage 94%；Python 3.12／3.13／3.14、build 與 audit/SBOM 由 PR CI 再驗證；最近發布的 v2.5.0 Release workflow 已通過 |
 | Isaac HIL（人工啟動） | Actions → `Isaac HIL Acceptance`，或依 `docs/validation/ISAAC_HIL_ACCEPTANCE.md` 執行 | 一般 CI 絕不動車；精確確認後在 self-hosted runner 驗 route、Nav2 cancel acknowledgement、software halt、完整 scan metadata gate 與可選 Twin verdict。任一 motion 失敗即停止後續 goal，artifact 必含 `final_halt`／`bridge_shutdown`；畸形 wire 回應不得算成功。clean `d942130…855` 本機 artifact 已通過，Twin 同 domain 明記 skip；這不等於已產生 GitHub workflow artifact |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | 最小 `contents: read` 權限；同 ref 新 run 取消舊 run；`test` job（30 分鐘上限）以 Python 3.12／3.13／3.14 matrix 跑 ruff format/lint、全 production code mypy strict、pytest branch coverage（整體 76% 與安全鏈 90% 退步閘）；`build` job（20 分鐘上限）以 `uv build` + 全新 tool 環境驗 wheel lifecycle |
@@ -39,12 +41,16 @@
 | 稽核紀錄 | 自動化測試 + 執行任一 TUI run | `<config 目錄>/audit.sqlite3` 保存 run/approval/tool/gate 事件,重啟後仍在;最多 10,000 筆且不含 prompt/raw payload |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `artifacts/experiments/soak/soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 
-## 本機實測現況快照（更新至 2026-07-19，DGX Spark／Isaac Sim 倉庫場景）
+## 本機實測現況快照（更新至 2026-07-26，DGX Spark／Isaac Sim 倉庫場景）
 
 - **doctor**:ROS/Nav2/地圖／相機皆可用；同 domain 0 純模擬驗收時 `twin_isolation` 的警告／失敗屬預期,不得寫成隔離通過
 - **ROS graph**:Isaac Sim 倉庫場景(`/cmd_vel`=Twist、`/amcl_pose`、`/map`、`/scan`、
   `/front_stereo_camera/left/image_raw`、Nav2 全家 + docking_server)
 - **FullScan HIL（2026-07-19）**：clean `d942130…855`、JenAI 2.0.2；10/10 samples、362 bins/筆、57.0442% valid-finite，角寬／increment／geometry／range／scan_time／frame／timestamp gate 全通過；`map_left_down` 82.881 s、Dock 45.804 s，皆 0 recoveries；Nav2 cancel acknowledged=`true`、停止漂移 0.0000 m；overall `pass_with_skips`（Twin 同 domain 0）
+- **v2.5.1 候選正式 HIL（2026-07-26）**：dirty `81f935d…b05` 候選碼；安全 profile `xy=0.05 m`、`yaw=0.15 rad`、`min_vel_x=0.0`、`vtheta_samples=15`。`map_left_down` 為 0.039 m／0.143 rad，Dock 為 0.045 m／0.144 rad；Nav2 cancel acknowledged、停止漂移 0.0000 m、final halt 與 bridge shutdown 均通過，overall `pass_with_skips`。Twin 與 target 同 domain，故不宣稱隔離或 Twin verdict；此 dirty run 不取代 clean HIL-FS2。
+- **v2.5.1 AMCL profile 再驗證（2026-07-26）**：產品腳本載入 `alpha1..5=0.01`、`update_min_a/update_min_d=0.02` 後，`map_left_down` 為 0.047 m／0.145 rad，Dock 為 0.018 m／0.144 rad；Nav2 cancel acknowledged、停止漂移 0.0071 m、final halt 與 bridge shutdown 均通過，overall `pass_with_skips`。此前 0.21 m timeout、零 pose 計畫與 0.066 m post-stop 拒絕仍保留；此 dirty run 不取代 clean HIL-FS2，也不宣稱 Twin 隔離或實體 AMCL 校正。
+- **v2.5.1 PR 前重播（2026-07-26）**：從重新 Play 後的已知起點重啟 Nav2；`map_left_down` 85.911 s、有界重試後 0.032 m／0.143 rad，Dock 57.447 s、0.036 m／0.142 rad；cancel acknowledged、停止漂移 0.0031 m、final halt 與 bridge shutdown 均通過，overall `pass_with_skips`。Twin 同 domain 明記 skip；dirty run 不取代 clean HIL-FS2。
+- **v2.5.1 真實 TUI 驗收（2026-07-26）**：刻意未 source ROS 的環境可自動載入 Jazzy；`/doctor` 全通過；`/loc list` 列出五個地點且無 `no aliases`；自然語言唯讀檢查未移動；修正後 `/route` 批准卡顯示具名座標而非 Python dict；移動中 `/stop` 成功取消並送零速度；末輪 `/dock` 以停止後新鮮 TF 通過 0.046 m／0.090 rad；`/status` 為 Doctor pass，`/quit` 正常。這是受監督工程驗收，不是 clean-revision 成功率或實體安全證據。
 - **Hero 固定序列**：clean `cc6d217…f6e` 首次因 pose feed 暫失而 fail closed、0 goal sent；恢復後 `map_left_down`／Dock 交替 10 legs 為 10/10 succeeded（45.155–111.668 s、0–4 recoveries）。這不是 10 次自然語言或完整 demo。
 - **自然語言單-goal**：測試 TUI 以「請回到 dock」產生正確批准卡並 succeeded；Nav2 goal count 18→19，只新增 1 個 goal。執行時是 dirty patch、後續提交為 `d942130…855`，故只作互動補充。
 - **唯讀快速路徑（2026-07-22）**：v2.1.0 候選在同一 Isaac/Nav2 環境的單次受監督 TUI 工程檢查，以自然語言讀取位置、LaserScan 與 Nav2 readiness，5.120 秒完成、5/5 readiness 檢查通過，且明記未送出移動指令；此為單次工程觀察，不取代 E4 的延遲分布。混合「檢查後回 dock」要求仍進 Agent 並停在批准卡，Esc 拒絕後未移動。
@@ -77,7 +83,7 @@ patrol/explore/inspect 與報告已在 2026-07-17 以真實 Isaac Sim graph 逐�
    `ros_shutdown_tool_not_available`）→ SDK 誠實將 run 標為 failed，且在批准前
    不會致動；未知工具的有界重試仍是後續改善項目。
 5. 本機 qwen3.6:35b 的單一推理回合需數十秒至約兩分鐘，多工具導航會再疊加 Twin
-   Gate／Nav2 時間；Slash 指令不經 LLM。此延遲再次支持 LLM 只能位於高階層。
+   Gate／Nav2 時間；Slash 指令不經 LLM。此延遲再次支援 LLM 只能位於高階層。
 
 ---
 
@@ -85,7 +91,7 @@ patrol/explore/inspect 與報告已在 2026-07-17 以真實 Isaac Sim graph 逐�
 
 | 狀態 | 命令 | 期望輸出 |
 |---|---|---|
-| ✅ | `JenAI version` | `JenAI 2.5.0`(版本來自 package metadata,隨 release 走) |
+| ✅ | `JenAI version` | `JenAI 2.5.1`(版本來自 package metadata,隨 release 走) |
 | ✅ | `JenAI help` | 一頁總覽:CLI 命令表 + 一鍵常用範例(doctor → TUI /help → /route → /patrol → /stop)+ 文件指路 |
 | ✅ | `JenAI scaffold "<描述>"` | 自然語言生成 ROS2 套件:印出 plan → 確認 → 寫入;boilerplate 定死永遠可 build、node 主體 LLM 寫需審閱;拒絕覆蓋。實測:local qwen 生成 greeting_publisher 全樹 ✅ |
 | ✅ | `JenAI eval scenarios.example.toml` | 決策腦 E1 評測:各場景家族 accuracy / unsafe rate / refer rate 表格(`--json` 機器可讀、`-k` 重複取樣);越界動作與幻覺目的地一律降級 refer_to_human |

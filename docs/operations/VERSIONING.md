@@ -31,5 +31,5 @@ TUI 畫面排版。這些任何版本都可能改。
 
 ## Release 流程
 
-驗收標準見 CLAUDE.md(review → CI → 實測 → 注釋 → 結構 → 文件 → PR+merge+tag+release)。
+驗收標準見根目錄 `AGENTS.md`（review → CI → 實測 → 注釋 → 結構 → 文件 → PR+merge+tag+release）。
 tag `vX.Y.Z` 必須等於 pyproject `version`(release workflow 強制檢查)。

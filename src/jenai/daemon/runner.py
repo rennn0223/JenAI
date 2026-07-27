@@ -19,7 +19,11 @@ from jenai.state.audit import AuditStore
 from jenai.task_results import navigation_output_result, navigation_receipt_text
 from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.perception import PerceptionLoop
-from jenai.tools.safety import arm_watchdog, halt_robot
+from jenai.tools.safety import (
+    NavigationCancelStatus,
+    arm_watchdog,
+    halt_robot_with_receipt,
+)
 
 PERCEPTION_TOPIC = "@perception"  # rule.topic sentinel: trigger on camera VLM analyses
 logger = logging.getLogger(__name__)
@@ -217,8 +221,13 @@ async def _execute_halt(
 ) -> None:
     worker.preempt(f"preempted by halt rule '{decision.rule.name}'")
     try:
-        summary = await halt_robot(config, bridge)
-        status = "succeeded"
+        receipt = await halt_robot_with_receipt(config, bridge)
+        summary = receipt.message
+        status = (
+            "failed"
+            if receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED
+            else "succeeded"
+        )
     except BridgeError as exc:
         summary = f"halt failed — {exc}"
         status = "failed"

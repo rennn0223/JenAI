@@ -135,6 +135,20 @@ def _bridge_process_args(ros_setup: str, python: str) -> tuple[str, ...]:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class HaltEvidence:
+    """Validated sidecar publish and Nav2-cancellation evidence."""
+
+    zero_velocity_delivered: bool
+    navigation_cancel_requested: bool
+    navigation_cancel_acknowledged: bool
+
+    @property
+    def zero_velocity_command_published(self) -> bool:
+        """Canonical name for the legacy wire-level publish-completion flag."""
+        return self.zero_velocity_delivered
+
+
 @dataclass(frozen=True)
 class PoseInfo:
     x: float
@@ -853,21 +867,39 @@ class RosBridgeClient:
         result = await self.request("nav_cancel", timeout=5.0)
         return _require_bool(result, "canceled", "nav_cancel")
 
-    async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
-        """EMERGENCY STOP: cancel any Nav2 goal and pulse zero velocity.
-        Returns whether a navigation goal was canceled in the process."""
+    async def halt_with_evidence(
+        self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False
+    ) -> HaltEvidence:
+        """Cancel Nav2, publish zero-velocity pulses, and return validated evidence."""
         _require_nonempty_input("halt", "cmd_vel_topic", cmd_vel_topic)
         _require_bool_input("halt", "stamped", stamped)
         result = await self.request(
             "halt", timeout=8.0, params={"cmd_vel_topic": cmd_vel_topic, "stamped": stamped}
         )
         halted = _require_bool(result, "halted", "halt")
-        nav_canceled = _require_bool(result, "nav_canceled", "halt")
+        cancel_requested = _require_bool(result, "nav_cancel_requested", "halt")
+        cancel_acknowledged = _require_bool(result, "nav_canceled", "halt")
         if not halted:
             raise BridgeError(
-                "invalid halt response: sidecar did not confirm zero-velocity delivery"
+                "invalid halt response: sidecar did not confirm zero-velocity publication"
             )
-        return nav_canceled
+        if cancel_acknowledged and not cancel_requested:
+            raise BridgeError(
+                "invalid halt response: cancellation cannot be acknowledged when none was requested"
+            )
+        return HaltEvidence(
+            zero_velocity_delivered=True,
+            navigation_cancel_requested=cancel_requested,
+            navigation_cancel_acknowledged=cancel_acknowledged,
+        )
+
+    async def halt(self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False) -> bool:
+        """Compatibility facade returning whether Nav2 cancellation was acknowledged."""
+        evidence = await self.halt_with_evidence(
+            cmd_vel_topic=cmd_vel_topic,
+            stamped=stamped,
+        )
+        return evidence.navigation_cancel_acknowledged
 
     async def configure_safety(
         self,

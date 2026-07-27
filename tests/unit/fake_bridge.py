@@ -31,7 +31,17 @@ def main() -> None:
         if op == "ping":
             emit({"id": req_id, "ok": True, "result": {"pong": True}})
         elif op == "halt":
-            emit({"id": req_id, "ok": True, "result": {"halted": True, "nav_canceled": False}})
+            emit(
+                {
+                    "id": req_id,
+                    "ok": True,
+                    "result": {
+                        "halted": True,
+                        "nav_canceled": False,
+                        "nav_cancel_requested": False,
+                    },
+                }
+            )
         elif op == "watchdog":
             emit({"id": req_id, "ok": True, "result": {"watchdog_s": req.get("timeout", 0.0)}})
         elif op == "pose":

@@ -72,13 +72,20 @@ def parse_scene_analysis(parsed: Any, *, ts: float | None = None) -> SceneAnalys
     def _prose(value: object) -> str:
         return normalize_user_visible_text(str(value).strip(), "zh-TW")
 
+    scene_context = _prose(parsed.get("scene_context", ""))
+    objects = [_prose(item) for item in _as_list(parsed.get("objects"))]
+    affordances = [
+        item.strip().lower().replace(" ", "_") for item in _as_list(parsed.get("affordances"))
+    ]
+    suggested_action = _prose(parsed.get("suggested_action", ""))
+    if not any((scene_context, objects, affordances, suggested_action)):
+        return None
+
     return SceneAnalysis(
-        scene_context=_prose(parsed.get("scene_context", "")),
-        objects=[_prose(item) for item in _as_list(parsed.get("objects"))],
-        affordances=[
-            a.strip().lower().replace(" ", "_") for a in _as_list(parsed.get("affordances"))
-        ],
-        suggested_action=_prose(parsed.get("suggested_action", "")),
+        scene_context=scene_context,
+        objects=objects,
+        affordances=affordances,
+        suggested_action=suggested_action,
         confidence=confidence,
         requires_approval=requires,
         ts=time.time() if ts is None else ts,

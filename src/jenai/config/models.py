@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -72,11 +71,11 @@ class VehicleProfile(BaseModel):
     max_linear: float = Field(default=1.0, gt=0, allow_inf_nan=False)  # m/s
     max_angular: float = Field(default=2.0, gt=0, allow_inf_nan=False)  # rad/s
     # Nav2's action status only means "inside Nav2's configured goal checker".
-    # JenAI independently verifies the terminal pose against these limits
-    # before reporting success.  The conservative defaults preserve existing
-    # physical-robot behavior; simulation profiles can use 0.05 m / 0.15 rad.
-    arrival_position_tolerance_m: float = Field(default=0.25, gt=0, allow_inf_nan=False)
-    arrival_yaw_tolerance_rad: float = Field(default=0.25, gt=0, le=math.pi, allow_inf_nan=False)
+    # JenAI independently verifies the terminal pose against these strict
+    # product-level limits before reporting success. Profiles may tighten these
+    # values, but cannot weaken the independent completion contract.
+    arrival_position_tolerance_m: float = Field(default=0.05, gt=0, le=0.05, allow_inf_nan=False)
+    arrival_yaw_tolerance_rad: float = Field(default=0.15, gt=0, le=0.15, allow_inf_nan=False)
     # The deprecated odom direct-drive fallback must stop when localization
     # feedback freezes after its first sample; a global route timeout is far too
     # slow for that failure mode.
@@ -85,6 +84,13 @@ class VehicleProfile(BaseModel):
     # A stalled controller must fail closed instead of occupying the robot
     # indefinitely; site profiles may increase this for genuinely long routes.
     nav_timeout_s: float = Field(default=240.0, gt=0, allow_inf_nan=False)
+    # A close-range controller can remain just outside the final pose contract
+    # without returning a terminal Nav2 result. Detect that bounded stall, halt
+    # and cancel the old goal, then permit one shorter same-goal recovery attempt.
+    nav_endpoint_retry_limit: int = Field(default=1, ge=0, le=1)
+    nav_endpoint_stall_radius_m: float = Field(default=0.10, gt=0, le=0.25, allow_inf_nan=False)
+    nav_endpoint_stall_timeout_s: float = Field(default=20.0, gt=0, allow_inf_nan=False)
+    nav_endpoint_retry_timeout_s: float = Field(default=60.0, gt=0, allow_inf_nan=False)
     # Fail-closed AMCL discontinuity guard for Nav2 goals. A displacement over
     # this threshold between two samples no more than `pose_jump_window_s`
     # apart cancels navigation and pulses zero velocity. Five metres in two
@@ -109,6 +115,19 @@ class VehicleProfile(BaseModel):
         if not normalized:
             raise ValueError("robot_base_frame must not be blank")
         return normalized
+
+    @model_validator(mode="after")
+    def endpoint_retry_must_be_single_and_shorter(self) -> VehicleProfile:
+        """Keep endpoint recovery to one bounded attempt shorter than the route."""
+        if (
+            self.nav_endpoint_retry_limit
+            and self.nav_endpoint_retry_timeout_s >= self.nav_timeout_s
+        ):
+            raise ValueError(
+                "nav_endpoint_retry_timeout_s must be shorter than nav_timeout_s "
+                "when endpoint retry is enabled"
+            )
+        return self
 
 
 class AvoidanceProfile(BaseModel):

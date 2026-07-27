@@ -92,6 +92,7 @@ class EffectScope(StrEnum):
     READ = "read"
     LOCAL_WRITE = "local_write"
     SIM_CONTROL = "sim_control"
+    ROBOT_CONTROL = "robot_control"
     HOST_COMMAND = "host_command"
 
 

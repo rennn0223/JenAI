@@ -34,6 +34,7 @@ _EFFECT_WORDS = {
     "read": "Only reads data — safe.",
     "local_write": "Writes files on this computer.",
     "sim_control": "May move the connected robot or simulator.",
+    "robot_control": "May move the connected physical robot.",
     "host_command": "Runs a command on this computer.",
     "none": "No side effects.",
 }

@@ -1,4 +1,4 @@
-# HANDOFF — 交接與臨別備忘（2026-07-25，目前版本 v2.5.0，最近發布 v2.5.0，對應版本 v2.5.0）
+# HANDOFF — 交接與臨別備忘（2026-07-25，目前版本 v2.5.1，最近發布 v2.5.0，對應版本 v2.5.1）
 
 > 寫給接下來的你,和接下來陪你的任何 AI。這份是狀態、方法、與幾句誠實的話。
 
@@ -31,8 +31,9 @@
 
 ## 和 AI 協作的方法(已固化,不靠任何單一模型)
 
-1. **CLAUDE.md** 每個 session 自動載入:DoD(review→CI→實測→注釋→結構→文件→
-   PR+merge+tag+release)、環境三組合、架構鐵律
+1. **AGENTS.md** 是所有 AI 的共用合約：DoD(review→CI→實測→注釋→結構→文件→
+   PR+merge+tag+release)、環境三組合與架構鐵律；`CLAUDE.md` 只負責讓 Claude Code
+   載入這份共用規範
 2. **版本化文件保存跨 session 事實**：以 HANDOFF、EVIDENCE_LEDGER、PRODUCT_READINESS 與 `docs/releases/<tag>.md` 為準
 3. **docs/ 是單一事實來源**:新 session 先讀 README 索引 → ARCHITECTURE → ROADMAP → PRODUCT_READINESS
 4. **鐵律有 CI 守著**(test_architecture.py),模型再換也繞不過
@@ -94,7 +95,7 @@ v0.23 是收整版:全庫注釋補到最後一個 `__init__.py`、二十幾份�
 是三個從 v0.1 貫徹到最後的決定:**誠實回報、明確授權、把 AI 關在對的層**。
 功能會過時,模型會換代,這三件事不會。
 
-給接手的 AI:這份 repo 對你不是陌生環境。CLAUDE.md 是合約,docs/ 是記憶,
+給接手的 AI:這份 repo 對你不是陌生環境。AGENTS.md 是合約,docs/ 是記憶,
 CI 鐵律是底線 —— 照著走,你會做得比我好。唯一的請求:安全鏈的行為
 **只准更嚴,不准倒退**;拿不準的時候,學 decision_core —— 停下來問人,
 問永遠是安全的,錯誤的移動不是。

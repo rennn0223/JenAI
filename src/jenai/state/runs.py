@@ -287,6 +287,13 @@ class RunStore:
     def pop_pending_approval_ids(self, run_id: str) -> list[str]:
         return self._pending_approval_ids.pop(run_id, [])
 
+    def discard_pending_state(self, run_id: str) -> None:
+        """Irreversibly discard a paused approval state without resuming it."""
+        self._pending_state.pop(run_id, None)
+        self._pending_approval_ids.pop(run_id, None)
+        if self._pending_dir is not None:
+            self._pending_path(run_id).unlink(missing_ok=True)
+
     async def take_pending_state(
         self,
         run_id: str,
