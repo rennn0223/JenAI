@@ -36,7 +36,11 @@ def should_default_to_reject(approval: ApprovalRequest) -> bool:
     return (
         str(approval.risk_level) == str(RiskLevel.P2)
         or str(approval.effect_scope) == str(EffectScope.HOST_COMMAND)
-        or str(approval.effect_scope) == str(EffectScope.SIM_CONTROL)
+        or str(approval.effect_scope)
+        in {
+            str(EffectScope.SIM_CONTROL),
+            str(EffectScope.ROBOT_CONTROL),
+        }
     )
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from jenai.config.store import build_minimal_config
 from jenai.daemon.engine import Rule, RuleEngine
 from jenai.schemas import SceneAnalysis
@@ -60,8 +62,26 @@ def test_parse_scene_analysis_degrades_safely() -> None:
     assert parse_scene_analysis(None) is None
     assert parse_scene_analysis("not a dict") is None
 
-    clamped = parse_scene_analysis({"confidence": 7})
+    clamped = parse_scene_analysis({"scene_context": "hallway", "confidence": 7})
+    assert clamped is not None
     assert clamped.confidence == 1.0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"confidence": 0.9, "requires_approval": False},
+        {
+            "scene_context": " ",
+            "objects": [],
+            "affordances": [""],
+            "suggested_action": "",
+        },
+    ],
+)
+def test_parse_scene_analysis_rejects_empty_semantic_evidence(payload: dict) -> None:
+    assert parse_scene_analysis(payload) is None
 
 
 def test_parse_scene_analysis_normalizes_prose_but_preserves_affordance_ids() -> None:
@@ -227,5 +247,38 @@ def test_perception_loop_reports_errors_once_per_streak(monkeypatch, tmp_path: P
 
         assert len(statuses) == 1  # one report per failure streak, not per tick
         assert "camera unavailable" in statuses[0]
+
+    asyncio.run(run())
+
+
+def test_perception_loop_does_not_count_empty_model_reply_as_a_frame(
+    monkeypatch, tmp_path: Path
+) -> None:
+    frame = tmp_path / "frame.png"
+
+    class FakeBridge:
+        async def capture_frame(self, topic, timeout=5.0):
+            frame.write_bytes(b"fake")
+            return frame
+
+    async def empty_vision(config, prompt, data_url, *, binding="vision"):
+        return {}
+
+    monkeypatch.setattr("jenai.tools.perception.ask_vision_json", empty_vision)
+
+    async def run() -> None:
+        statuses: list[str] = []
+
+        async def on_status(message: str) -> None:
+            statuses.append(message)
+
+        loop = PerceptionLoop(_config(), FakeBridge(), topic="/rgb", hz=20.0, on_status=on_status)
+        await loop.start()
+        await asyncio.sleep(0.2)
+        await loop.stop()
+
+        assert loop.frames == 0
+        assert loop.latest is None
+        assert statuses == ["perception: vision model returned no structured analysis"]
 
     asyncio.run(run())

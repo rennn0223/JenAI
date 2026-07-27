@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v2.5.0(2026-07)。架構單一事實來源見 [ARCHITECTURE.md](ARCHITECTURE.md)，前瞻主圖見 [ROADMAP.md](product/ROADMAP.md)；逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v2.5.1(2026-07)。架構單一事實來源見 [ARCHITECTURE.md](ARCHITECTURE.md)，前瞻主圖見 [ROADMAP.md](product/ROADMAP.md)；逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 
@@ -49,14 +49,18 @@ printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.confi
 # 4) 地點檔(路徑導航用;也可以之後在 TUI 裡 /loc add here 現場建)
 cp locations.example.toml ~/.config/jenai/locations.toml   # 再編輯座標
 
-# 5) 一鍵啟動器（自動 source ROS2 Jazzy 與 Isaac ROS jazzy_ws）
-ln -sf "$PWD/scripts/jenai" ~/.local/bin/jenai
-
-# 6) 驗收
-jenai doctor        # 每一項應為 pass/warn,不該有意外的 fail
+# 5) 驗收；正式 entry point 會在需要時自動載入 ROS2 Jazzy 與 Isaac ROS jazzy_ws
+uv run JenAI doctor # 每一項應為 pass/warn，不該有意外的 fail
 ```
 
 `~/.config/jenai/` 下的檔案:`config.toml`(provider/model/route_adapter)、`.env`(金鑰)、`locations.toml`(地點)、`rules.toml`(daemon 規則,選配)、`sessions/`(對話狀態)。路徑解析尊重 `JENAI_CONFIG`、`XDG_CONFIG_HOME`、`APPDATA`。
+
+`JenAI`、`jenai` 與 `uv run JenAI` 會在程序內自動載入 ROS 環境；預設為
+`/opt/ros/jazzy/setup.bash` 與 `$HOME/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash`。
+可用 `ROS_SETUP`、`ROS_WORKSPACE_SETUP` 覆寫；空的 `ROS_WORKSPACE_SETUP` 代表刻意停用
+workspace。若父 shell 已有可用的其他 ROS 發行版，JenAI 不會強制覆寫。這項自動載入只
+影響 JenAI 子程序；直接操作 `ros2`、RViz2 或 HIL script 的 shell 仍須自行 source。
+不要為已安裝的 wheel 再建立同名 symlink；`scripts/jenai` 僅是 source checkout 的開發便利工具。
 
 ### 2.3 設定檔重點
 
@@ -79,21 +83,40 @@ vision = "qwen3.6:35b"             # 要挑有 vision capability 的模型;pin �
 
 [vehicle]                          # 載具差異唯一的家(v0.7+)
 type = "ackermann"                 # ackermann | diff | quadruped
+robot_base_frame = "base_link"      # 停車後終點複核使用的 TF 車體 frame
 cmd_vel_topic = "/cmd_vel"
 cmd_vel_stamped = false            # true 時發 TwistStamped
 camera_topic = "/camera/image_raw" # /vision camera、patrol photo、MCP camera_look 預設
 max_linear = 1.0                   # 執行期硬限速(m/s)——LLM/使用者給再大都會被夾住
 max_angular = 2.0                  # rad/s;安全預設,依實車再調(Leatherback:2.0/0.53)
-arrival_position_tolerance_m = 0.25 # Nav2 terminal pose 的 JenAI 二次核對上限
-arrival_yaw_tolerance_rad = 0.25    # Isaac 精準 profile:0.05 m / 0.15 rad
+arrival_position_tolerance_m = 0.05 # Nav2 terminal pose 的 JenAI 二次核對上限
+arrival_yaw_tolerance_rad = 0.15    # 產品預設:0.05 m / 0.15 rad
 odom_timeout_s = 1.0               # odom 逾時立即歸零；不沿用舊位姿繼續直驅
 nav_timeout_s = 240.0       # 單次 live Nav2 任務最長秒數；逾時會取消並送出零速度
+nav_endpoint_retry_limit = 1        # 僅在近端停滯且取消獲確認時重送一次
+nav_endpoint_stall_radius_m = 0.10  # 近端停滯偵測半徑
+nav_endpoint_stall_timeout_s = 20.0 # 半徑內無終態的上限秒數
+nav_endpoint_retry_timeout_s = 60.0 # 同目標恢復嘗試的期限
 ```
 
-NavigationGateway 不把 action status 當成幾何證據。bridge 會把 Nav2 feedback 的最後
-`current_pose` 放入 terminal event，`navigate_live` 再計算平面距離與 wrap-around yaw
-誤差；超過 Vehicle Profile 上限、frame 不一致、位姿缺失或非有限值都 fail closed 並
-送 halt。這讓「Nav2 的成功容差」與「產品對外宣告的到點精度」成為兩個明確邊界。
+Nav2 一鍵 profile 會把 `general_goal_checker.stateful` 固定為 `false`，使無法原地旋轉的
+底盤在對齊朝向時持續重驗 XY；若設為 `true`，車輛曾進入位置容差後再次駛離仍可能
+被 Nav2 判成功。Nova Carter 模擬 profile 同時套用 AMCL `alpha1..5=0.01` 與
+`update_min_a/update_min_d=0.02`；前者描述里程計模型雜訊，後者讓小幅末端位移與旋轉也能
+觸發濾波更新。這組值只屬 Isaac Sim 固定場景，實體平台必須依輪滑、感測器與里程計誤差
+重新量測，不得照抄。
+
+測試時不必無條件重播 Isaac Sim。若車輛未卡牆、定位仍收斂、沒有未清除的活動 goal，
+可先 `/dock`，再執行 `./scripts/isaac_nav2.sh restart` 建立乾淨 Nav2 工作階段。只有卡牆、
+模擬時間重置、取消未確認、定位明顯漂移，或正式測試要求從固定 Dock 基準開始時，才需要
+Stop／Play；profile 變更後則一律完整重啟 Nav2。
+
+NavigationGateway 不把 action status 當成幾何證據。`navigate_live` 在 Nav2 成功後
+重新取得停止後的新鮮 TF，再計算平面距離與 wrap-around yaw 誤差；超過 Vehicle Profile
+上限、frame 不一致、位姿缺失或非有限值都 fail closed 並送 halt。若 action 在近端持續
+沒有終態，只有舊 goal 的 halt 已送達且 Nav2 取消獲確認時，才可有限重送同一目標；重送
+不會放寬 0.05 m／0.15 rad 的產品完成契約。這讓「Nav2 的成功容差」與「產品對外宣告的
+到點精度」成為兩個明確邊界。
 
 ## 3. 日常使用
 
@@ -213,7 +236,8 @@ jenai daemon                                        # Ctrl-C 停止
 | `tools/decision_core.py` | **M6 決策腦**(v0.21):`ContextSnapshot`(六欄位情境快照)→ 單次 `ask_json` 於封閉動作集單選 `Decision`;越界動作/幻覺目的地/解析失敗一律降級 refer_to_human,無自由文字可達致動 |
 | `tools/decision_eval.py` | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate;標註 `action:target` 綁定目標、gold 優先於 unsafe、未知動作名 fail-loud(論文工具鏈) |
 | `tools/user_skills.py` | **檔案定義技能**(v0.20):`skills/*.toml` → 新 slash 指令;與內建指令同一張批准卡;保留字拒載 |
-| `tools/safety.py` | `halt_robot`/`arm_watchdog`——急停語意的唯一出處,四介面共用 |
+| `tools/safety.py` | provider-free `HaltReceipt`／`halt_robot`／`arm_watchdog`；區分命令發布、Nav2 取消確認與尚未觀察車體停止 |
+| `tools/emergency_stop.py` | 保守急停意圖辨識與 cancel-and-zero 工作流程，不依賴 LLM provider 或 Agent SDK |
 | `tools/navigation_gateway.py` | **NavigationGateway(v0.25)**:所有導航的唯一出口——CLI/TUI/WebUI/MCP/daemon/任務/agent 工具全部經此;Twin Gate 與 watchdog 政策無法被直呼 route 執行繞過 |
 | `twin/gate.py` | **Twin Gate**:G1 碰撞/G2 逾時/G3 禁區/G4 終點偏差/G5 規劃失敗 → pass/block/refer;非有限 pose 不算有效樣本、缺孿生遙測回 refer(fail-closed) |
 | `state/`(runs/audit/reports/task_receipts/history/session) | run 記錄、SQLite audit（run/批准/工具/Gate/daemon event）、每個終止 TUI run 的原子 JSON task receipt（耗時、工具、批准、結果、標準失敗代碼）、巡邏報告與輸入歷史。audit 不落盤 prompt/raw payload；task receipt 是本機操作報告，依 data lifecycle 管理 |
@@ -249,9 +273,9 @@ jenai daemon                                        # Ctrl-C 停止
 
 **佔位符防呆。** 指令面板補完的 `<name|number>` 模板原文送出會被擋(曾把字面佔位符存成 model binding 弄壞 config)。
 
-**安全鏈是分層的(v0.7+)。** 依時間尺度由快到慢:①bridge watchdog(client 斷線/卡死 → 自主停車,不依賴任何上層)→ ②急停(四介面一鍵,免批准可搶佔,語意統一在 `tools/safety.py`)→ ③執行期硬限速(`[vehicle]`,LLM 給再大也夾住)→ ④HITL 批准卡(意圖層)→ ⑤daemon 明確授權。**LLM 永不進即時迴路**;載具差異只准活在 `[vehicle]`。
+**安全鏈是分層的(v0.7+)。** 依時間尺度由快到慢:①bridge watchdog(client 斷線/卡死 → 自主停車,不依賴任何上層)→ ②急停(四介面一鍵,免批准可搶佔,執行原語在 `tools/safety.py`，意圖與工作流程在 `tools/emergency_stop.py`)→ ③執行期硬限速(`[vehicle]`,LLM 給再大也夾住)→ ④HITL 批准卡(意圖層)→ ⑤daemon 明確授權。**LLM 永不進即時迴路**;載具差異只准活在 `[vehicle]`。
 
-**調度只寫一次。** 所有表面先進 `NavigationGateway`,再由 `navigate_with_fallback` 套用 Twin Gate、watchdog 與 live bridge；Bridge 啟動、協定、wire request/response 驗證或 watchdog 任一失敗即拒絕 goal，不存在無監督 CLI 後備。client 與 system-Python sidecar 都驗證致動參數，避免直接 JSON 呼叫繞過上層設定模型。人工 HIL 任一 motion check 失敗後也會停止後續 goal，並把 final halt／bridge shutdown 寫入 artifact。架構測試禁止其他模組直呼 `route_execute`。同理:急停 = `safety.py`,相機→VLM = `capture_and_analyze`,locations 容錯載入 = `load_locations_tolerant`。
+**調度只寫一次。** 所有表面先進 `NavigationGateway`,再由 `navigate_with_fallback` 套用 Twin Gate、watchdog 與 live bridge；Bridge 啟動、協定、wire request/response 驗證或 watchdog 任一失敗即拒絕 goal，不存在無監督 CLI 後備。client 與 system-Python sidecar 都驗證致動參數，避免直接 JSON 呼叫繞過上層設定模型。人工 HIL 任一 motion check 失敗後也會停止後續 goal，並把 final halt／bridge shutdown 寫入 artifact。架構測試禁止其他模組直呼 `route_execute`。同理:急停 = `safety.py` + `emergency_stop.py`,相機→VLM = `capture_and_analyze`,locations 容錯載入 = `load_locations_tolerant`。
 
 ### 4.4 測試與 CI
 
@@ -264,7 +288,7 @@ uv run pytest --cov=jenai --cov-branch
 ```
 
 - **目前工作樹基準**:全專案 branch coverage 79%（門檻 76%）、安全鏈 branch coverage 94%（門檻 90%）；Ruff format/lint 與全部 `src/jenai` production code 的 mypy strict 均通過。`ros_bridge.py` 的 rclpy 接線不假裝由無 ROS 的 hosted CI 覆蓋，另由人工 self-hosted Isaac HIL 驗收。精確測試數以當次 CI summary 為準；發布證據仍以該 tag 的 GitHub Actions run 為準，不能用本機結果冒充 release 證明。
-- **真實 TUI 驗收**:[TUI_LIVE_ACCEPTANCE_2026-07-17.md](validation/TUI_LIVE_ACCEPTANCE_2026-07-17.md) 記錄 Isaac Sim/Nav2 的 ROS introspection、有限時致動、stop、vision/perception、patrol、Slash/NL explore 與四角 inspect。該紀錄是描述性系統驗收，不代替實體安全或使用者效率實驗。
+- **真實 TUI 驗收**:[TUI_LIVE_ACCEPTANCE_2026-07-17.md](validation/TUI_LIVE_ACCEPTANCE_2026-07-17.md) 記錄早期完整功能面；[TUI_LIVE_ACCEPTANCE_2026-07-26.md](validation/TUI_LIVE_ACCEPTANCE_2026-07-26.md) 補充 v2.5.1 的自動 ROS 載入、Doctor、自然語言唯讀、可讀批准卡、移動中 stop 與精準 Dock。兩者都是描述性工程驗收，不代替 clean-revision 正式 HIL、實體安全或使用者效率實驗。
 - **CI**(`.github/workflows/ci.yml`):ubuntu-latest、無 ROS —— 測試設計成不依賴 ROS(bridge 用 `tests/unit/fake_bridge.py` 這個純 stdlib 假程序講同一套協定)。兩個 job:`test` 以 Python 3.12／3.13／3.14 matrix 跑 Ruff format/lint、mypy strict 與 pytest branch coverage（整體 `fail-under=76`、安全鏈 `fail-under=90`）、`build`(`uv build` + 全新 tool 環境裝 wheel 跑 lifecycle smoke,抓漏列的依賴)。架構鐵律由 `tests/unit/test_architecture.py` 進 CI 防護：所有導航必經 gateway，且任何函式超過 120 行都會失敗，目前無白名單。直接依賴同時有最低版與下一個未審核主版本上限，release 仍另輸出精確 constraints。
 - **Release**(`.github/workflows/release.yml`):兩個入口共用 tag／pyproject 一致、完整 lint／測試／安全 coverage、dependency audit、重現性 build、敏感檔掃描、constraints、SBOM、checksum 與隔離 wheel lifecycle 閘；public repository 另強制 build provenance 與 SBOM attestations。推 `vX.Y.Z` tag 只建立草稿；`workflow_dispatch` 建新 tag 時只接受 fetched `origin/main` 的精確 commit，並以 `docs/releases/<tag>.md` 發布。既有 tag recovery 必須從同一 tag ref 觸發，且只可覆寫尚未發布的 draft；published release 永不可變更，必須升版。
 - **TUI 測試**:Textual `app.run_test()` + `handle_user_text()`;導航測試 patch `NavigationGateway.execute`,以安全入口為邊界

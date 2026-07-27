@@ -86,11 +86,11 @@ metadata gate，不能用來宣稱現行 gate 已通過。它保留為歷史樣�
 
 ## 主張邊界
 
-本紀錄支持：在所記錄的 Isaac Sim、地圖、點位與 commit 組合中，JenAI 能經 production
+本紀錄支援：在所記錄的 Isaac Sim、地圖、點位與 commit 組合中，JenAI 能經 production
 navigation path 完成 Nav2 高階 route；最終 runner 能在送 goal 前拒絕低品質 scan，並
 區分「Python task 已取消」與「Nav2 已確認取消」。Hero 序列補充 10 個固定 route legs 的
 完成結果；自然語言樣本補充一次有監督的解析—批准—執行—回授鏈。
 
-本紀錄不支持：實體 Ackermann 車的路徑誤差、煞停距離或碰撞安全；虛實同時在線的通訊
+本紀錄不支援：實體 Ackermann 車的路徑誤差、煞停距離或碰撞安全；虛實同時在線的通訊
 隔離；不同運動學載具的物理泛化；未知地圖探索；自然語言成功率；事故率；或功能安全
 認證。這些仍須各自的實體 PoC、分離 ROS domain 驗收、使用者研究或預先定義的重複實驗。

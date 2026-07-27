@@ -142,6 +142,57 @@ def test_navigate_to_refuses_concurrent_goals(tmp_path: Path, monkeypatch) -> No
     asyncio.run(run())
 
 
+def test_mcp_stop_labels_unconfirmed_navigation_cancel(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from jenai.mcp_server import server as server_module
+    from jenai.state.audit import AuditStore
+    from jenai.state.runs import RunStore
+    from jenai.state.task_receipts import TaskReceiptStore
+    from jenai.tools.safety import HaltReceipt, NavigationCancelStatus
+
+    config, config_path = _setup(tmp_path)
+
+    async def bridge():
+        return object()
+
+    async def unconfirmed(_config, _bridge):
+        return HaltReceipt(
+            navigation_cancel_status=NavigationCancelStatus.UNCONFIRMED,
+            zero_velocity_delivered=True,
+            message=(
+                "Zero-velocity command published, but navigation cancellation was not "
+                "acknowledged. Motion stop was not independently observed."
+            ),
+        )
+
+    monkeypatch.setattr(server_module, "halt_robot_with_receipt", unconfirmed)
+    audit = AuditStore(tmp_path / "audit.sqlite3")
+    run_store = RunStore(
+        audit_store=audit,
+        receipt_store=TaskReceiptStore(tmp_path / "reports" / "tasks"),
+    )
+    resources = SimpleNamespace(
+        config=config,
+        config_path=config_path,
+        bridge=bridge,
+        run_store=run_store,
+    )
+
+    result = asyncio.run(server_module._stop_robot(resources))
+
+    assert result.startswith("unconfirmed:")
+    assert "not acknowledged" in result
+    run = run_store.list_runs()[0]
+    assert run.status == "completed"
+    assert run.outcome == "partial"
+    assert run.tool_calls[0].status == "failed"
+    assert run.tool_calls[0].raw_output["zero_velocity_command_published"] is True
+    assert run.tool_calls[0].raw_output["motion_stop_observed"] is None
+    assert len(list((tmp_path / "reports" / "tasks").glob("task-*.json"))) == 1
+    assert any(event.event_type == "run_finished" for event in audit.list_events())
+
+
 def test_stop_tool_is_always_available(tmp_path: Path) -> None:
     # Stopping is always safe — the tool exists even on read-only servers.
     config, config_path = _setup(tmp_path)

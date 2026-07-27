@@ -25,6 +25,7 @@ from jenai.agent.instructions import CHAT_INSTRUCTIONS
 from jenai.agent.intent_routing import RunAgentRoute, route_run_request
 from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
+from jenai.capabilities import has_registered_capability
 from jenai.capability_reporting import is_capability_card_request
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.language import (
@@ -321,10 +322,10 @@ class JenAITuiApp(
         command = value.split()[0].lower()
         # Recognize any spelling of the stop command ('/STOP', '/stop now'):
         # in an emergency the operator must not need the exact five characters.
-        is_stop = command == "/stop"
+        is_stop = command == "/stop" or orchestrator.is_emergency_stop_request(value)
         is_abort = command == "/abort"
         is_queue_command = command == "/queue"
-        if is_stop:
+        if command == "/stop":
             value = "/stop"
         active_task = self._active_task
         active = active_task is not None and not active_task.done()
@@ -336,19 +337,10 @@ class JenAITuiApp(
             return
 
         if is_stop:
-            # Never run old intent after an emergency stop. Stop preempts the
-            # active command and invalidates everything that was queued behind it.
-            cleared = len(self._command_queue)
-            self._command_queue.clear()
-            predecessor = active_task if active else None
-            # The stop task sends an immediate bridge halt before cancelling the
-            # predecessor, then waits for reap and sends a final halt. Replacing
-            # the active slot here also makes Esc unable to cancel that sequence.
-            if cleared:
-                await self._mount_event(
-                    TimelineItem("warn", f"Emergency stop cleared {cleared} queued command(s).")
-                )
-            self._start_user_submission(value, is_stop=True, predecessor=predecessor)
+            await self._preempt_for_emergency_stop(
+                value,
+                predecessor=active_task if active else None,
+            )
             return
 
         if is_abort and active:
@@ -372,6 +364,31 @@ class JenAITuiApp(
 
         self._start_user_submission(value)
 
+    async def _preempt_for_emergency_stop(
+        self,
+        value: str,
+        *,
+        predecessor: asyncio.Task[None] | None,
+    ) -> None:
+        """Invalidate queued and approval-paused intent before stopping."""
+        cleared = len(self._command_queue)
+        self._command_queue.clear()
+        rejected = await self._reject_pending_approvals_for_emergency_stop()
+        if cleared:
+            await self._mount_event(
+                TimelineItem("warn", f"Emergency stop cleared {cleared} queued command(s).")
+            )
+        if rejected:
+            await self._mount_event(
+                TimelineItem(
+                    "warn",
+                    f"Emergency stop rejected {rejected} pending approval(s).",
+                )
+            )
+        # The stop task sends an immediate halt before cancelling the predecessor,
+        # waits for it to unwind, then sends a final halt.
+        self._start_user_submission(value, is_stop=True, predecessor=predecessor)
+
     def _start_user_submission(
         self,
         value: str,
@@ -379,7 +396,9 @@ class JenAITuiApp(
         is_stop: bool = False,
         predecessor: asyncio.Task[None] | None = None,
     ) -> None:
-        self._active_task = asyncio.create_task(self._run_user_text(value, predecessor=predecessor))
+        self._active_task = asyncio.create_task(
+            self._run_user_text(value, predecessor=predecessor, is_stop=is_stop)
+        )
         self._active_task_is_stop = is_stop
         self._update_statusbar()
 
@@ -422,6 +441,7 @@ class JenAITuiApp(
         value: str,
         *,
         predecessor: asyncio.Task[None] | None = None,
+        is_stop: bool = False,
     ) -> None:
         """Run one submission with a working spinner; cancellable via Esc."""
         self._start_spinner(self._spinner_label_for(value))
@@ -430,7 +450,7 @@ class JenAITuiApp(
                 # Stop in two phases: brake immediately while the old action is
                 # still known, then cancel/kill/reap it, then handle /stop once
                 # more for a final zero after no stale publisher can reactivate.
-                if value == "/stop":
+                if is_stop:
                     try:
                         await self._halt_before_cancel()
                     except Exception as exc:
@@ -572,13 +592,17 @@ class JenAITuiApp(
         """Route one natural-language turn without mixing command dispatch policy."""
         self._scroll_to_bottom()
         try:
-            if is_capability_card_request(value):
+            if orchestrator.is_emergency_stop_request(value):
+                await self._show_emergency_stop(value)
+            elif is_capability_card_request(value):
                 await self._show_capability_card(value)
             elif is_casual_greeting(value):
                 await self._stream_chat_reply(value)
             elif self._mode == "plan":
                 await self._show_plan(value)
-            elif orchestrator.is_read_only_state_request(value):
+            elif orchestrator.is_read_only_state_request(value) and has_registered_capability(
+                self.config, "inspect_state"
+            ):
                 await self._show_state_inspection(value)
             elif route_run_request(value) is RunAgentRoute.AREA_PATROL:
                 # A compound coverage mission may mention its final dock/home.
@@ -961,6 +985,14 @@ class JenAITuiApp(
         ctx = self._new_run_context(arg)
         self._scroll_to_bottom()
         run = await self._run_with_agent_progress(ctx, orchestrator.start_read_only_state_run(ctx))
+        await self._render_run_update(ctx, run)
+
+    async def _show_emergency_stop(self, arg: str) -> None:
+        """Immediate natural-language stop using the recorded safety reflex."""
+
+        ctx = self._new_run_context(arg)
+        self._scroll_to_bottom()
+        run = await self._run_with_agent_progress(ctx, orchestrator.start_emergency_stop_run(ctx))
         await self._render_run_update(ctx, run)
 
     async def _show_why(self, _: str = "") -> None:

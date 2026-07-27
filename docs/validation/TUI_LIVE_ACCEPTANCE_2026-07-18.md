@@ -39,8 +39,8 @@ turn 只在 session 末端確實未由 assistant 收尾時追加誠實 marker，
 
 ## 證據邊界
 
-- 支持：follow-up 導航工具 fallback、批准／拒絕、Esc 中斷與 session 誠實收尾。
-- 不支持：Hero demo ≥9/10、成功導航路線、Twin 通訊隔離、實體安全或跨載具泛化。
+- 支援：follow-up 導航工具 fallback、批准／拒絕、Esc 中斷與 session 誠實收尾。
+- 不支援：Hero demo ≥9/10、成功導航路線、Twin 通訊隔離、實體安全或跨載具泛化。
 - SALES-1 與 ENG-2 維持 `PARTIAL`，直到 Reset 後在固定 commit／模型／場景保存完整 artifact。
 
 ## 本機 artifact

@@ -26,6 +26,8 @@
 | 文件 | 用途 |
 |---|---|
 | [ARCHITECTURE](ARCHITECTURE.md) | 現行產品邊界、模組責任、主要 seam 與依賴規則；架構單一事實來源 |
+| [CURRENT_WORKFLOW](workflow/CURRENT_WORKFLOW.md) | 啟動、TUI、批准、Capability、ROS/Nav2、HIL、ownership 與錯誤流程 |
+| [CURRENT_ISAAC_TUI_RUNBOOK](operations/CURRENT_ISAAC_TUI_RUNBOOK.md) | DGX Spark 上真 TUI＋Isaac Sim 的逐步操作、ownership、Replay 判斷與證據收尾 |
 | [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md) | 現行架構、建置、設定、模組與擴充方式；開發者主指南 |
 | [CODE_TOUR](CODE_TOUR.md) | 逐目錄與逐檔閱讀路徑 |
 | [ROADMAP](product/ROADMAP.md) | 演進軌道、技術債、里程碑與風險 |
@@ -46,6 +48,7 @@
 | [EXPERIMENTS](validation/EXPERIMENTS.md) | E1–E4、HIL、B4 與 soak runbook |
 | [USABILITY_STUDY](validation/USABILITY_STUDY.md) | 手動 ROS 2、Slash、自然語言的使用者研究流程 |
 | [EVIDENCE_LEDGER](validation/EVIDENCE_LEDGER.md) | 正式數字、artifact 雜湊與不可延伸主張 |
+| [WORKFLOW_EVIDENCE_MATRIX](validation/WORKFLOW_EVIDENCE_MATRIX.md) | Runtime Workflow 主張對應的實作、測試、live 證據與缺口 |
 | [QUALITY_REVIEW_2026-07-25](product/QUALITY_REVIEW_2026-07-25.md) | Workflow-first 重構、品質門檻、Isaac 實測與剩餘風險 |
 | [SAFETY_CASE](validation/SAFETY_CASE.md) | 危害、防護層、驗證證據與殘餘風險 |
 | [THREAT_MODEL](validation/THREAT_MODEL.md) | WebUI、MCP、Shell 與部署信任邊界 |
@@ -68,4 +71,5 @@ git log --all -- docs/archive/design docs/product/PROJECT_DIRECTION.md docs/prod
 git show v2.4.0:docs/archive/design/ARCHITECTURE.md
 ```
 
-維護者的每次改動驗收合約見根目錄 `CLAUDE.md`。
+所有 AI 開發工具的共同規範與每次改動驗收合約見根目錄 `AGENTS.md`；
+`CLAUDE.md` 只保留 Claude Code 的角色補充。

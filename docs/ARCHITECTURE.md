@@ -1,6 +1,6 @@
 # JenAI Architecture
 
-> Current architecture for JenAI v2.5.0. This document is the source of truth for module
+> Current architecture for JenAI v2.5.1. This document is the source of truth for module
 > responsibilities and dependency direction. Historical v0.1 design drafts were removed from
 > the current tree and remain available through Git history.
 
@@ -163,6 +163,8 @@ acceptance, and release supply-chain checks.
 ## Where to read next
 
 - [TECHNICAL_GUIDE](TECHNICAL_GUIDE.md): installation, configuration, runtime details, extension
+- [CURRENT_WORKFLOW](workflow/CURRENT_WORKFLOW.md): startup, runtime, approval, ownership, HIL state
+  machine, error recovery, and replay policy
 - [CODE_TOUR](CODE_TOUR.md): code-reading path by module and execution trace
 - [ADR](adr/): accepted architectural decisions
 - [ROADMAP](product/ROADMAP.md): future work and remaining evidence gates

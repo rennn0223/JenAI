@@ -670,9 +670,11 @@ def test_bridge_halt_and_watchdog_roundtrip(fake_bridge) -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"halted": "true", "nav_canceled": False},
-        {"halted": True, "nav_canceled": "false"},
-        {"halted": False, "nav_canceled": False},
+        {"halted": "true", "nav_canceled": False, "nav_cancel_requested": False},
+        {"halted": True, "nav_canceled": "false", "nav_cancel_requested": False},
+        {"halted": False, "nav_canceled": False, "nav_cancel_requested": False},
+        {"halted": True, "nav_canceled": False, "nav_cancel_requested": "false"},
+        {"halted": True, "nav_canceled": True, "nav_cancel_requested": False},
         {"nav_canceled": False},
     ],
 )

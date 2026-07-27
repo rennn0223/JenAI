@@ -4,13 +4,13 @@
 > `Supported` 表示設計與自動化測試涵蓋，但部署端仍須驗收；`Experimental` 不可作
 > 採購或安全承諾；`Planned` 尚未完成。能啟動不等於能力已驗證。
 
-## 目前開發／現場環境指紋（2026-07-19）
+## 目前開發／現場環境指紋（2026-07-26）
 
 | 欄位 | 觀察值 | 證據邊界 |
 |---|---|---|
 | Host | NVIDIA DGX Spark、aarch64、Ubuntu 24.04.4 LTS | 本機即時觀察；不是過去所有實驗的回溯 metadata |
 | ROS | ROS 2 Jazzy（`/opt/ros/jazzy`）、Nav2 bringup 可解析 | RMW 未明式設定；舊實驗 artifact 未完整保存套件版本 |
-| Simulator | Isaac Sim 5.1.0-rc.19（local build）、RViz2 Carter navigation workspace | clean `d942130…855` 的 local HIL artifact 已保存完整 scan gate、route、acknowledged cancel／software halt；clean `cc6d217…f6e` 另有 10/10 固定 route legs。場景／map hash、10 次完整 demo 與 workflow artifact 尚未關閉 |
+| Simulator | Isaac Sim 5.1.0-rc.19（local build）、RViz2 Carter navigation workspace | clean `d942130…855` 仍是正式主 HIL；2026-07-26 dirty `81f935d…b05` 候選另以 0.05 m／0.15 rad 契約通過兩條 route、acknowledged cancel／software halt。Twin 同 domain 明記 skip；場景／map hash、10 次完整 demo 與 separated-domain Twin 尚未關閉 |
 | Domain | 當前 shell 預設 ROS_DOMAIN_ID 0 | 純模擬可驗功能但不提供實體隔離；Twin 正式 gate 需不同 domain |
 | Model | Ollama `qwen3.6:35b` | 完整 model digest 未封存，不宣稱跨重拉位元可重現 |
 
@@ -44,7 +44,7 @@
 | Local model | Ollama + `qwen3.6:35b` | Supported | DGX Spark TUI/E3/E4；缺完整 digest，正式新實驗必須封存 |
 | Cloud model | NVIDIA OpenAI-compatible endpoint | Supported | provider abstraction/config 測試；資料會離開本機，見 SECURITY |
 | Other provider | Custom OpenAI-compatible base URL/model | Experimental | API 相容不代表工具呼叫品質相同；需跑 E1/E3 |
-| TUI | Local terminal | Supported | 主要操作面；responsive tests 與使用者接受的 120×30／80×30 樣本已保存，FullScan HIL 執行鏈另有正式 artifact；非維護者 fresh-machine 可用性研究仍待完成 |
+| TUI | Local terminal | Supported | 主要操作面；2026-07-26 已從未 source ROS 的環境驗證自動載入、Doctor、自然語言唯讀、可讀批准卡、移動中 stop 與 Dock。該次為 dirty 工程驗收且無不可變 transcript；非維護者 fresh-machine 可用性研究仍待完成 |
 | WebUI | localhost／isolated LAN | Supported | token auth；不得直接公開到 internet |
 | MCP | stdio、read-only by default | Supported | action tools 必須明確 `--allow-actions` |
 

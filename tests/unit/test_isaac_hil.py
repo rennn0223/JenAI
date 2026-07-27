@@ -22,9 +22,9 @@ from jenai.acceptance.isaac_hil import (
     _source_state,
     run_isaac_hil,
 )
-from jenai.bridge import MapCellInfo, NavPlanInfo
+from jenai.bridge import HaltEvidence, MapCellInfo, NavPlanInfo
 from jenai.config.models import AppConfig, ForbiddenZone, TwinProfile
-from jenai.schemas import Location, Pose2D
+from jenai.schemas import Location, NavigationAttemptEvidence, Pose2D, RouteOutput
 from jenai.tools.nav_live import NavigationCancelled
 
 
@@ -239,8 +239,8 @@ def test_cancel_and_stop_requires_nav2_acknowledgement_even_with_zero_drift(
         async def get_pose(self, timeout=3.0):
             return SimpleNamespace(x=1.0, y=2.0, yaw=0.0, frame_id="map", source="/amcl_pose")
 
-        async def halt(self, **_kwargs):
-            return True
+        async def halt_with_evidence(self, **_kwargs) -> HaltEvidence:
+            return HaltEvidence(True, False, False)
 
     goal = Location(name="corner", pose=Pose2D(x=4.0, y=5.0, yaw=0.0))
     result = asyncio.run(
@@ -259,6 +259,43 @@ def test_cancel_and_stop_requires_nav2_acknowledgement_even_with_zero_drift(
     assert result["evidence"]["drift_m"] == 0.0
     assert result["evidence"]["progress_samples"]
     assert result["evidence"]["progress_samples"][-1]["status"] == expected_progress_status
+
+
+def test_route_goal_preserves_navigation_attempts_in_hil_evidence() -> None:
+    attempts = [
+        NavigationAttemptEvidence(
+            attempt=1,
+            tag="goal-a",
+            execution_status="failed",
+            detail="endpoint stalled",
+            endpoint_retry_allowed=True,
+            halt_delivered=True,
+            nav_cancel_acknowledged=True,
+        ),
+        NavigationAttemptEvidence(
+            attempt=2,
+            tag="goal-b",
+            execution_status="succeeded",
+            detail="verified arrival",
+        ),
+    ]
+
+    class FakeGateway:
+        async def execute(self, _action, *, on_progress, on_gate_report):
+            return RouteOutput(
+                input_text="",
+                execution_status="succeeded",
+                route_preview="recovered",
+                navigation_attempts=attempts,
+            )
+
+    goal = Location(name="corner", pose=Pose2D(x=4.0, y=5.0, yaw=0.0))
+    checks = asyncio.run(isaac_hil._run_route_goal(FakeGateway(), AppConfig(), goal))
+
+    evidence = checks[0]["evidence"]["navigation_attempts"]
+    assert [item["tag"] for item in evidence] == ["goal-a", "goal-b"]
+    assert evidence[0]["nav_cancel_acknowledged"] is True
+    assert evidence[1]["execution_status"] == "succeeded"
 
 
 def test_live_hil_aborts_remaining_motion_after_first_failed_goal(monkeypatch, tmp_path) -> None:
@@ -281,9 +318,9 @@ def test_live_hil_aborts_remaining_motion_after_first_failed_goal(monkeypatch, t
         async def map_cell(self, _x, _y, *, timeout=3.0):
             return _cell()
 
-        async def halt(self, **_kwargs):
+        async def halt_with_evidence(self, **_kwargs) -> HaltEvidence:
             self.halted = True
-            return False
+            return HaltEvidence(True, False, False)
 
         async def stop(self) -> None:
             self.stopped = True
@@ -354,7 +391,7 @@ def test_live_hil_records_unconfirmed_final_halt_as_failure(monkeypatch, tmp_pat
         async def map_cell(self, _x, _y, *, timeout=3.0):
             return _cell()
 
-        async def halt(self, **_kwargs):
+        async def halt_with_evidence(self, **_kwargs) -> HaltEvidence:
             raise RuntimeError("zero velocity not confirmed")
 
         async def stop(self) -> None:

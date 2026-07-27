@@ -21,7 +21,14 @@ from textual.widgets import Static
 from jenai.agent.context import JenAIRunContext
 from jenai.bridge import RosBridgeClient
 from jenai.config.models import AppConfig, ProviderProfile
-from jenai.schemas import DoctorResult, Location, RouteOutput, RunRecord, ToolCallStatus
+from jenai.schemas import (
+    DoctorResult,
+    Location,
+    RouteOutput,
+    RunRecord,
+    SessionState,
+    ToolCallStatus,
+)
 from jenai.state import RunStore
 from jenai.tools.perception import PerceptionLoop
 
@@ -37,6 +44,7 @@ class TuiHostContract:
         config_path: Path
         doctor_result: DoctorResult | None
         run_store: RunStore
+        session: SessionState
         is_running: bool
         _doctor_is_full: bool
         _pending_direct_approvals: dict[str, PendingCommand]

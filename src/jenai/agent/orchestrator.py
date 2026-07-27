@@ -32,12 +32,23 @@ from jenai.schemas import (
     RunRecord,
     RunStatus,
     TaskOutcome,
+    ToolCallCategory,
+    ToolCallRecord,
+    ToolCallStatus,
 )
 from jenai.schemas.models import new_id
 from jenai.task_results import agent_completion_outcome, run_status_for_outcome
 from jenai.tools.approval_formatters import format_approval
+from jenai.tools.emergency_stop import (
+    emergency_stop_effect_scope,
+    execute_emergency_stop,
+)
+from jenai.tools.emergency_stop import (
+    is_emergency_stop_request as is_emergency_stop_request,
+)
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tools.ros2_agent_tools import inspect_robot_state
+from jenai.tools.safety import NavigationCancelStatus, halt_receipt_evidence
 
 _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
 logger = logging.getLogger(__name__)
@@ -122,6 +133,107 @@ async def start_read_only_state_run(ctx: JenAIRunContext) -> RunRecord:
         status=RunStatus.COMPLETED,
         outcome=TaskOutcome.SUCCEEDED,
         final_output=final_output,
+    )
+    return run
+
+
+async def start_emergency_stop_run(ctx: JenAIRunContext) -> RunRecord:
+    """Halt immediately and report optional observation failures separately."""
+
+    run, run_store = ctx.run, ctx.run_store
+    run_store.set_status(run, RunStatus.UNDERSTANDING)
+    run_store.set_status(run, RunStatus.RUNNING)
+    call = ToolCallRecord(
+        tool_name="emergency_stop",
+        category=ToolCallCategory.ROS2,
+        input_summary="cancel navigation and deliver zero velocity",
+        status=ToolCallStatus.RUNNING,
+        risk_level=RiskLevel.P0,
+        effect_scope=emergency_stop_effect_scope(ctx.config),
+    )
+    run_store.add_tool_call(run, call)
+    try:
+        receipt = await execute_emergency_stop(ctx.config)
+    except Exception as exc:
+        error = _error_from_exc(exc)
+        run_store.update_tool_call(
+            run,
+            call.tool_call_id,
+            status=ToolCallStatus.FAILED,
+            output_summary=f"Emergency stop unavailable: {exc}",
+            error=error,
+        )
+        run_store.finish(run, status=RunStatus.FAILED, error=error)
+        return run
+
+    cancel_unconfirmed = receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED
+    if output_language_for(run.user_input) == "zh-TW":
+        message = {
+            NavigationCancelStatus.ACKNOWLEDGED: (
+                "已發布零速度命令，且導航取消已確認；尚未由運動狀態證據確認車體停止。"
+            ),
+            NavigationCancelStatus.UNCONFIRMED: (
+                "已發布零速度命令，但導航取消尚未獲得確認；尚未由運動狀態證據確認車體停止。"
+            ),
+            NavigationCancelStatus.NOT_ACTIVE: (
+                "已發布零速度命令，且系統未回報進行中的導航目標；尚未由運動狀態證據確認車體停止。"
+            ),
+        }[receipt.navigation_cancel_status]
+    else:
+        message = receipt.message
+    run_store.update_tool_call(
+        run,
+        call.tool_call_id,
+        status=(ToolCallStatus.FAILED if cancel_unconfirmed else ToolCallStatus.SUCCEEDED),
+        output_summary=message,
+        raw_output={**halt_receipt_evidence(receipt), "message": message},
+    )
+
+    inspection_failure: str | None = None
+    if requests_state_inspection(run.user_input):
+        first_inspection_call = len(run.tool_calls)
+        try:
+            await inspect_robot_state(RunContextWrapper(ctx))
+        except Exception as exc:
+            inspection_failure = str(exc)
+        else:
+            inspection_calls = [
+                item
+                for item in run.tool_calls[first_inspection_call:]
+                if item.tool_name == "ros_state_tool"
+            ]
+            if not inspection_calls:
+                inspection_failure = "state inspection produced no recorded evidence"
+            elif inspection_calls[-1].status != ToolCallStatus.SUCCEEDED:
+                inspection_failure = (
+                    inspection_calls[-1].output_summary
+                    or "state inspection did not produce verified evidence"
+                )
+
+    outcome = (
+        TaskOutcome.PARTIAL
+        if cancel_unconfirmed or inspection_failure is not None
+        else TaskOutcome.SUCCEEDED
+    )
+    final_output = (
+        message if inspection_failure is not None else (_deterministic_state_report(run) or message)
+    )
+    if inspection_failure is not None:
+        zh = output_language_for(run.user_input) == "zh-TW"
+        suffix = (
+            f"已發布零速度命令，但無法取得命令發布後狀態：{inspection_failure}"
+            if zh
+            else (
+                "The zero-velocity command was published, but the subsequent state "
+                f"was unavailable: {inspection_failure}"
+            )
+        )
+        final_output = f"{message}\n\n{suffix}"
+    run_store.finish(
+        run,
+        status=RunStatus.COMPLETED,
+        outcome=outcome,
+        final_output=normalize_user_visible_text(final_output, output_language_for(run.user_input)),
     )
     return run
 
@@ -300,7 +412,18 @@ def _tool_result_summary(run: RunRecord) -> str:
 
 
 _STATE_SUBJECTS = ("state", "status", "position", "pose", "scan", "nav2", "位置", "雷射", "狀態")
-_STATE_INSPECTION = ("check", "inspect", "show", "current", "檢查", "查看", "現在", "目前")
+_STATE_INSPECTION = (
+    "check",
+    "inspect",
+    "show",
+    "current",
+    "report",
+    "檢查",
+    "查看",
+    "現在",
+    "目前",
+    "回報",
+)
 _STATE_DECISION = ("should", "recommend", "是否應該", "建議", "該不該")
 _STATE_ACTIONS = (
     "drive",
@@ -318,7 +441,24 @@ _STATE_ACTIONS = (
     "巡邏",
     "探索",
     "停靠",
+    "stop",
+    "halt",
+    "cancel",
+    "停止",
+    "停車",
+    "急停",
+    "取消導航",
+    "停下",
 )
+
+
+def requests_state_inspection(text: str) -> bool:
+    """Whether the user explicitly asks for a live state snapshot."""
+
+    lowered = text.lower()
+    return any(term in lowered for term in _STATE_SUBJECTS) and any(
+        term in lowered for term in _STATE_INSPECTION
+    )
 
 
 def is_read_only_state_request(text: str) -> bool:
@@ -326,8 +466,7 @@ def is_read_only_state_request(text: str) -> bool:
 
     lowered = text.lower()
     return (
-        any(term in lowered for term in _STATE_SUBJECTS)
-        and any(term in lowered for term in _STATE_INSPECTION)
+        requests_state_inspection(text)
         and not any(term in lowered for term in _STATE_DECISION)
         and not any(term in lowered for term in _STATE_ACTIONS)
     )
@@ -337,9 +476,17 @@ def _deterministic_state_report(run: RunRecord) -> str:
     """Render factual status-only observations without letting an LLM alter measurements."""
 
     calls = [call for call in run.tool_calls if call.tool_name == "ros_state_tool"]
-    if len(run.tool_calls) != 1 or len(calls) != 1 or calls[0].raw_output is None:
-        return ""
-    if not is_read_only_state_request(run.user_input):
+    stops = [call for call in run.tool_calls if call.tool_name == "emergency_stop"]
+    read_only_report = (
+        len(run.tool_calls) == 1 and len(calls) == 1 and is_read_only_state_request(run.user_input)
+    )
+    stopped_report = (
+        len(run.tool_calls) == 2
+        and len(calls) == 1
+        and len(stops) == 1
+        and is_emergency_stop_request(run.user_input)
+    )
+    if not (read_only_report or stopped_report) or calls[0].raw_output is None:
         return ""
 
     payload = calls[0].raw_output
@@ -349,6 +496,7 @@ def _deterministic_state_report(run: RunRecord) -> str:
     checks = nav2.get("checks") or {}
     availability = payload.get("availability") or {}
     zh = any("\u4e00" <= char <= "\u9fff" for char in run.user_input)
+    stop_message = stops[0].output_summary if stopped_report else None
 
     def _number(value: object, digits: int = 2) -> str:
         return f"{value:.{digits}f}" if isinstance(value, (int, float)) else "not measured"
@@ -391,7 +539,11 @@ def _deterministic_state_report(run: RunRecord) -> str:
             "Odom\n"
             f"  {'有快照' if availability.get('odom') else '本次未取得快照'}\n\n"
             "安全性\n"
-            "  本次查詢未送出任何移動指令。"
+            + (
+                f"  停止命令回執：{stop_message}\n  上述狀態是在命令發布後擷取。"
+                if stopped_report
+                else "  本次查詢未送出任何移動指令。"
+            )
         )
     sample_suffix = " (truncated)" if scan.get("ranges_truncated") else ""
     return (
@@ -414,7 +566,12 @@ def _deterministic_state_report(run: RunRecord) -> str:
         "Odom\n"
         f"  {'Snapshot available' if availability.get('odom') else 'Not captured'}\n\n"
         "Safety\n"
-        "  This query issued no motion command."
+        + (
+            f"  Stop command receipt: {stop_message}\n"
+            "  The state above was captured after command publication."
+            if stopped_report
+            else "  This query issued no motion command."
+        )
     )
 
 

@@ -28,6 +28,11 @@ def test_release_version_is_consistent_across_package_lock_and_living_docs() -> 
     assert __version__ == version
     assert locked["version"] == version
     assert (ROOT / "docs" / "releases" / f"v{version}.md").is_file()
+    website_package = json.loads((ROOT / "website" / "package.json").read_text(encoding="utf-8"))
+    website_lock = json.loads((ROOT / "website" / "package-lock.json").read_text(encoding="utf-8"))
+    assert website_package["version"] == version
+    assert website_lock["version"] == version
+    assert website_lock["packages"][""]["version"] == version
 
     pattern = re.compile(r"對應版本:(?:\*\*)?v(\d+\.\d+\.\d+)")
     for path in VERSIONED_DOCS:
@@ -52,6 +57,16 @@ def test_release_version_is_consistent_across_package_lock_and_living_docs() -> 
 
     test_manual = (ROOT / "docs" / "validation" / "TEST.md").read_text(encoding="utf-8")
     assert f"`JenAI {version}`" in test_manual
+
+
+def test_v250_exact_hil_metrics_are_not_presented_as_formal_evidence_without_artifact() -> None:
+    release = (ROOT / "docs" / "releases" / "v2.5.0.md").read_text(encoding="utf-8")
+    has_exact_metrics = all(
+        metric in release for metric in ("0.041 m", "0.140 rad", "0.035 m", "0.068 rad")
+    )
+    if has_exact_metrics:
+        assert "UNVERIFIED_SESSION_OBSERVATION" in release
+        assert "不可作為正式可稽核 HIL 證據" in release
 
 
 def test_ci_covers_supported_python_versions() -> None:

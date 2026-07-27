@@ -71,13 +71,13 @@ _CATALOG: dict[str, CapabilityContract] = {
     "emergency_stop": CapabilityContract(
         capability_id="emergency_stop",
         summary="Cancel active navigation and deliver a zero-velocity halt.",
-        summary_zh="取消進行中的導航並送出零速度停止。",
+        summary_zh="取消進行中的導航並發布零速度命令。",
         interface_name="bridge.halt",
         supported_platforms=["ackermann", "diff", "quadruped"],
         risk_level="p0",
         requires_approval=False,
         maturity=CapabilityMaturity.IMPLEMENTED_VALIDATED,
-        completion_evidence=["halt_delivery", "nav_cancel_acknowledgement"],
+        completion_evidence=["halt_delivery", "navigation_cancel_status"],
     ),
     "bounded_drive": CapabilityContract(
         capability_id="bounded_drive",

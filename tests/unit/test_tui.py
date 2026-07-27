@@ -5,6 +5,9 @@ import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from jenai.bridge import HaltEvidence
 from jenai.config.store import build_minimal_config
 from jenai.schemas import (
     PlanStep,
@@ -114,6 +117,32 @@ def test_tui_p2_host_approval_is_one_shot_and_defaults_to_no() -> None:
     assert "❯ 2. No" in rendered
     assert "3." not in rendered
     assert card._selected == 1
+
+
+def test_tui_physical_robot_control_approval_defaults_to_no() -> None:
+    from jenai.schemas import ApprovalRequest, EffectScope, RiskLevel
+
+    card = ApprovalCard(
+        ApprovalRequest(
+            run_id="run-physical",
+            tool_call_id="call-physical",
+            tool_name="navigate_to",
+            title="Move physical robot",
+            summary="Navigate the connected physical robot.",
+            raw_action="navigate_to dock",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.ROBOT_CONTROL,
+            justification="requested",
+        )
+    )
+
+    rendered = str(card.render())
+    assert "May move the connected physical robot." in rendered
+    assert "Effect: robot_control" not in rendered
+    assert "1. Yes" in rendered
+    assert "2. Yes, and remember this tool for this session" in rendered
+    assert "❯ 3. No" in rendered
+    assert card._selected == 2
 
 
 def test_agent_progress_and_tool_blocks_update_in_place() -> None:
@@ -1008,6 +1037,8 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
             await app.handle_user_text("/route from A to B")
             cards = list(app.query(ApprovalCard))
             assert len(cards) == 1
+            assert cards[0].approval.raw_action == "goto B (x=1.00, y=1.00, yaw=0.000 rad)"
+            assert "{" not in cards[0].approval.raw_action
 
             await pilot.press("1")
             await pilot.pause()
@@ -1351,17 +1382,65 @@ def test_tui_palette_completes_bare_command_with_trailing_space() -> None:
 class FakeHaltBridge:
     """Shared in-process bridge fake for the /stop tests (halt only)."""
 
-    def __init__(self, nav_canceled: bool = False) -> None:
+    def __init__(self, nav_canceled: bool = False, *, cancel_requested: bool | None = None) -> None:
         self.nav_canceled = nav_canceled
+        self.cancel_requested = nav_canceled if cancel_requested is None else cancel_requested
         self.halts: list[str] = []
 
-    async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
+    async def halt_with_evidence(self, cmd_vel_topic="/cmd_vel", stamped=False) -> HaltEvidence:
         self.halts.append(cmd_vel_topic)
-        return self.nav_canceled
+        return HaltEvidence(True, self.cancel_requested, self.nav_canceled)
 
 
-def test_tui_stop_command_halts_robot(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("deployment_mode", "expected_scope"),
+    [
+        ("simulation", "sim_control"),
+        ("physical", "robot_control"),
+    ],
+)
+def test_tui_stop_command_halts_robot(
+    monkeypatch,
+    tmp_path,
+    deployment_mode: str,
+    expected_scope: str,
+) -> None:
     fake = FakeHaltBridge(nav_canceled=True)
+
+    async def fake_get_bridge():
+        return fake
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        app.config.deployment_mode = deployment_mode
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        async with app.run_test():
+            await app.handle_user_text("/stop")
+            bodies = [i.body for i in app.query(TimelineItem)]
+            assert any("zero-velocity command published" in b.lower() for b in bodies)
+            runs = app.run_store.list_runs()
+            assert len(runs) == 1
+            assert runs[0].status == "completed"
+            assert runs[0].outcome == "succeeded"
+            assert runs[0].tool_calls[0].tool_name == "emergency_stop"
+            assert runs[0].tool_calls[0].status == "succeeded"
+            assert str(runs[0].tool_calls[0].effect_scope) == expected_scope
+            assert runs[0].tool_calls[0].raw_output["zero_velocity_command_published"] is True
+            assert runs[0].tool_calls[0].raw_output["motion_stop_observed"] is None
+
+    asyncio.run(run())
+
+    assert fake.halts == ["/cmd_vel"]
+    assert len(list((tmp_path / "reports" / "tasks").glob("task-*.json"))) == 1
+
+    from jenai.state.audit import AuditStore
+
+    events = AuditStore(tmp_path / "audit.sqlite3").list_events()
+    assert any(event.event_type == "run_finished" for event in events)
+
+
+def test_tui_stop_warns_when_navigation_cancel_is_unconfirmed(monkeypatch, tmp_path) -> None:
+    fake = FakeHaltBridge(nav_canceled=False, cancel_requested=True)
 
     async def fake_get_bridge():
         return fake
@@ -1370,13 +1449,12 @@ def test_tui_stop_command_halts_robot(monkeypatch, tmp_path) -> None:
         app = _app(tmp_path)
         monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
         async with app.run_test():
-            await app.handle_user_text("/stop")
-            bodies = [i.body for i in app.query(TimelineItem)]
-            assert any("halted" in b.lower() for b in bodies)
+            await app._show_stop()
+            items = list(app.query(TimelineItem))
+            matching = [item for item in items if "not acknowledged" in item.body]
+            assert matching and matching[-1].variant == "warn"
 
     asyncio.run(run())
-
-    assert fake.halts == ["/cmd_vel"]
 
 
 def test_tui_stop_preempts_and_reaps_running_task_before_halt(monkeypatch, tmp_path) -> None:
@@ -1434,12 +1512,12 @@ with events.open("a") as stream:
     halt_count = 0
 
     class OrderedBridge:
-        async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
+        async def halt_with_evidence(self, cmd_vel_topic="/cmd_vel", stamped=False) -> HaltEvidence:
             nonlocal halt_count
             halt_count += 1
             with events.open("a") as stream:
                 stream.write(f"halt-{'initial' if halt_count == 1 else 'final'}\n")
-            return False
+            return HaltEvidence(True, False, False)
 
     async def fake_get_bridge():
         return OrderedBridge()
@@ -1479,7 +1557,7 @@ with events.open("a") as stream:
                 "halt-final",
             ]
             bodies = [item.body for item in app.query(TimelineItem)]
-            assert any("halted" in body.lower() for body in bodies)
+            assert any("zero-velocity command published" in body.lower() for body in bodies)
             return pid
 
     pid = asyncio.run(run())
@@ -1837,7 +1915,158 @@ def test_tui_stop_variants_preempt_and_clear_queue(monkeypatch, tmp_path) -> Non
             assert list(app._command_queue) == []
             bodies = [i.body for i in app.query(TimelineItem)]
             assert any("cleared 1 queued" in b.lower() for b in bodies)
-            assert any("halted" in b.lower() for b in bodies)
+            assert any("zero-velocity command published" in b.lower() for b in bodies)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stop_text", ["先停車，再回報機器人狀態", "停止移動"])
+def test_tui_natural_language_stop_preempts_and_clears_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stop_text: str,
+) -> None:
+    """An explicit natural-language stop has the same scheduler priority as /stop."""
+    from types import SimpleNamespace
+
+    events: list[str] = []
+
+    class RecordingBridge:
+        async def halt_with_evidence(self, cmd_vel_topic="/cmd_vel", stamped=False) -> HaltEvidence:
+            events.append("halt")
+            return HaltEvidence(True, False, False)
+
+    async def fake_get_bridge():
+        return RecordingBridge()
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        processed: list[str] = []
+
+        async def fake_handle(value: str) -> None:
+            processed.append(value)
+
+        app.handle_user_text = fake_handle  # type: ignore[method-assign]
+        async with app.run_test() as pilot:
+            active_started = asyncio.Event()
+
+            async def hang() -> None:
+                active_started.set()
+                await asyncio.sleep(30)
+
+            active_task = asyncio.create_task(hang())
+            app._active_task = active_task
+            await active_started.wait()
+            app._command_queue.append("/status")
+
+            await app.on_input_submitted(
+                SimpleNamespace(value=stop_text, input=SimpleNamespace(value=""))
+            )
+            stop_task = app._active_task
+            assert stop_task is not active_task
+            assert app._active_task_is_stop is True
+            await stop_task
+            await pilot.pause()
+
+            assert active_task.cancelled()
+            assert list(app._command_queue) == []
+            assert processed == [stop_text]
+            assert events == ["halt"]
+
+    asyncio.run(run())
+
+
+def test_tui_emergency_stop_irreversibly_rejects_pending_approvals(monkeypatch, tmp_path) -> None:
+    from jenai.schemas import ApprovalRequest, EffectScope, RiskLevel, ToolCallCategory
+
+    class RecordingBridge:
+        async def halt_with_evidence(self, cmd_vel_topic="/cmd_vel", stamped=False) -> HaltEvidence:
+            return HaltEvidence(True, False, False)
+
+    async def fake_get_bridge():
+        return RecordingBridge()
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        executions: list[str] = []
+
+        async def fake_execute_direct(pending) -> None:
+            executions.append(pending["tool_call_id"])
+
+        monkeypatch.setattr(app, "_execute_direct", fake_execute_direct)
+        async with app.run_test() as pilot:
+            agent_ctx = app._new_run_context("agent action")
+            agent_approval = ApprovalRequest(
+                run_id=agent_ctx.run.run_id,
+                tool_call_id="agent-call",
+                tool_name="navigate",
+                title="Navigate",
+                summary="Move the robot.",
+                raw_action="navigate",
+                risk_level=RiskLevel.P1,
+                effect_scope=EffectScope.SIM_CONTROL,
+                justification="test approval",
+            )
+            app.run_store.add_interruption(agent_ctx.run, agent_approval)
+            app.run_store.set_status(agent_ctx.run, RunStatus.AWAITING_APPROVAL)
+            app.run_store._pending_state[agent_ctx.run.run_id] = object()
+            app._pending_approvals[agent_ctx.run.run_id] = {
+                "agent": object(),
+                "ctx": agent_ctx,
+                "decisions": {},
+                "expected": {"agent-call"},
+            }
+
+            direct_ctx = app._new_run_context("direct action")
+            direct_call = ToolCallRecord(
+                tool_call_id="direct-call",
+                tool_name="ros_pub_execute_tool",
+                category=ToolCallCategory.ROS2,
+                input_summary="publish motion",
+                risk_level=RiskLevel.P0,
+                effect_scope=EffectScope.SIM_CONTROL,
+            )
+            app.run_store.add_tool_call(direct_ctx.run, direct_call)
+            direct_approval = ApprovalRequest(
+                run_id=direct_ctx.run.run_id,
+                tool_call_id="direct-call",
+                tool_name="ros_pub_execute_tool",
+                title="Publish",
+                summary="Publish motion.",
+                raw_action="publish",
+                risk_level=RiskLevel.P0,
+                effect_scope=EffectScope.SIM_CONTROL,
+                justification="test approval",
+            )
+            app.run_store.add_interruption(direct_ctx.run, direct_approval)
+            app.run_store.set_status(direct_ctx.run, RunStatus.AWAITING_APPROVAL)
+            app._pending_direct_approvals["direct-call"] = {
+                "kind": "ros_pub",
+                "ctx": direct_ctx,
+                "tool_call_id": "direct-call",
+                "approval": direct_approval,
+            }
+
+            await app.on_input_submitted(
+                SimpleNamespace(value="/stop", input=SimpleNamespace(value=""))
+            )
+            await app._active_task
+            await pilot.pause()
+
+            assert app._pending_approvals == {}
+            assert app._pending_direct_approvals == {}
+            assert agent_ctx.run.status == RunStatus.BLOCKED
+            assert direct_ctx.run.status == RunStatus.BLOCKED
+            assert agent_ctx.run.run_id not in app.run_store._pending_state
+            assert direct_call.status == ToolCallStatus.REJECTED
+
+            for call_id in ("agent-call", "direct-call"):
+                await app.on_approval_card_decision(
+                    SimpleNamespace(tool_call_id=call_id, approved=True, remember=False)
+                )
+            assert executions == []
 
     asyncio.run(run())
 
@@ -1848,9 +2077,9 @@ def test_tui_escape_does_not_cancel_the_stop_task(monkeypatch, tmp_path) -> None
     release = None
 
     class SlowHaltBridge:
-        async def halt(self, cmd_vel_topic="/cmd_vel", stamped=False) -> bool:
+        async def halt_with_evidence(self, cmd_vel_topic="/cmd_vel", stamped=False) -> HaltEvidence:
             await release.wait()
-            return False
+            return HaltEvidence(True, False, False)
 
     async def fake_get_bridge():
         return SlowHaltBridge()
@@ -1873,7 +2102,7 @@ def test_tui_escape_does_not_cancel_the_stop_task(monkeypatch, tmp_path) -> None
             release.set()
             await stop_task
             bodies = [i.body for i in app.query(TimelineItem)]
-            assert any("halted" in b.lower() for b in bodies)
+            assert any("zero-velocity command published" in b.lower() for b in bodies)
 
     asyncio.run(run())
 
@@ -2148,9 +2377,13 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
     async def fake_state(self, arg):
         calls.append(("state", arg))
 
+    async def fake_stop(self, arg):
+        calls.append(("stop", arg))
+
     monkeypatch.setattr(JenAITuiApp, "_show_plan", fake_plan)
     monkeypatch.setattr(JenAITuiApp, "_show_run", fake_run)
     monkeypatch.setattr(JenAITuiApp, "_show_state_inspection", fake_state)
+    monkeypatch.setattr(JenAITuiApp, "_show_emergency_stop", fake_stop)
 
     async def run() -> None:
         app = _app()
@@ -2158,15 +2391,23 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
             await app.handle_user_text("帶我去機械系館")  # approve → agent
             await app.handle_user_text("檢查位置、雷射與 Nav2 狀態，不要移動機器人。")
             await app.handle_user_text("檢查 Nav2 狀態，然後回到 dock。")
+            await app.handle_user_text("幫我檢查現在機器人的位置，然後停止機器人")
             app._mode = "plan"
             await app.handle_user_text("帶我去機械系館")  # plan → planner
+
+        app = _app()
+        app.config.vehicle.capabilities = ["navigate"]
+        async with app.run_test():
+            await app.handle_user_text("檢查目前機器人位置和 Nav2 狀態")
 
     asyncio.run(run())
     assert calls == [
         ("run", "帶我去機械系館"),
         ("state", "檢查位置、雷射與 Nav2 狀態，不要移動機器人。"),
         ("run", "檢查 Nav2 狀態，然後回到 dock。"),
+        ("stop", "幫我檢查現在機器人的位置，然後停止機器人"),
         ("plan", "帶我去機械系館"),
+        ("run", "檢查目前機器人位置和 Nav2 狀態"),
     ]
 
 
