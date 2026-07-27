@@ -297,38 +297,40 @@ def _short_cwd() -> str:
         return str(cwd)
 
 
-# The welcome mascot is reconstructed from the original 80×58 dachshund SVG
-# bundled in the approved HTML design.  A terminal cell is roughly twice as
-# tall as it is wide, so this 24×18 square-pixel source is packed into 24×9
-# half-block cells.  Its size and whitespace match the HTML mock-up while the
-# original four-colour silhouette, brow, eye, floppy ear and short legs remain.
-# Periods are transparent pixels and make every source row explicitly 24 columns.
+# A terminal cell is roughly twice as tall as it is wide, so this 24×18
+# chocolate long-haired dachshund is packed into 24×9 half-block cells.
+# Periods are transparent pixels and keep every frame in a stable bounding box.
 _DESIGNED_DOG = (
-    "...KBBBDKK..............",
-    "..KBBTBKDDK.............",
-    "..KBBBBKDDD.............",
-    "..KBBKBKDDK.............",
-    "KBBBBBBKDDK............K",
-    "KKTTTTBKDDD...........KK",
-    "KTTTTTDKDDK..........KDK",
-    ".KKTKBDDKKKKKKKKKKKKKDK.",
-    "....KBBDDBBBBBBBBBBBBKK.",
-    "....KBBBBBBBBBBBBBBBBBK.",
-    "....KBBBBBBBBBBBBBBBBBK.",
-    "....KBTBBBBBBBBBBBBBBBK.",
-    ".....KTTBBBBBBBBBBBBBBK.",
-    ".....KKBBBBBBBBBBDDKBBK.",
-    "......KKBKBBKDKKKKDKKBK.",
-    "......KKKKBBKK...KBB.TK.",
-    ".....KKBKTTK.....KKKKTT.",
-    "......KKKKTT........KKK.",
+    "........................",
+    ".....OOOOOO.............",
+    "...OOttttttO............",
+    "..OtwwTTTEEEO...........",
+    "..OTWNTTEEEEO...........",
+    "..OTNNTTEEEEEO.......O..",
+    "BBwwTTTTEEEEEO......OtO.",
+    "BBwwwwTTEEEEEO......OTO.",
+    ".OOOwwTTEEEEEO.....OtTO.",
+    "...OOTTTEEEEEO.....OTTO.",
+    ".....OCCCEEEEEO....OTTO.",
+    "......OwwwEEEEtOOOOtTTO.",
+    "......OwwwTEETTttttTTTO.",
+    ".......OwwTTTTTTTTTTTTO.",
+    ".......OTTTTOOOOOTTTTO..",
+    "........OwwO.....OTTO...",
+    "........OwwO.....OTTO...",
+    ".......OwwwO....OwwwO...",
 )
 
 _DESIGNED_DOG_COLORS = {
-    "K": "#2b190d",  # outline / eye
-    "B": "#8c4c26",  # coat
-    "D": "#743b20",  # floppy ear / shadow
-    "T": "#d68742",  # muzzle / chest / paws
+    "O": "#2e1c12",  # outline
+    "t": "#8a5a38",  # lit coat
+    "T": "#6b4229",  # chocolate coat
+    "E": "#54331e",  # floppy ear
+    "w": "#e8cda2",  # cream markings
+    "N": "#14100d",  # eye
+    "W": "#ffffff",  # eye highlight
+    "B": "#8a5a4a",  # liver nose
+    "C": "#4a8fb5",  # collar
 }
 
 
@@ -359,18 +361,19 @@ def _animated_dog_cells(
         for x, token in enumerate(row.ljust(width)):
             cells[(x, y)] = _DESIGNED_DOG_COLORS.get(token)
 
-    # The sprite faces left. Wag the far-right tail tip inside the fixed box.
+    # The sprite faces left. Move its far-right tail tip inside the fixed box.
     if frame % 2:
-        cells[(23, 4)] = None
-        cells[(23, 3)] = _DESIGNED_DOG_COLORS["K"]
+        cells[(21, 5)] = None
+        cells[(22, 4)] = _DESIGNED_DOG_COLORS["O"]
 
-    # Blink the eye while idle; lift one paw while a task is running.
+    # Blink while idle; alternate the feet while a task is running.
     if not running and frame % 8 == 6:
-        cells[(5, 3)] = _DESIGNED_DOG_COLORS["B"]
+        for point in ((4, 4), (5, 4), (4, 5), (5, 5)):
+            cells[point] = _DESIGNED_DOG_COLORS["O"]
     if running:
-        lift = ((10, 17), (11, 17)) if frame % 2 else ((20, 16), (21, 16))
-        for point in lift:
-            cells[point] = None
+        foot = range(7, 12) if frame % 2 else range(16, 21)
+        for x in foot:
+            cells[(x, 17)] = None
     return cells, width, height
 
 

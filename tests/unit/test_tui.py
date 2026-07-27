@@ -42,10 +42,10 @@ def test_tui_uses_colored_dachshund_mascot() -> None:
     mascot = pixel_mark()
     styles = {str(span.style) for span in mascot.spans}
 
-    assert any("#8c4c26" in style for style in styles)
-    assert any("#743b20" in style for style in styles)
-    assert any("#d68742" in style for style in styles)
-    assert any("#2b190d" in style for style in styles)
+    assert any("#6b4229" in style for style in styles)
+    assert any("#54331e" in style for style in styles)
+    assert any("#e8cda2" in style for style in styles)
+    assert any("#4a8fb5" in style for style in styles)
     assert len(mascot.plain.splitlines()) == 9
     assert {len(row) for row in mascot.plain.splitlines()} == {24}
     assert pixel_mark(0).plain != pixel_mark(1).plain
