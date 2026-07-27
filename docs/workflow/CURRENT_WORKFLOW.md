@@ -4,6 +4,10 @@
 >
 > 目的：說明「整個系統如何運作」，供新進工程師與資深機器人工程師進行 Design Review。
 > 本文件不是逐檔程式碼導覽；逐檔閱讀請見 [CODE_TOUR](../CODE_TOUR.md)。
+> 可直接重播的 DGX Spark 操作見
+> [CURRENT_ISAAC_TUI_RUNBOOK](../operations/CURRENT_ISAAC_TUI_RUNBOOK.md)；各主張的
+> enforcement 狀態見
+> [WORKFLOW_EVIDENCE_MATRIX](../validation/WORKFLOW_EVIDENCE_MATRIX.md)。
 
 ## 1. 系統定位與責任邊界
 
@@ -82,6 +86,10 @@ Nav2 goal，而且不是要求相同起點的正式基準。此時依需求先 `
 只有車輛卡牆／穿模、模擬時間重設、定位明顯漂移、舊 goal 可能恢復，或正式 HIL 要求
 相同 Dock 起點時才 Replay。Replay 後必須 restart Nav2，避免舊 lifecycle、AMCL、costmap
 與 sim-time 狀態殘留。
+
+上述條件的可操作判斷表、Owner 與完整命令以
+[CURRENT_ISAAC_TUI_RUNBOOK](../operations/CURRENT_ISAAC_TUI_RUNBOOK.md) 為準。本文件只
+描述產品流程，不把人工 Replay 政策誤寫成 runtime 已自動偵測。
 
 ## 4. TUI 指令與批准 Workflow
 
