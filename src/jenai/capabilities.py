@@ -71,7 +71,7 @@ _CATALOG: dict[str, CapabilityContract] = {
     "emergency_stop": CapabilityContract(
         capability_id="emergency_stop",
         summary="Cancel active navigation and deliver a zero-velocity halt.",
-        summary_zh="取消進行中的導航並送出零速度停止。",
+        summary_zh="取消進行中的導航並發布零速度命令。",
         interface_name="bridge.halt",
         supported_platforms=["ackermann", "diff", "quadruped"],
         risk_level="p0",

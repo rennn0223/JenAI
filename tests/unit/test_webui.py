@@ -324,12 +324,59 @@ def test_web_stop_marks_unconfirmed_navigation_cancel_as_error() -> None:
         HaltReceipt(
             navigation_cancel_status=NavigationCancelStatus.UNCONFIRMED,
             zero_velocity_delivered=True,
-            message="Zero velocity delivered; cancellation not acknowledged.",
+            message=(
+                "Zero-velocity command published, but navigation cancellation was not "
+                "acknowledged. Motion stop was not independently observed."
+            ),
         )
     )
 
     assert response["kind"] == "error"
     assert "not acknowledged" in response["html"]
+
+
+def test_web_stop_records_terminal_outcome_receipt_and_audit(tmp_path: Path) -> None:
+    from jenai.state.audit import AuditStore
+    from jenai.state.task_receipts import TaskReceiptStore
+    from jenai.tools.safety import HaltReceipt, NavigationCancelStatus
+    from jenai.webui.server import _do_stop
+
+    class ReadyPoseCache:
+        def submit(self, _operation):
+            return HaltReceipt(
+                navigation_cancel_status=NavigationCancelStatus.ACKNOWLEDGED,
+                zero_velocity_delivered=True,
+                message=(
+                    "Zero-velocity command published; navigation cancellation acknowledged. "
+                    "Motion stop was not independently observed."
+                ),
+            )
+
+    audit = AuditStore(tmp_path / "audit.sqlite3")
+    run_store = RunStore(
+        audit_store=audit,
+        receipt_store=TaskReceiptStore(tmp_path / "reports" / "tasks"),
+    )
+
+    response = _do_stop(
+        _config(),
+        ReadyPoseCache(),
+        run_store=run_store,
+        session_id="webui-test",
+    )
+
+    assert response["kind"] == "result"
+    assert "zero-velocity command published" in response["html"].lower()
+    assert "motion stop was not independently observed" in response["html"].lower()
+    run = run_store.list_runs()[0]
+    assert run.status == "completed"
+    assert run.outcome == "succeeded"
+    assert run.tool_calls[0].tool_name == "emergency_stop"
+    assert run.tool_calls[0].status == "succeeded"
+    assert run.tool_calls[0].raw_output["zero_velocity_command_published"] is True
+    assert run.tool_calls[0].raw_output["motion_stop_observed"] is None
+    assert len(list((tmp_path / "reports" / "tasks").glob("task-*.json"))) == 1
+    assert any(event.event_type == "run_finished" for event in audit.list_events())
 
 
 def test_web_command_unknown_is_error(tmp_path: Path) -> None:

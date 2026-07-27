@@ -25,6 +25,7 @@ from jenai.agent.instructions import CHAT_INSTRUCTIONS
 from jenai.agent.intent_routing import RunAgentRoute, route_run_request
 from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
+from jenai.capabilities import has_registered_capability
 from jenai.capability_reporting import is_capability_card_request
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.language import (
@@ -599,7 +600,9 @@ class JenAITuiApp(
                 await self._stream_chat_reply(value)
             elif self._mode == "plan":
                 await self._show_plan(value)
-            elif orchestrator.is_read_only_state_request(value):
+            elif orchestrator.is_read_only_state_request(value) and has_registered_capability(
+                self.config, "inspect_state"
+            ):
                 await self._show_state_inspection(value)
             elif route_run_request(value) is RunAgentRoute.AREA_PATROL:
                 # A compound coverage mission may mention its final dock/home.

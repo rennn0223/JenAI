@@ -5,6 +5,8 @@ import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from jenai.bridge import HaltEvidence
 from jenai.config.store import build_minimal_config
 from jenai.schemas import (
@@ -115,6 +117,32 @@ def test_tui_p2_host_approval_is_one_shot_and_defaults_to_no() -> None:
     assert "❯ 2. No" in rendered
     assert "3." not in rendered
     assert card._selected == 1
+
+
+def test_tui_physical_robot_control_approval_defaults_to_no() -> None:
+    from jenai.schemas import ApprovalRequest, EffectScope, RiskLevel
+
+    card = ApprovalCard(
+        ApprovalRequest(
+            run_id="run-physical",
+            tool_call_id="call-physical",
+            tool_name="navigate_to",
+            title="Move physical robot",
+            summary="Navigate the connected physical robot.",
+            raw_action="navigate_to dock",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.ROBOT_CONTROL,
+            justification="requested",
+        )
+    )
+
+    rendered = str(card.render())
+    assert "May move the connected physical robot." in rendered
+    assert "Effect: robot_control" not in rendered
+    assert "1. Yes" in rendered
+    assert "2. Yes, and remember this tool for this session" in rendered
+    assert "❯ 3. No" in rendered
+    assert card._selected == 2
 
 
 def test_agent_progress_and_tool_blocks_update_in_place() -> None:
@@ -1364,7 +1392,19 @@ class FakeHaltBridge:
         return HaltEvidence(True, self.cancel_requested, self.nav_canceled)
 
 
-def test_tui_stop_command_halts_robot(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("deployment_mode", "expected_scope"),
+    [
+        ("simulation", "sim_control"),
+        ("physical", "robot_control"),
+    ],
+)
+def test_tui_stop_command_halts_robot(
+    monkeypatch,
+    tmp_path,
+    deployment_mode: str,
+    expected_scope: str,
+) -> None:
     fake = FakeHaltBridge(nav_canceled=True)
 
     async def fake_get_bridge():
@@ -1372,15 +1412,31 @@ def test_tui_stop_command_halts_robot(monkeypatch, tmp_path) -> None:
 
     async def run() -> None:
         app = _app(tmp_path)
+        app.config.deployment_mode = deployment_mode
         monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
         async with app.run_test():
             await app.handle_user_text("/stop")
             bodies = [i.body for i in app.query(TimelineItem)]
-            assert any("halted" in b.lower() for b in bodies)
+            assert any("zero-velocity command published" in b.lower() for b in bodies)
+            runs = app.run_store.list_runs()
+            assert len(runs) == 1
+            assert runs[0].status == "completed"
+            assert runs[0].outcome == "succeeded"
+            assert runs[0].tool_calls[0].tool_name == "emergency_stop"
+            assert runs[0].tool_calls[0].status == "succeeded"
+            assert str(runs[0].tool_calls[0].effect_scope) == expected_scope
+            assert runs[0].tool_calls[0].raw_output["zero_velocity_command_published"] is True
+            assert runs[0].tool_calls[0].raw_output["motion_stop_observed"] is None
 
     asyncio.run(run())
 
     assert fake.halts == ["/cmd_vel"]
+    assert len(list((tmp_path / "reports" / "tasks").glob("task-*.json"))) == 1
+
+    from jenai.state.audit import AuditStore
+
+    events = AuditStore(tmp_path / "audit.sqlite3").list_events()
+    assert any(event.event_type == "run_finished" for event in events)
 
 
 def test_tui_stop_warns_when_navigation_cancel_is_unconfirmed(monkeypatch, tmp_path) -> None:
@@ -1501,7 +1557,7 @@ with events.open("a") as stream:
                 "halt-final",
             ]
             bodies = [item.body for item in app.query(TimelineItem)]
-            assert any("halted" in body.lower() for body in bodies)
+            assert any("zero-velocity command published" in body.lower() for body in bodies)
             return pid
 
     pid = asyncio.run(run())
@@ -1859,12 +1915,17 @@ def test_tui_stop_variants_preempt_and_clear_queue(monkeypatch, tmp_path) -> Non
             assert list(app._command_queue) == []
             bodies = [i.body for i in app.query(TimelineItem)]
             assert any("cleared 1 queued" in b.lower() for b in bodies)
-            assert any("halted" in b.lower() for b in bodies)
+            assert any("zero-velocity command published" in b.lower() for b in bodies)
 
     asyncio.run(run())
 
 
-def test_tui_natural_language_stop_preempts_and_clears_queue(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("stop_text", ["先停車，再回報機器人狀態", "停止移動"])
+def test_tui_natural_language_stop_preempts_and_clears_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stop_text: str,
+) -> None:
     """An explicit natural-language stop has the same scheduler priority as /stop."""
     from types import SimpleNamespace
 
@@ -1899,9 +1960,8 @@ def test_tui_natural_language_stop_preempts_and_clears_queue(monkeypatch, tmp_pa
             await active_started.wait()
             app._command_queue.append("/status")
 
-            request = "先停車，再回報機器人狀態"
             await app.on_input_submitted(
-                SimpleNamespace(value=request, input=SimpleNamespace(value=""))
+                SimpleNamespace(value=stop_text, input=SimpleNamespace(value=""))
             )
             stop_task = app._active_task
             assert stop_task is not active_task
@@ -1911,7 +1971,7 @@ def test_tui_natural_language_stop_preempts_and_clears_queue(monkeypatch, tmp_pa
 
             assert active_task.cancelled()
             assert list(app._command_queue) == []
-            assert processed == [request]
+            assert processed == [stop_text]
             assert events == ["halt"]
 
     asyncio.run(run())
@@ -2042,7 +2102,7 @@ def test_tui_escape_does_not_cancel_the_stop_task(monkeypatch, tmp_path) -> None
             release.set()
             await stop_task
             bodies = [i.body for i in app.query(TimelineItem)]
-            assert any("halted" in b.lower() for b in bodies)
+            assert any("zero-velocity command published" in b.lower() for b in bodies)
 
     asyncio.run(run())
 
@@ -2335,6 +2395,11 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
             app._mode = "plan"
             await app.handle_user_text("帶我去機械系館")  # plan → planner
 
+        app = _app()
+        app.config.vehicle.capabilities = ["navigate"]
+        async with app.run_test():
+            await app.handle_user_text("檢查目前機器人位置和 Nav2 狀態")
+
     asyncio.run(run())
     assert calls == [
         ("run", "帶我去機械系館"),
@@ -2342,6 +2407,7 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
         ("run", "檢查 Nav2 狀態，然後回到 dock。"),
         ("stop", "幫我檢查現在機器人的位置，然後停止機器人"),
         ("plan", "帶我去機械系館"),
+        ("run", "檢查目前機器人位置和 Nav2 狀態"),
     ]
 
 

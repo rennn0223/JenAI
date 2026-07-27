@@ -33,6 +33,10 @@ from jenai.schemas import (
     VisionOutput,
 )
 from jenai.site_assets import SiteAssetError, resolve_site_location
+from jenai.state.emergency_stop import (
+    begin_emergency_stop_run,
+    finish_emergency_stop_run,
+)
 from jenai.tools.drive_core import extract_drive_command
 from jenai.tools.mission_core import MissionStep, parse_mission
 from jenai.tools.nav_live import NavProgress
@@ -989,13 +993,21 @@ class RobotCommandsMixin(LocationCommandsMixin):
         """Final EMERGENCY STOP pulse — no approval gate; stopping is always safe."""
 
         self._spinner_label = "STOPPING"
+        handle = begin_emergency_stop_run(
+            self.run_store,
+            self.config,
+            session_id=self.session.session_id,
+            user_input="/stop",
+        )
         try:
             receipt = await self._halt_once()
         except BridgeError as exc:
+            finish_emergency_stop_run(self.run_store, handle, error=exc)
             await self._mount_event(
                 TimelineItem("warn", f"Final stop unavailable (no ROS bridge): {exc}")
             )
             return
+        finish_emergency_stop_run(self.run_store, handle, receipt=receipt)
         variant = (
             "warn"
             if receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED

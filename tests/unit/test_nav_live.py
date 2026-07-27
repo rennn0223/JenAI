@@ -123,7 +123,7 @@ def test_navigate_live_rejects_nav2_success_outside_endpoint_tolerance() -> None
         assert output.execution_status == "endpoint_mismatch"
         assert "Nav2 reported success" in output.route_preview
         assert "position error 0.080 m (limit 0.050 m)" in output.route_preview
-        assert "Post-stop zero-velocity halt was delivered." in output.route_preview
+        assert "Post-stop zero-velocity command was published." in output.route_preview
         assert "cancellation" not in output.route_preview
         assert bridge.halted == 1
 
@@ -205,7 +205,7 @@ def test_navigate_live_reports_unavailable_when_bridge_fails(fake_bridge, monkey
             assert output.execution_status == "unavailable"
             assert "goal acceptance is unknown" in output.route_preview
             assert "Do not assume that no movement occurred" in output.route_preview
-            assert "halt was delivered" in output.route_preview
+            assert "zero-velocity command was published" in output.route_preview
             assert halted == 1
         finally:
             # navigate_live borrows its bridge; the owner must always close it.
@@ -319,6 +319,20 @@ def test_navigate_live_retries_one_confirmed_near_endpoint_stall() -> None:
 
         assert output.execution_status == "succeeded"
         assert "Endpoint recovery retry 1/1" in output.route_preview
+        assert [item.attempt for item in output.navigation_attempts] == [1, 2]
+        first, recovered = output.navigation_attempts
+        assert first.execution_status == "failed"
+        assert first.endpoint_retry_allowed is True
+        assert first.halt_delivered is True
+        assert first.nav_cancel_acknowledged is True
+        assert "remained near the endpoint" in first.detail
+        assert recovered.execution_status == "succeeded"
+        assert recovered.halt_delivered is None
+        assert recovered.nav_cancel_acknowledged is None
+        assert "position error" in recovered.detail
+        assert first.tag
+        assert recovered.tag
+        assert first.tag != recovered.tag
         assert bridge.sent == 2
         assert bridge.halted == 1
         assert bridge.halt_arguments == [("/nova/cmd_vel", True)]
@@ -515,9 +529,12 @@ def test_navigate_live_timeout_reports_cancel_acknowledgement(acknowledged: bool
 
         assert output.execution_status == "failed"
         expected = (
-            "halt was delivered and Nav2 cancellation acknowledged."
+            "zero-velocity command was published and Nav2 cancellation acknowledged."
             if acknowledged
-            else "halt was delivered, but active Nav2 cancellation was not acknowledged."
+            else (
+                "zero-velocity command was published, but active Nav2 cancellation was not "
+                "acknowledged."
+            )
         )
         assert expected in output.route_preview
 
@@ -551,7 +568,9 @@ def test_navigate_live_reports_when_ambiguous_dispatch_cannot_be_halted() -> Non
 
     assert output.execution_status == "unavailable"
     assert "goal acceptance is unknown" in output.route_preview
-    assert "Emergency halt could not be delivered or confirmed" in output.route_preview
+    assert "Emergency zero-velocity command could not be published or confirmed" in (
+        output.route_preview
+    )
 
 
 def test_run_mission_uses_injected_navigator() -> None:

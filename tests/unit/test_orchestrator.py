@@ -177,11 +177,15 @@ def test_state_request_with_non_actuation_constraint_remains_read_only(query: st
     "query",
     [
         "停止機器人",
+        "停止移動",
+        "停止巡邏",
         "請立刻停車",
         "取消目前的導航",
         "Stop the robot.",
+        "Stop moving.",
         "Cancel the active navigation goal.",
         "幫我檢查現在機器人的位置，然後停止機器人",
+        "請停下來思考，然後停止機器人",
     ],
 )
 def test_explicit_stop_request_uses_emergency_stop_reflex(query: str) -> None:
@@ -192,8 +196,17 @@ def test_explicit_stop_request_uses_emergency_stop_reflex(query: str) -> None:
     "query",
     [
         "不要停止機器人",
+        "不要停車",
+        "別停下",
+        "不要急停",
+        "別急停",
         "請檢查位置，但不要取消導航",
         "Check the robot without stopping it.",
+        "Do not stop the robot.",
+        "Do not halt the robot.",
+        "Don't halt the robot.",
+        "Report status without halting the robot.",
+        "Don't cancel the active navigation goal.",
         "How does the emergency stop work?",
         "停止機器人是否安全？",
         "停止服務的文件",
@@ -277,8 +290,67 @@ def test_emergency_stop_run_halts_before_optional_state_snapshot(monkeypatch) ->
     ]
     assert result.status == "completed"
     assert result.outcome == "succeeded"
-    assert "已執行停止" in (result.final_output or "")
-    assert "停止後才擷取上述狀態" in (result.final_output or "")
+    assert "停止命令回執" in (result.final_output or "")
+    assert "上述狀態是在命令發布後擷取" in (result.final_output or "")
+
+
+@pytest.mark.parametrize(
+    ("deployment_mode", "expected_scope"),
+    [
+        ("simulation", "sim_control"),
+        ("physical", "robot_control"),
+    ],
+)
+def test_emergency_stop_run_records_deployment_aware_effect_scope(
+    monkeypatch,
+    deployment_mode: str,
+    expected_scope: str,
+) -> None:
+    async def fake_execute(config):
+        return SimpleNamespace(
+            navigation_cancel_status=NavigationCancelStatus.ACKNOWLEDGED,
+            navigation_goal_canceled=True,
+            zero_velocity_delivered=True,
+            message="Robot halted.",
+        )
+
+    monkeypatch.setattr(orchestrator, "execute_emergency_stop", fake_execute)
+    ctx = _ctx(monkeypatch)
+    ctx.config.deployment_mode = deployment_mode
+    ctx.run.user_input = "停止機器人"
+
+    result = asyncio.run(orchestrator.start_emergency_stop_run(ctx))
+
+    assert str(result.tool_calls[0].effect_scope) == expected_scope
+
+
+def test_emergency_stop_run_does_not_claim_observed_motion_stop_without_evidence(
+    monkeypatch,
+) -> None:
+    async def fake_execute(config):
+        return SimpleNamespace(
+            navigation_cancel_status=NavigationCancelStatus.ACKNOWLEDGED,
+            navigation_goal_canceled=True,
+            zero_velocity_delivered=True,
+            message=(
+                "Zero-velocity command published; navigation cancellation acknowledged. "
+                "Motion stop was not independently observed."
+            ),
+        )
+
+    monkeypatch.setattr(orchestrator, "execute_emergency_stop", fake_execute)
+    ctx = _ctx(monkeypatch)
+    ctx.run.user_input = "停止機器人"
+
+    result = asyncio.run(orchestrator.start_emergency_stop_run(ctx))
+
+    assert "已發布零速度命令" in (result.final_output or "")
+    assert "導航取消已確認" in (result.final_output or "")
+    assert "尚未由運動狀態證據確認車體停止" in (result.final_output or "")
+    assert "機器人已停止" not in (result.final_output or "")
+    assert "已送達" not in (result.final_output or "")
+    assert result.tool_calls[0].raw_output["zero_velocity_command_published"] is True
+    assert result.tool_calls[0].raw_output["motion_stop_observed"] is None
 
 
 def test_emergency_stop_run_preserves_success_when_state_inspection_fails(monkeypatch) -> None:
@@ -304,8 +376,45 @@ def test_emergency_stop_run_preserves_success_when_state_inspection_fails(monkey
     assert result.outcome == "partial"
     assert result.tool_calls[0].status == "succeeded"
     assert result.tool_calls[0].raw_output["zero_velocity_delivered"] is True
-    assert "停止指令已送達" in (result.final_output or "")
-    assert "無法取得停止後狀態" in (result.final_output or "")
+    assert "已發布零速度命令" in (result.final_output or "")
+    assert "無法取得命令發布後狀態" in (result.final_output or "")
+
+
+def test_emergency_stop_run_downgrades_recorded_state_tool_failure(monkeypatch) -> None:
+    async def fake_execute(config):
+        return SimpleNamespace(
+            navigation_cancel_status=NavigationCancelStatus.NOT_ACTIVE,
+            navigation_goal_canceled=False,
+            zero_velocity_delivered=True,
+            message="Robot halted (no active navigation goal, zero velocity sent).",
+        )
+
+    async def fake_inspect(wrapper) -> dict:
+        wrapper.context.run_store.add_tool_call(
+            wrapper.context.run,
+            ToolCallRecord(
+                tool_name="ros_state_tool",
+                category=ToolCallCategory.ROS2,
+                input_summary="read robot state",
+                status="failed",
+                output_summary="read nothing; Nav2 not ready",
+                raw_output={"nav2": {"ready": False, "checks": {}}},
+            ),
+        )
+        return {"nav2": {"ready": False, "checks": {}}}
+
+    monkeypatch.setattr(orchestrator, "execute_emergency_stop", fake_execute)
+    monkeypatch.setattr(orchestrator, "inspect_robot_state", fake_inspect)
+    ctx = _ctx(monkeypatch)
+    ctx.run.user_input = "停止機器人並回報目前狀態"
+
+    result = asyncio.run(orchestrator.start_emergency_stop_run(ctx))
+
+    assert result.status == "completed"
+    assert result.outcome == "partial"
+    assert result.tool_calls[-1].status == "failed"
+    assert "已發布零速度命令" in (result.final_output or "")
+    assert "無法取得命令發布後狀態" in (result.final_output or "")
 
 
 def test_emergency_stop_run_does_not_report_unconfirmed_cancel_as_success(monkeypatch) -> None:

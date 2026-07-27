@@ -5,7 +5,7 @@
 
 | 檔案 | 職責 |
 |---|---|
-| `safety.py` | provider-free 停止原語：`HaltReceipt`、`halt_robot`、`arm_watchdog`，各介面共用且未確認送達就失敗 |
+| `safety.py` | provider-free 停止原語：`HaltReceipt`、`halt_robot`、`arm_watchdog`；各介面共用且不把命令發布誤寫成已觀察車體停止 |
 | `emergency_stop.py` | 保守急停意圖辨識與完整 cancel-and-zero 服務；不依賴 LLM provider 或 Agent SDK |
 | `nav_live.py` | bridge 版導航(回饋/逾時/取消/餵 watchdog);**`navigate_with_fallback` = nav2-vs-CLI 調度唯一出處**,所有導航入口(含 daemon)都過它 → Twin Gate 掛在這裡 |
 | `skills.py` | 任務技能:`parse_patrol`/`run_patrol`、`parse_explore`/`run_explore`(已知點位低重複率隨機巡遊+時間/目標/失敗硬界線)、`find_dock` |

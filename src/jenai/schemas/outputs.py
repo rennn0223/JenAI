@@ -67,6 +67,16 @@ class RosPubOutput(JenAIModel):
     result_message: str = ""
 
 
+class NavigationAttemptEvidence(JenAIModel):
+    attempt: int
+    tag: str
+    execution_status: str
+    detail: str
+    endpoint_retry_allowed: bool = False
+    halt_delivered: bool | None = None
+    nav_cancel_acknowledged: bool | None = None
+
+
 class RouteOutput(JenAIModel):
     input_text: str
     resolved_start: Location | None = None
@@ -76,6 +86,7 @@ class RouteOutput(JenAIModel):
     outgoing_action: dict[str, Any] = Field(default_factory=dict)
     approval_status: str = "pending"
     execution_status: str = "not_executed"
+    navigation_attempts: list[NavigationAttemptEvidence] = Field(default_factory=list)
 
 
 class LocationSummary(JenAIModel):

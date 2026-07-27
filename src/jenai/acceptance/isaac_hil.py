@@ -1036,6 +1036,9 @@ async def _run_route_goal(
             elapsed_s=round(time.perf_counter() - started, 3),
             progress_samples=progress.finish(status=result.execution_status),
             gate_reports=gate_reports,
+            navigation_attempts=[
+                item.model_dump(mode="json") for item in result.navigation_attempts
+            ],
         )
     ]
     if execution_config.twin.enabled:

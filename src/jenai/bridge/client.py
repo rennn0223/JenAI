@@ -137,11 +137,16 @@ def _bridge_process_args(ros_setup: str, python: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class HaltEvidence:
-    """Validated evidence returned by the sidecar emergency-stop operation."""
+    """Validated sidecar publish and Nav2-cancellation evidence."""
 
     zero_velocity_delivered: bool
     navigation_cancel_requested: bool
     navigation_cancel_acknowledged: bool
+
+    @property
+    def zero_velocity_command_published(self) -> bool:
+        """Canonical name for the legacy wire-level publish-completion flag."""
+        return self.zero_velocity_delivered
 
 
 @dataclass(frozen=True)
@@ -865,7 +870,7 @@ class RosBridgeClient:
     async def halt_with_evidence(
         self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False
     ) -> HaltEvidence:
-        """Cancel Nav2, pulse zero velocity, and return validated evidence."""
+        """Cancel Nav2, publish zero-velocity pulses, and return validated evidence."""
         _require_nonempty_input("halt", "cmd_vel_topic", cmd_vel_topic)
         _require_bool_input("halt", "stamped", stamped)
         result = await self.request(
@@ -876,7 +881,7 @@ class RosBridgeClient:
         cancel_acknowledged = _require_bool(result, "nav_canceled", "halt")
         if not halted:
             raise BridgeError(
-                "invalid halt response: sidecar did not confirm zero-velocity delivery"
+                "invalid halt response: sidecar did not confirm zero-velocity publication"
             )
         if cancel_acknowledged and not cancel_requested:
             raise BridgeError(

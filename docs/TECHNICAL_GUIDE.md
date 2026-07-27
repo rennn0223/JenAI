@@ -236,7 +236,7 @@ jenai daemon                                        # Ctrl-C 停止
 | `tools/decision_core.py` | **M6 決策腦**(v0.21):`ContextSnapshot`(六欄位情境快照)→ 單次 `ask_json` 於封閉動作集單選 `Decision`;越界動作/幻覺目的地/解析失敗一律降級 refer_to_human,無自由文字可達致動 |
 | `tools/decision_eval.py` | **`JenAI eval`**(E1 評測):scenarios.toml 場景庫 → per-family accuracy / unsafe rate / refer rate;標註 `action:target` 綁定目標、gold 優先於 unsafe、未知動作名 fail-loud(論文工具鏈) |
 | `tools/user_skills.py` | **檔案定義技能**(v0.20):`skills/*.toml` → 新 slash 指令;與內建指令同一張批准卡;保留字拒載 |
-| `tools/safety.py` | provider-free `HaltReceipt`／`halt_robot`／`arm_watchdog`，未確認送達不回報成功 |
+| `tools/safety.py` | provider-free `HaltReceipt`／`halt_robot`／`arm_watchdog`；區分命令發布、Nav2 取消確認與尚未觀察車體停止 |
 | `tools/emergency_stop.py` | 保守急停意圖辨識與 cancel-and-zero 工作流程，不依賴 LLM provider 或 Agent SDK |
 | `tools/navigation_gateway.py` | **NavigationGateway(v0.25)**:所有導航的唯一出口——CLI/TUI/WebUI/MCP/daemon/任務/agent 工具全部經此;Twin Gate 與 watchdog 政策無法被直呼 route 執行繞過 |
 | `twin/gate.py` | **Twin Gate**:G1 碰撞/G2 逾時/G3 禁區/G4 終點偏差/G5 規劃失敗 → pass/block/refer;非有限 pose 不算有效樣本、缺孿生遙測回 refer(fail-closed) |

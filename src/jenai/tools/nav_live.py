@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from jenai.bridge import BridgeError, RosBridgeClient
 from jenai.config.models import AppConfig, VehicleProfile
-from jenai.schemas import GateReport, RouteOutput
+from jenai.schemas import GateReport, NavigationAttemptEvidence, RouteOutput
 
 
 @dataclass(frozen=True)
@@ -125,7 +125,10 @@ class _NavigationAttemptResult:
 
     execution: str
     detail: str
+    tag: str
     endpoint_retry_allowed: bool = False
+    halt_delivered: bool | None = None
+    nav_cancel_acknowledged: bool | None = None
 
 
 NavigationAction = dict[str, Any]
@@ -135,6 +138,8 @@ def _route_output(
     outgoing_action: NavigationAction,
     execution_status: str,
     detail: str,
+    *,
+    navigation_attempts: list[NavigationAttemptEvidence] | None = None,
 ) -> RouteOutput:
     """Build the canonical approved navigation result."""
     return RouteOutput(
@@ -143,6 +148,7 @@ def _route_output(
         approval_status="approved",
         execution_status=execution_status,
         route_preview=detail,
+        navigation_attempts=navigation_attempts or [],
     )
 
 
@@ -429,28 +435,41 @@ async def _run_navigation_attempt(
         execution, detail = await _accepted_navigation_outcome(
             bridge, terminal, goal, vehicle, direct=direct
         )
-        return _NavigationAttemptResult(execution, detail)
+        return _NavigationAttemptResult(execution=execution, detail=detail, tag=collector.tag)
     except _EndpointStalled:
         halt = await _halt_quietly(bridge, vehicle)
         retry_allowed = halt.delivered and halt.nav_cancel_acknowledged
         return _NavigationAttemptResult(
-            "failed",
-            "Navigation remained near the endpoint without a terminal Nav2 result. "
-            f"{_halt_detail(halt)}",
+            execution="failed",
+            detail=(
+                "Navigation remained near the endpoint without a terminal Nav2 result. "
+                f"{_halt_detail(halt)}"
+            ),
+            tag=collector.tag,
             endpoint_retry_allowed=retry_allowed,
+            halt_delivered=halt.delivered,
+            nav_cancel_acknowledged=halt.nav_cancel_acknowledged,
         )
     except BridgeError as exc:
         halt = await _halt_quietly(bridge, vehicle)
         return _NavigationAttemptResult(
-            "unavailable",
-            f"The bridge failed after navigation dispatch began ({exc}); goal acceptance "
-            f"is unknown. {_halt_detail(halt)} Do not assume that no movement occurred.",
+            execution="unavailable",
+            detail=(
+                f"The bridge failed after navigation dispatch began ({exc}); goal acceptance "
+                f"is unknown. {_halt_detail(halt)} Do not assume that no movement occurred."
+            ),
+            tag=collector.tag,
+            halt_delivered=halt.delivered,
+            nav_cancel_acknowledged=halt.nav_cancel_acknowledged,
         )
     except TimeoutError:
         halt = await _halt_quietly(bridge, vehicle)
         return _NavigationAttemptResult(
-            "failed",
-            f"Navigation timed out after {timeout:.0f}s. {_halt_detail(halt)}",
+            execution="failed",
+            detail=f"Navigation timed out after {timeout:.0f}s. {_halt_detail(halt)}",
+            tag=collector.tag,
+            halt_delivered=halt.delivered,
+            nav_cancel_acknowledged=halt.nav_cancel_acknowledged,
         )
     except asyncio.CancelledError:
         halt = await _halt_quietly(bridge, vehicle)
@@ -495,6 +514,7 @@ async def navigate_live(
     retry_limit = vehicle.nav_endpoint_retry_limit if vehicle is not None and not direct else 0
     attempt_timeout = timeout
     first_stall_detail: str | None = None
+    navigation_attempts: list[NavigationAttemptEvidence] = []
     for attempt in range(retry_limit + 1):
         result = await _run_navigation_attempt(
             bridge,
@@ -506,11 +526,30 @@ async def navigate_live(
             vehicle=vehicle,
             avoidance=avoidance,
         )
+        navigation_attempts.append(
+            NavigationAttemptEvidence(
+                attempt=attempt + 1,
+                tag=result.tag,
+                execution_status=result.execution,
+                detail=result.detail,
+                endpoint_retry_allowed=result.endpoint_retry_allowed,
+                halt_delivered=result.halt_delivered,
+                nav_cancel_acknowledged=result.nav_cancel_acknowledged,
+            )
+        )
         if result.execution == "succeeded":
             detail = result.detail
             if attempt > 0:
-                detail = f"Endpoint recovery retry {attempt}/{retry_limit} succeeded. {detail}"
-            return _route_output(outgoing_action, result.execution, detail)
+                detail = (
+                    f"Initial attempt: {first_stall_detail} "
+                    f"Endpoint recovery retry {attempt}/{retry_limit} succeeded. {detail}"
+                )
+            return _route_output(
+                outgoing_action,
+                result.execution,
+                detail,
+                navigation_attempts=navigation_attempts,
+            )
 
         if result.endpoint_retry_allowed and attempt < retry_limit and vehicle is not None:
             first_stall_detail = result.detail
@@ -523,7 +562,12 @@ async def navigate_live(
                 f"Endpoint recovery retry {attempt}/{retry_limit} failed. "
                 f"Initial attempt: {first_stall_detail} Final attempt: {detail}"
             )
-        return _route_output(outgoing_action, result.execution, detail)
+        return _route_output(
+            outgoing_action,
+            result.execution,
+            detail,
+            navigation_attempts=navigation_attempts,
+        )
 
     raise AssertionError("navigation retry loop exhausted without an outcome")
 
@@ -553,13 +597,13 @@ def _halt_detail(
     cancellation_expected: bool = True,
 ) -> str:
     if not outcome.delivered:
-        return "Emergency halt could not be delivered or confirmed."
+        return "Emergency zero-velocity command could not be published or confirmed."
     if not cancellation_expected:
-        return "Post-stop zero-velocity halt was delivered."
+        return "Post-stop zero-velocity command was published."
     if outcome.nav_cancel_acknowledged:
-        return "Emergency zero-velocity halt was delivered and Nav2 cancellation acknowledged."
+        return "Emergency zero-velocity command was published and Nav2 cancellation acknowledged."
     return (
-        "Emergency zero-velocity halt was delivered, but active Nav2 cancellation was not "
+        "Emergency zero-velocity command was published, but active Nav2 cancellation was not "
         "acknowledged."
     )
 

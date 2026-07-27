@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
+from jenai.agent import run_agent
 from jenai.agent.intent_routing import RunAgentRoute, route_run_request
 from jenai.agent.run_agent import build_run_agent
 from jenai.config.store import build_minimal_config
@@ -61,3 +65,33 @@ def test_area_patrol_requires_a_registered_workflow_capability() -> None:
 
     assert route_run_request(task) is RunAgentRoute.AREA_PATROL
     assert build_run_agent(config, task).name == "JenAI"
+
+
+def test_read_only_fast_path_requires_registered_inspection_capability(monkeypatch) -> None:
+    config = _config()
+    config.vehicle.capabilities = ["navigate"]
+    task = "檢查目前機器人位置和 Nav2 狀態"
+    expected = SimpleNamespace(status="completed", final_output="handled by agent")
+    general_agent = object()
+    calls: list[tuple[object, str]] = []
+
+    async def unexpected_state_run(ctx):
+        raise AssertionError("unregistered inspect_state used the deterministic Fast Path")
+
+    async def fake_start_run(agent, ctx, user_input):
+        calls.append((agent, user_input))
+        return expected
+
+    monkeypatch.setattr(run_agent.orchestrator, "start_read_only_state_run", unexpected_state_run)
+    monkeypatch.setattr(run_agent.orchestrator, "start_run", fake_start_run)
+    monkeypatch.setattr(run_agent, "build_run_agent", lambda config, task: general_agent)
+
+    result = asyncio.run(
+        run_agent.run_task(
+            SimpleNamespace(config=config),
+            task,
+        )
+    )
+
+    assert result is expected
+    assert calls == [(general_agent, task)]

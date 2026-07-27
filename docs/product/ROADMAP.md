@@ -184,6 +184,7 @@
 | M6 延遲過高(邊緣) | 自主迴圈不即時 | 事件觸發 + 快取 + 小模型;LLM 永不進即時層(避障/急停在反射層) |
 | ~~客戶端進度(B 層)卡整體~~ | ~~v1.0 數據缺~~ | 已解除(2026-07-16 v1.0 定稿);留欄作歷史 |
 | 依賴/ROS 版本漂移 | 建置壞掉 | lock + 相容測試 + 協定版本化 |
+| 多入口各自持有 process-local bridge、busy lock 與 pending approval | TUI／WebUI／MCP／daemon 可能跨程序競爭 goal；某入口 STOP 後，其他入口的舊批准仍可能重新啟動移動 | P0 architecture epic：先建立 per-robot/domain global action lease 與 safety epoch；中期收斂為單一 RobotRuntime command authority。完成前不得宣稱 Navigation Gateway 已提供跨程序互斥 |
 
 ---
 

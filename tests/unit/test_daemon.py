@@ -542,7 +542,10 @@ def test_daemon_halt_unconfirmed_is_audited_as_failed(monkeypatch) -> None:
         return HaltReceipt(
             navigation_cancel_status=NavigationCancelStatus.UNCONFIRMED,
             zero_velocity_delivered=True,
-            message="Zero velocity delivered; cancellation not acknowledged.",
+            message=(
+                "Zero-velocity command published, but navigation cancellation was not "
+                "acknowledged. Motion stop was not independently observed."
+            ),
         )
 
     class Worker:

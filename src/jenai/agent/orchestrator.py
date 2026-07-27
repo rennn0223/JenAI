@@ -40,6 +40,7 @@ from jenai.schemas.models import new_id
 from jenai.task_results import agent_completion_outcome, run_status_for_outcome
 from jenai.tools.approval_formatters import format_approval
 from jenai.tools.emergency_stop import (
+    emergency_stop_effect_scope,
     execute_emergency_stop,
 )
 from jenai.tools.emergency_stop import (
@@ -47,7 +48,7 @@ from jenai.tools.emergency_stop import (
 )
 from jenai.tools.registry import TOOL_RISK_REGISTRY
 from jenai.tools.ros2_agent_tools import inspect_robot_state
-from jenai.tools.safety import NavigationCancelStatus
+from jenai.tools.safety import NavigationCancelStatus, halt_receipt_evidence
 
 _RUN_ERRORS = (MaxTurnsExceeded, ModelBehaviorError, ToolTimeoutError)
 logger = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ async def start_emergency_stop_run(ctx: JenAIRunContext) -> RunRecord:
         input_summary="cancel navigation and deliver zero velocity",
         status=ToolCallStatus.RUNNING,
         risk_level=RiskLevel.P0,
-        effect_scope=EffectScope.SIM_CONTROL,
+        effect_scope=emergency_stop_effect_scope(ctx.config),
     )
     run_store.add_tool_call(run, call)
     try:
@@ -168,10 +169,14 @@ async def start_emergency_stop_run(ctx: JenAIRunContext) -> RunRecord:
     cancel_unconfirmed = receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED
     if output_language_for(run.user_input) == "zh-TW":
         message = {
-            NavigationCancelStatus.ACKNOWLEDGED: "機器人已停止（導航目標已取消，已送出零速度）。",
-            NavigationCancelStatus.UNCONFIRMED: ("零速度已送達，但導航取消尚未獲得確認。"),
+            NavigationCancelStatus.ACKNOWLEDGED: (
+                "已發布零速度命令，且導航取消已確認；尚未由運動狀態證據確認車體停止。"
+            ),
+            NavigationCancelStatus.UNCONFIRMED: (
+                "已發布零速度命令，但導航取消尚未獲得確認；尚未由運動狀態證據確認車體停止。"
+            ),
             NavigationCancelStatus.NOT_ACTIVE: (
-                "機器人已停止（沒有進行中的導航目標，已送出零速度）。"
+                "已發布零速度命令，且系統未回報進行中的導航目標；尚未由運動狀態證據確認車體停止。"
             ),
         }[receipt.navigation_cancel_status]
     else:
@@ -181,33 +186,47 @@ async def start_emergency_stop_run(ctx: JenAIRunContext) -> RunRecord:
         call.tool_call_id,
         status=(ToolCallStatus.FAILED if cancel_unconfirmed else ToolCallStatus.SUCCEEDED),
         output_summary=message,
-        raw_output={
-            "navigation_cancel_status": receipt.navigation_cancel_status.value,
-            "navigation_goal_canceled": receipt.navigation_goal_canceled,
-            "zero_velocity_delivered": receipt.zero_velocity_delivered,
-            "message": message,
-        },
+        raw_output={**halt_receipt_evidence(receipt), "message": message},
     )
 
-    inspection_error: Exception | None = None
+    inspection_failure: str | None = None
     if requests_state_inspection(run.user_input):
+        first_inspection_call = len(run.tool_calls)
         try:
             await inspect_robot_state(RunContextWrapper(ctx))
         except Exception as exc:
-            inspection_error = exc
+            inspection_failure = str(exc)
+        else:
+            inspection_calls = [
+                item
+                for item in run.tool_calls[first_inspection_call:]
+                if item.tool_name == "ros_state_tool"
+            ]
+            if not inspection_calls:
+                inspection_failure = "state inspection produced no recorded evidence"
+            elif inspection_calls[-1].status != ToolCallStatus.SUCCEEDED:
+                inspection_failure = (
+                    inspection_calls[-1].output_summary
+                    or "state inspection did not produce verified evidence"
+                )
 
     outcome = (
         TaskOutcome.PARTIAL
-        if cancel_unconfirmed or inspection_error is not None
+        if cancel_unconfirmed or inspection_failure is not None
         else TaskOutcome.SUCCEEDED
     )
-    final_output = _deterministic_state_report(run) or message
-    if inspection_error is not None:
+    final_output = (
+        message if inspection_failure is not None else (_deterministic_state_report(run) or message)
+    )
+    if inspection_failure is not None:
         zh = output_language_for(run.user_input) == "zh-TW"
         suffix = (
-            f"停止指令已送達，但無法取得停止後狀態：{inspection_error}"
+            f"已發布零速度命令，但無法取得命令發布後狀態：{inspection_failure}"
             if zh
-            else f"The stop was delivered, but post-stop state was unavailable: {inspection_error}"
+            else (
+                "The zero-velocity command was published, but the subsequent state "
+                f"was unavailable: {inspection_failure}"
+            )
         )
         final_output = f"{message}\n\n{suffix}"
     run_store.finish(
@@ -521,7 +540,7 @@ def _deterministic_state_report(run: RunRecord) -> str:
             f"  {'有快照' if availability.get('odom') else '本次未取得快照'}\n\n"
             "安全性\n"
             + (
-                f"  已執行停止：{stop_message}\n  停止後才擷取上述狀態。"
+                f"  停止命令回執：{stop_message}\n  上述狀態是在命令發布後擷取。"
                 if stopped_report
                 else "  本次查詢未送出任何移動指令。"
             )
@@ -548,7 +567,8 @@ def _deterministic_state_report(run: RunRecord) -> str:
         f"  {'Snapshot available' if availability.get('odom') else 'Not captured'}\n\n"
         "Safety\n"
         + (
-            f"  Stop delivered: {stop_message}\n  The state above was captured after stopping."
+            f"  Stop command receipt: {stop_message}\n"
+            "  The state above was captured after command publication."
             if stopped_report
             else "  This query issued no motion command."
         )

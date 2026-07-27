@@ -12,9 +12,12 @@ from jenai.tools.safety import NavigationCancelStatus, halt_robot_with_receipt
 
 
 def test_halt_receipt_preserves_confirmed_zero_and_cancel_evidence() -> None:
+    evidence = HaltEvidence(True, True, True)
+    assert evidence.zero_velocity_command_published is True
+
     class Bridge:
         async def halt_with_evidence(self, cmd_vel_topic="/cmd_vel", stamped=False) -> HaltEvidence:
-            return HaltEvidence(True, True, True)
+            return evidence
 
     receipt = asyncio.run(
         halt_robot_with_receipt(
@@ -24,9 +27,15 @@ def test_halt_receipt_preserves_confirmed_zero_and_cancel_evidence() -> None:
     )
 
     assert receipt.zero_velocity_delivered is True
+    assert receipt.zero_velocity_command_published is True
+    assert receipt.motion_stop_observed is None
     assert receipt.navigation_goal_canceled is True
     assert receipt.navigation_cancel_status is NavigationCancelStatus.ACKNOWLEDGED
-    assert "navigation goal canceled" in receipt.message
+    assert "Zero-velocity command published" in receipt.message
+    assert "navigation cancellation acknowledged" in receipt.message
+    assert "Motion stop was not independently observed" in receipt.message
+    assert "halted" not in receipt.message.lower()
+    assert "delivered" not in receipt.message.lower()
 
 
 def test_halt_receipt_is_not_created_when_delivery_is_unconfirmed() -> None:

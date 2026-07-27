@@ -181,7 +181,8 @@ shell 的歷史狀態。
 - queue 回到空值，沒有 pending approval 或殘留 active task。
 
 若要驗急停，另開獨立情境 `TUI-STOP-001`：車輛開始移動後輸入 `/stop`，確認 queue 與
-pending approvals 被清除、Nav2 cancel acknowledgement 已記錄、zero velocity 已送達。
+pending approvals 被清除、Nav2 cancel acknowledgement 已記錄、zero-velocity command
+已完成發布。只有另有新鮮 odom／controller 證據時，才可宣稱已觀察到車體停止。
 不得把它接在失敗的 route 後面算成同一次 route PASS。
 
 ## 9. 自然語言與 Dock smoke
