@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-30
+- Implementation: Accepted direction; production migration has not started
 
 ## Context
 

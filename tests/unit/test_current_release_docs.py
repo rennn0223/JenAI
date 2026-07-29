@@ -1,16 +1,19 @@
-"""Current public guidance must follow the package's published version."""
+"""Current public guidance must follow the independently published release."""
 
 from __future__ import annotations
 
-import tomllib
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _version() -> str:
-    with (ROOT / "pyproject.toml").open("rb") as handle:
-        return tomllib.load(handle)["project"]["version"]
+def _published_version() -> str:
+    manifest = json.loads((ROOT / "docs/releases/published.json").read_text(encoding="utf-8"))
+    version = manifest["version"]
+    assert manifest["tag"] == f"v{version}"
+    assert (ROOT / f"docs/releases/v{version}.md").is_file()
+    return str(version)
 
 
 def _read(path: str) -> str:
@@ -18,7 +21,7 @@ def _read(path: str) -> str:
 
 
 def test_public_installation_guides_name_the_current_release() -> None:
-    version = _version()
+    version = _published_version()
     release_truth = f"目前 repository 是 public；v{version} Release 公開提供"
     for path in (
         "README.md",
@@ -31,10 +34,11 @@ def test_public_installation_guides_name_the_current_release() -> None:
 
     assert f"目前穩定版請使用 `v{version}`" in _read("README.md")
     assert f"目前穩定版為 `v{version}`" in _read("docs/QUICKSTART.md")
+    assert f'PRODUCT_VERSION = "{version}"' in _read("website/lib/product.ts")
 
 
 def test_living_release_status_no_longer_calls_current_version_a_candidate() -> None:
-    version = _version()
+    version = _published_version()
     readiness = _read("docs/product/PRODUCT_READINESS.md")
     handoff_title = _read("docs/product/HANDOFF.md").splitlines()[0]
     test_manual = _read("docs/validation/TEST.md")
