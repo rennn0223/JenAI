@@ -30,11 +30,24 @@ branch. They use the same deterministic provider fixture and viewport.
 |---|---|
 | ![TUI before, narrow](evidence/product-polish/tui-before-narrow.svg) | ![TUI after, narrow](evidence/product-polish/tui-after-narrow.svg) |
 
-The WebUI’s deterministic rendered documents are preserved as
+The WebUI and documentation website images below are rendered from their real production HTML and
+CSS at 1440 × 1000. The GPU-backed Firefox capture path is unavailable on this headless DGX, so
+these static views use WeasyPrint; JavaScript interaction and responsive behaviour remain covered
+by rendered-output tests. Inspectable WebUI documents are also preserved as
 [before](evidence/product-polish/webui-before.html) and
-[after](evidence/product-polish/webui-after.html) snapshots. Browser PNG capture was not available
-on the headless DGX graphics stack, so the production HTML, CSS, accessibility tree, and generated
-JavaScript are checked directly instead of presenting a synthetic image.
+[after](evidence/product-polish/webui-after.html).
+
+### Auxiliary WebUI — desktop
+
+| Before | After |
+|---|---|
+| ![WebUI before, desktop](evidence/product-polish/webui-before-desktop.png) | ![WebUI after, desktop](evidence/product-polish/webui-after-desktop.png) |
+
+### Documentation website — desktop
+
+| Before | After |
+|---|---|
+| ![Website before, desktop](evidence/product-polish/website-before-desktop.png) | ![Website after, desktop](evidence/product-polish/website-after-desktop.png) |
 
 ## First useful task checklist
 
