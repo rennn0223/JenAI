@@ -63,6 +63,7 @@ approval, policy, and evidence interfaces.
 | `tui/`, `webui/`, `cli/`, `mcp_server/` | Human or external entry points | Rendering and transport only; shared execution modules own behaviour |
 | `providers/` | OpenAI-compatible model interface | Ollama, NVIDIA NIM, or other configured providers |
 | `config/`, `site_profiles.py`, `site_assets.py` | Validated configuration and site identity | Provider, vehicle, map, location, policy, and deployment configuration |
+| `adapters/nxdog.py` | Read one typed NXDog observation snapshot | Experimental HTTP transport, strict payload validation, partial-failure evidence |
 | `acceptance/` | Reproducible HIL acceptance run | Isaac Sim/Nav2 preflight, route, cancel, halt, and evidence capture |
 
 ## Important seams
@@ -95,6 +96,11 @@ JenAI decision side
 Robot runtime side
   Workflow / Navigation Gateway / ROS bridge / Nav2
 ```
+
+NXDog HTTP observer 刻意位於 motion path 之外：Doctor 只能透過它取得 vendor 可觀察狀態，
+不得註冊 Agent motion tool、授權移動或宣稱定位與導航 ready。未來 NXDog motion
+integration 必須通過現有 Navigation Gateway，並遵守相同的批准、取消、evidence、
+outcome 與 audit contract；TUI／WebUI 不得直接呼叫 vendor motion endpoint。
 
 Split repositories only after this interface is stable and at least two independent runtimes
 need separate release cycles.

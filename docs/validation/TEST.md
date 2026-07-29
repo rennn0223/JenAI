@@ -38,6 +38,7 @@
 | Release gate | 推 `vX.Y.Z` tag,或手動 dispatch(輸入 tag) | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → tag push 建草稿(人工發佈);dispatch 由 workflow 建 tag 並以 `docs/releases/<tag>.md` 直接發佈 |
 | 安全鏈覆蓋閘 | CI `test` job 自動跑 | branch coverage：整體 `fail-under=76`；estop/watchdog/bridge/gate/rules `fail-under=90`（現況 94%），倒退即紅 |
 | Bridge wire 邊界 | `uv run pytest -q tests/unit/test_bridge_client.py tests/unit/test_bridge_protocol.py tests/unit/test_bridge_state.py tests/unit/test_bridge_server.py tests/unit/test_bridge_wire.py` | client 與 system-Python sidecar 雙層拒絕錯誤 bool、字串數字、NaN/Inf、零／負 timeout 與不一致回執；無效 request 在 ROS node dispatch 前失敗 |
+| NXDog 唯讀 observer | `uv run pytest -q tests/unit/test_nxdog_observer.py tests/unit/test_doctor_nxdog.py` | fake HTTP server 與 doctor projection 驗證 schema、partial failure、URL opt-in；不證明導航、定位、停止或硬體安全 |
 | 稽核紀錄 | 自動化測試 + 執行任一 TUI run | `<config 目錄>/audit.sqlite3` 保存 run/approval/tool/gate 事件,重啟後仍在;最多 10,000 筆且不含 prompt/raw payload |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `artifacts/experiments/soak/soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 

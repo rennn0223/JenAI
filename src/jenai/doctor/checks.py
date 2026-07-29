@@ -16,6 +16,7 @@ from jenai.config import (
     default_env_file_path,
     load_config,
 )
+from jenai.doctor.nxdog import check_nxdog
 from jenai.doctor.site import check_site
 from jenai.schemas import DoctorCheckItem, DoctorResult, DoctorStatus
 
@@ -66,6 +67,7 @@ def run_doctor(config_path: Path | None = None, *, include_nav: bool = True) -> 
         items.extend(_check_nav_stack(config))
         items.extend(check_site(config, config_path))
         items.extend(_check_twin(config))
+        items.extend(check_nxdog())
     items.extend(_check_provider(config))
     items.extend(_check_locations(config, config_path))
     items.extend(_check_webui_assets())

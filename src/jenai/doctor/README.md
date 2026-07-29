@@ -7,3 +7,7 @@ locations、webui、twin(啟用時探孿生 domain)。
 
 原則:誠實回報 —— 沒有的後端就 warn/fail 並給修法,絕不假裝 pass。
 `--json` 供機器讀(`{overall, items[], checked_at}`)。
+
+若明確設定 `JENAI_NXDOG_API_URL`，完整 doctor 會以唯讀 HTTP 觀測 NXDog health、ready、
+map、pose、velocity 與 charging state。API reachable／ready 不等同導航 action、定位或
+實體安全已驗證；未設定時完全不探測。

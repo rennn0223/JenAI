@@ -16,6 +16,7 @@ import re
 import tomllib
 from pathlib import Path
 
+from jenai.adapters.nxdog import NXDOG_READ_ONLY_ENDPOINTS
 from jenai.agent.specialists import build_supervisor_agent
 from jenai.config.store import build_minimal_config
 
@@ -88,6 +89,44 @@ def test_reflex_layer_never_imports_the_llm_stack() -> None:
         "Reflex/safety layer must survive a dead LLM — remove these imports:\n"
         + "\n".join(violations)
     )
+
+
+def test_nxdog_adapter_stays_observation_only_and_doctor_scoped() -> None:
+    """NXDog cannot silently become an Agent, UI, MCP, or Workflow motion seam."""
+
+    expected = (
+        "/nav_health",
+        "/get_ready_flag",
+        "/current_map",
+        "/odom",
+        "/velocity",
+        "/is_charging",
+    )
+    assert NXDOG_READ_ONLY_ENDPOINTS == expected
+    assert not set(expected).intersection(
+        {
+            "/navigate",
+            "/stop",
+            "/pause",
+            "/resume",
+            "/set_cmd_vel",
+            "/set_initialpose",
+            "/map",
+            "/charging",
+            "/auto_charging_stop",
+            "/set_sport_action",
+        }
+    )
+
+    allowed_importers = {"doctor/nxdog.py"}
+    actual_importers: set[str] = set()
+    for path in SRC.rglob("*.py"):
+        relative = path.relative_to(SRC).as_posix()
+        if relative == "adapters/nxdog.py":
+            continue
+        if "jenai.adapters.nxdog" in _imports_of(path):
+            actual_importers.add(relative)
+    assert actual_importers == allowed_importers
 
 
 def test_workflow_domain_is_independent_of_llm_ros_and_user_interfaces() -> None:

@@ -34,7 +34,8 @@
 | ROS2 vehicle | Humble ↔ Jazzy host | Experimental | 跨機 DDS 尚未完成正式固定任務集 |
 | Simulation | Isaac Sim 5.1.0-rc.19 + ROS2 Jazzy/Nav2 + Carter/Leatherback acceptance scenes | Supported | HIL-FS2 在 clean `d942130…855` 通過兩條 route、acknowledged cancel／software halt 與完整 FullScan gate；Hero 在 clean `cc6d217…f6e` 為 10/10 固定 route legs，並保留 0-goal preflight failure。Twin 同 domain 為 skip；因場景／map hash、10 次完整 demo 與 separated-domain Twin 尚缺，維持 Supported |
 | Physical Ackermann | 小型 ROS2 Ackermann 車 | Experimental | 先前同指令整合作背景；本版未完成正式實體任務集 |
-| Quadruped | Vendor ROS2/Nav2 quadruped | Planned | 只有高階 schema 設計；adapter、步態 API 與物理 PoC 未完成 |
+| NXDog physical observation | Vendor HTTP example | Experimental | 唯讀 health／ready／map／pose／velocity／charging；unauthenticated API，不構成 motion claim |
+| Quadruped motion | Vendor-specific | Planned | 尚無通過 Navigation Gateway 與實體 acceptance 的 runtime |
 | Unknown-map exploration | Frontier SLAM | Not supported | `/explore` 僅巡遊已知且合格的儲存點位 |
 
 ## 模型與介面
