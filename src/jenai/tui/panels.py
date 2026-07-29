@@ -52,19 +52,19 @@ class WelcomePanel(Container):
         self.border_title = f"JenAI v{self.version}"
         with Horizontal(id="welcome-content"):
             with Vertical(id="welcome-left"):
-                yield Static("Welcome back!", id="welcome-greeting", classes="heading")
+                yield Static("歡迎回來！", id="welcome-greeting", classes="heading")
                 yield Static(pixel_mark(), id="pixel-mark")
                 yield Static(self._provider_meta(), id="welcome-provider-meta", classes="meta")
             with Vertical(id="welcome-right"):
-                yield Static("Tips for getting started", classes="welcome-section-title")
+                yield Static("快速開始", classes="welcome-section-title")
                 yield Static(
-                    "Run [bold #f2ede4]/doctor[/] to check ROS 2 and provider readiness\n"
-                    "Run [bold #f2ede4]/run <task>[/] to plan and execute a robot task\n"
-                    "Use [bold #f2ede4]/help[/] to learn commands and shortcuts",
+                    "直接輸入任務，例如「檢查機器人狀態」\n"
+                    "執行 [bold #f2ede4]/doctor[/]，確認 ROS 2 與模型服務就緒\n"
+                    "輸入 [bold #f2ede4]/help[/]，查看指令與快捷鍵",
                     id="welcome-quick-start",
                 )
-                yield Static("Recent activity", classes="welcome-section-title recent-title")
-                yield Static("No activity in this session yet", id="welcome-recent", classes="meta")
+                yield Static("本次操作", classes="welcome-section-title recent-title")
+                yield Static("這個 session 尚無操作紀錄", id="welcome-recent", classes="meta")
 
     def record_activity(self, value: str) -> None:
         """Show the two most recent session inputs without echoing shell text."""
@@ -72,7 +72,7 @@ class WelcomePanel(Container):
         if not label:
             return
         if label.startswith("!"):
-            label = "! shell command"
+            label = "! shell 指令"
         elif len(label) > 60:
             label = label[:57] + "…"
         label = escape(label)
@@ -80,12 +80,12 @@ class WelcomePanel(Container):
             self._recent_activity.insert(0, label)
             del self._recent_activity[2:]
         self.query_one("#welcome-recent", Static).update(
-            "\n".join(f"[#7a756c]now[/]  {item}" for item in self._recent_activity)
+            "\n".join(f"[#7a756c]剛剛[/]  {item}" for item in self._recent_activity)
         )
 
     def clear_activity(self) -> None:
         self._recent_activity.clear()
-        self.query_one("#welcome-recent", Static).update("No activity in this session yet")
+        self.query_one("#welcome-recent", Static).update("這個 session 尚無操作紀錄")
 
     def update_model(
         self,
@@ -240,7 +240,7 @@ class CommandPalette(Static):
         selected_index: int,
     ) -> None:
         if not matches:
-            self.update("[#9c9689]No matching commands[/]")
+            self.update("[#9c9689]找不到相符指令[/]")
             return
 
         total = len(matches)
@@ -259,12 +259,12 @@ class CommandPalette(Static):
         # One visual row per command keeps the selected item and composer
         # reachable in compact terminals; long descriptions end in an ellipsis.
         text = Text(no_wrap=True, overflow="ellipsis")
-        text.append(f"Commands  ({selected_index + 1}/{total})\n", style=f"bold {ACCENT}")
+        text.append(f"指令  ({selected_index + 1}/{total})\n", style=f"bold {ACCENT}")
         # Keep every command label visually separate from its description,
         # including long entries such as ``/perception start``.
         name_width = max(18, max(len(command.name) for command in matches) + 2)
         if start > 0:
-            text.append(f"  ↑ {start} more\n", style=MUTED)
+            text.append(f"  ↑ 還有 {start} 個\n", style=MUTED)
         for index in range(start, end):
             command = matches[index]
             selected = index == selected_index
@@ -275,7 +275,7 @@ class CommandPalette(Static):
             text.append(command.description, style=MUTED)
             text.append("\n")
         if end < total:
-            text.append(f"  ↓ {total - end} more", style=MUTED)
+            text.append(f"  ↓ 還有 {total - end} 個", style=MUTED)
         text.rstrip()
         self.update(text)
 

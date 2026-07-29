@@ -1,6 +1,6 @@
 # JenAI UX 規格
 
-> **現行規格（2026-07-18）**：對應已實作並通過寬／窄終端測試的 TUI；外觀變更須先以獨立樣本取得使用者確認。
+> **現行規格（2026-07-30）**：對應已實作並通過寬／窄終端測試的 TUI；外觀變更須先以獨立樣本取得使用者確認。
 
 
 ## 設計原則
@@ -21,13 +21,13 @@
 columns 時折成單欄並隱藏右欄；小於 56 columns 時再隱藏吉祥物與產品副標。
 
 ```text
-╭─ JenAI v1.x ─────────────────────────────────────────────────────╮
-│  Welcome back!                  Quick start                       │
-│       (動態像素臘腸狗)          /help       Learn JenAI commands │
-│  Robot decision agent           /doctor     Check ROS2 setup      │
-│  qwen3.6:35b · ollama           /run        Execute a task        │
+╭─ JenAI v2.5.1 ───────────────────────────────────────────────────╮
+│  歡迎回來！                     快速開始                          │
+│       (動態像素臘腸狗)          直接輸入任務，例如「檢查機器人狀態」│
+│  Robot decision agent           /doctor  確認 ROS 2 與模型服務就緒│
+│  qwen3.6:35b · ollama           /help    查看指令與快捷鍵         │
 │  ~/JenAI                         ────────────────────────────────  │
-│                                 Recent activity                  │
+│                                 本次操作 · 尚無操作紀錄           │
 ╰──────────────────────────────────────────────────────────────────╯
 
 ❯ /route 從應科大樓到機械系館
@@ -41,14 +41,14 @@ columns 時折成單欄並隱藏右欄；小於 56 columns 時再隱藏吉祥物
 Send a navigation goal to the route adapter.
 May move the connected robot or simulator.
 
-Do you want to proceed?
-❯ 1. Yes
-  2. Yes, and remember this tool for this session
-  3. No
+要繼續嗎？
+❯ 1. 本次允許
+  2. 允許，這個 session 不再詢問這項工具
+  3. 不允許
 ──────────────────────────────────────────────────────────────────
-✻ Running… (8s · esc to interrupt)
+✻ 執行中… (8s · Esc 中斷)
 ──────────────────────────────────────────────────────────────────
-❯ Ask JenAI, / for commands, ! for shell
+❯ 輸入任務，或按 / 查看指令
 ──────────────────────────────────────────────────────────────────
 approve · ollama                              qwen3.6:35b · ~/JenAI
 ```
@@ -72,7 +72,7 @@ approve · ollama                              qwen3.6:35b · ~/JenAI
 
 ### 顯示格式（每列）
 ```text
-❯ /ros schema     Summarize a ROS2 topic's message schema
+❯ /ros schema     查看 ROS 2 topic 的 message schema
 ```
 
 palette 顯示命令名與一句說明；補全只填入命令名，參數格式另以灰色唯讀 hint 顯示，不把 placeholder 塞進 composer。
@@ -123,12 +123,12 @@ Tab 或 Enter 只補成命令名與尾端空格；需要的參數格式顯示於
 Approval card 出現時取得鍵盤焦點，採 Claude Code 風格的**編號選項**。有界、非 host 的 P0/P1 可顯示：
 
 ```
-❯ 1. Yes
-  2. Yes, and remember this tool for this session
-  3. No
+❯ 1. 本次允許
+  2. 允許，這個 session 不再詢問這項工具
+  3. 不允許
 ```
 
-`HOST_COMMAND` 或 P2 僅顯示一次性的 `Yes`／`No`；P2、`HOST_COMMAND` 與機器人控制預選 `No`。`↑/↓` 移動、`Enter` 選定，
+`HOST_COMMAND` 或 P2 僅顯示一次性的「本次允許」／「不允許」；P2、`HOST_COMMAND` 與機器人控制預選「不允許」。`↑/↓` 移動、`Enter` 選定，
 或直接按畫面上存在的數字鍵；`Esc` 永遠拒絕。auto mode 與 session remember 都不可跳過
 HOST_COMMAND／P2，因此自然語言 agent 與直接 `/shell` 走相同邊界。
 
@@ -177,11 +177,11 @@ TUI 對話區中的所有輸出，統一以 `●` 項目符號時間軸呈現：
 ## /help 輸出結構
 
 ```
-JenAI — ROS2 AI Agent Terminal
+JenAI — ROS 2 機器人 Agent 終端
 
 What can I do?
-  - 規劃並執行機器人任務（/plan, /run）
-  - 探索 ROS2 topics 與訊息結構（/ros）
+  - 規劃並執行機器人任務（/plan、/run）
+  - 查看 ROS 2 topics 與訊息結構（/ros）
   - 自然語言路由到目標位置（/route）
   - 分析圖片場景（/vision）
   - 執行 shell 命令（/shell）
@@ -189,7 +189,7 @@ What can I do?
 Command Groups:
   Session   /help /status /clear /compact /resume
   Planning  /plan /run /why /review /abort
-  ROS2      /ros topics /ros schema /ros echo /ros pub
+  ROS 2     /ros topics /ros schema /ros echo /ros pub
   Route     /route /loc list /loc show
   Vision    /vision image
   System    /shell /permissions

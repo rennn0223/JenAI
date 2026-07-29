@@ -18,32 +18,32 @@ WARN = "⚠"
 
 # (label, approved, remember)
 _REMEMBER_OPTIONS = [
-    ("Yes", True, False),
-    ("Yes, and remember this tool for this session", True, True),
-    ("No", False, False),
+    ("本次允許", True, False),
+    ("允許，這個 session 不再詢問這項工具", True, True),
+    ("不允許", False, False),
 ]
 
 _ONCE_OPTIONS = [
-    ("Yes", True, False),
-    ("No", False, False),
+    ("本次允許", True, False),
+    ("不允許", False, False),
 ]
 
 # Plain-language description of what a tool actually does, keyed by effect scope,
 # so the card never shows raw jargon like "Scope: sim_control".
 _EFFECT_WORDS = {
-    "read": "Only reads data — safe.",
-    "local_write": "Writes files on this computer.",
-    "sim_control": "May move the connected robot or simulator.",
-    "robot_control": "May move the connected physical robot.",
-    "host_command": "Runs a command on this computer.",
-    "none": "No side effects.",
+    "read": "只讀取資料，不會執行動作。",
+    "local_write": "會寫入這臺電腦上的檔案。",
+    "sim_control": "可能移動已連線的機器人或模擬器。",
+    "robot_control": "可能移動已連線的實體機器人。",
+    "host_command": "會在這臺電腦上執行指令。",
+    "none": "不會產生副作用。",
 }
 
 
 def _effect_line(effect_scope: str, risk_level: str) -> str:
-    words = _EFFECT_WORDS.get(str(effect_scope), f"Effect: {effect_scope}")
+    words = _EFFECT_WORDS.get(str(effect_scope), f"影響範圍：{effect_scope}")
     if str(risk_level) == "p2":
-        words += " Double-check before approving."
+        words += " 允許前請再次確認。"
     return words
 
 
@@ -84,7 +84,7 @@ class ApprovalCard(Static):
             f"{_effect_line(approval.effect_scope, approval.risk_level)}\n\n",
             style=MUTED,
         )
-        body.append("Do you want to proceed?\n", style=f"bold {TEXT}")
+        body.append("要繼續嗎？\n", style=f"bold {TEXT}")
         for index, (label, _approved, _remember) in enumerate(self._options):
             selected = index == self._selected
             pointer = "❯ " if selected else "  "
@@ -92,7 +92,7 @@ class ApprovalCard(Static):
             body.append(f"{pointer}{index + 1}. {label}\n", style=style)
         number_keys = "/".join(str(index) for index in range(1, len(self._options) + 1))
         body.append(
-            f"\nEsc to cancel · ↑/↓ to move · {number_keys} or Enter to confirm",
+            f"\nEsc 取消 · ↑/↓ 移動 · {number_keys} 或 Enter 確認",
             style=MUTED,
         )
         return body

@@ -36,6 +36,33 @@ a {
   text-decoration: none;
 }
 
+:focus-visible {
+  outline: 3px solid rgb(118 185 0 / 55%);
+  outline-offset: 3px;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 100;
+  top: 8px;
+  left: 12px;
+  padding: 9px 13px;
+  color: #101410;
+  background: var(--brand);
+  border-radius: 3px;
+  font-weight: 800;
+  transform: translateY(-160%);
+  transition: transform 150ms ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+#main-content:focus {
+  outline: none;
+}
+
 code,
 pre {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -134,13 +161,22 @@ pre {
   border-bottom: 1px solid #eceff1;
 }
 
-.search-results a:hover {
+.search-results a:hover,
+.search-results a.selected {
   background: #f2f7e9;
 }
 
 .search-results span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.search-empty {
+  margin: 0;
+  padding: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .version-badge {
@@ -902,5 +938,16 @@ pre {
   .article-footer {
     flex-direction: column;
     gap: 7px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

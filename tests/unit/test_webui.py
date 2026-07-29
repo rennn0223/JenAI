@@ -134,8 +134,8 @@ def test_render_dashboard_html_renders_doctor_and_ros(tmp_path: Path) -> None:
     payload = build_status_payload(_config(), tmp_path / "config.toml")
     html = render_dashboard_html(payload)
     assert "<h1>JenAI</h1>" in html
-    assert "Environment" in html
-    assert "ROS2 Graph" in html
+    assert "系統檢查" in html
+    assert "ROS 2 Graph" in html
     # Doctor check names surface with friendly (humanized) labels.
     assert "Python" in html
 
@@ -189,7 +189,7 @@ def test_render_main_is_a_standalone_fragment(tmp_path: Path) -> None:
     payload = build_status_payload(_config(), tmp_path / "config.toml")
     fragment = render_main(payload)
     assert "<html" not in fragment  # no page shell
-    assert "Environment" in fragment and "ROS2 Graph" in fragment
+    assert "系統檢查" in fragment and "ROS 2 Graph" in fragment
 
 
 def test_webui_server_serves_html_and_json(tmp_path: Path) -> None:
@@ -557,7 +557,7 @@ def test_api_map_rejects_non_finite_pose_and_stays_valid_json(tmp_path) -> None:
     assert payload["pose"] is None
     assert payload["pose_error"] == "invalid_pose"
     assert "NaN" not in json.dumps(payload, allow_nan=False)
-    assert "localization invalid (pose contains NaN/inf)" in render_dashboard_html({})
+    assert "定位資料無效（pose 含 NaN／inf）" in render_dashboard_html({})
 
 
 def test_pose_cache_backs_off_after_bridge_failure(monkeypatch) -> None:

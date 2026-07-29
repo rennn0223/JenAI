@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from jenai.webui.commands import WEB_SLASH_COMMANDS
+from jenai.webui.presentation import build_web_status_view
 
 
 def _esc(value: Any) -> str:
@@ -31,133 +32,101 @@ _KIND_DOT = {
 
 
 def _status_class(status: str) -> str:
-    return {"pass": "ok", "warn": "warn", "fail": "bad"}.get(str(status).lower(), "muted")
+    return {"pass": "ok", "warn": "warn", "fail": "bad"}.get(status, "muted")
 
 
-def _pill(status: str) -> str:
-    return f'<span class="pill p-{_status_class(status)}">{html.escape(str(status))}</span>'
-
-
-_CHECK_LABELS = {
-    "python": "Python",
-    "uv": "uv",
-    "virtual_env": "Virtual env",
-    "config_file": "Config file",
-    "ros2_cli": "ROS2 command",
-    "active_provider": "Provider",
-    "api_key": "API key",
-    "model_bindings": "Models",
-    "locations_file": "Locations file",
-    "assets": "WebUI assets",
-}
-
-
-def _health_summary(doctor: dict[str, Any]) -> str:
-    items = doctor.get("items", [])
-    fails = sum(1 for i in items if str(i["status"]).lower() == "fail")
-    warns = sum(1 for i in items if str(i["status"]).lower() == "warn")
-    if not items:
-        return "Getting your setup ready…"
-    if fails:
-        return (
-            f"{fails} thing{'s' if fails != 1 else ''} need{'' if fails == 1 else 's'} attention."
-        )
-    if warns:
-        return f"Running fine — {warns} minor note{'s' if warns != 1 else ''}."
-    return "Everything looks healthy."
+def _pill(status: str, label: str) -> str:
+    return f'<span class="pill p-{_status_class(status)}">{html.escape(label)}</span>'
 
 
 def render_main(status: dict[str, Any]) -> str:
     """Render the dynamic dashboard body (also served at /fragment for refresh)."""
+    view = build_web_status_view(status)
     stats = [
-        ("Provider", f"{status.get('provider') or '—'}"),
-        ("Model", status.get("model") or "—"),
-        ("Config", "complete" if status.get("config_complete") else "incomplete"),
-        ("Locations", str(status.get("locations", 0))),
+        ("模型服務", view.provider),
+        ("模型", view.model),
+        ("設定", view.config_label),
+        ("地點", str(view.locations)),
     ]
     stats_html = "".join(
-        f'<div class="stat"><span class="stat-k">{html.escape(k)}</span>'
-        f'<span class="stat-v">{html.escape(str(v))}</span></div>'
-        for k, v in stats
+        f'<div class="stat"><span class="stat-k">{html.escape(key)}</span>'
+        f'<span class="stat-v">{html.escape(value)}</span></div>'
+        for key, value in stats
     )
 
-    # Defaults keep the renderer robust against a partial status dict (e.g. the
-    # doctor WebUI smoke check renders with a minimal payload).
-    doctor = status.get("doctor") or {"overall": "unknown", "items": []}
-    groups: dict[str, list[dict[str, Any]]] = {}
+    groups: dict[str, list[Any]] = {}
     order: list[str] = []
-    for item in doctor["items"]:
-        section = item["section"]
-        if section not in groups:
-            groups[section] = []
-            order.append(section)
-        groups[section].append(item)
+    for item in view.checks:
+        if item.section not in groups:
+            groups[item.section] = []
+            order.append(item.section)
+        groups[item.section].append(item)
 
     check_rows: list[str] = []
     for section in order:
-        check_rows.append(f'<div class="group">{html.escape(section.capitalize())}</div>')
-        for item in groups[section]:
-            fix = f'<div class="fix">↳ {html.escape(item["fix"])}</div>' if item.get("fix") else ""
-            name = _CHECK_LABELS.get(item["check"], item["check"].replace("_", " ").capitalize())
+        items = groups[section]
+        check_rows.append(f'<div class="group">{html.escape(items[0].section_label)}</div>')
+        for item in items:
+            fix = f'<div class="fix">↳ {html.escape(item.fix)}</div>' if item.fix else ""
             check_rows.append(
                 '<div class="check">'
                 '<div class="check-main">'
-                f'<span class="check-name">{html.escape(name)}</span>'
-                f'<span class="check-msg">{html.escape(item["message"])}</span>{fix}'
+                f'<span class="check-name">{html.escape(item.label)}</span>'
+                f'<span class="check-msg">{html.escape(item.message)}</span>{fix}'
                 "</div>"
-                f"{_pill(item['status'])}"
+                f"{_pill(item.status, item.status_label)}"
                 "</div>"
             )
     doctor_html = "".join(check_rows)
 
-    ros = status.get("ros") or {"available": False, "topics": [], "count": 0, "error": None}
-    if not ros["available"]:
+    if not view.ros_available:
         ros_html = (
-            '<div class="empty">ROS2 not detected on PATH. Launch with '
-            '<span class="mono">jenai</span> so it sources ROS2 Jazzy first.</div>'
+            '<div class="empty">目前找不到 ROS 2。請先執行 '
+            '<span class="mono">JenAI doctor</span> 查看修復建議，再以 '
+            '<span class="mono">jenai</span> 啟動並載入 ROS 2 Jazzy。</div>'
         )
-    elif ros.get("error"):
-        ros_html = f'<div class="empty">ROS2 error: {html.escape(ros["error"])}</div>'
-    elif not ros["topics"]:
-        ros_html = '<div class="empty">No topics on the graph yet.</div>'
+    elif view.ros_error:
+        ros_html = f'<div class="empty">ROS 2 錯誤：{html.escape(view.ros_error)}</div>'
+    elif not view.ros_topics:
+        ros_html = '<div class="empty">ROS graph 目前還沒有 topic。</div>'
     else:
-        # Domain topics up front; the Nav2/lifecycle plumbing folds away so a
-        # 110-topic graph reads as the ~20 that matter.
-        def _chip(t: dict[str, Any]) -> str:
+
+        def _chip(topic: Any) -> str:
             return (
                 '<div class="chip">'
-                f'<span class="k-dot" style="background:{_KIND_DOT.get(t["kind"], "var(--muted)")}">'
+                f'<span class="k-dot" style="background:{_KIND_DOT.get(topic.kind, "var(--muted)")}">'
                 "</span>"
-                f'<span class="chip-name">{html.escape(t["name"])}</span>'
-                f'<span class="chip-kind">{html.escape(t["kind"])}</span>'
+                f'<span class="chip-name">{html.escape(topic.name)}</span>'
+                f'<span class="chip-kind">{html.escape(topic.kind)}</span>'
                 "</div>"
             )
 
-        main_topics = [t for t in ros["topics"] if t["kind"] != "infra"]
-        infra_topics = [t for t in ros["topics"] if t["kind"] == "infra"]
-        ros_html = f'<div class="chips">{"".join(_chip(t) for t in main_topics)}</div>'
+        main_topics = [topic for topic in view.ros_topics if topic.kind != "infra"]
+        infra_topics = [topic for topic in view.ros_topics if topic.kind == "infra"]
+        ros_html = f'<div class="chips">{"".join(_chip(topic) for topic in main_topics)}</div>'
         if infra_topics:
             ros_html += (
                 '<details class="infra-fold"><summary>'
-                f"infra(lifecycle/bond/rosout…)· {len(infra_topics)}</summary>"
-                f'<div class="chips">{"".join(_chip(t) for t in infra_topics)}</div></details>'
+                f"infra（lifecycle／bond／rosout…）· {len(infra_topics)}</summary>"
+                f'<div class="chips">{"".join(_chip(topic) for topic in infra_topics)}</div>'
+                "</details>"
             )
 
     updated = datetime.now().astimezone().strftime("%H:%M:%S")
     return (
-        f'<p class="summary">{html.escape(_health_summary(doctor))}</p>'
+        f'<p class="summary">{html.escape(view.health_summary)}</p>'
         f'<div class="stats">{stats_html}</div>'
         '<section class="card">'
-        '<div class="card-head"><h2>Environment</h2>'
-        f'<div class="head-right">overall {_pill(doctor["overall"])}</div></div>'
+        '<div class="card-head"><h2>系統檢查</h2>'
+        f'<div class="head-right">整體 {_pill(view.overall, view.overall_label)}</div></div>'
         f'<div class="checks">{doctor_html}</div>'
         "</section>"
         '<section class="card">'
-        '<div class="card-head"><h2>ROS2 Graph</h2>'
-        f'<div class="head-right"><span class="count">{ros["count"]}</span> topics</div></div>'
+        '<div class="card-head"><h2>ROS 2 Graph</h2>'
+        f'<div class="head-right"><span class="count">{view.ros_count}</span> topics</div></div>'
         f"{ros_html}"
         "</section>"
-        f'<div class="updated">updated {updated} · auto-refresh 5s</div>'
+        f'<div class="updated">更新於 {updated} · 每 5 秒自動重新整理</div>'
     )
 
 
@@ -167,14 +136,12 @@ def render_main(status: dict[str, Any]) -> str:
 # Raw string: the embedded JS contains regex escapes (e.g. /^\s+/) that are
 # not Python escape sequences.
 _PAGE = r"""<!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant-TW">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JenAI — Console</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<meta name="color-scheme" content="light">
+<title>JenAI — 機器人監控</title>
 <style>
 :root{
   --paper:#f7f4ee; --card:#fffefb; --ink:#26231d; --ink-soft:#57524b; --muted:#928c80;
@@ -190,7 +157,7 @@ body{
     radial-gradient(1100px 560px at 82% -12%, rgba(217,119,87,.09), transparent 60%),
     radial-gradient(820px 480px at -12% 8%, rgba(63,122,114,.05), transparent 55%);
   color:var(--ink);
-  font-family:'Instrument Sans',ui-sans-serif,-apple-system,'Segoe UI',sans-serif;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;
   font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased;
   min-height:100vh;
 }
@@ -201,11 +168,11 @@ body{
 }
 .brand{display:flex; align-items:center; gap:16px}
 .logo{
-  font-family:'Fraunces',Georgia,serif; font-size:34px; line-height:1;
+  font-family:'Iowan Old Style','Noto Serif TC','Palatino Linotype',Georgia,serif; font-size:34px; line-height:1;
   color:var(--accent); transform:translateY(2px);
 }
 .hero h1{
-  font-family:'Fraunces','Iowan Old Style',Georgia,serif;
+  font-family:'Iowan Old Style','Noto Serif TC','Palatino Linotype',Georgia,serif;
   font-weight:600; font-size:34px; letter-spacing:-.01em; margin:0;
 }
 .tagline{margin:2px 0 0; color:var(--muted); font-size:13.5px; letter-spacing:.02em}
@@ -221,7 +188,7 @@ body{
   box-shadow:0 0 0 0 rgba(192,95,59,.5); animation:pulse 2.4s ease-out infinite}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(192,95,59,.45)}70%{box-shadow:0 0 0 9px rgba(192,95,59,0)}100%{box-shadow:0 0 0 0 rgba(192,95,59,0)}}
 main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .28s ease}
-.summary{font-family:'Fraunces',Georgia,serif; font-weight:500; font-size:23px;
+.summary{font-family:'Iowan Old Style','Noto Serif TC','Palatino Linotype',Georgia,serif; font-weight:500; font-size:23px;
   line-height:1.3; color:var(--ink); margin:2px 0 20px}
 .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:10px 0 22px}
 .stat{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px}
@@ -233,12 +200,20 @@ main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .
   box-shadow:0 1px 2px rgba(42,38,34,.04), 0 18px 40px -26px rgba(42,38,34,.22);
   animation:rise .5s cubic-bezier(.2,.7,.2,1) both;
 }
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{
+  outline:3px solid rgba(217,119,87,.35); outline-offset:2px;
+}
+.live.is-online .dot{background:var(--ok)}
+.live.is-stale .dot{background:var(--warn);animation:none}
+.live.is-offline .dot{background:var(--bad);animation:none}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .card:nth-child(2){animation-delay:.05s}
 .card:nth-child(3){animation-delay:.12s}
 .no-anim .card{animation:none}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .card-head{display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px}
-.card-head h2{font-family:'Fraunces',Georgia,serif; font-weight:600; font-size:21px; margin:0}
+.card-head h2{font-family:'Iowan Old Style','Noto Serif TC','Palatino Linotype',Georgia,serif; font-weight:600; font-size:21px; margin:0}
 .head-right{color:var(--muted); font-size:13px}
 .count{font-weight:700; color:var(--ink); font-size:15px}
 .group{margin:16px 0 6px; color:var(--muted); font-size:11px; font-weight:600;
@@ -261,7 +236,7 @@ main{max-width:960px; margin:0 auto; padding:8px 32px 24px; transition:opacity .
   max-width:100%; min-width:0}
 .chip:hover{transform:translateY(-1px); box-shadow:0 6px 16px -10px rgba(42,38,34,.35)}
 .k-dot{width:8px;height:8px;border-radius:50%;flex:none}
-.chip-name{font-family:'Fraunces',ui-monospace,monospace; font-size:13.5px;
+.chip-name{font-family:'Iowan Old Style','Noto Serif TC',ui-monospace,monospace; font-size:13.5px;
   min-width:0; overflow-wrap:anywhere}
 .chip-kind{color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em}
 .infra-fold{margin-top:10px}
@@ -383,6 +358,11 @@ body:not(.view-api) #apicard{display:none}
   /* One view at a time on a phone */
   body.view-status #cmdform{display:none}
 }
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
+    scroll-behavior:auto!important;transition-duration:.01ms!important}
+}
+
 </style>
 </head>
 <body class="view-console">
@@ -390,102 +370,131 @@ body:not(.view-api) #apicard{display:none}
 <header class="hero">
   <div class="brand">
     <span class="logo">&#10043;</span>
-    <div><h1>JenAI</h1><p class="tagline">ROS2 Agent Console</p></div>
+    <div><h1>JenAI</h1><p class="tagline">ROS 2 機器人監控</p></div>
   </div>
   <div class="hero-right">
-    <button id="estop" title="Emergency stop: cancel navigation, zero velocity">STOP</button>
-    <div class="live"><span class="dot"></span>live</div>
+    <button id="estop" aria-label="立即停止機器人" title="立即取消導航並送出零速度命令">STOP</button>
+    <div id="connection-status" class="live is-stale" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span><span id="connection-label">正在連線</span>
+    </div>
   </div>
 </header>
-<nav id="tabs">
-  <button class="tab active" data-view="console">Console</button>
-  <button class="tab" data-view="camera">Camera</button>
-  <button class="tab" data-view="status">Status</button>
-  <button class="tab" data-view="api">API</button>
+<nav id="tabs" role="tablist" aria-label="WebUI 功能">
+  <button id="tab-console" class="tab active" role="tab" aria-selected="true" aria-controls="console" tabindex="0" data-view="console">互動</button>
+  <button id="tab-camera" class="tab" role="tab" aria-selected="false" aria-controls="cameracard" tabindex="-1" data-view="camera">相機</button>
+  <button id="tab-status" class="tab" role="tab" aria-selected="false" aria-controls="status-view" tabindex="-1" data-view="status">狀態</button>
+  <button id="tab-api" class="tab" role="tab" aria-selected="false" aria-controls="apicard" tabindex="-1" data-view="api">API</button>
 </nav>
-<section id="console" class="card">
-  <div class="card-head"><h2>Console</h2><span class="dim">type a command, or ask in plain language</span></div>
-  <div id="transcript"></div>
+<section id="console" class="card" role="tabpanel" aria-labelledby="tab-console">
+  <div class="card-head"><h2>與 JenAI 互動</h2><span class="dim">輸入指令，或直接說明要完成的任務</span></div>
+  <div id="transcript" role="log" aria-live="polite" aria-relevant="additions"></div>
   <form id="cmdform" autocomplete="off">
-    <div id="palette" role="listbox"></div>
-    <input id="cmdinput" placeholder="/drive 前進兩秒 · /ros topics · or ask anything…" autocomplete="off">
-    <button type="submit" id="cmdsend">Send</button>
+    <div id="palette" role="listbox" aria-label="可用指令"></div>
+    <label class="sr-only" for="cmdinput">輸入 JenAI 指令或自然語言任務</label>
+    <input id="cmdinput" aria-label="輸入 JenAI 指令或自然語言任務" placeholder="/status · /ros topics · 或直接描述任務…" autocomplete="off">
+    <button type="submit" id="cmdsend">送出</button>
   </form>
 </section>
-<section id="mapcard" class="card">
-  <div class="card-head"><h2>Map</h2><span class="dim" id="map-meta">waiting for robot pose…</span>
+<section id="mapcard" class="card" aria-label="機器人地圖">
+  <div class="card-head"><h2>地圖</h2><span class="dim" id="map-meta" role="status" aria-live="polite">正在等待機器人位姿…</span>
     <div class="map-tools">
-      <button type="button" id="map-zout" title="zoom out">−</button>
-      <button type="button" id="map-zin" title="zoom in">+</button>
-      <button type="button" id="map-zfit" title="fit all">⤢</button>
+      <button type="button" id="map-zout" aria-label="縮小地圖" title="縮小">−</button>
+      <button type="button" id="map-zin" aria-label="放大地圖" title="放大">+</button>
+      <button type="button" id="map-zfit" aria-label="顯示全部地點" title="顯示全部">⤢</button>
     </div></div>
-  <svg id="map" viewBox="0 0 100 60" preserveAspectRatio="xMidYMid meet"></svg>
+  <svg id="map" role="img" aria-label="機器人目前位姿與已儲存地點" viewBox="0 0 100 60" preserveAspectRatio="xMidYMid meet"></svg>
 </section>
-<section id="cameracard" class="card">
-  <div class="card-head"><h2>Camera</h2>
-    <select id="cam-topic" title="image topic for /api/frame"><option value="__default__">vehicle.camera_topic(預設)</option></select>
-    <span class="dim" id="cam-meta">switch here to start streaming…</span>
+<section id="cameracard" class="card" role="tabpanel" aria-labelledby="tab-camera">
+  <div class="card-head"><h2>相機</h2>
+    <select id="cam-topic" aria-label="選擇相機 topic" title="選擇 /api/frame 使用的 image topic"><option value="__default__">vehicle.camera_topic（預設）</option></select>
+    <span class="dim" id="cam-meta" role="status" aria-live="polite">切換到相機頁面後開始串流</span>
   </div>
   <div id="camwrap">
-    <img id="rgb" alt="camera frame">
+    <img id="rgb" alt="機器人相機最新畫面">
     <div id="odom-mini">
-      <h3>Odometry</h3>
+      <h3>里程計</h3>
       <div class="odom-row"><span>x</span><b id="od-x">–</b></div>
       <div class="odom-row"><span>y</span><b id="od-y">–</b></div>
       <div class="odom-row"><span>yaw</span><b id="od-yaw">–</b></div>
       <div class="odom-row"><span>frame</span><b id="od-frame">–</b></div>
       <div class="odom-row"><span>source</span><b id="od-src">–</b></div>
-      <div class="odom-row"><span>updated</span><b id="od-ts">–</b></div>
+      <div class="odom-row"><span>更新</span><b id="od-ts">–</b></div>
     </div>
   </div>
 </section>
-<section id="apicard" class="card">
-  <div class="card-head"><h2>API</h2><span class="dim">HTTP endpoints served by <span class="mono">jenai web</span> — token via Bearer / cookie / ?token=</span></div>
-  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/</span><span class="api-d">此儀表板(?token= 首次授權)</span></div>
+<section id="apicard" class="card" role="tabpanel" aria-labelledby="tab-api">
+  <div class="card-head"><h2>API</h2><span class="dim"><span class="mono">jenai web</span> 提供的 HTTP endpoints；token 可透過 Bearer、cookie 或 ?token= 傳入</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/</span><span class="api-d">此儀表板（?token= 首次授權）</span></div>
   <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/status</span><span class="api-d">provider/doctor/ROS 狀態 JSON</span></div>
-  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/map</span><span class="api-d">地點 + 即時位姿 JSON</span></div>
-  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/frame?topic=…</span><span class="api-d">相機單幀 JPEG(預設 vehicle.camera_topic)</span></div>
-  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/command　{"text": "…"}</span><span class="api-d">跑指令;動作類回 confirm_id</span></div>
-  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/confirm　{"confirm_id": "…"}</span><span class="api-d">批准一次性動作(server 端持有)</span></div>
-  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/stop</span><span class="api-d">緊急停止 — 唯一免 token</span></div>
-  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/topics</span><span class="api-d">即時 ROS graph topics(下表)</span></div>
-  <div class="card-head" style="margin-top:14px"><h2 style="font-size:15px">ROS topics(即時)</h2><span class="dim" id="api-topics-meta">切到此頁時載入…</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/map</span><span class="api-d">地點與即時位姿 JSON</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/frame?topic=…</span><span class="api-d">相機單幀 JPEG（預設 vehicle.camera_topic）</span></div>
+  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/command　{"text": "…"}</span><span class="api-d">執行指令；動作類回傳 confirm_id</span></div>
+  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/confirm　{"confirm_id": "…"}</span><span class="api-d">批准由 server 暫存的一次性動作</span></div>
+  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/stop</span><span class="api-d">立即停止；唯一不需要 token 的 endpoint</span></div>
+  <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/topics</span><span class="api-d">即時 ROS graph topics（下表）</span></div>
+  <div class="card-head" style="margin-top:14px"><h2 style="font-size:15px">ROS topics（即時）</h2><span class="dim" id="api-topics-meta">切換至此頁時載入…</span></div>
   <div id="api-topics" class="mono" style="font-size:12.5px; line-height:1.9; overflow-wrap:anywhere"></div>
-  <div class="dim" style="margin-top:8px">程式化整合建議走 <span class="mono">JenAI mcp</span>(MCP 協定,預設唯讀);完整規格見 docs/validation/THREAT_MODEL.md 與 docs/COMMANDS.md。</div>
+  <div class="dim" style="margin-top:8px">程式化整合建議使用 <span class="mono">JenAI mcp</span>（MCP 協定，預設唯讀）；完整規格見 docs/validation/THREAT_MODEL.md 與 docs/COMMANDS.md。</div>
 </section>
-<main>__MAIN__</main>
-<footer>Actions that move the robot always ask you to confirm first · served by <span class="mono">jenai web</span> (localhost).</footer>
+<main id="status-view" role="tabpanel" aria-labelledby="tab-status">__MAIN__</main>
+<footer>所有會移動機器人的動作都必須先經過批准 · 由 <span class="mono">jenai web</span> 在 localhost 提供服務。</footer>
 <script>
 const tx = document.getElementById('transcript');
+const connection = document.getElementById('connection-status');
+const connectionLabel = document.getElementById('connection-label');
 function el(cls, html){ const d=document.createElement('div'); if(cls)d.className=cls; if(html!=null)d.innerHTML=html; return d; }
 function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function scroll(){ tx.scrollTop = tx.scrollHeight; }
+function setConnection(state, label){
+  connection.classList.remove('is-online','is-stale','is-offline');
+  connection.classList.add('is-' + state);
+  connectionLabel.textContent = label;
+}
 
 function block(kind, node){ const b=el('blk blk-'+kind); b.appendChild(node); tx.appendChild(b); scroll(); return b; }
 
 async function post(url, payload){
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-  return r.json();
+  const raw = await r.text();
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch(err){ throw new Error(`伺服器回傳無法解析的內容（HTTP ${r.status}）`); }
+  if(!r.ok){
+    const detail = data && (data.error || data.message);
+    throw new Error(detail || `請求失敗（HTTP ${r.status}）`);
+  }
+  setConnection('online', '已連線');
+  return data;
 }
 
 function render(res){
   if(res.kind === 'confirm'){
     const wrap = el(); wrap.innerHTML = res.html;
-    const danger = el('danger', '⚠ ' + esc(res.danger||'This will act on the robot.'));
+    const danger = el('danger', '⚠ ' + esc(res.danger||'這個動作會操作機器人。'));
     wrap.appendChild(danger);
     const row = el('confirm-row');
-    const yes = el(); yes.innerHTML='<button class="btn-approve">Approve</button>';
-    const no  = el(); no.innerHTML='<button class="btn-cancel">Cancel</button>';
+    const yes = el(); yes.innerHTML='<button class="btn-approve">批准一次</button>';
+    const no  = el(); no.innerHTML='<button class="btn-cancel">取消</button>';
     row.appendChild(yes); row.appendChild(no); wrap.appendChild(row);
-    const b = block('confirm', wrap);
-    yes.querySelector('button').onclick = async () => {
-      row.remove(); danger.remove();
-      const busy = el('dim','running…'); wrap.appendChild(busy);
-      const out = await post('api/confirm', {confirm_id: res.confirm_id});
-      busy.remove(); wrap.appendChild(el('out', out.html));
-      scroll();
+    block('confirm', wrap);
+    const yesButton = yes.querySelector('button');
+    const noButton = no.querySelector('button');
+    yesButton.onclick = async () => {
+      yesButton.disabled = true; noButton.disabled = true;
+      const busy = el('dim','執行中…'); wrap.appendChild(busy);
+      try{
+        const out = await post('api/confirm', {confirm_id: res.confirm_id});
+        row.remove(); danger.remove();
+        wrap.appendChild(el(out.kind === 'error' ? 'out danger' : 'out', out.html));
+      }catch(err){
+        setConnection('offline', '連線中斷');
+        wrap.appendChild(el('danger', '無法確認動作結果：' + esc(err.message)));
+        yesButton.disabled = false; noButton.disabled = false;
+      }finally{
+        busy.remove(); scroll();
+      }
     };
-    no.querySelector('button').onclick = () => { row.remove(); danger.remove(); wrap.appendChild(el('dim','Cancelled.')); };
+    noButton.onclick = () => { row.remove(); danger.remove(); wrap.appendChild(el('dim','已取消。')); };
   } else {
     block(res.kind === 'error' ? 'error' : 'result', el('out', res.html));
   }
@@ -495,9 +504,12 @@ const estop = document.getElementById('estop');
 estop.addEventListener('click', async () => {
   // No confirm dialog: an emergency stop must be one tap, always.
   estop.disabled = true; estop.textContent = '…';
-  block('you', el('you-line', '<span class="you-mark">›</span> EMERGENCY STOP'));
+  block('you', el('you-line', '<span class="you-mark">›</span> 立即停止'));
   try { render(await post('api/stop', {})); }
-  catch(err){ block('error', el('out', '<p>Network error.</p>')); }
+  catch(err){
+    setConnection('offline', '連線中斷');
+    block('error', el('out', '<p>無法確認停止命令是否送達。請立刻使用實體急停，並確認 jenai web 連線。</p>'));
+  }
   finally { estop.disabled = false; estop.textContent = 'STOP'; }
 });
 
@@ -560,13 +572,17 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = input.value.trim();
   if(!text) return;
-  input.value='';
+  input.value = '';
   palHide();
   block('you', el('you-line', '<span class="you-mark">›</span> ' + esc(text)));
   const send = document.getElementById('cmdsend'); send.disabled=true; send.textContent='…';
   try { render(await post('api/command', {text})); }
-  catch(err){ block('error', el('out', '<p>Network error.</p>')); }
-  finally { send.disabled=false; send.textContent='Send'; input.focus(); }
+  catch(err){
+    input.value = text;
+    setConnection('offline', '連線中斷');
+    block('error', el('out', '<p>連線失敗，指令尚未送出。請確認 jenai web 仍在執行後再重試。</p>'));
+  }
+  finally { send.disabled=false; send.textContent='送出'; input.focus(); }
 });
 
 const mapSvg = document.getElementById('map');
@@ -580,8 +596,8 @@ function mapDraw(data){
   if(data.pose) pts.push([data.pose.x, data.pose.y]);
   if(!pts.length){
     mapMeta.textContent = data.pose_error === 'invalid_pose'
-      ? 'localization invalid (pose contains NaN/inf) — check AMCL / odometry'
-      : 'no locations yet — save one with /loc add here <name> in the TUI';
+      ? '定位資料無效（pose 含 NaN／inf）；請檢查 AMCL 或 odometry'
+      : '尚未儲存地點；請在 TUI 使用 /loc add here <name>';
     return;
   }
   const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
@@ -628,12 +644,12 @@ function mapDraw(data){
     const deg = -data.pose.yaw * 180 / Math.PI;
     out += `<circle class="robot-ring" cx="${px}" cy="${py}" r="2.6"/>`;
     out += `<polygon class="robot" points="2.4,0 -1.4,1.4 -1.4,-1.4" transform="translate(${px},${py}) rotate(${deg})"/>`;
-    mapMeta.textContent = `robot at (${data.pose.x.toFixed(2)}, ${data.pose.y.toFixed(2)}) · ${data.pose.frame_id} · ${data.pose.source}`
-      + (hidden ? ` · ${hidden} labels hidden (zoom in)` : '');
+    mapMeta.textContent = `機器人位於 (${data.pose.x.toFixed(2)}, ${data.pose.y.toFixed(2)}) · ${data.pose.frame_id} · ${data.pose.source}`
+      + (hidden ? ` · 已隱藏 ${hidden} 個重疊標籤（放大可查看）` : '');
   } else if(data.pose_error === 'invalid_pose') {
-    mapMeta.textContent = 'localization invalid (pose contains NaN/inf) — check AMCL / odometry';
+    mapMeta.textContent = '定位資料無效（pose 含 NaN／inf）；請檢查 AMCL 或 odometry';
   } else {
-    mapMeta.textContent = data.ros ? 'no live pose (is the robot publishing /amcl_pose or /odom?)' : 'ROS2 not available on this host';
+    mapMeta.textContent = data.ros ? '尚無即時位姿；請確認 /amcl_pose 或 /odom 正在發布' : '這台主機目前無法使用 ROS 2';
   }
   mapSvg.innerHTML = out;
 }
@@ -674,31 +690,39 @@ mapSvg.addEventListener('pointermove', ev => {
 });
 mapSvg.addEventListener('pointerup', () => { panFrom = null; });
 async function pollMap(){
-  try{ const r = await fetch('api/map', {cache:'no-store'}); if(r.ok) mapDraw(await r.json()); }
-  catch(e){ /* keep last drawing */ }
+  try{
+    const r = await fetch('api/map', {cache:'no-store'});
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    mapDraw(await r.json());
+  }catch(e){
+    mapMeta.textContent = mapData ? '地圖更新中斷；目前顯示上次取得的資料' : '無法取得機器人地圖資料';
+  }
 }
 pollMap(); setInterval(pollMap, 2000);
 
 async function refresh(){
   try{
     const r = await fetch('fragment', {cache:'no-store'});
-    if(!r.ok) return;
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
     const htmlText = await r.text();
     const m = document.querySelector('main');
     m.classList.add('no-anim');
     m.style.opacity = '.55';
     m.innerHTML = htmlText;
     requestAnimationFrame(() => { m.style.opacity = '1'; });
-  }catch(e){/* keep last good view */}
+    setConnection('online', '已連線');
+  }catch(e){
+    setConnection('offline', '連線中斷');
+  }
 }
-setInterval(refresh, 5000);
+refresh(); setInterval(refresh, 5000);
 
 // Camera page: poll only while visible — every tick costs a bridge frame grab.
 const rgb = document.getElementById('rgb');
 const camMeta = document.getElementById('cam-meta');
 let camTimer = null, camBusy = false;
-rgb.addEventListener('error', () => { camMeta.textContent = 'camera unavailable — is the RGB topic publishing? (vehicle.camera_topic)'; });
-rgb.addEventListener('load', () => { camMeta.textContent = 'live · ~1 fps snapshot stream'; });
+rgb.addEventListener('error', () => { camMeta.textContent = '相機無法使用；請確認 RGB topic 或 vehicle.camera_topic'; });
+rgb.addEventListener('load', () => { camMeta.textContent = '即時畫面 · 約 1 fps · ' + new Date().toLocaleTimeString(); });
 async function camTick(){
   if(camBusy) return;               // a slow frame must not stack requests
   camBusy = true;
@@ -715,10 +739,10 @@ async function camTick(){
         document.getElementById('od-src').textContent = d.pose.source;
         document.getElementById('od-ts').textContent = new Date().toLocaleTimeString();
       } else {
-        document.getElementById('od-src').textContent = d.ros ? 'no pose yet' : 'no ROS';
+        document.getElementById('od-src').textContent = d.ros ? '尚無位姿' : 'ROS 2 不可用';
       }
     }
-  }catch(e){/* keep last values */}
+  }catch(e){ camMeta.textContent = '資料更新中斷；目前顯示上次取得的畫面'; }
   finally{ camBusy = false; }
 }
 // Topic picker: camera_topic names vary per robot (/rgb vs /rgb/image vs
@@ -741,7 +765,7 @@ async function camTopicsLoad(){
     const imgish = names.filter(n => /rgb|image|camera|depth/i.test(n));
     const rest = names.filter(n => !imgish.includes(n));
     const keep = camTopic.value;
-    camTopic.innerHTML = '<option value="__default__">vehicle.camera_topic(預設)</option>' +
+    camTopic.innerHTML = '<option value="__default__">vehicle.camera_topic（預設）</option>' +
       imgish.map(n => `<option>${esc(n)}</option>`).join('') +
       (rest.length ? '<optgroup label="其他 topics">' + rest.map(n => `<option>${esc(n)}</option>`).join('') + '</optgroup>' : '');
     if([...camTopic.options].some(o => o.value === keep)) camTopic.value = keep;
@@ -758,8 +782,9 @@ async function apiTopicsLoad(){
   const meta = document.getElementById('api-topics-meta');
   try{
     const r = await fetch('api/topics', {cache:'no-store'});
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
-    if(!d.available){ meta.textContent = 'ROS2 not available on this host'; return; }
+    if(!d.available){ meta.textContent = '這台主機目前無法使用 ROS 2'; return; }
     if(d.error){ meta.textContent = d.error; return; }
     const order = ['control','sensor','nav','tf','debug','unknown'];
     const groups = {};
@@ -773,25 +798,46 @@ async function apiTopicsLoad(){
     }
     if(infra.length){
       html += `<details style="margin-top:10px"><summary class="dim" style="cursor:pointer">`
-            + `infra(lifecycle/bond/rosout…)· ${infra.length}</summary>`
+            + `infra（lifecycle／bond／rosout…）· ${infra.length}</summary>`
             + infra.map(esc).join('<br>') + '</details>';
     }
-    meta.textContent = `${d.count} topics · ${d.count - infra.length} shown · ${infra.length} infra folded`;
+    meta.textContent = `${d.count} topics · 顯示 ${d.count - infra.length} · 收合 ${infra.length} 個 infra topic`;
     box.innerHTML = html;
-  }catch(e){ meta.textContent = 'failed to load topics'; }
+  }catch(e){ meta.textContent = '無法載入 topics；請確認 WebUI 連線'; }
 }
 
 // Console/Camera/Status/API tabs (multi-page on every screen size)
-document.querySelectorAll('#tabs .tab').forEach(t => {
-  t.addEventListener('click', () => {
-    document.querySelectorAll('#tabs .tab').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    document.body.className = 'view-' + t.dataset.view;
-    if(t.dataset.view === 'camera') camStart(); else camStop();
-    if(t.dataset.view === 'api') apiTopicsLoad();
-    if(t.dataset.view === 'console') input.focus();
+const tabs = [...document.querySelectorAll('#tabs .tab')];
+function activateTab(tab, focusContent){
+  tabs.forEach(item => {
+    const active = item === tab;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-selected', String(active));
+    item.tabIndex = active ? 0 : -1;
+  });
+  document.body.className = 'view-' + tab.dataset.view;
+  document.getElementById('console').setAttribute('aria-hidden', String(tab.dataset.view !== 'console'));
+  document.getElementById('mapcard').setAttribute('aria-hidden', String(tab.dataset.view !== 'console'));
+  document.getElementById('cameracard').setAttribute('aria-hidden', String(tab.dataset.view !== 'camera'));
+  document.getElementById('status-view').setAttribute('aria-hidden', String(tab.dataset.view !== 'status'));
+  document.getElementById('apicard').setAttribute('aria-hidden', String(tab.dataset.view !== 'api'));
+  if(tab.dataset.view === 'camera') camStart(); else camStop();
+  if(tab.dataset.view === 'api') apiTopicsLoad();
+  if(focusContent && tab.dataset.view === 'console') input.focus();
+}
+tabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => activateTab(tab, true));
+  tab.addEventListener('keydown', event => {
+    let next = null;
+    if(event.key === 'ArrowRight') next = tabs[(index + 1) % tabs.length];
+    else if(event.key === 'ArrowLeft') next = tabs[(index - 1 + tabs.length) % tabs.length];
+    else if(event.key === 'Home') next = tabs[0];
+    else if(event.key === 'End') next = tabs[tabs.length - 1];
+    if(!next) return;
+    event.preventDefault(); activateTab(next, false); next.focus();
   });
 });
+activateTab(tabs[0], false);
 if(window.innerWidth > 640) input.focus();
 </script>
 </body>

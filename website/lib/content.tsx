@@ -10,9 +10,8 @@ export type DocPage = {
 };
 
 const startNav2 = `
-source /opt/ros/jazzy/setup.bash
-source /home/nvidia/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash
-ros2 launch carter_navigation carter_navigation.launch.py
+cd /home/nvidia/JenAI
+./scripts/isaac_nav2.sh restart
 `;
 
 const startJenAI = `
@@ -588,7 +587,7 @@ domain_id = 0
       <>
         <ul className="future-list">
           <li><strong>Final docking</strong><span>Close-range alignment and verified charge engagement.</span></li>
-          <li><strong>Quadruped integration</strong><span>Explicit Nexuni APIs, capability registration, and platform validation.</span></li>
+          <li><strong>Quadruped motion integration</strong><span>Read-only NXDog observation exists; motion still requires explicit vendor contracts, capability registration, and physical validation.</span></li>
           <li><strong>New-site onboarding</strong><span>Guided map capture, profile validation, and explicit activation.</span></li>
           <li><strong>Visual change detection</strong><span>Compare managed baseline/current images and add VLM-assisted review with factual provenance.</span></li>
           <li><strong>Agent latency</strong><span>Smaller prompts, model routing, caching, and broader deterministic intent coverage.</span></li>

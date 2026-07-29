@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import typer
 from rich.console import Console
@@ -53,7 +55,7 @@ PRESETS: tuple[ProviderPreset, ...] = (
         base_url="http://localhost:11434/v1",
         api_key_env="",
         model_example="qwen3.6:35b",
-        hint="斷網可用;DGX Spark 實測過。先跑 `ollama pull qwen3.6:35b`",
+        hint="斷網可用；DGX Spark 實測過。先跑 `ollama pull qwen3.6:35b`",
     ),
     ProviderPreset(
         key="nvidia-cloud",
@@ -62,7 +64,7 @@ PRESETS: tuple[ProviderPreset, ...] = (
         base_url="https://integrate.api.nvidia.com/v1",
         api_key_env="NVIDIA_API_KEY",
         model_example="meta/llama-3.3-70b-instruct",
-        hint="金鑰:https://build.nvidia.com(nvapi- 開頭)",
+        hint="金鑰：https://build.nvidia.com（nvapi- 開頭）",
     ),
     ProviderPreset(
         key="openai",
@@ -71,7 +73,7 @@ PRESETS: tuple[ProviderPreset, ...] = (
         base_url="",
         api_key_env="OPENAI_API_KEY",
         model_example="gpt-4.1-mini",
-        hint="金鑰:https://platform.openai.com(sk- 開頭)",
+        hint="金鑰：https://platform.openai.com（sk- 開頭）",
     ),
     ProviderPreset(
         key="custom",
@@ -89,14 +91,38 @@ def _print_banner(console: Console) -> None:
     console.print()
     for line, color in zip(_BANNER_LINES, _BANNER_COLORS, strict=True):
         console.print(f"[bold {color}]{line}[/bold {color}]", highlight=False)
-    console.print("[dim]Terminal-first AI agent for ROS2 robots[/dim]\n", highlight=False)
+    console.print("[dim]Terminal-first AI agent for ROS 2 robots[/dim]\n", highlight=False)
 
 
-def _prompt(label: str, *, default: str, example: str = "") -> str:
-    # typer.prompt renders its own [default]; the example rides in the label so
-    # every field shows "怎麼填" without extra lines.
-    hint = f" (例:{example})" if example and example != default else ""
-    return str(typer.prompt(f"  {label}{hint}", default=default, show_default=bool(default)))
+def _prompt(
+    console: Console,
+    label: str,
+    *,
+    default: str,
+    example: str = "",
+    validator: Callable[[str], bool] | None = None,
+    error: str = "輸入值無效。",
+) -> str:
+    """Prompt until one field is valid, without discarding earlier answers."""
+    hint = f"（例：{example}）" if example and example != default else ""
+    while True:
+        value = str(
+            typer.prompt(f"  {label}{hint}", default=default, show_default=bool(default))
+        ).strip()
+        if validator is None or validator(value):
+            return value
+        console.print(f"  [red]{error}[/red]", highlight=False)
+
+
+def _not_blank(value: str) -> bool:
+    return bool(value)
+
+
+def _http_url_or_blank(value: str) -> bool:
+    if not value:
+        return True
+    parsed = urlsplit(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _secure_api_key_input(
@@ -132,46 +158,67 @@ def _secure_api_key_input(
     return env_name, env_path
 
 
-def run_setup_wizard(config_path: Path) -> Path:
-    console = Console()
-    _print_banner(console)
+def _choose_provider(console: Console) -> ProviderPreset:
     console.print(
         Panel(
-            "第一次使用,先接上一個模型供應商。之後隨時可用 [bold]/provider[/bold] 切換、"
+            "第一次使用，先接上一個模型供應商。之後隨時可用 [bold]/provider[/bold] 切換、"
             "[bold]JenAI config[/bold] 檢視。",
             title="Setup 1/3 — 選供應商",
             border_style=_ACCENT,
         )
     )
-    for idx, preset in enumerate(PRESETS, start=1):
+    for index, preset in enumerate(PRESETS, start=1):
         console.print(
-            f"  [bold #d97757]{idx}[/bold #d97757]. [bold]{preset.title}[/bold]"
+            f"  [bold #d97757]{index}[/bold #d97757]. [bold]{preset.title}[/bold]"
             f"  [dim]{preset.hint}[/dim]",
             highlight=False,
         )
     while True:
-        raw = typer.prompt("  選擇", default="1")
-        if raw.strip() in {str(i) for i in range(1, len(PRESETS) + 1)}:
-            preset = PRESETS[int(raw.strip()) - 1]
-            break
+        raw = typer.prompt("  選擇", default="1").strip()
+        if raw in {str(index) for index in range(1, len(PRESETS) + 1)}:
+            return PRESETS[int(raw) - 1]
         console.print(f"  [red]請輸入 1–{len(PRESETS)}[/red]")
+
+
+def run_setup_wizard(config_path: Path) -> Path:
+    console = Console()
+    _print_banner(console)
+    preset = _choose_provider(console)
 
     console.print(
         Panel(
-            "留白直接 Enter 用預設值;每欄都附範例。",
+            "留白直接 Enter 使用預設值；每欄都附範例。",
             title="Setup 2/3 — 連線細節",
             border_style=_ACCENT,
         )
     )
-    provider_name = _prompt("Profile 名稱", default=preset.key, example="local")
-    default_model = _prompt("預設模型", default=preset.model_example, example=preset.model_example)
+    provider_name = _prompt(
+        console,
+        "Profile 名稱",
+        default=preset.key,
+        example="local",
+        validator=_not_blank,
+        error="Profile 名稱不可留白。",
+    )
+    default_model = _prompt(
+        console,
+        "預設模型",
+        default=preset.model_example,
+        example=preset.model_example,
+        validator=_not_blank,
+        error="預設模型不可留白。",
+    )
     base_url = _prompt(
-        "Base URL(供應商官方端點可留白)",
+        console,
+        "Base URL（供應商官方端點可留白）",
         default=preset.base_url,
         example="http://localhost:11434/v1",
+        validator=_http_url_or_blank,
+        error="Base URL 必須是完整的 http:// 或 https:// 網址。",
     )
     api_key_env = _prompt(
-        "API 金鑰環境變數名稱(貼入金鑰會安全搬到 .env;本地模型留白)",
+        console,
+        "API 金鑰環境變數名稱（貼入金鑰會安全搬到 .env；本地模型留白）",
         default=preset.api_key_env,
         example="NVIDIA_API_KEY",
     )
@@ -179,12 +226,19 @@ def run_setup_wizard(config_path: Path) -> Path:
 
     console.print(
         Panel(
-            "地點檔存 `/loc add here` 建的導航點。",
+            "地點檔保存 `/loc add here` 建立的導航點。",
             title="Setup 3/3 — 地點檔",
             border_style=_ACCENT,
         )
     )
-    locations_path = _prompt("Locations 檔路徑", default="locations.toml", example="locations.toml")
+    locations_path = _prompt(
+        console,
+        "Locations 檔路徑",
+        default="locations.toml",
+        example="locations.toml",
+        validator=_not_blank,
+        error="Locations 檔路徑不可留白。",
+    )
 
     config = build_minimal_config(
         provider_name=provider_name,
@@ -203,24 +257,34 @@ def run_setup_wizard(config_path: Path) -> Path:
     summary = Table(show_header=False, box=None, padding=(0, 1))
     summary.add_row("[dim]Provider[/dim]", f"{provider_name} ({preset.provider})")
     summary.add_row("[dim]Model[/dim]", default_model)
-    summary.add_row("[dim]Base URL[/dim]", base_url or "(供應商預設)")
-    summary.add_row("[dim]API key env[/dim]", api_key_env or "(不需要)")
+    summary.add_row("[dim]Base URL[/dim]", base_url or "（供應商預設）")
+    summary.add_row("[dim]API key env[/dim]", api_key_env or "（不需要）")
     summary.add_row("[dim]Config[/dim]", str(written))
+    summary.add_row("[dim]Locations[/dim]", str(resolved_locations_path or "（未設定）"))
     console.print(Panel(summary, title="✓ 設定完成", border_style=_GREEN))
+    if resolved_locations_path is not None:
+        console.print(
+            f"  [dim]Locations 檔：[/dim][bold]{resolved_locations_path}[/bold]",
+            highlight=False,
+            soft_wrap=True,
+        )
     if saved_credential_path is not None:
         console.print(
-            f"  [green]金鑰已安全寫入:[/green] [bold]{saved_credential_path}[/bold] "
-            f"([bold]{api_key_env}[/bold],權限 0600)",
+            f"  [green]金鑰已安全寫入：[/green] [bold]{saved_credential_path}[/bold] "
+            f"（[bold]{api_key_env}[/bold]，權限 0600）",
             highlight=False,
         )
     elif api_key_env:
         console.print(
-            f"  [yellow]記得放金鑰:[/yellow]在 [bold]~/.config/jenai/.env[/bold] 加一行 "
+            f"  [yellow]記得放入金鑰：[/yellow]在 [bold]~/.config/jenai/.env[/bold] 加入 "
             f"[bold]{api_key_env}=你的金鑰[/bold]",
             highlight=False,
         )
     console.print(
-        "  下一步:[bold]JenAI doctor[/bold] 健檢 → [bold]JenAI[/bold] 進 TUI\n", highlight=False
+        "  下一步：\n"
+        "  1. [bold]JenAI doctor[/bold] — 確認模型、ROS 2 與必要檔案\n"
+        "  2. [bold]JenAI[/bold] — 進入 TUI，先從 /status 開始\n",
+        highlight=False,
     )
 
     return written
