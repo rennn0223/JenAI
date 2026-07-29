@@ -94,16 +94,16 @@ def test_reflex_layer_never_imports_the_llm_stack() -> None:
 def test_nxdog_adapter_stays_observation_only_and_doctor_scoped() -> None:
     """NXDog cannot silently become an Agent, UI, MCP, or Workflow motion seam."""
 
-    expected = {
+    expected = (
         "/nav_health",
         "/get_ready_flag",
         "/current_map",
         "/odom",
         "/velocity",
         "/is_charging",
-    }
-    assert set(NXDOG_READ_ONLY_ENDPOINTS) == expected
-    assert not expected.intersection(
+    )
+    assert NXDOG_READ_ONLY_ENDPOINTS == expected
+    assert not set(expected).intersection(
         {
             "/navigate",
             "/stop",

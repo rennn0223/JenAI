@@ -249,14 +249,15 @@ class NXDogObserver:
 
         collection_started_at = datetime.now(UTC)
         collection_started = time.monotonic()
-        captures: tuple[tuple[str, Callable[[object], object]], ...] = (
-            ("/nav_health", _parse_nav_health),
-            ("/get_ready_flag", _parse_ready_flag),
-            ("/current_map", _parse_current_map),
-            ("/odom", _parse_odom),
-            ("/velocity", _parse_velocity),
-            ("/is_charging", _parse_charging),
+        parsers: tuple[Callable[[object], object], ...] = (
+            _parse_nav_health,
+            _parse_ready_flag,
+            _parse_current_map,
+            _parse_odom,
+            _parse_velocity,
+            _parse_charging,
         )
+        captures = tuple(zip(NXDOG_READ_ONLY_ENDPOINTS, parsers, strict=True))
         values: dict[str, object] = {}
         failures: list[NXDogEndpointFailure] = []
         with ThreadPoolExecutor(max_workers=len(captures), thread_name_prefix="nxdog-read") as pool:
