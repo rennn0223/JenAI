@@ -67,6 +67,10 @@ def test_observer_returns_one_typed_snapshot_through_the_external_interface() ->
     ).observe()
 
     assert result.complete is True
+    assert result.all_endpoints_valid is True
+    assert result.collection_started_at <= result.collection_completed_at
+    assert result.collection_duration_ms >= 0
+    assert result.captured_at == result.collection_completed_at
     assert result.base_url == "http://192.168.123.18:5088"
     assert result.nav_alive is True
     assert result.client_ready is True
@@ -105,7 +109,13 @@ def test_observer_returns_one_typed_snapshot_through_the_external_interface() ->
 def test_unavailable_evidence_properties_cannot_be_overridden(field: str) -> None:
     with pytest.raises(ValidationError):
         NXDogObservation.model_validate(
-            {"captured_at": datetime.now(UTC), "base_url": "http://dog.local:5088", field: True}
+            {
+                "collection_started_at": datetime.now(UTC),
+                "collection_completed_at": datetime.now(UTC),
+                "collection_duration_ms": 0.0,
+                "base_url": "http://dog.local:5088",
+                field: True,
+            }
         )
 
 
@@ -174,14 +184,39 @@ def test_every_malformed_endpoint_fails_closed(endpoint: str, payload: object) -
         "",
         "192.168.123.18:5088",
         "ftp://192.168.123.18",
+        "http://[::1",
+        "http://:5088",
+        "http:///",
         "http://user:secret@192.168.123.18:5088",
         "http://192.168.123.18:5088/api",
         "http://192.168.123.18:5088?token=secret",
+        "http://dog.local:5088?",
+        "http://dog.local:5088#",
+        "http://dog.local:5088/?",
+        "http://dog.local:5088/#",
+        "http://dog.local:not-a-port",
+        "http://dog.local:65536",
+        "http://dog.local:-1",
+        "http://dog.local:0",
     ],
 )
 def test_unsafe_or_ambiguous_base_urls_are_rejected(base_url: str) -> None:
     with pytest.raises(NXDogConfigurationError):
         NXDogObserver(base_url, transport=_FakeTransport(_valid_payloads()))
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("HTTP://DOG.LOCAL:5088/", "http://dog.local:5088"),
+        ("https://DOG.LOCAL/", "https://dog.local"),
+        ("http://[2001:0db8::1]:5088/", "http://[2001:db8::1]:5088"),
+    ],
+)
+def test_server_root_url_is_canonicalized(base_url: str, expected: str) -> None:
+    observer = NXDogObserver(base_url, transport=_FakeTransport(_valid_payloads()))
+
+    assert observer.base_url == expected
 
 
 def test_environment_opt_in_is_required() -> None:
@@ -267,4 +302,4 @@ def test_real_http_adapter_rejects_redirects_before_an_action_endpoint_is_called
 
     failure = result.failure_for("/nav_health")
     assert failure is not None
-    assert failure.kind == NXDogFailureKind.TRANSPORT
+    assert failure.kind == NXDogFailureKind.REDIRECT_REJECTED

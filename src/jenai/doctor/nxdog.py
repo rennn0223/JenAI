@@ -90,7 +90,7 @@ def _transport_security_item(observer: NXDogObserver) -> DoctorCheckItem:
 
 def _snapshot_items(snapshot: NXDogObservation) -> list[DoctorCheckItem]:
     failures = {item.endpoint: item for item in snapshot.failures}
-    return [
+    items = [
         _bool_item(
             failures.get("/nav_health"),
             check_name="nav_heartbeat",
@@ -123,18 +123,46 @@ def _snapshot_items(snapshot: NXDogObservation) -> list[DoctorCheckItem]:
             false_status=DoctorStatus.PASS,
         ),
     ]
+    if (
+        "/current_map" not in failures
+        and "/odom" not in failures
+        and snapshot.current_map is not None
+        and snapshot.pose is not None
+        and snapshot.pose.map_name is not None
+        and snapshot.current_map != snapshot.pose.map_name
+    ):
+        items.append(
+            DoctorCheckItem(
+                section="nxdog",
+                check_name="map_consistency",
+                status=DoctorStatus.WARN,
+                message="NXDog map observations are inconsistent and untimestamped.",
+                fix_suggestion="Confirm the active NXDog map before relying on pose observations.",
+            )
+        )
+    return items
 
 
 def _failure_item(check_name: str, failure: NXDogEndpointFailure) -> DoctorCheckItem:
+    if failure.kind == NXDogFailureKind.TRANSPORT:
+        fix = (
+            "Check the isolated NXDog network path and example backend. "
+            "Do not enable motion while read-only evidence is invalid."
+        )
+    elif failure.kind == NXDogFailureKind.HTTP_STATUS:
+        fix = "Check the NXDog backend service and response version before enabling motion."
+    elif failure.kind == NXDogFailureKind.REDIRECT_REJECTED:
+        fix = "Remove the redirect and expose the documented read-only endpoint directly."
+    elif failure.kind == NXDogFailureKind.INVALID_PAYLOAD:
+        fix = "Check the NXDog response schema and vendor API version before enabling motion."
+    else:
+        fix = "Inspect the JenAI NXDog adapter error before enabling motion."
     return DoctorCheckItem(
         section="nxdog",
         check_name=check_name,
         status=DoctorStatus.FAIL,
-        message=f"{failure.endpoint} observation failed: {failure.message}",
-        fix_suggestion=(
-            "Check the NXDog example backend, network path, and response version. "
-            "Do not enable motion while read-only evidence is invalid."
-        ),
+        message=f"[{failure.kind.value}] {failure.endpoint} observation failed: {failure.message}",
+        fix_suggestion=fix,
     )
 
 
@@ -177,7 +205,7 @@ def _map_item(
             section="nxdog",
             check_name="current_map",
             status=DoctorStatus.WARN,
-            message="NXDog reports no fresh current map group.",
+            message="NXDog reports no current map group name.",
             fix_suggestion="Load the intended NXDog map and wait for /nxnav/current_map.",
         )
     return DoctorCheckItem(

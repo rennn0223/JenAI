@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -18,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 NXDOG_API_URL_ENV = "JENAI_NXDOG_API_URL"
 _MAX_RESPONSE_BYTES = 64 * 1024
-_READ_ONLY_ENDPOINTS = (
+NXDOG_READ_ONLY_ENDPOINTS = (
     "/nav_health",
     "/get_ready_flag",
     "/current_map",
@@ -37,18 +39,29 @@ class NXDogConfigurationError(NXDogObservationError):
 
 
 class NXDogTransportError(NXDogObservationError):
-    """Raised when a read-only HTTP request cannot return bounded JSON."""
+    """Raised when a read-only HTTP request fails at the transport layer."""
+
+
+class NXDogHttpStatusError(NXDogObservationError):
+    """Raised when a read-only endpoint returns a non-redirect HTTP error."""
+
+
+class NXDogRedirectError(NXDogObservationError):
+    """Raised when a read-only endpoint attempts any redirect."""
 
 
 class NXDogPayloadError(NXDogObservationError):
-    """Raised when a vendor response does not match the documented shape."""
+    """Raised when a vendor response is not valid documented JSON evidence."""
 
 
 class NXDogFailureKind(StrEnum):
     """Stable failure categories preserved in a partial observation."""
 
     TRANSPORT = "transport"
+    HTTP_STATUS = "http_status"
+    REDIRECT_REJECTED = "redirect_rejected"
     INVALID_PAYLOAD = "invalid_payload"
+    INTERNAL_ADAPTER_ERROR = "internal_adapter_error"
 
 
 class NXDogPoseObservation(BaseModel):
@@ -84,16 +97,19 @@ class NXDogEndpointFailure(BaseModel):
 
 
 class NXDogObservation(BaseModel):
-    """One best-effort snapshot from all documented read-only endpoints.
+    """One non-atomic best-effort collection from documented read-only endpoints.
 
     Missing fields are distinguishable from valid ``false`` values through
-    ``failures``. The vendor example does not expose source timestamps or a
-    cryptographic map digest, so those limitations are explicit invariants.
+    ``failures``. Endpoints are sampled concurrently across the recorded
+    collection interval; they are not one atomic robot state. The vendor
+    example exposes neither source timestamps nor a cryptographic map digest.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    captured_at: datetime
+    collection_started_at: datetime
+    collection_completed_at: datetime
+    collection_duration_ms: float = Field(ge=0, allow_inf_nan=False)
     base_url: str
     transport_authenticated: Literal[False] = False
     source_timestamps_available: Literal[False] = False
@@ -107,10 +123,22 @@ class NXDogObservation(BaseModel):
     failures: tuple[NXDogEndpointFailure, ...] = Field(default_factory=tuple)
 
     @property
-    def complete(self) -> bool:
+    def captured_at(self) -> datetime:
+        """Compatibility alias for the JenAI collection completion time."""
+
+        return self.collection_completed_at
+
+    @property
+    def all_endpoints_valid(self) -> bool:
         """Return whether every read-only endpoint produced valid evidence."""
 
         return not self.failures
+
+    @property
+    def complete(self) -> bool:
+        """Compatibility alias for :attr:`all_endpoints_valid`."""
+
+        return self.all_endpoints_valid
 
     def failure_for(self, endpoint: str) -> NXDogEndpointFailure | None:
         """Return the failure for one documented endpoint, if present."""
@@ -137,10 +165,13 @@ class UrllibNXDogTransport:
 
     def __init__(self, base_url: str) -> None:
         self._base_url = _normalize_base_url(base_url)
-        self._opener = urllib.request.build_opener(_RejectRedirects())
+        self._opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _RejectRedirects(),
+        )
 
     def get_json(self, endpoint: str, *, timeout_s: float) -> object:
-        if endpoint not in _READ_ONLY_ENDPOINTS:
+        if endpoint not in NXDOG_READ_ONLY_ENDPOINTS:
             raise NXDogTransportError(f"NXDog endpoint is not read-only: {endpoint}")
         request = urllib.request.Request(
             f"{self._base_url}{endpoint}",
@@ -151,16 +182,21 @@ class UrllibNXDogTransport:
             with self._opener.open(request, timeout=timeout_s) as response:
                 payload = response.read(_MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
-            raise NXDogTransportError(f"{endpoint} returned HTTP {exc.code}") from exc
+            exc.close()
+            if 300 <= exc.code < 400:
+                raise NXDogRedirectError(
+                    f"{endpoint} redirect was rejected (HTTP {exc.code})"
+                ) from exc
+            raise NXDogHttpStatusError(f"{endpoint} returned HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise NXDogTransportError(f"{endpoint} request failed: {exc}") from exc
 
         if len(payload) > _MAX_RESPONSE_BYTES:
-            raise NXDogTransportError(f"{endpoint} response exceeded {_MAX_RESPONSE_BYTES} bytes")
+            raise NXDogPayloadError(f"{endpoint} response exceeded {_MAX_RESPONSE_BYTES} bytes")
         try:
             return json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise NXDogTransportError(f"{endpoint} did not return valid UTF-8 JSON") from exc
+            raise NXDogPayloadError(f"{endpoint} did not return valid UTF-8 JSON") from exc
 
 
 _T = TypeVar("_T")
@@ -209,8 +245,10 @@ class NXDogObserver:
         return urlsplit(self._base_url).scheme == "https"
 
     def observe(self) -> NXDogObservation:
-        """Capture every read-only endpoint concurrently and preserve failures."""
+        """Collect endpoints concurrently, recording a non-atomic time interval."""
 
+        collection_started_at = datetime.now(UTC)
+        collection_started = time.monotonic()
         captures: tuple[tuple[str, Callable[[object], object]], ...] = (
             ("/nav_health", _parse_nav_health),
             ("/get_ready_flag", _parse_ready_flag),
@@ -237,7 +275,23 @@ class NXDogObserver:
                             message=str(exc),
                         )
                     )
-                except NXDogObservationError as exc:
+                except NXDogRedirectError as exc:
+                    failures.append(
+                        NXDogEndpointFailure(
+                            endpoint=endpoint,
+                            kind=NXDogFailureKind.REDIRECT_REJECTED,
+                            message=str(exc),
+                        )
+                    )
+                except NXDogHttpStatusError as exc:
+                    failures.append(
+                        NXDogEndpointFailure(
+                            endpoint=endpoint,
+                            kind=NXDogFailureKind.HTTP_STATUS,
+                            message=str(exc),
+                        )
+                    )
+                except NXDogTransportError as exc:
                     failures.append(
                         NXDogEndpointFailure(
                             endpoint=endpoint,
@@ -245,17 +299,37 @@ class NXDogObserver:
                             message=str(exc),
                         )
                     )
-                except Exception as exc:  # Defensive isolation of a test/vendor adapter.
+                except (TimeoutError, OSError) as exc:
                     failures.append(
                         NXDogEndpointFailure(
                             endpoint=endpoint,
                             kind=NXDogFailureKind.TRANSPORT,
+                            message=f"{endpoint} request failed: {exc}",
+                        )
+                    )
+                except NXDogObservationError as exc:
+                    failures.append(
+                        NXDogEndpointFailure(
+                            endpoint=endpoint,
+                            kind=NXDogFailureKind.INTERNAL_ADAPTER_ERROR,
+                            message=str(exc),
+                        )
+                    )
+                except Exception as exc:  # Defensive isolation of a test/vendor adapter.
+                    failures.append(
+                        NXDogEndpointFailure(
+                            endpoint=endpoint,
+                            kind=NXDogFailureKind.INTERNAL_ADAPTER_ERROR,
                             message=f"{endpoint} adapter failed: {type(exc).__name__}",
                         )
                     )
 
+        collection_completed_at = datetime.now(UTC)
+        collection_duration_ms = (time.monotonic() - collection_started) * 1000
         return NXDogObservation(
-            captured_at=datetime.now(UTC),
+            collection_started_at=collection_started_at,
+            collection_completed_at=collection_completed_at,
+            collection_duration_ms=collection_duration_ms,
             base_url=self._base_url,
             transport_authenticated=False,
             nav_alive=_typed_value(values, "/nav_health", bool),
@@ -277,17 +351,56 @@ class NXDogObserver:
 
 
 def _normalize_base_url(base_url: str) -> str:
-    stripped = base_url.strip().rstrip("/")
-    parts = urlsplit(stripped)
+    raw = base_url.strip()
+    if not raw:
+        raise NXDogConfigurationError("NXDog base URL must be an absolute HTTP(S) URL")
+    if "?" in raw or "#" in raw:
+        raise NXDogConfigurationError(
+            "NXDog base URL must not contain a query or fragment delimiter"
+        )
+
+    try:
+        parts = urlsplit(raw)
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError as exc:
+        raise NXDogConfigurationError(f"NXDog base URL is malformed: {exc}") from exc
+
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         raise NXDogConfigurationError("NXDog base URL must be an absolute HTTP(S) URL")
     if parts.username is not None or parts.password is not None:
         raise NXDogConfigurationError("NXDog credentials must not be embedded in the base URL")
-    if parts.query or parts.fragment:
-        raise NXDogConfigurationError("NXDog base URL must not contain a query or fragment")
+    if hostname is None or not hostname:
+        raise NXDogConfigurationError("NXDog base URL must contain a valid hostname")
+    if port is not None and port < 1:
+        raise NXDogConfigurationError("NXDog base URL port must be between 1 and 65535")
     if parts.path not in {"", "/"}:
         raise NXDogConfigurationError("NXDog base URL must point to the server root")
-    return stripped
+    canonical_host = _canonical_hostname(hostname)
+    rendered_host = f"[{canonical_host}]" if ":" in canonical_host else canonical_host
+    rendered_port = f":{port}" if port is not None else ""
+    return f"{parts.scheme.lower()}://{rendered_host}{rendered_port}"
+
+
+def _canonical_hostname(hostname: str) -> str:
+    lowered = hostname.lower().rstrip(".")
+    try:
+        return str(ipaddress.ip_address(lowered))
+    except ValueError:
+        labels = lowered.split(".")
+        if not labels or any(
+            not label
+            or len(label) > 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or any(
+                not (character.isascii() and (character.isalnum() or character == "-"))
+                for character in label
+            )
+            for label in labels
+        ):
+            raise NXDogConfigurationError("NXDog base URL must contain a valid hostname") from None
+        return lowered
 
 
 def _require_object(payload: object, endpoint: str) -> dict[str, Any]:

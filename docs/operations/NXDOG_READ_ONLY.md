@@ -40,6 +40,10 @@ endpoint、輸入驗證、timeout、partial failure 與 evidence limitations 都
 公開範例使用 plain HTTP、全域 CORS、`0.0.0.0` bind，且沒有 authentication。JenAI
 可以誠實觀察它，但不會把該 transport 宣稱為 production-safe。
 
+JenAI 明確停用 ambient HTTP／HTTPS proxy，避免機器人流量被 shell 或系統代理攔截。
+所有重新導向（包含同 host、外部 host 與相對路徑）都會 fail closed，不會跟隨至
+`/stop` 或其他非 allowlist endpoint。
+
 ## 設定
 
 不要把 NXDog IP commit 到 repository。在 JenAI host 的 shell 或本機 `.env` 設定：
@@ -76,8 +80,17 @@ JenAI doctor --json
 /is_charging
 ```
 
-每個 endpoint 獨立驗證。單一 endpoint timeout 或 payload 不合法時，其他有效證據仍會
-保留，但該項 doctor check 會 `FAIL`。
+六個 endpoint 會並行收集，但不是同一時刻的原子快照。Observation 會記錄 JenAI 的
+collection start、completion 與 duration；vendor payload 本身沒有 source timestamp，
+因此不可將跨 endpoint 欄位視為同一個 robot state。`all_endpoints_valid` 表示六項都
+通過驗證；`complete` 只是相容別名，不代表狀態具原子性或 freshness。
+
+每個 endpoint 獨立驗證。單一 endpoint 失敗時，其他有效證據仍會保留，並以穩定分類
+回報：`transport`、`http_status`、`redirect_rejected`、`invalid_payload` 或
+`internal_adapter_error`。Doctor 保留分類，不會把壞 JSON 或程式錯誤誤報為網路故障。
+
+若 `/current_map` 與 `/odom.map` 的 map group name 不同，Doctor 會警告兩份無 timestamp
+觀察不一致；它不會自行選一份作為正式 map identity。
 
 ## 證據語意
 
@@ -89,6 +102,12 @@ JenAI doctor --json
 | `odom` | vendor 回傳的 map pose | freshness、covariance、實際世界 ground truth |
 | `velocity` | vendor 回傳的速度值 | 已確認停止；response 沒有 source timestamp |
 | `is_charging` | backend 目前以正電池電流判定 charging | 充電接點、功率、持續充電或電池增加 |
+
+分享 Doctor JSON、log 或 artifact 前必須先遮蔽：
+
+- 私有 map group name 與 map tile。
+- pose／velocity 座標。
+- NXDog host、port 與完整 base URL。
 
 因此本階段不得宣稱：
 
