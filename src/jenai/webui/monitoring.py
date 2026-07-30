@@ -38,6 +38,7 @@ def build_monitoring_transcript(runs: Iterable[RunRecord]) -> list[dict[str, Any
             "approvals": [
                 {
                     "approval_id": approval.approval_id,
+                    "tool_call_id": approval.tool_call_id,
                     "title": redact_sensitive_text(approval.title),
                     "summary": redact_sensitive_text(approval.summary),
                     "tool_name": redact_sensitive_text(approval.tool_name),

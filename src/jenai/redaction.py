@@ -6,10 +6,20 @@ import re
 from collections.abc import Iterable
 
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)([\"']?(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)"
-    r"[\"']?\s*[:=]\s*[\"']?)([^\"'\s,}]+)"
+    r"(?i)(?P<prefix>[\"']?(?:api[_-]?key|access[_-]?token|auth[_-]?token|"
+    r"password|secret|token)[\"']?\s*[:=]\s*)"
+    r"(?P<value>\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,}&]+)"
 )
 _BEARER = re.compile(r"(?i)([\"']?authorization[\"']?\s*:\s*[\"']?\s*bearer\s+)([^\s\"']+)")
+
+
+def _redact_assignment(match: re.Match[str]) -> str:
+    prefix = match.group("prefix")
+    value = match.group("value")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        quote = value[0]
+        return f"{prefix}{quote}[REDACTED]{quote}"
+    return f"{prefix}[REDACTED]"
 
 
 def redact_sensitive_text(
@@ -22,7 +32,7 @@ def redact_sensitive_text(
     for secret in sorted(secret_values, key=len, reverse=True):
         if len(secret) >= 4:
             redacted = redacted.replace(secret, "[REDACTED]")
-    redacted = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", redacted)
+    redacted = _SECRET_ASSIGNMENT.sub(_redact_assignment, redacted)
     redacted = _BEARER.sub(r"\1[REDACTED]", redacted)
     return redacted
 

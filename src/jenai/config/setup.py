@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from rich.table import Table
 
 from jenai.adapters.locations import ensure_locations_file
 from jenai.config.store import build_minimal_config, default_env_file_path, save_config
+from jenai.secure_files import atomic_write_text
 
 _BANNER_LINES = (
     "     ██╗███████╗███╗   ██╗ █████╗ ██╗",
@@ -152,15 +152,7 @@ def _secure_api_key_input(
 
     lines = [line for line in existing if _assignment_name(line) != env_name]
     lines.append(f"{env_name}={stripped}")
-    temporary = env_path.with_name(f".{env_path.name}.{os.getpid()}.tmp")
-    try:
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
-        os.replace(temporary, env_path)
-        os.chmod(env_path, 0o600)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_write_text(env_path, "\n".join(lines) + "\n")
     return env_name, env_path
 
 

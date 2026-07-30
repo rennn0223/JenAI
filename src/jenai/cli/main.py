@@ -93,8 +93,15 @@ def main(
     config: ConfigOption = None,
     debug: Annotated[bool, typer.Option("--debug", help="Show debug details.")] = False,
 ) -> None:
+    if ctx.invoked_subcommand is not None:
+        # Each subcommand loads the env file adjacent to its own --config.
+        # Loading the default file here would make those values impossible to
+        # override because shell-existing values intentionally take precedence.
+        bootstrap_ros_environment()
+        return
+
     # Load API keys from the env file before anything touches a provider, so
-    # every launch mode (uv run, venv script, launcher, subcommands) behaves
+    # every direct TUI launch mode (uv run, venv script, launcher) behaves
     # the same. Shell-exported variables still take precedence over the file.
     config_path = config or default_config_path()
     env_result = load_env_file(default_env_file_path(config_path))
@@ -107,9 +114,6 @@ def main(
     # launcher. Missing ROS remains non-fatal; Doctor reports the remedy while
     # provider-only features continue to work.
     bootstrap_ros_environment()
-
-    if ctx.invoked_subcommand is not None:
-        return
 
     try:
         loaded = _load_runtime_config(config_path)

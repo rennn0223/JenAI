@@ -141,10 +141,11 @@ class _ActiveConfirmation:
             self._current = pending
             return True
 
-    def finish(self, pending: _PendingConfirmation) -> bool:
+    def finish(self, pending: _PendingConfirmation, on_finish: Callable[[], None]) -> bool:
         with self._lock:
             if self._current is not pending:
                 return False
+            on_finish()
             self._current = None
             return True
 
@@ -237,6 +238,19 @@ class _PendingConfirms:
         if expired is not None:
             self._notify(expired, "expired")
         return None
+
+    def snapshot(self) -> dict[str, str]:
+        """Return active opaque ids keyed by tool call, purging expired entries."""
+        with self._lock:
+            expired = self._purge_expired(time.monotonic())
+            tokens = {
+                pending.tool_call_id: token
+                for token, (_, pending) in self._items.items()
+                if pending.tool_call_id is not None
+            }
+        for pending in expired:
+            self._notify(pending, "expired")
+        return tokens
 
     def clear(self) -> list[_PendingConfirmation]:
         """Revoke every token and return correlations for lifecycle cleanup."""
@@ -548,7 +562,7 @@ def _do_stop(
     except BridgeError as exc:
         if run_store is not None and handle is not None:
             finish_emergency_stop_run(run_store, handle, error=exc)
-        return {"kind": "error", "html": f"<p>Stop unavailable (no ROS bridge): {exc}</p>"}
+        return {"kind": "error", "html": f"<p>停止功能目前不可用（ROS bridge 未連線）：{exc}</p>"}
     if run_store is not None and handle is not None:
         finish_emergency_stop_run(run_store, handle, receipt=message)
     return _halt_response(message)
@@ -572,13 +586,23 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def _status(self) -> dict[str, Any]:
+        # Snapshot first: its purge callback terminalizes expired approvals before
+        # the run transcript is projected for this refresh.
+        confirmation_tokens = self.pending.snapshot() if self.pending is not None else {}
         if self.status_cache is not None:
-            return self.status_cache.build_status(
+            payload = self.status_cache.build_status(
                 self.config,
                 self.config_path,
                 run_store=self.run_store,
             )
-        return build_status_payload(self.config, self.config_path, run_store=self.run_store)
+        else:
+            payload = build_status_payload(self.config, self.config_path, run_store=self.run_store)
+        for run in payload.get("transcript", []):
+            for approval in run.get("approvals", []):
+                confirm_id = confirmation_tokens.get(str(approval.get("tool_call_id") or ""))
+                if confirm_id is not None:
+                    approval["confirm_id"] = confirm_id
+        return payload
 
     def _send(self, body: str, content_type: str, status: int = 200) -> None:
         encoded = body.encode("utf-8")
@@ -628,13 +652,13 @@ class _Handler(BaseHTTPRequestHandler):
         # Same minimal body for missing and wrong tokens — nothing to enumerate.
         if self._route().startswith("/api/"):
             self._send(
-                '{"kind": "error", "html": "<p>Unauthorized.</p>"}',
+                '{"kind": "error", "html": "<p>未授權。</p>"}',
                 "application/json; charset=utf-8",
                 status=401,
             )
         else:
             self._send(
-                "<h1>401</h1><p>Open the tokened URL printed by <code>JenAI web</code>.</p>",
+                "<h1>401</h1><p>請開啟 <code>JenAI web</code> 顯示的含 token 網址。</p>",
                 "text/html; charset=utf-8",
                 status=401,
             )
@@ -665,7 +689,7 @@ class _Handler(BaseHTTPRequestHandler):
             )
         if frame_path is None:
             self._send(
-                json.dumps({"kind": "error", "html": f"<p>No frame from {topic}.</p>"}),
+                json.dumps({"kind": "error", "html": f"<p>無法從 {topic} 取得影像。</p>"}),
                 "application/json; charset=utf-8",
                 status=503,
             )
@@ -733,14 +757,14 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             self._send(
-                '{"kind": "error", "html": "<p>Invalid Content-Length.</p>"}',
+                '{"kind": "error", "html": "<p>Content-Length 無效。</p>"}',
                 "application/json; charset=utf-8",
                 status=400,
             )
             return None
         if length < 0 or length > _MAX_JSON_BODY:
             self._send(
-                '{"kind": "error", "html": "<p>Request body too large.</p>"}',
+                '{"kind": "error", "html": "<p>Request body 過大。</p>"}',
                 "application/json; charset=utf-8",
                 status=413,
             )
@@ -750,14 +774,14 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.loads(raw.decode("utf-8")) if raw else {}
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send(
-                '{"kind": "error", "html": "<p>Invalid JSON body.</p>"}',
+                '{"kind": "error", "html": "<p>JSON request body 無效。</p>"}',
                 "application/json; charset=utf-8",
                 status=400,
             )
             return None
         if not isinstance(data, dict):
             self._send(
-                '{"kind": "error", "html": "<p>JSON body must be an object.</p>"}',
+                '{"kind": "error", "html": "<p>JSON body 必須是 object。</p>"}',
                 "application/json; charset=utf-8",
                 status=400,
             )
@@ -804,7 +828,7 @@ class _Handler(BaseHTTPRequestHandler):
             return self._run_confirm(body)
         if path == "/api/reject":
             return self._run_reject(body)
-        return {"kind": "error", "html": "<p>Unknown endpoint.</p>"}
+        return {"kind": "error", "html": "<p>不支援的 endpoint。</p>"}
 
     def _run_command(self, body: dict[str, Any]) -> dict[str, Any]:
         text = str(body.get("text") or "").strip()
@@ -917,20 +941,22 @@ class _Handler(BaseHTTPRequestHandler):
         result: dict[str, Any],
     ) -> bool:
         store = self.run_store
-        is_current = tracker is None or tracker.finish(pending)
-        if (
-            is_current
-            and store is not None
-            and run is not None
-            and pending.tool_call_id is not None
-        ):
-            finish_confirmation(
-                store,
-                run,
-                pending.tool_call_id,
-                result=web_response_task_result(result),
-            )
-        return is_current
+
+        def mark_finished() -> None:
+            if store is not None and run is not None and pending.tool_call_id is not None:
+                finish_confirmation(
+                    store,
+                    run,
+                    pending.tool_call_id,
+                    result=web_response_task_result(result),
+                )
+
+        if tracker is None:
+            mark_finished()
+            return True
+        # Persist the authoritative terminal result while holding the same
+        # lock used by STOP, so success and cancellation have one total order.
+        return tracker.finish(pending, mark_finished)
 
     def _run_confirm(self, body: dict[str, Any]) -> dict[str, Any]:
         acquired = self.action_lock is None or self.action_lock.acquire(blocking=False)

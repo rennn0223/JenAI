@@ -75,6 +75,7 @@ def test_dashboard_is_offline_ready_and_accessible() -> None:
     assert 'aria-label="輸入 JenAI 指令或自然語言任務"' in page
     assert 'aria-label="立即停止機器人"' in page
     assert "@media(prefers-reduced-motion:reduce)" in page
+    assert ">1</span> 個 topics" in page
 
 
 def test_dashboard_keeps_card_and_focus_styles_as_separate_css_rules() -> None:
@@ -108,6 +109,16 @@ def test_command_failure_path_restores_input_and_reports_unknown_delivery() -> N
     assert "無法確認伺服器是否已接收這項指令" in page
     assert "請先查看目前狀態，再決定是否重試" in page
     assert "指令尚未送出" not in page
+
+
+def test_confirmation_response_loss_requires_state_check_before_retry() -> None:
+    page = render_dashboard_html(_status())
+    catch_block = page.split("無法確認動作結果：", 1)[1].split("}finally{", 1)[0]
+
+    assert "請勿重複批准" in catch_block
+    assert "必要時使用 STOP" in catch_block
+    assert "yesButton.disabled = false" not in catch_block
+    assert "noButton.disabled = false" not in catch_block
 
 
 def test_status_fragment_renders_durable_run_approval_and_tool_timeline() -> None:
@@ -157,3 +168,5 @@ def test_status_fragment_renders_durable_run_approval_and_tool_timeline() -> Non
     assert "工具時間軸" in fragment
     assert "navigate" in fragment
     assert "本工作階段紀錄" in fragment
+    assert ">1</span> 筆任務" in fragment
+    assert "1 runs" not in fragment

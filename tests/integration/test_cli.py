@@ -324,6 +324,37 @@ def test_subcommand_loads_env_next_to_its_explicit_config(tmp_path: Path, monkey
     assert observed == "secret"
 
 
+def test_subcommand_custom_env_is_not_shadowed_by_default_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    env_name = "JENAI_TEST_ENV_PRECEDENCE_KEY"
+    default_config = tmp_path / "default" / "config.toml"
+    custom_config = tmp_path / "custom" / "config.toml"
+    for path in (default_config, custom_config):
+        save_config(
+            build_minimal_config(
+                provider_name="test",
+                provider="openai",
+                default_model="gpt-test",
+                api_key_env=env_name,
+            ),
+            path,
+        )
+    (default_config.parent / ".env").write_text(f"{env_name}=default-secret\n", encoding="utf-8")
+    (custom_config.parent / ".env").write_text(f"{env_name}=custom-secret\n", encoding="utf-8")
+    monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr("jenai.cli.main.default_config_path", lambda: default_config)
+    try:
+        result = runner.invoke(app, ["models", "--config", str(custom_config)])
+        observed = os.environ.get(env_name)
+    finally:
+        os.environ.pop(env_name, None)
+
+    assert result.exit_code == 0
+    assert observed == "custom-secret"
+
+
 def _config_with_locations(tmp_path: Path) -> Path:
     from jenai.adapters.locations import save_locations
     from jenai.schemas import Location, Pose2D

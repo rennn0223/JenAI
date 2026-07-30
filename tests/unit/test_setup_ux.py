@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
-from jenai.config.setup import run_setup_wizard
+from jenai.config.setup import PRESETS, _secure_api_key_input, run_setup_wizard
 from jenai.config.store import load_config
 
 
@@ -125,3 +126,25 @@ def test_setup_reports_the_env_path_next_to_a_custom_config(
     output = capsys.readouterr().out
     assert str(config_path.parent / ".env") in output
     assert "~/.config/jenai/.env" not in output
+
+
+def test_setup_secret_write_does_not_follow_predictable_temp_symlink(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    env_path = tmp_path / ".env"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("preserve me\n", encoding="utf-8")
+    predictable_temp = env_path.with_name(f".{env_path.name}.{os.getpid()}.tmp")
+    predictable_temp.symlink_to(victim)
+
+    env_name, written = _secure_api_key_input(
+        "nvapi-super-secret",
+        PRESETS[1],
+        config_path,
+    )
+
+    assert env_name == "NVIDIA_API_KEY"
+    assert written == env_path
+    assert victim.read_text(encoding="utf-8") == "preserve me\n"
+    assert env_path.read_text(encoding="utf-8") == "NVIDIA_API_KEY=nvapi-super-secret\n"

@@ -127,6 +127,7 @@ class RosTopicView:
 @dataclass(frozen=True, slots=True)
 class WebApprovalView:
     approval_id: str
+    confirm_id: str | None
     title: str
     summary: str
     tool_name: str
@@ -231,6 +232,7 @@ def _build_runs(status: dict[str, Any]) -> tuple[WebRunView, ...]:
             approvals.append(
                 WebApprovalView(
                     approval_id=str(item.get("approval_id") or ""),
+                    confirm_id=_optional_text(item.get("confirm_id")),
                     title=str(item.get("title") or "未命名批准"),
                     summary=str(item.get("summary") or ""),
                     tool_name=str(item.get("tool_name") or "未知工具"),

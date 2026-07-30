@@ -125,7 +125,7 @@ def render_main(status: dict[str, Any]) -> str:
         "</section>"
         '<section class="card">'
         '<div class="card-head"><h2>ROS 2 Graph</h2>'
-        f'<div class="head-right"><span class="count">{view.ros_count}</span> topics</div></div>'
+        f'<div class="head-right"><span class="count">{view.ros_count}</span> 個 topics</div></div>'
         f"{ros_html}"
         "</section>"
         f'<div class="updated">更新於 {updated} · 每 5 秒自動重新整理</div>'
@@ -272,6 +272,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 .monitor-item strong{display:block; font-size:13px; overflow-wrap:anywhere}
 .monitor-item span:not(.monitor-state){display:block; color:var(--muted); font-size:11.5px;
   overflow-wrap:anywhere}
+.monitor-actions{display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px}
+.monitor-actions .btn-approve,.monitor-actions .btn-cancel{padding:5px 9px; font-size:12px}
 .monitor-empty,.monitor-note{color:var(--muted); font-size:12.5px}
 .monitor-note{margin:12px 0 0}
 .updated{color:var(--muted); font-size:12px; text-align:right; margin-top:4px}
@@ -521,8 +523,10 @@ function render(res){
         wrap.appendChild(el(out.kind === 'error' ? 'out danger' : 'out', out.html));
       }catch(err){
         setConnection('offline', '連線中斷');
-        wrap.appendChild(el('danger', '無法確認動作結果：' + esc(err.message)));
-        yesButton.disabled = false; noButton.disabled = false;
+        wrap.appendChild(el('danger',
+          '無法確認動作結果：' + esc(err.message) +
+          '。結果未知；請先查看「狀態」頁的目前任務與待批准清單。' +
+          '請勿重複批准；必要時使用 STOP。'));
       }finally{
         busy.remove(); scroll();
       }
@@ -540,8 +544,6 @@ function render(res){
           'danger',
           '無法確認取消是否送達；請先查看「狀態」頁的待批准清單，再決定下一步。'
         ));
-        yesButton.disabled = false;
-        noButton.disabled = false;
       } finally {
         scroll();
       }
@@ -550,6 +552,27 @@ function render(res){
     block(res.kind === 'error' ? 'error' : 'result', el('out', res.html));
   }
 }
+
+document.getElementById('status-view').addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-confirm-action]');
+  if(!button) return;
+  const group = button.closest('.monitor-actions');
+  group.querySelectorAll('button').forEach(item => { item.disabled = true; });
+  try {
+    const out = await post('api/' + button.dataset.confirmAction, {
+      confirm_id: button.dataset.confirmId
+    });
+    render(out);
+    await refresh();
+  } catch(err) {
+    setConnection('offline', '連線中斷');
+    const item = button.closest('.monitor-item');
+    const note = el('danger',
+      '無法確認操作結果。請先重新整理目前任務與待批准清單；' +
+      '請勿重複批准，必要時使用 STOP。');
+    item.appendChild(note);
+  }
+});
 
 const estop = document.getElementById('estop');
 estop.addEventListener('click', async () => {

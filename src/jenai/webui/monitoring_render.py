@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 
-from jenai.webui.presentation import WebRunView, WebStatusView
+from jenai.webui.presentation import WebApprovalView, WebRunView, WebStatusView
 
 
 def _esc(value: object) -> str:
@@ -34,6 +34,22 @@ def _current_run(view: WebStatusView) -> str:
     )
 
 
+def _approval_actions(item: WebApprovalView) -> str:
+    if item.confirm_id is None:
+        return (
+            f'<span class="monitor-state state-awaiting_approval">{_esc(item.status_label)}</span>'
+        )
+    confirm_id = _esc(item.confirm_id)
+    return (
+        f'<div class="monitor-actions" data-confirm-id="{confirm_id}">'
+        f'<button type="button" class="btn-cancel monitor-reject" '
+        f'data-confirm-action="reject" data-confirm-id="{confirm_id}">取消</button>'
+        f'<button type="button" class="btn-approve monitor-approve" '
+        f'data-confirm-action="confirm" data-confirm-id="{confirm_id}">批准一次</button>'
+        "</div>"
+    )
+
+
 def _approval_queue(view: WebStatusView) -> str:
     pending = view.pending_approvals
     if not pending:
@@ -44,8 +60,8 @@ def _approval_queue(view: WebStatusView) -> str:
             '<div class="monitor-item">'
             f"<div><strong>{_esc(item.title)}</strong>"
             f"<span>{_esc(item.summary or item.tool_name)}</span></div>"
-            f'<span class="monitor-state state-awaiting_approval">{_esc(item.status_label)}</span>'
-            "</div>"
+            + _approval_actions(item)
+            + "</div>"
             for item in pending
         )
         + "</div>"
@@ -95,7 +111,7 @@ def render_monitoring(view: WebStatusView) -> str:
     return (
         '<section class="card monitoring-card">'
         '<div class="card-head"><h2>任務監控</h2>'
-        f'<div class="head-right"><span class="count">{len(view.runs)}</span> runs</div></div>'
+        f'<div class="head-right"><span class="count">{len(view.runs)}</span> 筆任務</div></div>'
         '<div class="monitor-grid">'
         '<section class="monitor-panel monitor-primary"><h3 class="monitor-title">目前任務</h3>'
         f"{_current_run(view)}</section>"
