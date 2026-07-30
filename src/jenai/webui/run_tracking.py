@@ -54,23 +54,19 @@ def register_confirmation(
         risk_level=RiskLevel.P1,
         effect_scope=effect_scope,
     )
-    store.add_tool_call(run, call)
-    store.add_interruption(
-        run,
-        ApprovalRequest(
-            run_id=run.run_id,
-            tool_call_id=call.tool_call_id,
-            tool_name=tool_name,
-            title=f"執行 {tool_name}",
-            summary=danger or "這項動作需要操作員批准。",
-            raw_action=str(action.get("type") or "unknown"),
-            risk_level=RiskLevel.P1,
-            effect_scope=effect_scope,
-            justification="WebUI 動作必須經過一次性批准。",
-            preview=preview,
-        ),
+    approval = ApprovalRequest(
+        run_id=run.run_id,
+        tool_call_id=call.tool_call_id,
+        tool_name=tool_name,
+        title=f"執行 {tool_name}",
+        summary=danger or "這項動作需要操作員批准。",
+        raw_action=str(action.get("type") or "unknown"),
+        risk_level=RiskLevel.P1,
+        effect_scope=effect_scope,
+        justification="WebUI 動作必須經過一次性批准。",
+        preview=preview,
     )
-    store.set_status(run, RunStatus.AWAITING_APPROVAL)
+    store.register_pending_approval(run, call, approval)
     return call.tool_call_id
 
 

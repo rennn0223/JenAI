@@ -27,6 +27,19 @@ def _config():
     )
 
 
+def _route_action(name: str = "Dock") -> dict[str, object]:
+    return {
+        "type": "route",
+        "outgoing_action": {
+            "goal": {
+                "name": name,
+                "frame_id": "map",
+                "pose": {"x": -6.0, "y": -1.0, "yaw": 3.142},
+            }
+        },
+    }
+
+
 def test_status_payload_includes_provider_and_transcript(tmp_path: Path) -> None:
     store = RunStore()
     run = store.create_run("session-1", "patrol area A")
@@ -136,7 +149,7 @@ def test_status_payload_never_hides_active_or_pending_run_behind_history_cap(
         store,
         pending,
         _config(),
-        {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+        _route_action(),
         "機器人將開始移動。",
     )
     for index in range(55):
@@ -344,7 +357,7 @@ def test_webui_confirmation_updates_approval_and_tool_monitoring(
             "kind": "confirm",
             "html": "<p>前往 Dock</p>",
             "danger": "機器人將開始移動。",
-            "action": {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+            "action": _route_action(),
         }
 
     async def fake_confirm(_config, action, *, config_path):
@@ -531,7 +544,7 @@ def test_webui_fragment_keeps_redacted_ros_payload_after_refresh(
 ) -> None:
     import jenai.webui.server as server_module
 
-    secret = "vendor-credential-value"
+    secret = "vendor<&credential"
     monkeypatch.setenv("MODEL_AUTH", secret)
     config = _config()
     config.provider_profiles["test"].api_key_env = "MODEL_AUTH"
@@ -539,7 +552,7 @@ def test_webui_fragment_keeps_redacted_ros_payload_after_refresh(
     async def fake_command(_config, _config_path, _text):
         return {
             "kind": "confirm",
-            "html": f"<p>發布訊息：{secret}</p>",
+            "html": "<p>發布訊息：vendor&lt;&amp;credential</p>",
             "danger": "這會發布一筆 ROS 訊息。",
             "action": {
                 "type": "pub",
@@ -585,6 +598,25 @@ def test_webui_fragment_keeps_redacted_ros_payload_after_refresh(
     assert "monitor-approve" in fragment
 
 
+def test_approval_preview_rejects_route_without_exact_pose() -> None:
+    from jenai.webui.approval_preview import build_approval_preview
+
+    with pytest.raises(ValueError, match="frame"):
+        build_approval_preview({"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}})
+
+
+def test_approval_preview_and_parameters_are_immutable() -> None:
+    from pydantic import ValidationError
+
+    from jenai.webui.approval_preview import build_approval_preview
+
+    preview = build_approval_preview(_route_action())
+    with pytest.raises(ValidationError, match="frozen"):
+        preview.display_title = "tampered"
+    with pytest.raises(ValidationError, match="frozen"):
+        preview.parameters[0].value = "tampered"
+
+
 def test_webui_status_refresh_hides_action_when_preview_cannot_be_rebuilt(
     tmp_path: Path,
 ) -> None:
@@ -612,7 +644,7 @@ def test_webui_status_refresh_hides_action_when_preview_cannot_be_rebuilt(
         run_store=store,
     )
     server.RequestHandlerClass.pending.put(
-        {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+        _route_action(),
         run_id=run.run_id,
         tool_call_id=approval.tool_call_id,
     )
@@ -643,7 +675,7 @@ def test_webui_status_refresh_expires_pending_approval(
             "kind": "confirm",
             "html": "<p>前往 Dock</p>",
             "danger": "機器人將開始移動。",
-            "action": {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+            "action": _route_action(),
         }
 
     monkeypatch.setattr(server_module, "run_web_command", fake_command)
@@ -698,8 +730,8 @@ def test_webui_confirm_fails_closed_when_preview_digest_no_longer_matches_action
     monkeypatch.setattr(server_module, "run_web_confirm", fake_confirm)
     store = RunStore()
     run = store.create_run("webui", "/route Dock")
-    expected = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
-    tampered = {"type": "route", "outgoing_action": {"goal": {"name": "Lab"}}}
+    expected = _route_action()
+    tampered = _route_action("Lab")
     tool_call_id = register_confirmation(
         store,
         run,
@@ -758,7 +790,7 @@ def test_webui_confirmation_exception_finishes_tracked_run(
     monkeypatch.setattr(server_module, "run_web_confirm", failing_confirm)
     store = RunStore()
     run = store.create_run("webui", "/route Dock")
-    action = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
+    action = _route_action()
     tool_call_id = register_confirmation(
         store,
         run,
@@ -813,6 +845,39 @@ def test_webui_server_serves_html_and_json(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_confirmation_registration_publishes_one_consistent_pending_snapshot() -> None:
+    from jenai.webui.run_tracking import register_confirmation
+
+    tool_audit_started = threading.Event()
+    release_audit = threading.Event()
+
+    class BlockingAudit:
+        def record(self, event_type, **_kwargs):
+            if event_type == "tool_registered":
+                tool_audit_started.set()
+                assert release_audit.wait(timeout=2)
+
+    store = RunStore(audit_store=BlockingAudit())
+    run = store.create_run("webui", "/route Dock")
+    worker = threading.Thread(
+        target=register_confirmation,
+        args=(store, run, _config(), _route_action(), "機器人將開始移動。"),
+    )
+    worker.start()
+    assert tool_audit_started.wait(timeout=2)
+
+    snapshot = store.snapshot_runs()[0]
+    release_audit.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert snapshot.status == "awaiting_approval"
+    assert len(snapshot.tool_calls) == 1
+    assert snapshot.tool_calls[0].status == "awaiting_approval"
+    assert len(snapshot.interruptions) == 1
+    assert snapshot.interruptions[0].status == "pending"
+
+
 def test_confirmation_start_publishes_one_consistent_run_snapshot() -> None:
     from jenai.webui.run_tracking import register_confirmation, start_confirmation
 
@@ -831,7 +896,7 @@ def test_confirmation_start_publishes_one_consistent_run_snapshot() -> None:
         store,
         run,
         _config(),
-        {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+        _route_action(),
         "機器人將開始移動。",
     )
     worker = threading.Thread(
@@ -869,7 +934,7 @@ def test_confirmation_rejection_publishes_one_consistent_terminal_snapshot() -> 
         store,
         run,
         _config(),
-        {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+        _route_action(),
         "機器人將開始移動。",
     )
     worker = threading.Thread(
@@ -916,7 +981,7 @@ def test_confirmation_finish_publishes_one_consistent_terminal_snapshot() -> Non
         store,
         run,
         _config(),
-        {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+        _route_action(),
         "機器人將開始移動。",
     )
     start_confirmation(store, run, tool_call_id)
@@ -955,7 +1020,7 @@ def test_webui_reject_consumes_confirmation_and_updates_monitoring(
             "kind": "confirm",
             "html": "<p>前往 Dock</p>",
             "danger": "機器人將開始移動。",
-            "action": {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+            "action": _route_action(),
         }
 
     monkeypatch.setattr(server_module, "run_web_command", fake_command)
@@ -1279,7 +1344,7 @@ def test_web_confirm_navigation_returns_and_audits_product_outcome(monkeypatch, 
 
     monkeypatch.setattr(commands, "execute_navigation", fake_navigation)
     config_path = tmp_path / "config.toml"
-    action = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
+    action = _route_action()
     result = asyncio.run(run_web_confirm(_config(), action, config_path=config_path))
 
     assert result["kind"] == "result"
@@ -1661,7 +1726,7 @@ def test_webui_concurrent_lifecycle_stress_keeps_terminal_invariants(  # noqa: C
             "kind": "confirm",
             "html": f"<p>前往 {target}</p>",
             "danger": "機器人將開始移動。",
-            "action": {"type": "route", "outgoing_action": {"goal": {"name": target}}},
+            "action": _route_action(target),
         }
 
     async def fake_confirm(_config, _action, *, config_path):
@@ -1835,7 +1900,7 @@ def test_webui_stop_rejects_tracked_pending_approval(monkeypatch, tmp_path: Path
             "kind": "confirm",
             "html": "<p>前往 Dock</p>",
             "danger": "機器人將開始移動。",
-            "action": {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+            "action": _route_action(),
         }
 
     monkeypatch.setattr(server_module, "run_web_command", fake_command)
@@ -2120,7 +2185,7 @@ def test_webui_stop_cancels_active_confirmation_and_waits_for_cleanup(
     monkeypatch.setattr(server_module, "_do_stop", lambda *args, **kwargs: {"kind": "info"})
     store = RunStore()
     run = store.create_run("webui", "/route Dock")
-    action = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
+    action = _route_action()
     tool_call_id = register_confirmation(store, run, _config(), action, "移動機器人。")
     pending = _PendingConfirms()
     confirm_id = pending.put(action, run_id=run.run_id, tool_call_id=tool_call_id)
@@ -2176,7 +2241,7 @@ def test_webui_command_started_before_stop_cannot_escrow_late_approval(
             "kind": "confirm",
             "html": "<p>前往 Dock</p>",
             "danger": "機器人將開始移動。",
-            "action": {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+            "action": _route_action(),
         }
 
     monkeypatch.setattr(server_module, "run_web_command", slow_command)
@@ -2219,39 +2284,56 @@ def test_webui_command_started_before_stop_cannot_escrow_late_approval(
     assert run.outcome == "blocked"
 
 
-def test_active_confirmation_finalization_is_linearized_with_stop() -> None:
-    from jenai.webui.server import _ActiveConfirmation, _PendingConfirmation
+def test_confirmation_persistence_does_not_hold_safety_lock() -> None:
+    from types import SimpleNamespace
 
+    from jenai.task_results import TaskResult
+    from jenai.webui.run_tracking import register_confirmation, start_confirmation
+    from jenai.webui.server import _ActiveConfirmation, _Handler, _PendingConfirmation
+
+    persistence_started = threading.Event()
+    release_persistence = threading.Event()
+
+    class BlockingAudit:
+        enabled = False
+
+        def record(self, event_type, **_kwargs):
+            if self.enabled and event_type == "tool_updated":
+                persistence_started.set()
+                assert release_persistence.wait(timeout=2)
+
+    audit = BlockingAudit()
+    store = RunStore(audit_store=audit)
+    run = store.create_run("webui", "/route Dock")
+    action = _route_action()
+    tool_call_id = register_confirmation(store, run, _config(), action, "移動機器人。")
+    start_confirmation(store, run, tool_call_id)
+    pending = _PendingConfirmation(action, run.run_id, tool_call_id)
     active = _ActiveConfirmation()
-    pending = _PendingConfirmation({"type": "route"})
-    assert active.start(pending, active.epoch(), lambda: None)
-    finalization_started = threading.Event()
-    release_finalization = threading.Event()
-    stop_finished = threading.Event()
-    stop_result = []
+    assert active.start(pending, active.epoch(), None)
+    audit.enabled = True
+    handler = SimpleNamespace(run_store=store)
+    result = {
+        "kind": "result",
+        "run_status": "completed",
+        "outcome": "arrived_unverified",
+    }
 
-    def persist_result() -> None:
-        finalization_started.set()
-        assert release_finalization.wait(timeout=2)
-
-    finisher = threading.Thread(target=active.finish, args=(pending, persist_result))
+    finisher = threading.Thread(
+        target=_Handler._finish_tracked_confirmation,
+        args=(handler, pending, run, active, result),
+    )
     finisher.start()
-    assert finalization_started.wait(timeout=2)
+    assert persistence_started.wait(timeout=2)
 
-    def stop() -> None:
-        stop_result.append(active.cancel())
-        stop_finished.set()
+    started = time.monotonic()
+    assert active.cancel() is None
+    assert time.monotonic() - started < 0.1
 
-    stopper = threading.Thread(target=stop)
-    stopper.start()
-    assert not stop_finished.wait(timeout=0.05)
-    release_finalization.set()
+    release_persistence.set()
     finisher.join(timeout=2)
-    stopper.join(timeout=2)
-
     assert not finisher.is_alive()
-    assert not stopper.is_alive()
-    assert stop_result == [None]
+    assert run.status == TaskResult(run_status="completed", outcome="arrived_unverified").run_status
 
 
 def test_pending_expiry_and_eviction_finish_correlated_runs() -> None:
@@ -2260,7 +2342,7 @@ def test_pending_expiry_and_eviction_finish_correlated_runs() -> None:
 
     store = RunStore()
     config = _config()
-    action = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
+    action = _route_action()
 
     def correlated_pending(label: str):
         run = store.create_run("webui", label)
@@ -2300,9 +2382,7 @@ def test_active_confirmation_refuses_start_after_stop_epoch() -> None:
     pending = _PendingConfirmation({"type": "route"})
     epoch = active.epoch()
     active.cancel()
-    called: list[bool] = []
-    assert active.start(pending, epoch, lambda: called.append(True)) is False
-    assert called == []
+    assert active.start(pending, epoch, None) is False
 
 
 def test_web_response_task_result_rejects_inconsistent_status_and_outcome() -> None:

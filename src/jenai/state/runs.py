@@ -92,6 +92,26 @@ class RunStore:
         with self._lock:
             return [run.model_copy(deep=True) for run in self._runs.values()]
 
+    def _persist_receipt(self, run: RunRecord, snapshot: RunRecord) -> None:
+        """Persist one lock-free terminal snapshot without affecting robot control."""
+        if self.receipt_store is None:
+            return
+        try:
+            self.receipt_store.save(snapshot)
+        except Exception as exc:
+            self.audit_event(
+                run,
+                "task_receipt_failed",
+                status="failed",
+                summary="Task receipt could not be persisted.",
+                details={"exception_type": type(exc).__name__},
+            )
+            logger.warning(
+                "Task receipt persistence failed for run %s",
+                run.run_id,
+                exc_info=True,
+            )
+
     def set_status(self, run: RunRecord, status: RunStatus) -> None:
         with self._lock:
             previous = run.status.value
@@ -175,6 +195,50 @@ class RunStore:
             },
         )
 
+    def register_pending_approval(
+        self,
+        run: RunRecord,
+        tool_call: ToolCallRecord,
+        approval: ApprovalRequest,
+    ) -> None:
+        """Atomically publish the tool, approval, and awaiting run state."""
+        with self._lock:
+            previous = run.status.value
+            run.tool_calls.append(tool_call)
+            run.interruptions.append(approval)
+            run.status = RunStatus.AWAITING_APPROVAL
+            run.finished_at = None
+        self.audit_event(
+            run,
+            "tool_registered",
+            entity_id=tool_call.tool_call_id,
+            status=tool_call.status,
+            details={
+                "tool_name": tool_call.tool_name,
+                "category": str(tool_call.category),
+                "risk_level": str(tool_call.risk_level),
+                "effect_scope": str(tool_call.effect_scope),
+            },
+        )
+        self.audit_event(
+            run,
+            "approval_requested",
+            entity_id=approval.tool_call_id,
+            status=approval.status,
+            details={
+                "tool_name": approval.tool_name,
+                "risk_level": str(approval.risk_level),
+                "effect_scope": str(approval.effect_scope),
+            },
+        )
+        if previous != RunStatus.AWAITING_APPROVAL.value:
+            self.audit_event(
+                run,
+                "run_status",
+                status=RunStatus.AWAITING_APPROVAL,
+                details={"previous": previous},
+            )
+
     def start_approved_tool(
         self,
         run: RunRecord,
@@ -192,6 +256,12 @@ class RunStore:
             )
             if approval is None or call is None:
                 raise KeyError(f"Unknown confirmation tool call {tool_call_id}")
+            if (
+                ApprovalStatus(approval.status) != ApprovalStatus.PENDING
+                or ToolCallStatus(call.status) != ToolCallStatus.AWAITING_APPROVAL
+                or RunStatus(run.status) != RunStatus.AWAITING_APPROVAL
+            ):
+                raise RuntimeError("Confirmation is no longer pending")
             previous = run.status.value
             now = utc_now()
             approval.status = ApprovalStatus.APPROVED
@@ -309,22 +379,7 @@ class RunStore:
                 "error_type": None,
             },
         )
-        if self.receipt_store is not None:
-            try:
-                self.receipt_store.save(receipt_snapshot)
-            except Exception as exc:
-                self.audit_event(
-                    run,
-                    "task_receipt_failed",
-                    status="failed",
-                    summary="Task receipt could not be persisted.",
-                    details={"exception_type": type(exc).__name__},
-                )
-                logger.warning(
-                    "Task receipt persistence failed for run %s",
-                    run.run_id,
-                    exc_info=True,
-                )
+        self._persist_receipt(run, receipt_snapshot)
 
     def finish_tool_and_run(
         self,
@@ -393,22 +448,7 @@ class RunStore:
                 "error_type": None,
             },
         )
-        if self.receipt_store is not None:
-            try:
-                self.receipt_store.save(receipt_snapshot)
-            except Exception as exc:
-                self.audit_event(
-                    run,
-                    "task_receipt_failed",
-                    status="failed",
-                    summary="Task receipt could not be persisted.",
-                    details={"exception_type": type(exc).__name__},
-                )
-                logger.warning(
-                    "Task receipt persistence failed for run %s",
-                    run.run_id,
-                    exc_info=True,
-                )
+        self._persist_receipt(run, receipt_snapshot)
 
     def resolve_interruption(
         self,
@@ -480,22 +520,7 @@ class RunStore:
                 "error_type": str(error.error_type) if error is not None else None,
             },
         )
-        if self.receipt_store is not None:
-            try:
-                self.receipt_store.save(receipt_snapshot)
-            except Exception as exc:
-                self.audit_event(
-                    run,
-                    "task_receipt_failed",
-                    status="failed",
-                    summary="Task receipt could not be persisted.",
-                    details={"exception_type": type(exc).__name__},
-                )
-                logger.warning(
-                    "Task receipt persistence failed for run %s",
-                    run.run_id,
-                    exc_info=True,
-                )
+        self._persist_receipt(run, receipt_snapshot)
 
     def audit_event(
         self,

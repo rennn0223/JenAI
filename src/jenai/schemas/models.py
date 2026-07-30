@@ -227,12 +227,16 @@ class ToolCallRecord(JenAIModel):
 class ApprovalParameter(JenAIModel):
     """One immutable, browser-safe value the operator is approving."""
 
+    model_config = ConfigDict(extra="forbid", use_enum_values=True, frozen=True)
+
     label: str
     value: str
 
 
 class ApprovalPreview(JenAIModel):
     """Exact display contract bound to one canonical server-held action."""
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True, frozen=True)
 
     action_kind: str
     display_title: str

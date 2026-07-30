@@ -182,34 +182,46 @@ class _ActiveConfirmation:
         with self._lock:
             return self._epoch
 
-    def run_if_epoch(self, expected_epoch: int, action: Callable[[], None]) -> bool:
-        """Linearize approval escrow with STOP's safety epoch."""
+    def publish_pending(
+        self,
+        expected_epoch: int,
+        pending_store: _PendingConfirms,
+        action: WebAction,
+        *,
+        run_id: str | None,
+        tool_call_id: str | None,
+    ) -> str | None:
+        """Publish only in-memory token state while linearized with STOP."""
         with self._lock:
             if self._epoch != expected_epoch:
-                return False
-            action()
-            return True
+                return None
+            token, invalidated = pending_store._put_without_notify(
+                action,
+                run_id=run_id,
+                tool_call_id=tool_call_id,
+            )
+        pending_store._notify_invalidated(invalidated)
+        return token
 
     def start(
         self,
         pending: _PendingConfirmation,
         expected_epoch: int,
-        on_start: Callable[[], None],
-        execution: _ConfirmationExecution | None = None,
+        execution: _ConfirmationExecution | None,
     ) -> bool:
+        """Claim the active in-memory slot; persistence occurs after releasing the lock."""
         with self._lock:
             if self._epoch != expected_epoch:
                 return False
-            on_start()
             self._current = pending
             self._execution = execution
             return True
 
-    def finish(self, pending: _PendingConfirmation, on_finish: Callable[[], None]) -> bool:
+    def finish(self, pending: _PendingConfirmation) -> bool:
+        """Choose success before STOP; persistence occurs after releasing the lock."""
         with self._lock:
             if self._current is not pending:
                 return False
-            on_finish()
             self._current = None
             self._execution = None
             return True
@@ -269,13 +281,14 @@ class _PendingConfirms:
         if self._on_invalidate is not None:
             self._on_invalidate(pending, reason)
 
-    def put(
+    def _put_without_notify(
         self,
         action: WebAction,
         *,
         run_id: str | None = None,
         tool_call_id: str | None = None,
-    ) -> str:
+    ) -> tuple[str, list[tuple[_PendingConfirmation, str]]]:
+        """Publish one token and defer lifecycle callbacks to the caller."""
         token = secrets.token_urlsafe(16)
         invalidated: list[tuple[_PendingConfirmation, str]] = []
         with self._lock:
@@ -286,8 +299,28 @@ class _PendingConfirms:
                 oldest_token = next(iter(self._items))
                 _, pending = self._items.pop(oldest_token)
                 invalidated.append((pending, "evicted"))
+        return token, invalidated
+
+    def _notify_invalidated(
+        self,
+        invalidated: list[tuple[_PendingConfirmation, str]],
+    ) -> None:
         for pending, reason in invalidated:
             self._notify(pending, reason)
+
+    def put(
+        self,
+        action: WebAction,
+        *,
+        run_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> str:
+        token, invalidated = self._put_without_notify(
+            action,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+        )
+        self._notify_invalidated(invalidated)
         return token
 
     def pop(self, token: str) -> WebAction | None:
@@ -967,11 +1000,11 @@ class _Handler(BaseHTTPRequestHandler):
         pending_store = self.pending
         if pending_store is None:
             return False
-
-        def escrow() -> None:
-            if run is not None and store is not None:
-                action = result.get("action")
-                safe_action = action if isinstance(action, dict) else {}
+        action = result.get("action")
+        safe_action = action if isinstance(action, dict) else {}
+        tool_call_id: str | None = None
+        if run is not None and store is not None:
+            try:
                 tool_call_id = register_confirmation(
                     store,
                     run,
@@ -980,18 +1013,51 @@ class _Handler(BaseHTTPRequestHandler):
                     str(result.get("danger") or ""),
                     secret_values=_configured_secret_values(self.config, self.config_path),
                 )
-                result["confirm_id"] = pending_store.put(
-                    result.pop("action", {}),
-                    run_id=run.run_id,
-                    tool_call_id=tool_call_id,
+            except (TypeError, ValueError):
+                result.clear()
+                result.update(
+                    {
+                        "kind": "error",
+                        "html": "<p>批准內容無法完整重建，請重新送出指令。</p>",
+                        "run_status": RunStatus.BLOCKED.value,
+                        "outcome": TaskOutcome.BLOCKED.value,
+                    }
                 )
-            else:
-                result["confirm_id"] = pending_store.put(result.pop("action", {}))
+                store.finish(
+                    run,
+                    status=RunStatus.BLOCKED,
+                    outcome=TaskOutcome.BLOCKED,
+                    final_output="批准內容無法完整重建；動作未執行。",
+                )
+                return True
 
+        token: str | None
         if tracker is None:
-            escrow()
-            return True
-        return tracker.run_if_epoch(command_epoch, escrow)
+            token = pending_store.put(
+                safe_action,
+                run_id=run.run_id if run is not None else None,
+                tool_call_id=tool_call_id,
+            )
+        else:
+            token = tracker.publish_pending(
+                command_epoch,
+                pending_store,
+                safe_action,
+                run_id=run.run_id if run is not None else None,
+                tool_call_id=tool_call_id,
+            )
+        result.pop("action", None)
+        if token is None:
+            if run is not None and store is not None and tool_call_id is not None:
+                reject_confirmation(
+                    store,
+                    run,
+                    tool_call_id,
+                    summary="急停已撤銷待批准動作；動作未執行。",
+                )
+            return False
+        result["confirm_id"] = token
+        return True
 
     def _run_command(self, body: dict[str, Any]) -> dict[str, Any]:
         text = str(body.get("text") or "").strip()
@@ -1004,10 +1070,16 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             result = asyncio.run(run_web_command(self.config, self.config_path, text))
             secret_values = _configured_secret_values(self.config, self.config_path)
+            browser_secret_values = secret_values | {
+                html.escape(value, quote=True) for value in secret_values
+            }
             for field in ("html", "danger"):
                 value = result.get(field)
                 if isinstance(value, str):
-                    result[field] = redact_sensitive_text(value, secret_values=secret_values)
+                    result[field] = redact_sensitive_text(
+                        value,
+                        secret_values=browser_secret_values,
+                    )
         except Exception:
             if run is not None and store is not None:
                 store.finish(
@@ -1032,7 +1104,11 @@ class _Handler(BaseHTTPRequestHandler):
                     "run_status": RunStatus.BLOCKED.value,
                     "outcome": TaskOutcome.BLOCKED.value,
                 }
-                if run is not None and store is not None:
+                if (
+                    run is not None
+                    and store is not None
+                    and RunStatus(run.status) not in {RunStatus.BLOCKED, RunStatus.INTERRUPTED}
+                ):
                     store.finish(
                         run,
                         status=RunStatus.BLOCKED,
@@ -1084,29 +1160,45 @@ class _Handler(BaseHTTPRequestHandler):
         execution: _ConfirmationExecution,
     ) -> dict[str, Any] | None:
         store = self.run_store
-
-        def mark_running() -> None:
+        if tracker is not None and not tracker.start(pending, stop_epoch, execution):
+            if store is not None and run is not None and pending.tool_call_id is not None:
+                reject_confirmation(
+                    store,
+                    run,
+                    pending.tool_call_id,
+                    summary="急停已撤銷這項批准；動作未執行。",
+                )
+            return {
+                "kind": "error",
+                "html": "<p>急停已撤銷這項批准；請重新確認機器人狀態。</p>",
+                "run_status": RunStatus.BLOCKED.value,
+                "outcome": TaskOutcome.BLOCKED.value,
+            }
+        try:
             if store is not None and run is not None and pending.tool_call_id is not None:
                 start_confirmation(store, run, pending.tool_call_id)
-
-        if tracker is None:
-            mark_running()
-            return None
-        if tracker.start(pending, stop_epoch, mark_running, execution):
-            return None
-        if store is not None and run is not None and pending.tool_call_id is not None:
-            reject_confirmation(
-                store,
-                run,
-                pending.tool_call_id,
-                summary="急停已撤銷這項批准；動作未執行。",
-            )
-        return {
-            "kind": "error",
-            "html": "<p>急停已撤銷這項批准；請重新確認機器人狀態。</p>",
-            "run_status": RunStatus.BLOCKED.value,
-            "outcome": TaskOutcome.BLOCKED.value,
-        }
+        except RuntimeError:
+            if tracker is not None:
+                tracker.finish(pending)
+            if (
+                store is not None
+                and run is not None
+                and pending.tool_call_id is not None
+                and RunStatus(run.status) not in {RunStatus.BLOCKED, RunStatus.INTERRUPTED}
+            ):
+                reject_confirmation(
+                    store,
+                    run,
+                    pending.tool_call_id,
+                    summary="急停已撤銷這項批准；動作未執行。",
+                )
+            return {
+                "kind": "error",
+                "html": "<p>急停已撤銷這項批准；請重新確認機器人狀態。</p>",
+                "run_status": RunStatus.INTERRUPTED.value,
+                "outcome": TaskOutcome.CANCELLED.value,
+            }
+        return None
 
     def _finish_tracked_confirmation(
         self,
@@ -1116,22 +1208,16 @@ class _Handler(BaseHTTPRequestHandler):
         result: dict[str, Any],
     ) -> bool:
         store = self.run_store
-
-        def mark_finished() -> None:
-            if store is not None and run is not None and pending.tool_call_id is not None:
-                finish_confirmation(
-                    store,
-                    run,
-                    pending.tool_call_id,
-                    result=web_response_task_result(result),
-                )
-
-        if tracker is None:
-            mark_finished()
-            return True
-        # Persist the authoritative terminal result while holding the same
-        # lock used by STOP, so success and cancellation have one total order.
-        return tracker.finish(pending, mark_finished)
+        if tracker is not None and not tracker.finish(pending):
+            return False
+        if store is not None and run is not None and pending.tool_call_id is not None:
+            finish_confirmation(
+                store,
+                run,
+                pending.tool_call_id,
+                result=web_response_task_result(result),
+            )
+        return True
 
     def _run_confirm(self, body: dict[str, Any]) -> dict[str, Any]:
         acquired = self.action_lock is None or self.action_lock.acquire(blocking=False)

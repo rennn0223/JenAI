@@ -55,14 +55,17 @@ def _route_parameters(action: Mapping[str, Any]) -> tuple[ApprovalParameter, ...
         _parameter("目標", name),
     ]
     frame = str(goal.get("frame_id") or "").strip()
-    if frame:
-        parameters.append(_parameter("Frame", frame))
+    if not frame:
+        raise ValueError("navigation action has no frame")
+    parameters.append(_parameter("Frame", frame))
     pose = goal.get("pose")
-    if isinstance(pose, Mapping):
-        for key, label in (("x", "X"), ("y", "Y"), ("yaw", "Yaw")):
-            display = _finite_display(pose.get(key))
-            if display is not None:
-                parameters.append(_parameter(label, display))
+    if not isinstance(pose, Mapping):
+        raise ValueError("navigation action has no exact pose")
+    for key, label in (("x", "X"), ("y", "Y"), ("yaw", "Yaw")):
+        display = _finite_display(pose.get(key))
+        if display is None:
+            raise ValueError(f"navigation action has invalid pose {key}")
+        parameters.append(_parameter(label, display))
     return tuple(parameters)
 
 
