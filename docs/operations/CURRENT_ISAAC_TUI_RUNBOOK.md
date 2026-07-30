@@ -1,6 +1,6 @@
 # JenAI TUI＋Isaac Sim 現行操作 Runbook
 
-> 適用版本：v2.5.1
+> 適用版本：v2.6.0
 > 執行主機：DGX Spark（Codex CLI、JenAI、ROS 2、Nav2、Isaac Sim 均在本機）
 > 用途：重播一次受監督的真 TUI＋Nav2＋Isaac Sim 產品驗收。
 

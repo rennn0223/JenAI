@@ -1,7 +1,7 @@
 # JenAI 技術指南(從零到有)
 
 > 給新加入的工程師:這份文件讓你在一台新機器上把 JenAI 建起來、理解每個模組在做什麼、知道怎麼擴充。讀完你應該能獨立開發。
-> 對應版本:v2.5.1(2026-07)。架構單一事實來源見 [ARCHITECTURE.md](ARCHITECTURE.md)，前瞻主圖見 [ROADMAP.md](product/ROADMAP.md)；逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
+> 對應版本:v2.6.0(2026-07)。架構單一事實來源見 [ARCHITECTURE.md](ARCHITECTURE.md)，前瞻主圖見 [ROADMAP.md](product/ROADMAP.md)；逐檔導讀見 [CODE_TOUR.md](CODE_TOUR.md)。
 
 ## 1. JenAI 是什麼
 

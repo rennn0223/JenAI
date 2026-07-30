@@ -46,7 +46,7 @@
 | Cloud model | NVIDIA OpenAI-compatible endpoint | Supported | provider abstraction/config 測試；資料會離開本機，見 SECURITY |
 | Other provider | Custom OpenAI-compatible base URL/model | Experimental | API 相容不代表工具呼叫品質相同；需跑 E1/E3 |
 | TUI | Local terminal | Supported | 主要操作面；2026-07-26 已從未 source ROS 的環境驗證自動載入、Doctor、自然語言唯讀、可讀批准卡、移動中 stop 與 Dock。該次為 dirty 工程驗收且無不可變 transcript；非維護者 fresh-machine 可用性研究仍待完成 |
-| WebUI | localhost／isolated LAN | Supported | token auth；不得直接公開到 internet |
+| WebUI | localhost／isolated LAN | Supported | token auth；refresh-resilient run／approval／evidence monitoring 與 server-bound redacted approval preview 已有回歸。clean `c66d163…4af` 另驗 WebUI STOP 將同一模擬 Nav2 goal 由 executing 轉為 canceled，未觀察到 late success；這不是實體停止或正式 HIL 證據。不得直接公開到 internet |
 | MCP | stdio、read-only by default | Supported | action tools 必須明確 `--allow-actions` |
 
 ## 升級規則
