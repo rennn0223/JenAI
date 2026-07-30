@@ -62,6 +62,54 @@ _VEHICLE_AGNOSTIC_FILES = [
     "tools/route_core.py",
     "tools/perception.py",
 ]
+_VENDOR_NEUTRAL_COMMAND_DIRS = (
+    "agent",
+    "tui",
+    "webui",
+    "mcp_server",
+    "cli",
+    "daemon",
+    "tools",
+    "workflows",
+)
+_VENDOR_NEUTRAL_COMMAND_FILES = ("capabilities.py",)
+_NXDOG_VENDOR_IMPORT_PREFIXES = ("nxnav_msgs", "nxdog_interfaces")
+_NXDOG_VENDOR_COUPLING_LITERALS = frozenset(
+    {
+        "/navigate",
+        "/pause",
+        "/resume",
+        "/set_cmd_vel",
+        "/cmd_vel_low",
+        "/cmd_vel_mid",
+        "/cmd_vel_high",
+        "/nxnav/avoidance_enabled",
+        "/initialpose",
+        "/nxnav/compute_prm_path",
+        "/nxnav/switch_map",
+        "/nxnav/set_map",
+        "/set_initialpose",
+        "/charging",
+        "/auto_charging_stop",
+        "/set_sport_action",
+        "/nxnav/navigate_to_pose",
+        "/nxdog/sport",
+        "/nxdog/cmd_vui",
+        "/nxdog/auto_charging_cmd",
+        "/nxdog/auto_charging_result",
+        "NxNavClient",
+        "NxDogPlatformClient",
+        "nxnav_msgs",
+        "nxdog_interfaces",
+        "JENAI_NXDOG_API_URL",
+        ":5088",
+    }
+)
+
+# `/stop` is deliberately not a vendor literal here: it is JenAI's approved,
+# provider-free high-level safety command in the TUI, WebUI, and CLI. The known
+# NXDog HTTP adapter remains read-only, excludes `/stop`, and is Doctor-scoped
+# by `test_nxdog_adapter_stays_observation_only_and_doctor_scoped`.
 
 
 def _imports_of(path: Path) -> list[str]:
@@ -73,6 +121,26 @@ def _imports_of(path: Path) -> list[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             found.append(node.module)
     return found
+
+
+def _string_literals_of(path: Path) -> list[tuple[int, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+def _is_nxdog_vendor_coupling_literal(value: str) -> bool:
+    for literal in _NXDOG_VENDOR_COUPLING_LITERALS:
+        if not literal.startswith("/") and literal in value:
+            return True
+        if value == literal or value.endswith(literal):
+            return True
+        if f"{literal}?" in value or f"{literal}/" in value:
+            return True
+    return False
 
 
 def test_reflex_layer_never_imports_the_llm_stack() -> None:
@@ -127,6 +195,32 @@ def test_nxdog_adapter_stays_observation_only_and_doctor_scoped() -> None:
         if "jenai.adapters.nxdog" in _imports_of(path):
             actual_importers.add(relative)
     assert actual_importers == allowed_importers
+
+
+def test_command_layers_cannot_embed_nxdog_vendor_interfaces() -> None:
+    """Command layers submit Capabilities and never bind vendor operations."""
+
+    violations: list[str] = []
+    files = [SRC / relative for relative in _VENDOR_NEUTRAL_COMMAND_FILES]
+    for directory in _VENDOR_NEUTRAL_COMMAND_DIRS:
+        files.extend((SRC / directory).rglob("*.py"))
+    for path in files:
+        relative = path.relative_to(SRC).as_posix()
+        violations.extend(
+            f"{relative}: imports {name}"
+            for name in _imports_of(path)
+            if name.startswith(_NXDOG_VENDOR_IMPORT_PREFIXES)
+        )
+        violations.extend(
+            f"{relative}:{lineno}: embeds {literal!r}"
+            for lineno, literal in _string_literals_of(path)
+            if _is_nxdog_vendor_coupling_literal(literal)
+        )
+    assert not violations, (
+        "NXDog vendor interfaces must stay behind the future Robot Runtime "
+        "and NavigationGateway; expose typed platform-neutral "
+        "Capabilities instead:\n" + "\n".join(violations)
+    )
 
 
 def test_workflow_domain_is_independent_of_llm_ros_and_user_interfaces() -> None:

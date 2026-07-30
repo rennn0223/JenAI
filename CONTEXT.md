@@ -62,6 +62,48 @@ The small typed interface through which a Workflow navigates, inspects, and
 returns home. ROS 2, Nav2, Isaac Sim, and future robot-specific SDKs implement
 this seam; the Workflow domain does not import them.
 
+### Robot Runtime Authority
+
+The single owner of effectful command admission, approval, execution, stopping,
+and evidence truth for one robot. Interaction surfaces submit high-level tasks
+to this authority and must not create independent robot-control paths.
+
+_Avoid:_ “shared backend” or “vendor API proxy”, which omit the ownership and
+safety responsibility.
+
+### Command Lease
+
+The exclusive, time-bounded right of one accepted effectful task to command a
+robot. Revocation prevents the former holder from starting or continuing work,
+including delayed requests.
+
+_Avoid:_ “lock”, which can imply only process-local mutual exclusion.
+
+### Safety Epoch
+
+A monotonically advancing generation that invalidates commands, approvals, and
+leases created before a safety event. A client with an older epoch must refresh
+authoritative state rather than retry its stale action.
+
+_Avoid:_ “session ID”, which does not express invalidation or ordering.
+
+### Runtime Event
+
+An ordered, immutable fact about a task, approval, stop, availability, or
+evidence lifecycle. TUI and WebUI may render different projections, but both
+derive them from the same event and state truth.
+
+_Avoid:_ “log message”, which does not imply a stable schema or lifecycle
+meaning.
+
+### Evidence Envelope
+
+A source-attributed observation carrying robot and task identity, source and
+receive time, freshness, integrity, schema version, and known limitations. When
+the source does not provide a timestamp, that absence remains explicit.
+
+_Avoid:_ “telemetry blob”, which hides provenance and verification limits.
+
 ### Robot Capability Card
 
 The authoritative description of a robot's identity and registered
