@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(?P<prefix>[\"']?(?:api[_-]?key|access[_-]?token|auth[_-]?token|"
@@ -20,6 +22,34 @@ def _redact_assignment(match: re.Match[str]) -> str:
         quote = value[0]
         return f"{prefix}{quote}[REDACTED]{quote}"
     return f"{prefix}[REDACTED]"
+
+
+def known_secret_values(
+    credentials: Path | None = None,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> set[str]:
+    """Collect configured credential values without exposing their names or locations."""
+    values: set[str] = set()
+    if credentials is not None:
+        try:
+            lines = credentials.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            _key, separator, value = stripped.removeprefix("export ").partition("=")
+            if separator:
+                value = value.strip().strip("\"'")
+                if len(value) >= 4:
+                    values.add(value)
+    environ = os.environ if environment is None else environment
+    for key, value in environ.items():
+        if re.search(r"(?i)(key|token|secret|password)$", key) and len(value) >= 4:
+            values.add(value)
+    return values
 
 
 def redact_sensitive_text(

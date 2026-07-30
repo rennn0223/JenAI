@@ -102,6 +102,28 @@ def test_status_payload_exposes_safe_monitoring_details_without_raw_actions(
     assert "secret raw action" not in serialized
 
 
+def test_status_payload_redacts_bare_known_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-proj-bare-secret-value"
+    config_path = tmp_path / "config.toml"
+    (tmp_path / ".env").write_text(f"OPENAI_API_KEY={secret}\n", encoding="utf-8")
+    monkeypatch.setenv("JENAI_WEB_TOKEN", "browser-token-secret")
+    store = RunStore()
+    store.create_run(
+        "session-1",
+        f"credential {secret} and browser-token-secret",
+    )
+
+    payload = build_status_payload(_config(), config_path, run_store=store)
+
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert secret not in serialized
+    assert "browser-token-secret" not in serialized
+    assert serialized.count("[REDACTED]") >= 2
+
+
 def test_status_payload_empty_transcript_without_store(tmp_path: Path) -> None:
     payload = build_status_payload(_config(), tmp_path / "config.toml")
     assert payload["run_count"] == 0
@@ -624,6 +646,44 @@ def test_web_command_common_guidance_uses_taiwan_traditional_chinese(
         assert english not in rendered
 
 
+@pytest.mark.parametrize(
+    ("deployment_mode", "expected"),
+    (("simulation", "模擬器中的機器人"), ("physical", "實體機器人")),
+)
+def test_web_ros_pub_cmd_vel_approval_names_motion_risk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    deployment_mode: str,
+    expected: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from jenai.webui import commands
+
+    async def valid_publish(_topic, _payload):
+        return SimpleNamespace(
+            ok=True,
+            message_type="geometry_msgs/msg/Twist",
+            error=None,
+        )
+
+    monkeypatch.setattr(commands.ros2_core, "ros_pub_validate", valid_publish)
+    config = _config()
+    config.deployment_mode = deployment_mode
+
+    result = asyncio.run(
+        run_web_command(
+            config,
+            tmp_path / "config.toml",
+            '/ros pub /cmd_vel {"linear":{"x":1.0}}',
+        )
+    )
+
+    assert result["kind"] == "confirm"
+    assert expected in result["danger"]
+    assert "立即移動" in result["danger"]
+
+
 def test_web_command_topics_is_read(monkeypatch, tmp_path: Path) -> None:
     from jenai.schemas import RosTopicsOutput, TopicItem
     from jenai.webui import commands
@@ -635,6 +695,32 @@ def test_web_command_topics_is_read(monkeypatch, tmp_path: Path) -> None:
     res = asyncio.run(run_web_command(_config(), tmp_path / "c.toml", "/ros topics"))
     assert res["kind"] == "result"
     assert "/cmd_vel" in res["html"]
+
+
+def test_web_route_without_resolved_goal_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from jenai.schemas import RouteOutput
+    from jenai.webui import commands
+
+    async def unresolved(_config, _locations, _text):
+        return RouteOutput(
+            input_text="missing place",
+            outgoing_action={},
+            execution_status="blocked",
+            route_preview="找不到指定地點；請選擇已儲存的地點。",
+        )
+
+    monkeypatch.setattr(commands, "route_preview", unresolved)
+    result = asyncio.run(
+        run_web_command(_config(), tmp_path / "config.toml", "/route missing place")
+    )
+
+    assert result["kind"] == "error"
+    assert result["run_status"] == "blocked"
+    assert result["outcome"] == "blocked"
+    assert "找不到指定地點" in result["html"]
 
 
 def test_web_confirm_executes_drive(monkeypatch, tmp_path: Path) -> None:
@@ -802,6 +888,29 @@ def test_web_stop_marks_unconfirmed_navigation_cancel_as_error() -> None:
     assert response["kind"] == "error"
     assert "實體緊急停止" in response["html"]
     assert "not acknowledged" in response["html"]
+
+
+def test_web_stop_bridge_failure_requires_physical_emergency_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jenai.bridge import BridgeError
+    from jenai.webui import server as server_module
+
+    class BrokenBridge:
+        async def start(self) -> None:
+            raise BridgeError("bridge down")
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "RosBridgeClient", BrokenBridge)
+
+    response = server_module._do_stop(_config())
+
+    assert response["kind"] == "error"
+    assert "軟體停止未送達" in response["html"]
+    assert "實體緊急停止" in response["html"]
+    assert "保持安全距離" in response["html"]
 
 
 def test_web_stop_records_terminal_outcome_receipt_and_audit(tmp_path: Path) -> None:
@@ -1406,7 +1515,9 @@ def test_api_topics_endpoint_and_camera_picker(tmp_path: Path, monkeypatch) -> N
         assert needle in html
 
 
-def test_webui_stop_keeps_active_confirmation_cancelled(monkeypatch, tmp_path: Path) -> None:
+def test_webui_stop_cancels_active_confirmation_and_waits_for_cleanup(
+    monkeypatch, tmp_path: Path
+) -> None:
     from types import SimpleNamespace
 
     import jenai.webui.server as server_module
@@ -1414,12 +1525,21 @@ def test_webui_stop_keeps_active_confirmation_cancelled(monkeypatch, tmp_path: P
     from jenai.webui.server import _ActiveConfirmation, _Handler, _PendingConfirms
 
     started = threading.Event()
-    release = threading.Event()
+    cancelled = threading.Event()
+    cleanup_finished = threading.Event()
+    fallback_release = threading.Event()
 
     async def fake_confirm(_config, action, *, config_path):
         assert action["type"] == "route"
         started.set()
-        await asyncio.to_thread(release.wait)
+        try:
+            while not fallback_release.is_set():
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError:
+            cancelled.set()
+            await asyncio.sleep(0.05)
+            cleanup_finished.set()
+            raise
         return {
             "kind": "result",
             "html": "<p>late success</p>",
@@ -1455,12 +1575,79 @@ def test_webui_stop_keeps_active_confirmation_cancelled(monkeypatch, tmp_path: P
     worker.start()
     assert started.wait(timeout=2)
     _Handler._handle_emergency_stop(handler)
-    release.set()
+    was_cancelled = cancelled.wait(timeout=1)
+    was_cleaned = cleanup_finished.wait(timeout=1)
+    fallback_release.set()
     worker.join(timeout=2)
+
+    assert was_cancelled
+    assert was_cleaned
     assert not worker.is_alive()
     assert run.status == "interrupted"
     assert run.outcome == "cancelled"
     assert run.tool_calls[0].status == "failed"
+
+
+def test_webui_command_started_before_stop_cannot_escrow_late_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    import jenai.webui.server as server_module
+    from jenai.webui.server import _ActiveConfirmation, _Handler, _PendingConfirms
+
+    started = threading.Event()
+    release = threading.Event()
+
+    async def slow_command(_config, _config_path, _text):
+        started.set()
+        await asyncio.to_thread(release.wait)
+        return {
+            "kind": "confirm",
+            "html": "<p>前往 Dock</p>",
+            "danger": "機器人將開始移動。",
+            "action": {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}},
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", slow_command)
+    monkeypatch.setattr(server_module, "_do_stop", lambda *args, **kwargs: {"kind": "info"})
+    store = RunStore()
+    pending = _PendingConfirms()
+    active = _ActiveConfirmation()
+    responses: list[dict[str, object]] = []
+    handler = SimpleNamespace(
+        config=_config(),
+        config_path=tmp_path / "config.toml",
+        pending=pending,
+        run_store=store,
+        action_lock=threading.Lock(),
+        active_confirmation=active,
+        pose_cache=None,
+        _send=lambda body, *_args, **_kwargs: responses.append(json.loads(body)),
+        _drain_body=lambda: None,
+    )
+    command_result: list[dict[str, object]] = []
+    worker = threading.Thread(
+        target=lambda: command_result.append(
+            _Handler._run_command(handler, {"text": "/route Dock"})
+        )
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+
+    _Handler._handle_emergency_stop(handler)
+    release.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert command_result[0]["kind"] == "error"
+    assert command_result[0]["run_status"] == "blocked"
+    assert "confirm_id" not in command_result[0]
+    assert pending.snapshot() == {}
+    run = store.list_runs()[0]
+    assert run.status == "blocked"
+    assert run.outcome == "blocked"
 
 
 def test_active_confirmation_finalization_is_linearized_with_stop() -> None:

@@ -252,6 +252,11 @@ async def _ros_pub(config: AppConfig, arg: str) -> WebResponse:
     validation = await ros2_core.ros_pub_validate(topic, payload)
     if not validation.ok:
         return _error(validation.error.message if validation.error else "驗證失敗。")
+    if topic.strip("/") == config.vehicle.cmd_vel_topic.strip("/"):
+        target = "實體機器人" if config.deployment_mode == "physical" else "模擬器中的機器人"
+        danger = f"這會發布速度指令至 {topic}，可能使{target}立即移動。"
+    else:
+        danger = f"這會發布一筆訊息至 {topic}。"
     return _confirm(
         _p(f"發布至 {topic}\n{json.dumps(payload, ensure_ascii=False)}"),
         {
@@ -260,7 +265,7 @@ async def _ros_pub(config: AppConfig, arg: str) -> WebResponse:
             "message_type": validation.message_type,
             "payload": payload,
         },
-        danger=f"這會發布一筆訊息至 {topic}。",
+        danger=danger,
     )
 
 
@@ -324,7 +329,11 @@ async def _route(config: AppConfig, config_path: Path, rest: str) -> WebResponse
     locations = _load_locations(config, config_path)
     out = await route_preview(config, locations, rest)
     if not out.outgoing_action:
-        return _result(_p(out.route_preview))
+        return _error(
+            out.route_preview,
+            run_status=RunStatus.BLOCKED,
+            outcome=TaskOutcome.BLOCKED,
+        )
     return _confirm(
         _p(out.route_preview),
         {"type": "route", "outgoing_action": out.outgoing_action},

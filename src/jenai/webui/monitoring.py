@@ -17,31 +17,40 @@ from jenai.schemas import RunRecord
 _MAX_VISIBLE_RUNS = 50
 
 
-def _safe_optional(value: str | None) -> str | None:
+def _safe_optional(value: str | None, secret_values: tuple[str, ...]) -> str | None:
     if value is None:
         return None
-    return redact_sensitive_text(value)
+    return redact_sensitive_text(value, secret_values=secret_values)
 
 
-def build_monitoring_transcript(runs: Iterable[RunRecord]) -> list[dict[str, Any]]:
+def build_monitoring_transcript(
+    runs: Iterable[RunRecord],
+    *,
+    secret_values: Iterable[str] = (),
+) -> list[dict[str, Any]]:
     """Return a bounded, chronological, browser-safe run transcript."""
+    known_secrets = tuple(secret_values)
+
+    def safe(value: str) -> str:
+        return redact_sensitive_text(value, secret_values=known_secrets)
+
     visible = list(runs)[-_MAX_VISIBLE_RUNS:]
     return [
         {
             "run_id": run.run_id,
             "status": str(run.status),
             "outcome": str(run.outcome) if run.outcome is not None else None,
-            "summary": redact_sensitive_text(run.user_input),
-            "final_output": _safe_optional(run.final_output),
+            "summary": safe(run.user_input),
+            "final_output": _safe_optional(run.final_output, known_secrets),
             "started_at": run.started_at.isoformat(),
             "finished_at": run.finished_at.isoformat() if run.finished_at else None,
             "approvals": [
                 {
                     "approval_id": approval.approval_id,
                     "tool_call_id": approval.tool_call_id,
-                    "title": redact_sensitive_text(approval.title),
-                    "summary": redact_sensitive_text(approval.summary),
-                    "tool_name": redact_sensitive_text(approval.tool_name),
+                    "title": safe(approval.title),
+                    "summary": safe(approval.summary),
+                    "tool_name": safe(approval.tool_name),
                     "risk_level": str(approval.risk_level),
                     "status": str(approval.status),
                     "created_at": approval.created_at.isoformat(),
@@ -51,10 +60,10 @@ def build_monitoring_transcript(runs: Iterable[RunRecord]) -> list[dict[str, Any
             "tool_calls": [
                 {
                     "tool_call_id": call.tool_call_id,
-                    "tool_name": redact_sensitive_text(call.tool_name),
-                    "input_summary": redact_sensitive_text(call.input_summary),
+                    "tool_name": safe(call.tool_name),
+                    "input_summary": safe(call.input_summary),
                     "status": str(call.status),
-                    "output_summary": _safe_optional(call.output_summary),
+                    "output_summary": _safe_optional(call.output_summary, known_secrets),
                     "started_at": call.started_at.isoformat() if call.started_at else None,
                     "ended_at": call.ended_at.isoformat() if call.ended_at else None,
                 }

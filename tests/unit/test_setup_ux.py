@@ -74,9 +74,10 @@ def test_setup_completion_summary_contains_the_real_next_journey(
 def test_setup_hides_a_pasted_secret_and_reports_the_actual_env_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     config_path = tmp_path / "custom" / "config.toml"
-    secret = "nvapi-super-secret"
+    secret = "Abcdef1234567890"
     prompts: list[dict[str, object]] = []
     answers = iter(
         [
@@ -101,6 +102,7 @@ def test_setup_hides_a_pasted_secret_and_reports_the_actual_env_path(
     assert (config_path.parent / ".env").read_text(encoding="utf-8") == (
         f"NVIDIA_API_KEY={secret}\n"
     )
+    assert secret not in capsys.readouterr().out
 
 
 def test_setup_reports_the_env_path_next_to_a_custom_config(
@@ -148,3 +150,28 @@ def test_setup_secret_write_does_not_follow_predictable_temp_symlink(
     assert written == env_path
     assert victim.read_text(encoding="utf-8") == "preserve me\n"
     assert env_path.read_text(encoding="utf-8") == "NVIDIA_API_KEY=nvapi-super-secret\n"
+
+
+def test_setup_relocates_identifier_shaped_pasted_secret(tmp_path: Path) -> None:
+    config_path = tmp_path / "custom" / "config.toml"
+    secret = "Abcdef1234567890"
+
+    env_name, written = _secure_api_key_input(secret, PRESETS[1], config_path)
+
+    assert env_name == "NVIDIA_API_KEY"
+    assert written == config_path.parent / ".env"
+    assert written.read_text(encoding="utf-8") == f"NVIDIA_API_KEY={secret}\n"
+
+
+def test_setup_accepts_explicit_environment_variable_reference(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+
+    env_name, written = _secure_api_key_input(
+        "env:MY_NVIDIA_KEY",
+        PRESETS[1],
+        config_path,
+    )
+
+    assert env_name == "MY_NVIDIA_KEY"
+    assert written is None
+    assert not (tmp_path / ".env").exists()

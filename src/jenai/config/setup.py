@@ -136,8 +136,15 @@ def _secure_api_key_input(
 ) -> tuple[str, Path | None]:
     """Accept an env name, or safely relocate an accidentally pasted key."""
     stripped = value.strip()
-    if not stripped or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", stripped):
+    if not stripped:
+        return "", None
+    if stripped == preset.api_key_env:
         return stripped, None
+    if stripped.lower().startswith("env:"):
+        env_name = stripped.partition(":")[2].strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+            raise ValueError("env: 後方必須是有效的環境變數名稱")
+        return env_name, None
 
     env_name = preset.api_key_env or "JENAI_API_KEY"
     env_path = default_env_file_path(config_path)
@@ -216,9 +223,14 @@ def run_setup_wizard(config_path: Path) -> Path:
     )
     api_key_env = _prompt(
         console,
-        "API 金鑰環境變數名稱（貼入金鑰會安全搬到 .env；本地模型留白）",
+        "API 金鑰（直接貼上；使用其他環境變數請輸入 env:NAME；本地模型留白）",
         default=preset.api_key_env,
-        example="NVIDIA_API_KEY",
+        example="env:NVIDIA_API_KEY",
+        validator=lambda value: (
+            not value.lower().startswith("env:")
+            or bool(re.fullmatch(r"(?i:env:)[A-Za-z_][A-Za-z0-9_]*", value))
+        ),
+        error="env: 後方必須是有效的環境變數名稱。",
         hide_input=True,
     )
     api_key_env, saved_credential_path = _secure_api_key_input(api_key_env, preset, config_path)

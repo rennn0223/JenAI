@@ -10,7 +10,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import re
 import shutil
 import sqlite3
 import stat
@@ -24,7 +23,7 @@ from pathlib import Path
 from jenai.agent.session import _sessions_dir
 from jenai.agent.tracing import _traces_path
 from jenai.config import ConfigError, load_config
-from jenai.redaction import redact_sensitive_bytes
+from jenai.redaction import known_secret_values, redact_sensitive_bytes
 from jenai.secure_files import PRIVATE_FILE_MODE, atomic_output_path, atomic_write_text
 from jenai.state.data_hardening import build_hardening_plan
 from jenai.state.reports import reports_dir
@@ -446,24 +445,7 @@ def _read_regular_file(path: Path, protected_identities: set[tuple[int, int]]) -
 
 
 def _known_secret_values(credentials: Path) -> set[bytes]:
-    values: set[str] = set()
-    try:
-        lines = credentials.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        _key, separator, value = stripped.removeprefix("export ").partition("=")
-        if separator:
-            value = value.strip().strip("\"'")
-            if len(value) >= 4:
-                values.add(value)
-    for key, value in os.environ.items():
-        if re.search(r"(?i)(key|token|secret|password)$", key) and len(value) >= 4:
-            values.add(value)
-    return {value.encode() for value in values}
+    return {value.encode() for value in known_secret_values(credentials)}
 
 
 def _redact(payload: bytes, secret_values: set[bytes]) -> bytes:
