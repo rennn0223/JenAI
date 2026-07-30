@@ -35,11 +35,11 @@ def default_config_path() -> Path:
     return Path.home() / ".config" / "jenai" / "config.toml"
 
 
-def default_env_file_path() -> Path:
+def default_env_file_path(config_path: Path | None = None) -> Path:
     override = os.environ.get("JENAI_ENV_FILE")
     if override:
         return Path(override).expanduser()
-    return default_config_path().parent / ".env"
+    return (config_path or default_config_path()).parent / ".env"
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from jenai.adapters.locations import ensure_locations_file
-from jenai.config.store import build_minimal_config, save_config
+from jenai.config.store import build_minimal_config, default_env_file_path, save_config
 
 _BANNER_LINES = (
     "     ██╗███████╗███╗   ██╗ █████╗ ██╗",
@@ -102,12 +102,18 @@ def _prompt(
     example: str = "",
     validator: Callable[[str], bool] | None = None,
     error: str = "輸入值無效。",
+    hide_input: bool = False,
 ) -> str:
     """Prompt until one field is valid, without discarding earlier answers."""
     hint = f"（例：{example}）" if example and example != default else ""
     while True:
         value = str(
-            typer.prompt(f"  {label}{hint}", default=default, show_default=bool(default))
+            typer.prompt(
+                f"  {label}{hint}",
+                default=default,
+                show_default=bool(default),
+                hide_input=hide_input,
+            )
         ).strip()
         if validator is None or validator(value):
             return value
@@ -134,7 +140,7 @@ def _secure_api_key_input(
         return stripped, None
 
     env_name = preset.api_key_env or "JENAI_API_KEY"
-    env_path = config_path.parent / ".env"
+    env_path = default_env_file_path(config_path)
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
 
@@ -221,6 +227,7 @@ def run_setup_wizard(config_path: Path) -> Path:
         "API 金鑰環境變數名稱（貼入金鑰會安全搬到 .env；本地模型留白）",
         default=preset.api_key_env,
         example="NVIDIA_API_KEY",
+        hide_input=True,
     )
     api_key_env, saved_credential_path = _secure_api_key_input(api_key_env, preset, config_path)
 
@@ -275,8 +282,9 @@ def run_setup_wizard(config_path: Path) -> Path:
             highlight=False,
         )
     elif api_key_env:
+        env_path = default_env_file_path(config_path)
         console.print(
-            f"  [yellow]記得放入金鑰：[/yellow]在 [bold]~/.config/jenai/.env[/bold] 加入 "
+            f"  [yellow]記得放入金鑰：[/yellow]在 [bold]{env_path}[/bold] 加入 "
             f"[bold]{api_key_env}=你的金鑰[/bold]",
             highlight=False,
         )

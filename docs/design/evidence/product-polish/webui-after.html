@@ -107,6 +107,34 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 .empty{color:var(--muted); font-size:14px; padding:6px 0}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; background:#efe9dc;
   padding:1px 6px; border-radius:6px; font-size:13px}
+.monitor-grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px}
+.monitor-panel{border:1px solid var(--line); border-radius:12px; padding:13px 14px; min-width:0}
+.monitor-primary{grid-column:1/-1; background:#faf7f0}
+.monitor-title{margin:0 0 9px; color:var(--muted); font-size:11px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.08em}
+.monitor-current{position:relative; padding-right:110px; min-height:44px}
+.monitor-current h3{margin:0; font-size:17px; overflow-wrap:anywhere}
+.monitor-id{margin:3px 0 0; color:var(--muted); font:11px ui-monospace,Menlo,monospace;
+  overflow-wrap:anywhere}
+.monitor-result{margin:8px 0 0; color:var(--ink-soft); font-size:13px; overflow-wrap:anywhere}
+.monitor-state{display:inline-block; color:var(--muted); background:var(--muted-bg);
+  border-radius:999px; padding:2px 8px; font-size:10.5px; font-weight:700; white-space:nowrap}
+.monitor-current>.monitor-state{position:absolute; top:0; right:0}
+.state-running,.state-understanding,.state-planning{color:var(--teal); background:#e5efec}
+.state-awaiting_approval{color:var(--warn); background:var(--warn-bg)}
+.state-failed,.state-blocked,.state-rejected{color:var(--bad); background:var(--bad-bg)}
+.state-completed,.state-succeeded,.state-approved{color:var(--ok); background:var(--ok-bg)}
+.monitor-list{display:flex; flex-direction:column}
+.monitor-item{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+  border-top:1px solid var(--line); padding:8px 0}
+.monitor-item:first-child{border-top:0; padding-top:0}
+.monitor-item:last-child{padding-bottom:0}
+.monitor-item div{min-width:0}
+.monitor-item strong{display:block; font-size:13px; overflow-wrap:anywhere}
+.monitor-item span:not(.monitor-state){display:block; color:var(--muted); font-size:11.5px;
+  overflow-wrap:anywhere}
+.monitor-empty,.monitor-note{color:var(--muted); font-size:12.5px}
+.monitor-note{margin:12px 0 0}
 .updated{color:var(--muted); font-size:12px; text-align:right; margin-top:4px}
 footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted); font-size:12.5px}
 
@@ -201,6 +229,8 @@ body:not(.view-api) #apicard{display:none}
     background:var(--paper); border-bottom:1px solid var(--line)}
   .hero h1{font-size:26px}
   .logo{font-size:26px}
+  .monitor-grid{grid-template-columns:1fr}
+  .monitor-primary{grid-column:auto}
   #tabs{display:flex; position:sticky; top:56px; z-index:5; padding:10px 16px;
     background:var(--paper); margin:0}
   main, #console, footer{max-width:100%; padding-left:16px; padding-right:16px}
@@ -293,13 +323,14 @@ body:not(.view-api) #apicard{display:none}
   <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/frame?topic=…</span><span class="api-d">相機單幀 JPEG（預設 vehicle.camera_topic）</span></div>
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/command　{"text": "…"}</span><span class="api-d">執行指令；動作類回傳 confirm_id</span></div>
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/confirm　{"confirm_id": "…"}</span><span class="api-d">批准由 server 暫存的一次性動作</span></div>
+  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/reject　{"confirm_id": "…"}</span><span class="api-d">拒絕並撤銷由 server 暫存的一次性動作</span></div>
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/stop</span><span class="api-d">立即停止；唯一不需要 token 的 endpoint</span></div>
   <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/topics</span><span class="api-d">即時 ROS graph topics（下表）</span></div>
   <div class="card-head" style="margin-top:14px"><h2 style="font-size:15px">ROS topics（即時）</h2><span class="dim" id="api-topics-meta">切換至此頁時載入…</span></div>
   <div id="api-topics" class="mono" style="font-size:12.5px; line-height:1.9; overflow-wrap:anywhere"></div>
   <div class="dim" style="margin-top:8px">程式化整合建議使用 <span class="mono">JenAI mcp</span>（MCP 協定，預設唯讀）；完整規格見 docs/validation/THREAT_MODEL.md 與 docs/COMMANDS.md。</div>
 </section>
-<main id="status-view" role="tabpanel" aria-labelledby="tab-status"><p class="summary">系統狀態正常，可以開始使用。</p><div class="stats"><div class="stat"><span class="stat-k">模型服務</span><span class="stat-v">local</span></div><div class="stat"><span class="stat-k">模型</span><span class="stat-v">qwen3.6:35b</span></div><div class="stat"><span class="stat-k">設定</span><span class="stat-v">完成</span></div><div class="stat"><span class="stat-k">地點</span><span class="stat-v">4</span></div></div><section class="card"><div class="card-head"><h2>系統檢查</h2><div class="head-right">整體 <span class="pill p-ok">正常</span></div></div><div class="checks"><div class="group">執行環境</div><div class="check"><div class="check-main"><span class="check-name">Python</span><span class="check-msg">Python 與虛擬環境已就緒。</span></div><span class="pill p-ok">正常</span></div><div class="group">模型服務</div><div class="check"><div class="check-main"><span class="check-name">模型服務</span><span class="check-msg">本地模型服務可使用。</span></div><span class="pill p-ok">正常</span></div></div></section><section class="card"><div class="card-head"><h2>ROS 2 Graph</h2><div class="head-right"><span class="count">3</span> topics</div></div><div class="chips"><div class="chip"><span class="k-dot" style="background:var(--ok)"></span><span class="chip-name">/amcl_pose</span><span class="chip-kind">nav</span></div><div class="chip"><span class="k-dot" style="background:var(--teal)"></span><span class="chip-name">/scan</span><span class="chip-kind">sensor</span></div></div><details class="infra-fold"><summary>infra（lifecycle／bond／rosout…）· 1</summary><div class="chips"><div class="chip"><span class="k-dot" style="background:var(--muted)"></span><span class="chip-name">/rosout</span><span class="chip-kind">infra</span></div></div></details></section><div class="updated">更新於 06:27:13 · 每 5 秒自動重新整理</div></main>
+<main id="status-view" role="tabpanel" aria-labelledby="tab-status"><p class="summary">正在確認系統狀態…</p><section class="card monitoring-card"><div class="card-head"><h2>任務監控</h2><div class="head-right"><span class="count">0</span> runs</div></div><div class="monitor-grid"><section class="monitor-panel monitor-primary"><h3 class="monitor-title">目前任務</h3><div class="monitor-empty">目前沒有任務。從「互動」頁送出任務後，這裡會顯示執行狀態與結果。</div></section><section class="monitor-panel"><h3 class="monitor-title">待批准</h3><div class="monitor-empty">目前沒有待批准項目。</div></section><section class="monitor-panel"><h3 class="monitor-title">工具時間軸</h3><div class="monitor-empty">這項任務目前沒有工具呼叫紀錄。</div></section><section class="monitor-panel"><h3 class="monitor-title">本工作階段紀錄</h3><div class="monitor-empty">本工作階段尚無任務紀錄。</div></section></div><p class="monitor-note">此處顯示目前 WebUI 服務程序可觀察的執行紀錄；重新啟動服務後，請以 task receipt 與 audit 紀錄為準。</p></section><div class="stats"><div class="stat"><span class="stat-k">模型服務</span><span class="stat-v">browser-test</span></div><div class="stat"><span class="stat-k">模型</span><span class="stat-v">gpt-test</span></div><div class="stat"><span class="stat-k">設定</span><span class="stat-v">完成</span></div><div class="stat"><span class="stat-k">地點</span><span class="stat-v">0</span></div></div><section class="card"><div class="card-head"><h2>系統檢查</h2><div class="head-right">整體 <span class="pill p-ok">正常</span></div></div><div class="checks"></div></section><section class="card"><div class="card-head"><h2>ROS 2 Graph</h2><div class="head-right"><span class="count">0</span> topics</div></div><div class="empty">目前找不到 ROS 2。請先執行 <span class="mono">JenAI doctor</span> 查看修復建議，再以 <span class="mono">jenai</span> 啟動並載入 ROS 2 Jazzy。</div></section><div class="updated">更新於 14:10:06 · 每 5 秒自動重新整理</div></main>
 <footer>所有會移動機器人的動作都必須先經過批准 · 由 <span class="mono">jenai web</span> 在 localhost 提供服務。</footer>
 <script>
 const tx = document.getElementById('transcript');
@@ -357,7 +388,25 @@ function render(res){
         busy.remove(); scroll();
       }
     };
-    noButton.onclick = () => { row.remove(); danger.remove(); wrap.appendChild(el('dim','已取消。')); };
+    noButton.onclick = async () => {
+      yesButton.disabled = true;
+      noButton.disabled = true;
+      try {
+        const out = await post('api/reject', {confirm_id: res.confirm_id});
+        row.remove(); danger.remove();
+        wrap.appendChild(el(out.kind === 'error' ? 'out danger' : 'dim', out.html));
+      } catch (err) {
+        setConnection('offline', '連線中斷');
+        wrap.appendChild(el(
+          'danger',
+          '無法確認取消是否送達；請先查看「狀態」頁的待批准清單，再決定下一步。'
+        ));
+        yesButton.disabled = false;
+        noButton.disabled = false;
+      } finally {
+        scroll();
+      }
+    };
   } else {
     block(res.kind === 'error' ? 'error' : 'result', el('out', res.html));
   }
@@ -443,7 +492,8 @@ form.addEventListener('submit', async (e) => {
   catch(err){
     input.value = text;
     setConnection('offline', '連線中斷');
-    block('error', el('out', '<p>連線失敗，指令尚未送出。請確認 jenai web 仍在執行後再重試。</p>'));
+    block('error', el('out', '<p>連線中斷，無法確認伺服器是否已接收這項指令。' +
+      '請先查看目前狀態，再決定是否重試，避免重複執行。</p>'));
   }
   finally { send.disabled=false; send.textContent='送出'; input.focus(); }
 });

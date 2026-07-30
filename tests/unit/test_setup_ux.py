@@ -68,3 +68,60 @@ def test_setup_completion_summary_contains_the_real_next_journey(
     assert str(tmp_path / "locations.toml") in output
     assert "1. JenAI doctor" in output
     assert "2. JenAI" in output
+
+
+def test_setup_hides_a_pasted_secret_and_reports_the_actual_env_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "custom" / "config.toml"
+    secret = "nvapi-super-secret"
+    prompts: list[dict[str, object]] = []
+    answers = iter(
+        [
+            "2",
+            "nvidia-cloud",
+            "meta/llama-3.3-70b-instruct",
+            "https://integrate.api.nvidia.com/v1",
+            secret,
+            "locations.toml",
+        ]
+    )
+
+    def prompt(*_args: object, **kwargs: object) -> str:
+        prompts.append(kwargs)
+        return next(answers)
+
+    monkeypatch.setattr("typer.prompt", prompt)
+
+    run_setup_wizard(config_path)
+
+    assert prompts[4]["hide_input"] is True
+    assert (config_path.parent / ".env").read_text(encoding="utf-8") == (
+        f"NVIDIA_API_KEY={secret}\n"
+    )
+
+
+def test_setup_reports_the_env_path_next_to_a_custom_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "custom" / "config.toml"
+    _drive(
+        monkeypatch,
+        [
+            "2",
+            "nvidia-cloud",
+            "meta/llama-3.3-70b-instruct",
+            "https://integrate.api.nvidia.com/v1",
+            "NVIDIA_API_KEY",
+            "locations.toml",
+        ],
+    )
+
+    run_setup_wizard(config_path)
+
+    output = capsys.readouterr().out
+    assert str(config_path.parent / ".env") in output
+    assert "~/.config/jenai/.env" not in output

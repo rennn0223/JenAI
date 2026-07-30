@@ -31,9 +31,10 @@ branch. They use the same deterministic provider fixture and viewport.
 | ![TUI before, narrow](evidence/product-polish/tui-before-narrow.svg) | ![TUI after, narrow](evidence/product-polish/tui-after-narrow.svg) |
 
 The WebUI and documentation website images below are rendered from their real production HTML and
-CSS at 1440 × 1000. The GPU-backed Firefox capture path is unavailable on this headless DGX, so
-these static views use WeasyPrint; JavaScript interaction and responsive behaviour remain covered
-by rendered-output tests. Inspectable WebUI documents are also preserved as
+CSS at a fixed 1440 × 1000 viewport. Keyboard interaction and the 390 × 844 phone layout were
+separately exercised in real headless Firefox through WebDriver; the result manifest and browser
+screenshots are preserved
+beside these images. Inspectable WebUI documents are also preserved as
 [before](evidence/product-polish/webui-before.html) and
 [after](evidence/product-polish/webui-after.html).
 
@@ -49,6 +50,22 @@ by rendered-output tests. Inspectable WebUI documents are also preserved as
 |---|---|
 | ![Website before, desktop](evidence/product-polish/website-before-desktop.png) | ![Website after, desktop](evidence/product-polish/website-after-desktop.png) |
 
+### Real-browser phone acceptance — 390 × 844
+
+| Auxiliary WebUI | Documentation website |
+|---|---|
+| ![WebUI in Firefox at 390 by 844](evidence/product-polish/webui-browser-mobile.png) | ![Website in Firefox at 390 by 844](evidence/product-polish/website-browser-mobile.png) |
+
+The real-browser gate executed the same event handlers shipped to users:
+
+- WebUI `/` palette: typing, `ArrowDown`, `Tab` completion, and focus retention.
+- WebUI tabs: `ArrowRight` and `End` both activate and focus the expected tab.
+- Website search: typed query, `ArrowDown`, and `Escape` with combobox focus retained.
+- Website mobile menu: `Enter` toggles `aria-expanded` and opens the navigation.
+- Both phone layouts: document width and the primary interaction region remain inside the viewport.
+
+Machine-readable results: [browser-acceptance.json](evidence/product-polish/browser-acceptance.json).
+
 ## First useful task checklist
 
 | Journey | Expected user experience | Evidence |
@@ -58,9 +75,10 @@ by rendered-output tests. Inspectable WebUI documents are also preserved as
 | TUI welcome | Leads with a natural-language task, then `/doctor` and `/help`; the approved visual layout stays intact | wide/narrow renders and `test_tui_ux_copy.py` |
 | Discover a command | `/` opens the palette; keyboard navigation and descriptions use operator language | `test_tui.py`, `test_tui_command_dispatch.py` |
 | Approve motion | Risk and physical effect are explicit; options remain one-time, session, or reject; `Esc` rejects | `test_tui_ux_copy.py`, approval-policy tests |
-| Web command fails | The user’s input is restored and the connection is shown as interrupted instead of implying success | `test_webui_ux.py` |
+| Web monitor | Current task, pending approvals, tool timeline, and current-service run history survive browser refresh without exposing raw actions | `test_webui.py`, `test_webui_ux.py` |
+| Web command fails | Input is restored, but response loss is reported as unknown delivery and tells the operator to inspect state before retrying | `test_webui_ux.py` |
 | Web stop is ambiguous | The UI says stop delivery is unconfirmed and directs the operator to the physical emergency stop | `test_webui_ux.py` |
-| Website discovery | Search supports Arrow keys, Enter, and Escape; mobile navigation reports expanded state | website rendered-output tests |
+| Website discovery | Search and mobile navigation respond to real keyboard events in Firefox | `ui_browser_acceptance.py`, browser acceptance manifest |
 
 ## Verification
 
@@ -69,5 +87,6 @@ by rendered-output tests. Inspectable WebUI documents are also preserved as
 - Website TypeScript check and production build: pass.
 - Website rendered-output and stylesheet regressions: pass.
 - Generated WebUI JavaScript syntax check: pass.
-- Live Isaac Sim and physical NXDog motion were not run because this change does not alter a
-  motion path. No simulation or physical result is claimed.
+- Firefox WebDriver keyboard and 390 × 844 responsive acceptance: pass.
+- Live Isaac Sim and physical NXDog motion were not run because this change does not alter a motion
+  path. No simulation or physical result is claimed.

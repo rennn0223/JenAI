@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -225,6 +226,36 @@ def test_main_command_starts_tui(tmp_path: Path, monkeypatch) -> None:
     assert started["active_provider"] == "test"
     assert started["config_path"] == config_path
     assert started["doctor_result"].items
+
+
+def test_main_loads_env_next_to_an_explicit_config(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "custom" / "config.toml"
+    env_name = "JENAI_TEST_CUSTOM_CONFIG_KEY"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="gpt-test",
+            api_key_env=env_name,
+        ),
+        config_path,
+    )
+    (config_path.parent / ".env").write_text(f"{env_name}=secret\n", encoding="utf-8")
+    monkeypatch.delenv(env_name, raising=False)
+    observed: dict[str, str | None] = {}
+
+    def fake_run_tui(config, *, config_path, doctor_result):
+        observed["key"] = os.environ.get(env_name)
+
+    monkeypatch.setattr("jenai.cli.main.run_tui", fake_run_tui)
+
+    try:
+        result = runner.invoke(app, ["--config", str(config_path)])
+    finally:
+        os.environ.pop(env_name, None)
+
+    assert result.exit_code == 0
+    assert observed["key"] == "secret"
 
 
 def _config_with_locations(tmp_path: Path) -> Path:

@@ -99,10 +99,61 @@ def test_status_fragment_uses_actionable_traditional_chinese_copy() -> None:
     assert "ROS2 Graph" not in fragment
 
 
-def test_command_failure_path_restores_input_and_reports_connection_state() -> None:
+def test_command_failure_path_restores_input_and_reports_unknown_delivery() -> None:
     page = render_dashboard_html(_status())
 
     assert "input.value = text" in page
     assert "setConnection(" in page
     assert "throw new Error" in page
-    assert "連線失敗，指令尚未送出" in page
+    assert "無法確認伺服器是否已接收這項指令" in page
+    assert "請先查看目前狀態，再決定是否重試" in page
+    assert "指令尚未送出" not in page
+
+
+def test_status_fragment_renders_durable_run_approval_and_tool_timeline() -> None:
+    status = _status()
+    status["transcript"] = [
+        {
+            "run_id": "run-1",
+            "status": "awaiting_approval",
+            "outcome": None,
+            "summary": "前往 Dock",
+            "final_output": None,
+            "started_at": "2026-07-30T08:00:00Z",
+            "finished_at": None,
+            "approvals": [
+                {
+                    "approval_id": "approval-1",
+                    "title": "前往 Dock",
+                    "summary": "機器人將開始移動。",
+                    "tool_name": "navigate",
+                    "risk_level": "p1",
+                    "status": "pending",
+                    "created_at": "2026-07-30T08:00:01Z",
+                }
+            ],
+            "tool_calls": [
+                {
+                    "tool_call_id": "tool-1",
+                    "tool_name": "navigate",
+                    "input_summary": "Dock",
+                    "status": "awaiting_approval",
+                    "output_summary": None,
+                    "started_at": None,
+                    "ended_at": None,
+                }
+            ],
+        }
+    ]
+
+    fragment = render_main(status)
+
+    assert "任務監控" in fragment
+    assert "目前任務" in fragment
+    assert "前往 Dock" in fragment
+    assert "等待批准" in fragment
+    assert "待批准" in fragment
+    assert "機器人將開始移動。" in fragment
+    assert "工具時間軸" in fragment
+    assert "navigate" in fragment
+    assert "本工作階段紀錄" in fragment

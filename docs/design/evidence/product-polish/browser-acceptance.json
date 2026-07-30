@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "browser": "Firefox headless via WebDriver",
+  "webui": {
+    "slash_keyboard": "pass",
+    "tab_keyboard": "pass",
+    "mobile_390x844": "pass"
+  },
+  "website": {
+    "search_keyboard": "pass",
+    "mobile_menu_keyboard": "pass",
+    "mobile_390x844": "pass"
+  }
+}

@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from jenai.webui.commands import WEB_SLASH_COMMANDS
+from jenai.webui.monitoring_render import render_monitoring
 from jenai.webui.presentation import build_web_status_view
 
 
@@ -115,6 +116,7 @@ def render_main(status: dict[str, Any]) -> str:
     updated = datetime.now().astimezone().strftime("%H:%M:%S")
     return (
         f'<p class="summary">{html.escape(view.health_summary)}</p>'
+        f"{render_monitoring(view)}"
         f'<div class="stats">{stats_html}</div>'
         '<section class="card">'
         '<div class="card-head"><h2>系統檢查</h2>'
@@ -244,6 +246,34 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 .empty{color:var(--muted); font-size:14px; padding:6px 0}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; background:#efe9dc;
   padding:1px 6px; border-radius:6px; font-size:13px}
+.monitor-grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px}
+.monitor-panel{border:1px solid var(--line); border-radius:12px; padding:13px 14px; min-width:0}
+.monitor-primary{grid-column:1/-1; background:#faf7f0}
+.monitor-title{margin:0 0 9px; color:var(--muted); font-size:11px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.08em}
+.monitor-current{position:relative; padding-right:110px; min-height:44px}
+.monitor-current h3{margin:0; font-size:17px; overflow-wrap:anywhere}
+.monitor-id{margin:3px 0 0; color:var(--muted); font:11px ui-monospace,Menlo,monospace;
+  overflow-wrap:anywhere}
+.monitor-result{margin:8px 0 0; color:var(--ink-soft); font-size:13px; overflow-wrap:anywhere}
+.monitor-state{display:inline-block; color:var(--muted); background:var(--muted-bg);
+  border-radius:999px; padding:2px 8px; font-size:10.5px; font-weight:700; white-space:nowrap}
+.monitor-current>.monitor-state{position:absolute; top:0; right:0}
+.state-running,.state-understanding,.state-planning{color:var(--teal); background:#e5efec}
+.state-awaiting_approval{color:var(--warn); background:var(--warn-bg)}
+.state-failed,.state-blocked,.state-rejected{color:var(--bad); background:var(--bad-bg)}
+.state-completed,.state-succeeded,.state-approved{color:var(--ok); background:var(--ok-bg)}
+.monitor-list{display:flex; flex-direction:column}
+.monitor-item{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+  border-top:1px solid var(--line); padding:8px 0}
+.monitor-item:first-child{border-top:0; padding-top:0}
+.monitor-item:last-child{padding-bottom:0}
+.monitor-item div{min-width:0}
+.monitor-item strong{display:block; font-size:13px; overflow-wrap:anywhere}
+.monitor-item span:not(.monitor-state){display:block; color:var(--muted); font-size:11.5px;
+  overflow-wrap:anywhere}
+.monitor-empty,.monitor-note{color:var(--muted); font-size:12.5px}
+.monitor-note{margin:12px 0 0}
 .updated{color:var(--muted); font-size:12px; text-align:right; margin-top:4px}
 footer{max-width:960px; margin:0 auto; padding:14px 32px 44px; color:var(--muted); font-size:12.5px}
 
@@ -338,6 +368,8 @@ body:not(.view-api) #apicard{display:none}
     background:var(--paper); border-bottom:1px solid var(--line)}
   .hero h1{font-size:26px}
   .logo{font-size:26px}
+  .monitor-grid{grid-template-columns:1fr}
+  .monitor-primary{grid-column:auto}
   #tabs{display:flex; position:sticky; top:56px; z-index:5; padding:10px 16px;
     background:var(--paper); margin:0}
   main, #console, footer{max-width:100%; padding-left:16px; padding-right:16px}
@@ -430,6 +462,7 @@ body:not(.view-api) #apicard{display:none}
   <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/frame?topic=…</span><span class="api-d">相機單幀 JPEG（預設 vehicle.camera_topic）</span></div>
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/command　{"text": "…"}</span><span class="api-d">執行指令；動作類回傳 confirm_id</span></div>
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/confirm　{"confirm_id": "…"}</span><span class="api-d">批准由 server 暫存的一次性動作</span></div>
+  <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/reject　{"confirm_id": "…"}</span><span class="api-d">拒絕並撤銷由 server 暫存的一次性動作</span></div>
   <div class="api-row"><span class="api-m m-post">POST</span><span class="api-p">/api/stop</span><span class="api-d">立即停止；唯一不需要 token 的 endpoint</span></div>
   <div class="api-row"><span class="api-m m-get">GET</span><span class="api-p">/api/topics</span><span class="api-d">即時 ROS graph topics（下表）</span></div>
   <div class="card-head" style="margin-top:14px"><h2 style="font-size:15px">ROS topics（即時）</h2><span class="dim" id="api-topics-meta">切換至此頁時載入…</span></div>
@@ -494,7 +527,25 @@ function render(res){
         busy.remove(); scroll();
       }
     };
-    noButton.onclick = () => { row.remove(); danger.remove(); wrap.appendChild(el('dim','已取消。')); };
+    noButton.onclick = async () => {
+      yesButton.disabled = true;
+      noButton.disabled = true;
+      try {
+        const out = await post('api/reject', {confirm_id: res.confirm_id});
+        row.remove(); danger.remove();
+        wrap.appendChild(el(out.kind === 'error' ? 'out danger' : 'dim', out.html));
+      } catch (err) {
+        setConnection('offline', '連線中斷');
+        wrap.appendChild(el(
+          'danger',
+          '無法確認取消是否送達；請先查看「狀態」頁的待批准清單，再決定下一步。'
+        ));
+        yesButton.disabled = false;
+        noButton.disabled = false;
+      } finally {
+        scroll();
+      }
+    };
   } else {
     block(res.kind === 'error' ? 'error' : 'result', el('out', res.html));
   }
@@ -580,7 +631,8 @@ form.addEventListener('submit', async (e) => {
   catch(err){
     input.value = text;
     setConnection('offline', '連線中斷');
-    block('error', el('out', '<p>連線失敗，指令尚未送出。請確認 jenai web 仍在執行後再重試。</p>'));
+    block('error', el('out', '<p>連線中斷，無法確認伺服器是否已接收這項指令。' +
+      '請先查看目前狀態，再決定是否重試，避免重複執行。</p>'));
   }
   finally { send.disabled=false; send.textContent='送出'; input.focus(); }
 });

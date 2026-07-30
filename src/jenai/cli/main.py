@@ -22,7 +22,13 @@ from jenai.adapters.locations import (
 from jenai.capabilities import has_registered_capability
 from jenai.cli.data import data_app
 from jenai.cli.site import site_app
-from jenai.config import ConfigError, default_config_path, load_config, load_env_file
+from jenai.config import (
+    ConfigError,
+    default_config_path,
+    default_env_file_path,
+    load_config,
+    load_env_file,
+)
 from jenai.config.models import AppConfig
 from jenai.config.setup import run_setup_wizard
 from jenai.doctor import run_doctor
@@ -62,6 +68,7 @@ ConfigOption = Annotated[
 def _run_setup_and_reload(config_path: Path) -> AppConfig:
     """Run first-time setup, then validate and return the written config."""
     written = run_setup_wizard(config_path)
+    load_env_file(default_env_file_path(written))
     console.print(f"Config written to {written}")
     try:
         loaded = load_config(written)
@@ -83,7 +90,8 @@ def main(
     # Load API keys from the env file before anything touches a provider, so
     # every launch mode (uv run, venv script, launcher, subcommands) behaves
     # the same. Shell-exported variables still take precedence over the file.
-    env_result = load_env_file()
+    config_path = config or default_config_path()
+    env_result = load_env_file(default_env_file_path(config_path))
     if env_result.explicit and not env_result.found:
         err_console.print(
             f"[yellow]JENAI_ENV_FILE points to a missing file: {env_result.path}[/yellow]"
@@ -97,7 +105,6 @@ def main(
     if ctx.invoked_subcommand is not None:
         return
 
-    config_path = config or default_config_path()
     try:
         loaded = load_config(config_path)
     except ConfigError:
