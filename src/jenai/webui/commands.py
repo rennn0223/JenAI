@@ -18,7 +18,7 @@ from jenai.capabilities import has_registered_capability
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
 from jenai.providers.chat import ProviderChatError, ask_provider, chat_model_name
-from jenai.schemas import Location
+from jenai.schemas import Location, RunStatus, TaskOutcome
 from jenai.state.audit import AuditStore
 from jenai.task_results import navigation_output_result, navigation_receipt_text
 from jenai.tools import ros2_core
@@ -70,12 +70,32 @@ def _p(text: str) -> str:
     return "<p>" + _esc(text).replace("\n", "<br>") + "</p>"
 
 
-def _result(html: str) -> WebResponse:
-    return {"kind": "result", "html": html}
+def _result(
+    html: str,
+    *,
+    run_status: RunStatus = RunStatus.COMPLETED,
+    outcome: TaskOutcome = TaskOutcome.SUCCEEDED,
+) -> WebResponse:
+    return {
+        "kind": "result",
+        "html": html,
+        "run_status": run_status.value,
+        "outcome": outcome.value,
+    }
 
 
-def _error(text: str) -> WebResponse:
-    return {"kind": "error", "html": _p(text)}
+def _error(
+    text: str,
+    *,
+    run_status: RunStatus = RunStatus.FAILED,
+    outcome: TaskOutcome = TaskOutcome.FAILED,
+) -> WebResponse:
+    return {
+        "kind": "error",
+        "html": _p(text),
+        "run_status": run_status.value,
+        "outcome": outcome.value,
+    }
 
 
 def _confirm(html: str, action: WebAction, danger: str) -> WebResponse:
@@ -421,7 +441,11 @@ class _WebActionExecutor:
     async def _route(self, action: WebAction) -> WebResponse:
         if not has_registered_capability(self.config, "navigate"):
             self._audit("route", "tool_updated", "blocked")
-            return _error("Navigation is not registered for this robot profile.")
+            return _error(
+                "Navigation is not registered for this robot profile.",
+                run_status=RunStatus.BLOCKED,
+                outcome=TaskOutcome.BLOCKED,
+            )
         route_out = await execute_navigation(
             self.config,
             action["outgoing_action"],
@@ -435,7 +459,11 @@ class _WebActionExecutor:
             task_result.run_status.value,
             outcome=task_result.outcome.value,
         )
-        return _result(_p(navigation_receipt_text(route_out)))
+        return _result(
+            _p(navigation_receipt_text(route_out)),
+            run_status=task_result.run_status,
+            outcome=task_result.outcome,
+        )
 
 
 async def run_web_confirm(

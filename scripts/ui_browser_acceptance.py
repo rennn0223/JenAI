@@ -302,18 +302,34 @@ def _webui_acceptance(root: Path, artifacts: Path | None) -> dict[str, object]:
         browser.navigate(fixture.url)
         time.sleep(0.3)
         mobile = browser.script(
-            "return {inner:innerWidth,scroll:document.documentElement.scrollWidth,"
-            "composer:document.querySelector('#cmdform').getBoundingClientRect().right,"
+            "return {inner_width:innerWidth,inner_height:innerHeight,"
+            "scroll_width:document.documentElement.scrollWidth,composer_right:document.querySelector('#cmdform').getBoundingClientRect().right,"
             "tabs:getComputedStyle(document.querySelector('#tabs')).display};"
         )
         _require(
-            mobile["scroll"] <= mobile["inner"] and mobile["composer"] <= mobile["inner"],
+            mobile["scroll_width"] <= mobile["inner_width"]
+            and mobile["composer_right"] <= mobile["inner_width"],
             "WebUI overflows the phone viewport",
+        )
+        _require(
+            0 < mobile["inner_width"] <= 760 and mobile["inner_height"] > 0,
+            "WebUI did not enter its narrow responsive breakpoint",
         )
         _require(mobile["tabs"] == "flex", "Mobile WebUI tabs are not visible")
         if artifacts is not None:
             browser.screenshot(artifacts / "webui-browser-mobile.png")
-    return {"slash_keyboard": "pass", "tab_keyboard": "pass", "mobile_390x844": "pass"}
+    return {
+        "slash_keyboard": "pass",
+        "tab_keyboard": "pass",
+        "narrow_viewport": {
+            "status": "pass",
+            "requested_window": {"width": 390, "height": 844},
+            "effective_inner": {
+                "width": mobile["inner_width"],
+                "height": mobile["inner_height"],
+            },
+        },
+    }
 
 
 def _website_acceptance(root: Path, artifacts: Path | None) -> dict[str, object]:
@@ -358,20 +374,36 @@ def _website_acceptance(root: Path, artifacts: Path | None) -> dict[str, object]
         mobile = browser.script(
             "return {expanded:document.querySelector('.menu-button').getAttribute('aria-expanded'),"
             "open:document.querySelector('#documentation-navigation').classList.contains('sidebar-open'),"
-            "inner:innerWidth,scroll:document.documentElement.scrollWidth,focus:document.activeElement.className};"
+            "inner_width:innerWidth,inner_height:innerHeight,"
+            "scroll_width:document.documentElement.scrollWidth,focus:document.activeElement.className};"
         )
         _require(
             mobile["expanded"] == "true" and mobile["open"],
             "Enter did not open the mobile documentation menu",
         )
         _require(
-            mobile["scroll"] <= mobile["inner"],
+            mobile["scroll_width"] <= mobile["inner_width"],
             "Documentation website overflows the phone viewport",
+        )
+        _require(
+            0 < mobile["inner_width"] <= 760 and mobile["inner_height"] > 0,
+            "Documentation website did not enter its narrow responsive breakpoint",
         )
         _require("menu-button" in mobile["focus"], "Mobile menu button lost keyboard focus")
         if artifacts is not None:
             browser.screenshot(artifacts / "website-browser-mobile.png")
-    return {"search_keyboard": "pass", "mobile_menu_keyboard": "pass", "mobile_390x844": "pass"}
+    return {
+        "search_keyboard": "pass",
+        "mobile_menu_keyboard": "pass",
+        "narrow_viewport": {
+            "status": "pass",
+            "requested_window": {"width": 390, "height": 844},
+            "effective_inner": {
+                "width": mobile["inner_width"],
+                "height": mobile["inner_height"],
+            },
+        },
+    }
 
 
 def main() -> int:
@@ -383,7 +415,7 @@ def main() -> int:
     if artifacts is not None:
         artifacts.mkdir(parents=True, exist_ok=True)
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "browser": "Firefox headless via WebDriver",
         "webui": _webui_acceptance(root, artifacts),
         "website": _website_acceptance(root, artifacts),

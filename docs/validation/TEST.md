@@ -40,7 +40,7 @@
 | Bridge wire 邊界 | `uv run pytest -q tests/unit/test_bridge_client.py tests/unit/test_bridge_protocol.py tests/unit/test_bridge_state.py tests/unit/test_bridge_server.py tests/unit/test_bridge_wire.py` | client 與 system-Python sidecar 雙層拒絕錯誤 bool、字串數字、NaN/Inf、零／負 timeout 與不一致回執；無效 request 在 ROS node dispatch 前失敗 |
 | NXDog 唯讀 observer | `uv run pytest -q tests/unit/test_nxdog_observer.py tests/unit/test_doctor_nxdog.py` | fake HTTP server 與 doctor projection 驗證 schema、partial failure、URL opt-in；不證明導航、定位、停止或硬體安全 |
 | 稽核紀錄 | 自動化測試 + 執行任一 TUI run | `<config 目錄>/audit.sqlite3` 保存 run/approval/tool/gate 事件,重啟後仍在;最多 10,000 筆且不含 prompt/raw payload |
-| UI 真實瀏覽器驗收 | 先於 `website/` 執行 `npm run build`，再於 repo root 執行 `env -u PYTHONPATH uv run python scripts/ui_browser_acceptance.py --artifacts-dir docs/design/evidence/product-polish` | 需要本機 Firefox 與 geckodriver；以真實 WebDriver 鍵盤事件驗 WebUI slash palette／tabs、網站搜尋／mobile menu，並於 390 × 844 驗兩個介面無水平溢位；不替代使用者研究 |
+| UI 真實瀏覽器驗收 | 先於 `website/` 執行 `npm run build`，再於 repo root 執行 `env -u PYTHONPATH uv run python scripts/ui_browser_acceptance.py --artifacts-dir docs/design/evidence/product-polish` | 需要本機 Firefox 與 geckodriver；以真實 WebDriver 鍵盤事件驗 WebUI slash palette／tabs、網站搜尋／mobile menu，manifest 同時保存 requested outer window 與 effective inner viewport，並驗證窄版 breakpoint 與無水平溢位；不替代使用者研究 |
 | 24h soak(A6) | `python3 scripts/soak.py --rules <rules.toml>`(ROS-sourced shell、掛機時跑) | `artifacts/experiments/soak/soak-*/report.md`:RSS baseline/final/peak、增長 %、**PASS/WARN**(>20% 增長 = WARN);短跑驗證:`--minutes 5 --interval 5 --warmup 60` |
 
 ## 本機實測現況快照（更新至 2026-07-26，DGX Spark／Isaac Sim 倉庫場景）

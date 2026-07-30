@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html
 import json
 import math
 import secrets
@@ -24,7 +25,7 @@ from jenai.bridge import BridgeError, PoseInfo, RosBridgeClient
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
 from jenai.providers.chat import chat_model_name
-from jenai.schemas import DoctorResult, RunStatus, TaskOutcome
+from jenai.schemas import DoctorResult, RunRecord, RunStatus, TaskOutcome
 from jenai.state.audit import AuditStore
 from jenai.state.emergency_stop import (
     begin_emergency_stop_run,
@@ -42,10 +43,12 @@ from jenai.webui.commands import WebAction, run_web_command, run_web_confirm
 from jenai.webui.monitoring import build_monitoring_transcript
 from jenai.webui.render import render_dashboard_html, render_main
 from jenai.webui.run_tracking import (
+    cancel_confirmation,
     finish_confirmation,
     register_confirmation,
     reject_confirmation,
     start_confirmation,
+    web_response_task_result,
 )
 
 _MAX_JSON_BODY = 64 * 1024
@@ -116,6 +119,42 @@ class _PendingConfirmation:
     tool_call_id: str | None = None
 
 
+class _ActiveConfirmation:
+    """Correlate the one executing browser action with emergency stop."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._current: _PendingConfirmation | None = None
+        self._epoch = 0
+
+    def epoch(self) -> int:
+        with self._lock:
+            return self._epoch
+
+    def start(
+        self, pending: _PendingConfirmation, expected_epoch: int, on_start: Callable[[], None]
+    ) -> bool:
+        with self._lock:
+            if self._epoch != expected_epoch:
+                return False
+            on_start()
+            self._current = pending
+            return True
+
+    def finish(self, pending: _PendingConfirmation) -> bool:
+        with self._lock:
+            if self._current is not pending:
+                return False
+            self._current = None
+            return True
+
+    def cancel(self) -> _PendingConfirmation | None:
+        with self._lock:
+            self._epoch += 1
+            current, self._current = self._current, None
+            return current
+
+
 class _PendingConfirms:
     """Server-side store binding a previewed robot action to a one-time token.
 
@@ -128,18 +167,32 @@ class _PendingConfirms:
     button — a second layer under the session token auth (see THREAT_MODEL.md).
     """
 
-    def __init__(self, max_entries: int = 32, ttl_s: float = 120.0) -> None:
+    def __init__(
+        self,
+        max_entries: int = 32,
+        ttl_s: float = 120.0,
+        on_invalidate: Callable[[_PendingConfirmation, str], None] | None = None,
+    ) -> None:
         self._items: dict[str, tuple[float, _PendingConfirmation]] = {}
         self._lock = threading.Lock()
         self._max = max_entries
         self._ttl_s = max(0.0, ttl_s)
+        self._on_invalidate = on_invalidate
 
-    def _purge_expired(self, now: float) -> None:
+    def _purge_expired(self, now: float) -> list[_PendingConfirmation]:
         expired = [
             token for token, (created, _) in self._items.items() if now - created >= self._ttl_s
         ]
+        pending: list[_PendingConfirmation] = []
         for token in expired:
-            self._items.pop(token, None)
+            item = self._items.pop(token, None)
+            if item is not None:
+                pending.append(item[1])
+        return pending
+
+    def _notify(self, pending: _PendingConfirmation, reason: str) -> None:
+        if self._on_invalidate is not None:
+            self._on_invalidate(pending, reason)
 
     def put(
         self,
@@ -149,12 +202,17 @@ class _PendingConfirms:
         tool_call_id: str | None = None,
     ) -> str:
         token = secrets.token_urlsafe(16)
+        invalidated: list[tuple[_PendingConfirmation, str]] = []
         with self._lock:
             now = time.monotonic()
-            self._purge_expired(now)
+            invalidated.extend((pending, "expired") for pending in self._purge_expired(now))
             self._items[token] = (now, _PendingConfirmation(action, run_id, tool_call_id))
             while len(self._items) > self._max:  # bound memory; evict oldest
-                self._items.pop(next(iter(self._items)), None)
+                oldest_token = next(iter(self._items))
+                _, pending = self._items.pop(oldest_token)
+                invalidated.append((pending, "evicted"))
+        for pending, reason in invalidated:
+            self._notify(pending, reason)
         return token
 
     def pop(self, token: str) -> WebAction | None:
@@ -166,14 +224,19 @@ class _PendingConfirms:
         """Consume one server-issued confirmation with its run correlation."""
         if not token:
             return None
+        expired: _PendingConfirmation | None = None
         with self._lock:
             item = self._items.pop(token, None)
             if item is None:
                 return None
             created, pending = item
             if time.monotonic() - created >= self._ttl_s:
-                return None
-            return pending
+                expired = pending
+            else:
+                return pending
+        if expired is not None:
+            self._notify(expired, "expired")
+        return None
 
     def clear(self) -> list[_PendingConfirmation]:
         """Revoke every token and return correlations for lifecycle cleanup."""
@@ -181,6 +244,29 @@ class _PendingConfirms:
             pending = [item for _, item in self._items.values()]
             self._items.clear()
             return pending
+
+
+def _invalidate_pending_confirmation(
+    store: RunStore,
+    pending: _PendingConfirmation,
+    reason: str,
+) -> None:
+    """Close the correlated run when confirmation escrow drops an action."""
+    if pending.run_id is None or pending.tool_call_id is None:
+        return
+    run = store.get(pending.run_id)
+    if run is None:
+        return
+    summaries = {
+        "expired": "批准已逾時；動作未執行。",
+        "evicted": "待批准項目已由較新的動作取代；動作未執行。",
+    }
+    reject_confirmation(
+        store,
+        run,
+        pending.tool_call_id,
+        summary=summaries.get(reason, "批准已失效；動作未執行。"),
+    )
 
 
 class PoseCache:
@@ -413,7 +499,10 @@ def _halt_response(receipt: HaltReceipt) -> dict[str, Any]:
         if receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED
         else "result"
     )
-    return {"kind": kind, "html": f"<p>🛑 {receipt.message}</p>"}
+    message = html.escape(receipt.message)
+    if receipt.navigation_cancel_status is NavigationCancelStatus.UNCONFIRMED:
+        message += "<br><strong>無法確認導航已停止；請立即使用實體緊急停止並保持安全距離。</strong>"
+    return {"kind": kind, "html": f"<p>🛑 {message}</p>"}
 
 
 def _do_stop(
@@ -476,6 +565,7 @@ class _Handler(BaseHTTPRequestHandler):
     pose_cache: PoseCache | None = None
     status_cache: StatusCache | None = None
     action_lock: threading.Lock | None = None
+    active_confirmation: _ActiveConfirmation | None = None
     token: str | None = None  # None = auth disabled (unit tests); CLI always sets one
 
     def log_message(self, *args: Any) -> None:  # silence default stderr logging
@@ -676,7 +766,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle_emergency_stop(self) -> None:
         invalidated = self.pending.clear() if self.pending is not None else []
+        active = self.active_confirmation.cancel() if self.active_confirmation is not None else None
         if self.run_store is not None:
+            if active is not None and active.run_id is not None:
+                run = self.run_store.get(active.run_id)
+                if run is not None and active.tool_call_id is not None:
+                    cancel_confirmation(
+                        self.run_store,
+                        run,
+                        active.tool_call_id,
+                    )
             for pending in invalidated:
                 run = self.run_store.get(pending.run_id) if pending.run_id is not None else None
                 if run is not None and pending.tool_call_id is not None:
@@ -743,14 +842,14 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 result["confirm_id"] = self.pending.put(result.pop("action", {}))
         elif run is not None and store is not None:
-            succeeded = result.get("kind") == "result"
+            task_result = web_response_task_result(result)
             store.finish(
                 run,
-                status=RunStatus.COMPLETED if succeeded else RunStatus.FAILED,
-                outcome=TaskOutcome.SUCCEEDED if succeeded else TaskOutcome.FAILED,
-                final_output=(
-                    "WebUI 指令已完成。" if succeeded else "WebUI 指令失敗；請查看互動紀錄。"
-                ),
+                status=task_result.run_status,
+                outcome=task_result.outcome,
+                final_output="WebUI 指令已完成。"
+                if task_result.succeeded
+                else "WebUI 指令未完成。",
             )
         return result
 
@@ -772,52 +871,113 @@ class _Handler(BaseHTTPRequestHandler):
             "html": "<p>已取消；動作未執行。</p>",
         }
 
-    def _run_confirm(self, body: dict[str, Any]) -> dict[str, Any]:
+    def _correlated_confirmation_run(self, pending: _PendingConfirmation) -> RunRecord | None:
         store = self.run_store
+        if store is None or pending.run_id is None:
+            return None
+        return store.get(pending.run_id)
+
+    def _start_tracked_confirmation(
+        self,
+        pending: _PendingConfirmation,
+        run: RunRecord | None,
+        tracker: _ActiveConfirmation | None,
+        stop_epoch: int,
+    ) -> dict[str, Any] | None:
+        store = self.run_store
+
+        def mark_running() -> None:
+            if store is not None and run is not None and pending.tool_call_id is not None:
+                start_confirmation(store, run, pending.tool_call_id)
+
+        if tracker is None:
+            mark_running()
+            return None
+        if tracker.start(pending, stop_epoch, mark_running):
+            return None
+        if store is not None and run is not None and pending.tool_call_id is not None:
+            reject_confirmation(
+                store,
+                run,
+                pending.tool_call_id,
+                summary="急停已撤銷這項批准；動作未執行。",
+            )
+        return {
+            "kind": "error",
+            "html": "<p>急停已撤銷這項批准；請重新確認機器人狀態。</p>",
+            "run_status": RunStatus.BLOCKED.value,
+            "outcome": TaskOutcome.BLOCKED.value,
+        }
+
+    def _finish_tracked_confirmation(
+        self,
+        pending: _PendingConfirmation,
+        run: RunRecord | None,
+        tracker: _ActiveConfirmation | None,
+        result: dict[str, Any],
+    ) -> bool:
+        store = self.run_store
+        is_current = tracker is None or tracker.finish(pending)
+        if (
+            is_current
+            and store is not None
+            and run is not None
+            and pending.tool_call_id is not None
+        ):
+            finish_confirmation(
+                store,
+                run,
+                pending.tool_call_id,
+                result=web_response_task_result(result),
+            )
+        return is_current
+
+    def _run_confirm(self, body: dict[str, Any]) -> dict[str, Any]:
         acquired = self.action_lock is None or self.action_lock.acquire(blocking=False)
         if not acquired:
             return {
                 "kind": "error",
-                "html": (
-                    "<p>Another robot action is already running. Try again when it finishes.</p>"
-                ),
+                "html": ("<p>已有另一項機器人動作正在執行；完成後再試。</p>"),
             }
         try:
+            tracker = getattr(self, "active_confirmation", None)
+            stop_epoch = tracker.epoch() if tracker is not None else 0
             pending = self.pending.claim(body.get("confirm_id", "")) if self.pending else None
             if pending is None:
                 return {
                     "kind": "error",
-                    "html": (
-                        "<p>This confirmation expired or was already used. Re-run the command.</p>"
-                    ),
+                    "html": ("<p>這項批准已逾時或已使用；請重新送出指令。</p>"),
                 }
-            run = (
-                store.get(pending.run_id)
-                if store is not None and pending.run_id is not None
-                else None
+            run = _Handler._correlated_confirmation_run(self, pending)
+            blocked = _Handler._start_tracked_confirmation(
+                self,
+                pending,
+                run,
+                tracker,
+                stop_epoch,
             )
-            if store is not None and run is not None and pending.tool_call_id is not None:
-                start_confirmation(store, run, pending.tool_call_id)
+            if blocked is not None:
+                return blocked
             try:
                 result = asyncio.run(
                     run_web_confirm(self.config, pending.action, config_path=self.config_path)
                 )
             except Exception:
-                if store is not None and run is not None and pending.tool_call_id is not None:
-                    finish_confirmation(
-                        store,
-                        run,
-                        pending.tool_call_id,
-                        succeeded=False,
-                    )
+                _Handler._finish_tracked_confirmation(self, pending, run, tracker, {})
                 raise
-            if store is not None and run is not None and pending.tool_call_id is not None:
-                finish_confirmation(
-                    store,
-                    run,
-                    pending.tool_call_id,
-                    succeeded=result.get("kind") == "result",
-                )
+            if not _Handler._finish_tracked_confirmation(
+                self,
+                pending,
+                run,
+                tracker,
+                result,
+            ):
+                return {
+                    "kind": "error",
+                    "html": "<p>這項動作已被急停中斷；請確認機器人狀態。</p>",
+                    "run_status": RunStatus.INTERRUPTED.value,
+                    "outcome": TaskOutcome.CANCELLED.value,
+                }
             return result
         finally:
             if self.action_lock is not None:
@@ -886,11 +1046,16 @@ def make_server(
             "config": config,
             "config_path": config_path,
             "run_store": run_store,
-            "pending": _PendingConfirms(),
+            "pending": _PendingConfirms(
+                on_invalidate=lambda pending, reason: _invalidate_pending_confirmation(
+                    run_store, pending, reason
+                )
+            ),
             "pose_cache": PoseCache(),
             "status_cache": StatusCache(),
             "action_lock": threading.Lock(),
             "token": token,
+            "active_confirmation": _ActiveConfirmation(),
         },
     )
     return ThreadingHTTPServer((host, port), handler)

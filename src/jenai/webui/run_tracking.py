@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from jenai.config.models import AppConfig
@@ -18,6 +19,7 @@ from jenai.schemas import (
 )
 from jenai.schemas.models import utc_now
 from jenai.state.runs import RunStore
+from jenai.task_results import TaskResult, run_status_for_outcome
 from jenai.tools.emergency_stop import emergency_stop_effect_scope
 
 
@@ -105,25 +107,84 @@ def reject_confirmation(
     )
 
 
+_TERMINAL_RUN_STATUSES = frozenset(
+    {
+        RunStatus.BLOCKED,
+        RunStatus.INTERRUPTED,
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+    }
+)
+
+
+def web_response_task_result(response: Mapping[str, Any]) -> TaskResult:
+    """Parse typed terminal metadata, failing closed when it is absent or invalid."""
+    try:
+        run_status = RunStatus(str(response["run_status"]))
+        outcome = TaskOutcome(str(response["outcome"]))
+    except (KeyError, TypeError, ValueError):
+        return TaskResult(
+            run_status=RunStatus.FAILED,
+            outcome=TaskOutcome.FAILED,
+        )
+    if run_status not in _TERMINAL_RUN_STATUSES:
+        return TaskResult(run_status=RunStatus.FAILED, outcome=TaskOutcome.FAILED)
+    if run_status != run_status_for_outcome(outcome):
+        return TaskResult(run_status=RunStatus.FAILED, outcome=TaskOutcome.FAILED)
+    return TaskResult(run_status=run_status, outcome=outcome)
+
+
 def finish_confirmation(
     store: RunStore,
     run: RunRecord,
     tool_call_id: str,
     *,
-    succeeded: bool,
+    result: TaskResult,
 ) -> None:
-    """Finalize both tool and run from the confirmed action response."""
-    summary = "WebUI 動作已完成。" if succeeded else "WebUI 動作失敗；請查看互動紀錄。"
+    """Finalize both tool and run from authoritative task metadata."""
+    summaries = {
+        TaskOutcome.SUCCEEDED: "WebUI 動作已完成。",
+        TaskOutcome.ARRIVED_UNVERIFIED: "已抵達目標附近，但最終物理效果尚未驗證。",
+        TaskOutcome.PARTIAL: "WebUI 動作只完成一部分；請查看互動紀錄。",
+        TaskOutcome.ENDPOINT_MISMATCH: "導航已結束，但終點超出允許誤差。",
+        TaskOutcome.BLOCKED: "WebUI 動作已被政策或前置條件阻擋。",
+        TaskOutcome.UNAVAILABLE: "WebUI 動作所需能力目前不可用。",
+        TaskOutcome.FAILED: "WebUI 動作失敗；請查看互動紀錄。",
+        TaskOutcome.CANCELLED: "WebUI 動作已取消。",
+    }
+    summary = summaries[result.outcome]
     store.update_tool_call(
         run,
         tool_call_id,
-        status=ToolCallStatus.SUCCEEDED if succeeded else ToolCallStatus.FAILED,
+        status=ToolCallStatus.SUCCEEDED if result.succeeded else ToolCallStatus.FAILED,
         ended_at=utc_now(),
         output_summary=summary,
     )
     store.finish(
         run,
-        status=RunStatus.COMPLETED if succeeded else RunStatus.FAILED,
-        outcome=TaskOutcome.SUCCEEDED if succeeded else TaskOutcome.FAILED,
+        status=result.run_status,
+        outcome=result.outcome,
+        final_output=summary,
+    )
+
+
+def cancel_confirmation(
+    store: RunStore,
+    run: RunRecord,
+    tool_call_id: str,
+) -> None:
+    """Make an already-approved action terminal when emergency stop interrupts it."""
+    summary = "急停已中斷這項動作；請以停止回執確認機器人狀態。"
+    store.update_tool_call(
+        run,
+        tool_call_id,
+        status=ToolCallStatus.FAILED,
+        ended_at=utc_now(),
+        output_summary=summary,
+    )
+    store.finish(
+        run,
+        status=RunStatus.INTERRUPTED,
+        outcome=TaskOutcome.CANCELLED,
         final_output=summary,
     )

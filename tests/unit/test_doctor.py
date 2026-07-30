@@ -69,6 +69,30 @@ def test_doctor_reports_provider_and_models_from_config(tmp_path: Path, monkeypa
     )
 
 
+def test_doctor_custom_config_loads_adjacent_env(tmp_path: Path, monkeypatch) -> None:
+    key = "JENAI_CUSTOM_PATH_API_KEY"
+    monkeypatch.delenv(key, raising=False)
+    path = tmp_path / "nested" / "config.toml"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="gpt-test",
+            api_key_env=key,
+        ),
+        path,
+    )
+    (path.parent / ".env").write_text(f"{key}=from-adjacent-env\n", encoding="utf-8")
+
+    result = run_doctor(path, include_nav=False)
+
+    env_check = next(item for item in result.items if item.check_name == "env_file")
+    provider_check = next(item for item in result.items if item.check_name == "active_provider")
+    assert str(path.parent / ".env") in env_check.message
+    assert env_check.status == "pass"
+    assert provider_check.status == "pass"
+
+
 def test_doctor_none_config_path_resolves_locations_against_config_dir(
     tmp_path: Path, monkeypatch
 ) -> None:

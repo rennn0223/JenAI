@@ -51,11 +51,12 @@ def test_status_payload_exposes_safe_monitoring_details_without_raw_actions(
     )
 
     store = RunStore()
-    run = store.create_run("session-1", "前往 Dock")
+    run = store.create_run("session-1", '/ros pub /cmd {"password":"visible-secret"}')
     call = ToolCallRecord(
         tool_name="navigate",
         category=ToolCallCategory.ROUTE,
-        input_summary="Dock",
+        input_summary="Authorization: Bearer input-token",
+        output_summary="api_key=output-token",
         raw_input={"secret": "must-not-leak"},
         status=ToolCallStatus.AWAITING_APPROVAL,
         risk_level=RiskLevel.P1,
@@ -69,7 +70,7 @@ def test_status_payload_exposes_safe_monitoring_details_without_raw_actions(
             tool_call_id=call.tool_call_id,
             tool_name="navigate",
             title="前往 Dock",
-            summary="機器人將開始移動。",
+            summary="機器人將開始移動；auth_token=approval-token",
             raw_action="secret raw action",
             risk_level=RiskLevel.P1,
             effect_scope=EffectScope.SIM_CONTROL,
@@ -82,10 +83,14 @@ def test_status_payload_exposes_safe_monitoring_details_without_raw_actions(
 
     item = payload["transcript"][0]
     assert item["status"] == "awaiting_approval"
-    assert item["approvals"][0]["summary"] == "機器人將開始移動。"
+    assert "[REDACTED]" in item["approvals"][0]["summary"]
     assert item["tool_calls"][0]["tool_name"] == "navigate"
     assert item["tool_calls"][0]["status"] == "awaiting_approval"
     serialized = json.dumps(payload, ensure_ascii=False)
+    assert "visible-secret" not in serialized
+    assert "input-token" not in serialized
+    assert "output-token" not in serialized
+    assert "approval-token" not in serialized
     assert "must-not-leak" not in serialized
     assert "secret raw action" not in serialized
 
@@ -289,7 +294,12 @@ def test_webui_confirmation_updates_approval_and_tool_monitoring(
 
     async def fake_confirm(_config, action, *, config_path):
         assert action["type"] == "route"
-        return {"kind": "result", "html": "<p>已抵達 Dock。</p>"}
+        return {
+            "kind": "result",
+            "html": "<p>已抵達 Dock，但尚無充電回授。</p>",
+            "run_status": "completed",
+            "outcome": "arrived_unverified",
+        }
 
     monkeypatch.setattr(server_module, "run_web_command", fake_command)
     monkeypatch.setattr(server_module, "run_web_confirm", fake_confirm)
@@ -337,7 +347,7 @@ def test_webui_confirmation_updates_approval_and_tool_monitoring(
     assert confirmed["kind"] == "result"
     finished_run = completed["transcript"][0]
     assert finished_run["status"] == "completed"
-    assert finished_run["outcome"] == "succeeded"
+    assert finished_run["outcome"] == "arrived_unverified"
     assert finished_run["approvals"][0]["status"] == "approved"
     assert finished_run["tool_calls"][0]["status"] == "succeeded"
 
@@ -561,6 +571,8 @@ def test_web_confirm_navigation_returns_and_audits_product_outcome(monkeypatch, 
 
     assert result["kind"] == "result"
     assert "outcome=arrived_unverified" in result["html"]
+    assert result["run_status"] == "completed"
+    assert result["outcome"] == "arrived_unverified"
     from jenai.state.audit import AuditStore
 
     events = AuditStore(tmp_path / "audit.sqlite3").list_events()
@@ -596,6 +608,7 @@ def test_web_stop_marks_unconfirmed_navigation_cancel_as_error() -> None:
     )
 
     assert response["kind"] == "error"
+    assert "實體緊急停止" in response["html"]
     assert "not acknowledged" in response["html"]
 
 
@@ -686,7 +699,7 @@ def test_confirm_endpoint_rejects_unknown_id(tmp_path: Path) -> None:
         with urllib.request.urlopen(req, timeout=5) as resp:
             payload = json.loads(resp.read().decode())
         assert payload["kind"] == "error"
-        assert "expired" in payload["html"].lower() or "used" in payload["html"].lower()
+        assert "逾時" in payload["html"] or "已使用" in payload["html"]
     finally:
         thread.join(timeout=5)
         server.server_close()
@@ -712,7 +725,7 @@ def test_confirm_endpoint_rejects_overlapping_robot_action(tmp_path: Path) -> No
         with urllib.request.urlopen(req, timeout=5) as resp:
             payload = json.loads(resp.read().decode())
         assert payload["kind"] == "error"
-        assert "already running" in payload["html"]
+        assert "正在執行" in payload["html"]
         # A busy response does not consume the one-shot approval; it can be
         # retried after the current robot action finishes.
         assert handler.pending.pop(confirm_id) == action
@@ -1193,3 +1206,119 @@ def test_api_topics_endpoint_and_camera_picker(tmp_path: Path, monkeypatch) -> N
     html = render_dashboard_html(build_status_payload(_config(), tmp_path / "config.toml"))
     for needle in ('id="cam-topic"', "api/topics", 'id="api-topics"'):
         assert needle in html
+
+
+def test_webui_stop_keeps_active_confirmation_cancelled(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    import jenai.webui.server as server_module
+    from jenai.webui.run_tracking import register_confirmation
+    from jenai.webui.server import _ActiveConfirmation, _Handler, _PendingConfirms
+
+    started = threading.Event()
+    release = threading.Event()
+
+    async def fake_confirm(_config, action, *, config_path):
+        assert action["type"] == "route"
+        started.set()
+        await asyncio.to_thread(release.wait)
+        return {
+            "kind": "result",
+            "html": "<p>late success</p>",
+            "run_status": "completed",
+            "outcome": "succeeded",
+        }
+
+    monkeypatch.setattr(server_module, "run_web_confirm", fake_confirm)
+    monkeypatch.setattr(server_module, "_do_stop", lambda *args, **kwargs: {"kind": "info"})
+    store = RunStore()
+    run = store.create_run("webui", "/route Dock")
+    action = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
+    tool_call_id = register_confirmation(store, run, _config(), action, "移動機器人。")
+    pending = _PendingConfirms()
+    confirm_id = pending.put(action, run_id=run.run_id, tool_call_id=tool_call_id)
+    active = _ActiveConfirmation()
+    responses: list[dict[str, object]] = []
+    handler = SimpleNamespace(
+        config=_config(),
+        config_path=tmp_path / "config.toml",
+        pending=pending,
+        run_store=store,
+        action_lock=threading.Lock(),
+        active_confirmation=active,
+        pose_cache=None,
+        _send=lambda body, *_args, **_kwargs: responses.append(json.loads(body)),
+        _drain_body=lambda: None,
+    )
+
+    worker = threading.Thread(
+        target=_Handler._run_confirm, args=(handler, {"confirm_id": confirm_id})
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+    _Handler._handle_emergency_stop(handler)
+    release.set()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert run.status == "interrupted"
+    assert run.outcome == "cancelled"
+    assert run.tool_calls[0].status == "failed"
+
+
+def test_pending_expiry_and_eviction_finish_correlated_runs() -> None:
+    from jenai.webui.run_tracking import register_confirmation
+    from jenai.webui.server import _invalidate_pending_confirmation, _PendingConfirms
+
+    store = RunStore()
+    config = _config()
+    action = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
+
+    def correlated_pending(label: str):
+        run = store.create_run("webui", label)
+        tool_call_id = register_confirmation(
+            store,
+            run,
+            config,
+            action,
+            "移動機器人。",
+        )
+        return run, tool_call_id
+
+    def invalidate(pending, reason):
+        _invalidate_pending_confirmation(store, pending, reason)
+
+    evicted_run, evicted_tool = correlated_pending("evicted")
+    expired_run, expired_tool = correlated_pending("expired")
+    bounded = _PendingConfirms(max_entries=1, on_invalidate=invalidate)
+    bounded.put(action, run_id=evicted_run.run_id, tool_call_id=evicted_tool)
+    bounded.put(action, run_id=expired_run.run_id, tool_call_id=expired_tool)
+    assert evicted_run.status == "blocked"
+    assert evicted_run.outcome == "blocked"
+    assert evicted_run.interruptions[0].status == "rejected"
+
+    expiring = _PendingConfirms(ttl_s=0, on_invalidate=invalidate)
+    token = expiring.put(action, run_id=expired_run.run_id, tool_call_id=expired_tool)
+    assert expiring.claim(token) is None
+    assert expired_run.status == "blocked"
+    assert expired_run.outcome == "blocked"
+    assert expired_run.interruptions[0].status == "rejected"
+
+
+def test_active_confirmation_refuses_start_after_stop_epoch() -> None:
+    from jenai.webui.server import _ActiveConfirmation, _PendingConfirmation
+
+    active = _ActiveConfirmation()
+    pending = _PendingConfirmation({"type": "route"})
+    epoch = active.epoch()
+    active.cancel()
+    called: list[bool] = []
+    assert active.start(pending, epoch, lambda: called.append(True)) is False
+    assert called == []
+
+
+def test_web_response_task_result_rejects_inconsistent_status_and_outcome() -> None:
+    from jenai.webui.run_tracking import web_response_task_result
+
+    result = web_response_task_result({"run_status": "completed", "outcome": "failed"})
+    assert result.run_status == "failed"
+    assert result.outcome == "failed"

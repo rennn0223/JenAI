@@ -31,9 +31,10 @@ branch. They use the same deterministic provider fixture and viewport.
 | ![TUI before, narrow](evidence/product-polish/tui-before-narrow.svg) | ![TUI after, narrow](evidence/product-polish/tui-after-narrow.svg) |
 
 The WebUI and documentation website images below are rendered from their real production HTML and
-CSS at a fixed 1440 × 1000 viewport. Keyboard interaction and the 390 × 844 phone layout were
-separately exercised in real headless Firefox through WebDriver; the result manifest and browser
-screenshots are preserved
+CSS at a fixed 1440 × 1000 viewport. Keyboard interaction and the narrow responsive layout were
+separately exercised in real headless Firefox through WebDriver. Firefox received a 390 × 844
+outer-window request and reported a 500 × 758 effective inner viewport for this run; the manifest and
+browser screenshots are preserved
 beside these images. Inspectable WebUI documents are also preserved as
 [before](evidence/product-polish/webui-before.html) and
 [after](evidence/product-polish/webui-after.html).
@@ -50,11 +51,11 @@ beside these images. Inspectable WebUI documents are also preserved as
 |---|---|
 | ![Website before, desktop](evidence/product-polish/website-before-desktop.png) | ![Website after, desktop](evidence/product-polish/website-after-desktop.png) |
 
-### Real-browser phone acceptance — 390 × 844
+### Real-browser narrow acceptance — measured 500 × 758 inner viewport
 
 | Auxiliary WebUI | Documentation website |
 |---|---|
-| ![WebUI in Firefox at 390 by 844](evidence/product-polish/webui-browser-mobile.png) | ![Website in Firefox at 390 by 844](evidence/product-polish/website-browser-mobile.png) |
+| ![WebUI in Firefox narrow viewport](evidence/product-polish/webui-browser-mobile.png) | ![Website in Firefox narrow viewport](evidence/product-polish/website-browser-mobile.png) |
 
 The real-browser gate executed the same event handlers shipped to users:
 
@@ -62,7 +63,7 @@ The real-browser gate executed the same event handlers shipped to users:
 - WebUI tabs: `ArrowRight` and `End` both activate and focus the expected tab.
 - Website search: typed query, `ArrowDown`, and `Escape` with combobox focus retained.
 - Website mobile menu: `Enter` toggles `aria-expanded` and opens the navigation.
-- Both phone layouts: document width and the primary interaction region remain inside the viewport.
+- Both narrow layouts: document width and the primary interaction region remain inside the viewport.
 
 Machine-readable results: [browser-acceptance.json](evidence/product-polish/browser-acceptance.json).
 
@@ -87,6 +88,6 @@ Machine-readable results: [browser-acceptance.json](evidence/product-polish/brow
 - Website TypeScript check and production build: pass.
 - Website rendered-output and stylesheet regressions: pass.
 - Generated WebUI JavaScript syntax check: pass.
-- Firefox WebDriver keyboard and 390 × 844 responsive acceptance: pass.
+- Firefox WebDriver keyboard and measured 500 × 758 inner-viewport responsive acceptance: pass.
 - Live Isaac Sim and physical NXDog motion were not run because this change does not alter a motion
   path. No simulation or physical result is claimed.

@@ -11,9 +11,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from jenai.redaction import redact_sensitive_text
 from jenai.schemas import RunRecord
 
 _MAX_VISIBLE_RUNS = 50
+
+
+def _safe_optional(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return redact_sensitive_text(value)
 
 
 def build_monitoring_transcript(runs: Iterable[RunRecord]) -> list[dict[str, Any]]:
@@ -24,16 +31,16 @@ def build_monitoring_transcript(runs: Iterable[RunRecord]) -> list[dict[str, Any
             "run_id": run.run_id,
             "status": str(run.status),
             "outcome": str(run.outcome) if run.outcome is not None else None,
-            "summary": run.user_input,
-            "final_output": run.final_output,
+            "summary": redact_sensitive_text(run.user_input),
+            "final_output": _safe_optional(run.final_output),
             "started_at": run.started_at.isoformat(),
             "finished_at": run.finished_at.isoformat() if run.finished_at else None,
             "approvals": [
                 {
                     "approval_id": approval.approval_id,
-                    "title": approval.title,
-                    "summary": approval.summary,
-                    "tool_name": approval.tool_name,
+                    "title": redact_sensitive_text(approval.title),
+                    "summary": redact_sensitive_text(approval.summary),
+                    "tool_name": redact_sensitive_text(approval.tool_name),
                     "risk_level": str(approval.risk_level),
                     "status": str(approval.status),
                     "created_at": approval.created_at.isoformat(),
@@ -43,10 +50,10 @@ def build_monitoring_transcript(runs: Iterable[RunRecord]) -> list[dict[str, Any
             "tool_calls": [
                 {
                     "tool_call_id": call.tool_call_id,
-                    "tool_name": call.tool_name,
-                    "input_summary": call.input_summary,
+                    "tool_name": redact_sensitive_text(call.tool_name),
+                    "input_summary": redact_sensitive_text(call.input_summary),
                     "status": str(call.status),
-                    "output_summary": call.output_summary,
+                    "output_summary": _safe_optional(call.output_summary),
                     "started_at": call.started_at.isoformat() if call.started_at else None,
                     "ended_at": call.ended_at.isoformat() if call.ended_at else None,
                 }
