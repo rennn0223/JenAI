@@ -13,7 +13,7 @@
   create a second robot execution path.
 - No Nav2 algorithm, AMCL parameter, arrival tolerance, endpoint recovery, Capability, TUI motion
   path, or dependency changed. WebUI confirmation cancellation and STOP lifecycle semantics did
-  change and therefore require targeted live acceptance before merge.
+  change; the targeted live acceptance for that lifecycle is recorded below.
 
 ## Rendered before / after
 
@@ -91,6 +91,15 @@ Machine-readable results: [browser-acceptance.json](evidence/product-polish/brow
 - Website rendered-output and stylesheet regressions: pass.
 - Generated WebUI JavaScript syntax check: pass.
 - Firefox WebDriver keyboard and measured 500 × 758 inner-viewport responsive acceptance: pass.
-- No physical NXDog motion was run or claimed. WebUI confirmation cancellation and STOP lifecycle
-  are production action-lifecycle changes; a targeted WebUI → Isaac STOP acceptance is required and
-  must be recorded before merge. Unit and concurrency tests do not replace that live evidence.
+- Targeted WebUI → Isaac STOP acceptance on clean revision
+  `c66d163aefcd6f7644221b8fd99643132bc314af`: pass. An exact, digest-bound
+  `/route map_left_down` approval entered `running`; the same Nav2 goal UUID changed from
+  `executing` (2) to `canceled` (5) after WebUI STOP. The action finished
+  `interrupted`/`cancelled`, no late success was observed, and the separate STOP run recorded a
+  published zero-velocity command.
+- This is simulation action-lifecycle evidence only. The STOP receipt correctly did not claim
+  independently observed motion stop; a later odometry sample was near zero, while the post-stop TF
+  window was unavailable because of transient extrapolation. No physical NXDog motion or physical
+  safety result is claimed.
+- Machine-readable result:
+  [webui-isaac-stop-acceptance.json](evidence/product-polish/webui-isaac-stop-acceptance.json).

@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "acceptance_id": "WEB-STOP-20260730",
+  "executed_at": "2026-07-30T13:44:32Z",
+  "execution_revision": "c66d163aefcd6f7644221b8fd99643132bc314af",
+  "git_clean": true,
+  "scope": "Isaac Sim / ROS 2 Jazzy / Nav2 / production JenAI WebUI",
+  "site": "Isaac Warehouse — Nova Carter",
+  "result": "pass",
+  "request": {
+    "command": "/route map_left_down",
+    "action_run_id": "run_dfb30e8c5d9f4dc5a4c08eea7867243b",
+    "preview": {
+      "capability": "navigate",
+      "target": "map_left_down",
+      "frame_id": "map",
+      "x": -8.5,
+      "y": -7.5,
+      "yaw": 0.785,
+      "canonical_action_sha256": "9b46cb5504ad16db0907664fe1b679be5da75ef03f21596acce7831a322186f9"
+    }
+  },
+  "nav2": {
+    "goal_uuid": "00d23880f9074c229748231978692e72",
+    "status_before_stop": 2,
+    "status_before_stop_label": "executing",
+    "status_after_stop": 5,
+    "status_after_stop_label": "canceled"
+  },
+  "webui_lifecycle": {
+    "active_status_before_stop": "running",
+    "confirmation_response_status": "interrupted",
+    "confirmation_response_outcome": "cancelled",
+    "action_final_status": "interrupted",
+    "action_final_outcome": "cancelled",
+    "approval_status": "approved",
+    "tool_status": "failed",
+    "late_success_observed": false
+  },
+  "stop": {
+    "stop_run_id": "run_3ae164bafd1c4dc9a711134fef652433",
+    "run_status": "completed",
+    "outcome": "succeeded",
+    "zero_velocity_command_published": true,
+    "motion_stop_observed_by_stop_contract": false,
+    "summary": "Zero-velocity command published; no active navigation goal was reported. Motion stop was not independently observed.",
+    "ordering_note": "The cancelled navigation coroutine completed Nav2 cancellation before the STOP helper queried for a remaining active goal; the same Nav2 goal UUID changed from executing (2) to canceled (5)."
+  },
+  "post_stop_observation": {
+    "odom_linear_x_m_s": -0.000504740048199892,
+    "odom_linear_y_m_s": -6.772602500859648e-05,
+    "odom_angular_z_rad_s": 1.5848498151171952e-05,
+    "tf_window": "unavailable_transient_extrapolation"
+  },
+  "limitations": [
+    "Simulation evidence only; this does not establish physical robot safety.",
+    "The product stop receipt correctly did not promote the later odometry sample into independently observed stop evidence.",
+    "The post-stop TF window was unavailable because of transient extrapolation and is not claimed as passing evidence."
+  ]
+}
