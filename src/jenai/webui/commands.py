@@ -252,7 +252,10 @@ async def _ros_pub(config: AppConfig, arg: str) -> WebResponse:
     validation = await ros2_core.ros_pub_validate(topic, payload)
     if not validation.ok:
         return _error(validation.error.message if validation.error else "驗證失敗。")
-    if topic.strip("/") == config.vehicle.cmd_vel_topic.strip("/"):
+    is_motion = topic.strip("/") == config.vehicle.cmd_vel_topic.strip(
+        "/"
+    ) or ros2_core.is_velocity_message_type(validation.message_type)
+    if is_motion:
         target = "實體機器人" if config.deployment_mode == "physical" else "模擬器中的機器人"
         danger = f"這會發布速度指令至 {topic}，可能使{target}立即移動。"
     else:

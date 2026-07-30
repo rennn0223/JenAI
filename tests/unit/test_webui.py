@@ -684,6 +684,44 @@ def test_web_ros_pub_cmd_vel_approval_names_motion_risk(
     assert "立即移動" in result["danger"]
 
 
+@pytest.mark.parametrize(
+    "message_type",
+    (
+        "geometry_msgs/msg/Twist",
+        "geometry_msgs/msg/TwistStamped",
+        "ackermann_msgs/msg/AckermannDrive",
+        "ackermann_msgs/msg/AckermannDriveStamped",
+    ),
+)
+def test_web_ros_pub_remapped_motion_type_still_names_physical_motion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    message_type: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from jenai.webui import commands
+
+    async def valid_publish(_topic, _payload):
+        return SimpleNamespace(ok=True, message_type=message_type, error=None)
+
+    monkeypatch.setattr(commands.ros2_core, "ros_pub_validate", valid_publish)
+    config = _config()
+    config.deployment_mode = "physical"
+
+    result = asyncio.run(
+        run_web_command(
+            config,
+            tmp_path / "config.toml",
+            '/ros pub /teleop/cmd_vel {"linear":{"x":1.0}}',
+        )
+    )
+
+    assert result["kind"] == "confirm"
+    assert "實體機器人" in result["danger"]
+    assert "立即移動" in result["danger"]
+
+
 def test_web_command_topics_is_read(monkeypatch, tmp_path: Path) -> None:
     from jenai.schemas import RosTopicsOutput, TopicItem
     from jenai.webui import commands

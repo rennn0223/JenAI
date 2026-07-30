@@ -70,7 +70,7 @@ def run_doctor(config_path: Path | None = None, *, include_nav: bool = True) -> 
         items.extend(check_site(config, config_path))
         items.extend(_check_twin(config))
         items.extend(check_nxdog())
-    items.extend(_check_provider(config))
+    items.extend(_check_provider(config, config_path))
     items.extend(_check_locations(config, config_path))
     items.extend(_check_webui_assets())
     return DoctorResult.from_items(items)
@@ -533,7 +533,7 @@ def _check_twin(config: AppConfig | None) -> list[DoctorCheckItem]:
     return items
 
 
-def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:
+def _check_provider(config: AppConfig | None, config_path: Path) -> list[DoctorCheckItem]:
     if config is None or config.active_provider is None:
         return [
             DoctorCheckItem(
@@ -569,6 +569,7 @@ def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:
     ]
 
     if profile.api_key_env and not os.environ.get(profile.api_key_env):
+        env_path = default_env_file_path(config_path)
         items.append(
             DoctorCheckItem(
                 section="provider",
@@ -577,7 +578,7 @@ def _check_provider(config: AppConfig | None) -> list[DoctorCheckItem]:
                 message=f"Environment variable {profile.api_key_env} is not set.",
                 fix_suggestion=(
                     f"Add it to the env file, e.g.: printf '{profile.api_key_env}=…\\n' "
-                    f">> {default_env_file_path()} && chmod 600 {default_env_file_path()}"
+                    f">> {env_path} && chmod 600 {env_path}"
                 ),
             )
         )
