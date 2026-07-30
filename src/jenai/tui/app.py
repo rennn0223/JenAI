@@ -217,7 +217,7 @@ class JenAITuiApp(
                         with Horizontal(id="composer-line"):
                             yield Static(">", id="composer-prompt")
                             yield Input(
-                                placeholder='Try "check the robot status"',
+                                placeholder="輸入任務，或按 / 查看指令",
                                 id="composer",
                             )
                     with Horizontal(id="statusbar"):

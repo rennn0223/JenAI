@@ -224,6 +224,26 @@ class ToolCallRecord(JenAIModel):
     error: JenAIError | None = None
 
 
+class ApprovalParameter(JenAIModel):
+    """One immutable, browser-safe value the operator is approving."""
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True, frozen=True)
+
+    label: str
+    value: str
+
+
+class ApprovalPreview(JenAIModel):
+    """Exact display contract bound to one canonical server-held action."""
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True, frozen=True)
+
+    action_kind: str
+    display_title: str
+    parameters: tuple[ApprovalParameter, ...] = ()
+    canonical_action_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ApprovalRequest(JenAIModel):
     approval_id: str = Field(default_factory=lambda: new_id("approval"))
     run_id: str
@@ -235,6 +255,7 @@ class ApprovalRequest(JenAIModel):
     risk_level: RiskLevel
     effect_scope: EffectScope
     justification: str
+    preview: ApprovalPreview | None = None
     status: ApprovalStatus = ApprovalStatus.PENDING
     created_at: datetime = Field(default_factory=utc_now)
     resolved_at: datetime | None = None

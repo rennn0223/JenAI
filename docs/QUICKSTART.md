@@ -32,12 +32,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## 2. 取得並安裝 JenAI
 
-目前 repository 是 public；v2.5.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+目前 repository 是 public；v2.5.1 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
 
 選定正式版本後，命令會下載該版 wheel、matching constraints 和 checksum，先驗證兩個
 安裝檔再交給 `uv`。只有 asset 清單確實含 wheel、同版 constraints、`SHA256SUMS` 的
-release 才適用；例如歷史 `v1.1.4` 缺少後兩項，不代表供應鏈檢查已通過；目前請使用
-目前穩定版為 `v2.5.0` 或後續資產完整版本。
+release 才適用；例如歷史 `v1.1.4` 缺少後兩項，不代表供應鏈檢查已通過。
+目前穩定版為 `v2.5.1`；若使用後續版本，也必須先確認資產完整。
 這段流程以 Linux／Ubuntu 為目標；macOS 仍是 Experimental，須自行安裝 GNU coreutils
 並將 `sha256sum` 換成 `gsha256sum`，且不因此取得相同驗證等級。
 
@@ -116,6 +116,10 @@ JenAI
 3. **地點檔**:按 Enter 用預設
 
 之後想重來:`JenAI onboard`(會先備份舊設定,金鑰和地點都保留)。
+
+> 升級提醒：使用 `--config /path/to/config.toml` 時，預設金鑰檔現在是同目錄的
+> `/path/to/.env`。原本共用 `~/.config/jenai/.env` 的部署，請搬移檔案、設定
+> `JENAI_ENV_FILE` 指向舊路徑，或在啟動 shell export 對應變數。
 
 ## 4. 健檢
 

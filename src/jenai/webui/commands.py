@@ -18,7 +18,7 @@ from jenai.capabilities import has_registered_capability
 from jenai.config.models import AppConfig
 from jenai.doctor import run_doctor
 from jenai.providers.chat import ProviderChatError, ask_provider, chat_model_name
-from jenai.schemas import Location
+from jenai.schemas import Location, RunStatus, TaskOutcome
 from jenai.state.audit import AuditStore
 from jenai.task_results import navigation_output_result, navigation_receipt_text
 from jenai.tools import ros2_core
@@ -38,7 +38,7 @@ def _parse_payload_object(payload_json: str) -> dict[str, Any]:
 
     payload = json.loads(payload_json)
     if not isinstance(payload, dict):
-        raise ValueError("payload must be a JSON object")
+        raise ValueError("payload 必須是 JSON object")
     return payload
 
 
@@ -70,12 +70,32 @@ def _p(text: str) -> str:
     return "<p>" + _esc(text).replace("\n", "<br>") + "</p>"
 
 
-def _result(html: str) -> WebResponse:
-    return {"kind": "result", "html": html}
+def _result(
+    html: str,
+    *,
+    run_status: RunStatus = RunStatus.COMPLETED,
+    outcome: TaskOutcome = TaskOutcome.SUCCEEDED,
+) -> WebResponse:
+    return {
+        "kind": "result",
+        "html": html,
+        "run_status": run_status.value,
+        "outcome": outcome.value,
+    }
 
 
-def _error(text: str) -> WebResponse:
-    return {"kind": "error", "html": _p(text)}
+def _error(
+    text: str,
+    *,
+    run_status: RunStatus = RunStatus.FAILED,
+    outcome: TaskOutcome = TaskOutcome.FAILED,
+) -> WebResponse:
+    return {
+        "kind": "error",
+        "html": _p(text),
+        "run_status": run_status.value,
+        "outcome": outcome.value,
+    }
 
 
 def _confirm(html: str, action: WebAction, danger: str) -> WebResponse:
@@ -101,7 +121,7 @@ async def run_web_command(config: AppConfig, config_path: Path, text: str) -> We
     """
     text = (text or "").strip()
     if not text:
-        return _error("Type a command or a plain-language question.")
+        return _error("請輸入指令或一般語言問題。")
     try:
         if text.startswith("/"):
             return await _slash(config, config_path, text)
@@ -110,9 +130,9 @@ async def run_web_command(config: AppConfig, config_path: Path, text: str) -> We
     except ProviderChatError as exc:
         return _error(str(exc))
     except ros2_adapter.Ros2AdapterError as exc:
-        return _error(f"ROS2: {exc}")
+        return _error(f"ROS 2 錯誤：{exc}")
     except Exception as exc:  # keep the dashboard alive
-        return _error(f"Error: {exc}")
+        return _error(f"錯誤：{exc}")
 
 
 async def _slash(config: AppConfig, config_path: Path, text: str) -> WebResponse:
@@ -120,22 +140,22 @@ async def _slash(config: AppConfig, config_path: Path, text: str) -> WebResponse
     rest = rest.strip()
     if cmd == "/help":
         return _result(
-            "<p>Try:</p><ul>"
-            "<li><code>/ros topics</code>, <code>/ros topic-info /cmd_vel</code>, "
-            "<code>/ros schema /cmd_vel</code>, <code>/ros echo /odom</code></li>"
+            "<p>可用指令：</p><ul>"
+            "<li><code>/ros topics</code>、<code>/ros topic-info /cmd_vel</code>、"
+            "<code>/ros schema /cmd_vel</code>、<code>/ros echo /odom</code></li>"
             "<li><code>/drive 前進兩秒</code> · <code>/ros drive /cmd_vel {...} 2</code> · "
             "<code>/ros pub /cmd_vel {...}</code></li>"
             "<li><code>/route from A to B</code> · <code>/loc list</code> · "
             "<code>/doctor</code> · <code>/status</code></li>"
-            "<li>Or just ask a question in plain language.</li></ul>"
+            "<li>也可以直接用一般語言描述任務。</li></ul>"
         )
     if cmd == "/status":
         profile = config.active_profile()
         return _result(
             _p(
-                f"Provider: {profile.name if profile else '—'}\n"
-                f"Model: {chat_model_name(config)}\n"
-                f"Config: {'complete' if config.is_complete() else 'incomplete'}"
+                f"供應商：{profile.name if profile else '—'}\n"
+                f"模型：{chat_model_name(config)}\n"
+                f"設定：{'完成' if config.is_complete() else '未完成'}"
             )
         )
     if cmd == "/doctor":
@@ -145,7 +165,7 @@ async def _slash(config: AppConfig, config_path: Path, text: str) -> WebResponse
             f"<b>{_esc(i.status)}</b> {_esc(i.message)}</li>"
             for i in result.items
         )
-        return _result(f"<p>Overall: <b>{_esc(result.overall)}</b></p><ul>{rows}</ul>")
+        return _result(f"<p>整體狀態：<b>{_esc(result.overall)}</b></p><ul>{rows}</ul>")
     if cmd == "/ros":
         return await _ros(config, rest)
     if cmd == "/drive":
@@ -154,7 +174,7 @@ async def _slash(config: AppConfig, config_path: Path, text: str) -> WebResponse
         return await _route(config, config_path, rest)
     if cmd == "/loc":
         return _loc(config, config_path, rest)
-    return _error(f"Unknown command: {cmd}. Try /help.")
+    return _error(f"不支援的指令：{cmd}。請使用 /help 查看可用指令。")
 
 
 async def _ros(config: AppConfig, rest: str) -> WebResponse:
@@ -169,14 +189,14 @@ async def _ros(config: AppConfig, rest: str) -> WebResponse:
     }
     handler = handlers.get(op)
     if handler is None:
-        return _error(f"Unknown: /ros {op}")
+        return _error(f"不支援的 ROS 指令：/ros {op}")
     return await handler(config, arg.strip())
 
 
 async def _ros_topics(config: AppConfig, _arg: str) -> WebResponse:
     topics_out = await ros2_core.ros_topics(config)
     if not topics_out.topics:
-        return _result(_p("No topics on the graph."))
+        return _result(_p("ROS graph 目前沒有 topic。"))
     items = "".join(
         f"<li><b>{_esc(topic.name)}</b> <span class='dim'>{_esc(topic.kind_hint)}</span></li>"
         for topic in topics_out.topics
@@ -191,8 +211,8 @@ async def _ros_topic_info(config: AppConfig, arg: str) -> WebResponse:
     return _result(
         _p(
             f"{info_out.name}\n{info_out.message_type}\n"
-            f"{info_out.publisher_count} publisher(s) · "
-            f"{info_out.subscriber_count} subscriber(s)"
+            f"{info_out.publisher_count} 個 publisher · "
+            f"{info_out.subscriber_count} 個 subscriber"
         )
     )
 
@@ -207,7 +227,7 @@ async def _ros_schema(config: AppConfig, arg: str) -> WebResponse:
     example = _esc(json.dumps(schema_out.example_payload, ensure_ascii=False))
     return _result(
         f"<p><b>{_esc(schema_out.message_type)}</b></p><ul class='cmd-list'>{rows}</ul>"
-        f"<p class='dim'>example: <code>{example}</code></p>"
+        f"<p class='dim'>範例：<code>{example}</code></p>"
     )
 
 
@@ -224,30 +244,38 @@ async def _ros_echo(config: AppConfig, arg: str) -> WebResponse:
 async def _ros_pub(config: AppConfig, arg: str) -> WebResponse:
     topic, _, payload_json = arg.partition(" ")
     if not payload_json.strip():
-        return _error("Usage: /ros pub &lt;topic&gt; &lt;json&gt;")
+        return _error("用法：/ros pub <topic> <json>")
     try:
         payload = _parse_payload_object(payload_json)
     except ValueError as exc:
-        return _error(f"Invalid payload: {exc}")
+        return _error(f"Payload 無效：{exc}")
     validation = await ros2_core.ros_pub_validate(topic, payload)
     if not validation.ok:
-        return _error(validation.error.message if validation.error else "Validation failed.")
+        return _error(validation.error.message if validation.error else "驗證失敗。")
+    is_motion = topic.strip("/") == config.vehicle.cmd_vel_topic.strip(
+        "/"
+    ) or ros2_core.is_velocity_message_type(validation.message_type)
+    if is_motion:
+        target = "實體機器人" if config.deployment_mode == "physical" else "模擬器中的機器人"
+        danger = f"這會發布速度指令至 {topic}，可能使{target}立即移動。"
+    else:
+        danger = f"這會發布一筆訊息至 {topic}。"
     return _confirm(
-        _p(f"Publish to {topic}\n{json.dumps(payload, ensure_ascii=False)}"),
+        _p(f"發布至 {topic}\n{json.dumps(payload, ensure_ascii=False)}"),
         {
             "type": "pub",
             "topic": topic,
             "message_type": validation.message_type,
             "payload": payload,
         },
-        danger=f"This publishes one message to {topic}.",
+        danger=danger,
     )
 
 
 async def _ros_drive(config: AppConfig, arg: str) -> WebResponse:
     parts = arg.split()
     if len(parts) < 2:
-        return _error("Usage: /ros drive &lt;topic&gt; &lt;json&gt; [seconds]")
+        return _error("用法：/ros drive <topic> <json> [秒]")
     duration = 1.0
     if len(parts) >= 3 and _isnum(parts[-1]):
         duration = float(parts[-1])
@@ -258,9 +286,9 @@ async def _ros_drive(config: AppConfig, arg: str) -> WebResponse:
     try:
         payload = _parse_payload_object(payload_json)
     except ValueError as exc:
-        return _error(f"Invalid payload: {exc}")
+        return _error(f"Payload 無效：{exc}")
     return _confirm(
-        _p(f"Drive {topic} for {duration:g}s\n{json.dumps(payload, ensure_ascii=False)}"),
+        _p(f"在 {topic} 駕駛 {duration:g} 秒\n{json.dumps(payload, ensure_ascii=False)}"),
         {
             "type": "drive",
             "topic": topic,
@@ -268,19 +296,19 @@ async def _ros_drive(config: AppConfig, arg: str) -> WebResponse:
             "payload": payload,
             "duration": duration,
         },
-        danger=f"This drives the robot on {topic} for {duration:g}s.",
+        danger=f"這會透過 {topic} 驅動機器人 {duration:g} 秒。",
     )
 
 
 async def _drive_nl(config: AppConfig, rest: str) -> WebResponse:
     if not rest:
-        return _error("Usage: /drive 前進兩秒")
+        return _error("用法：/drive 前進兩秒")
     intent = await extract_drive_command(config, rest)
     if intent is None:
-        return _error(f"Couldn't understand '{rest}' as a drive command.")
+        return _error(f"無法將「{rest}」理解為駕駛指令。")
     return _confirm(
         _p(
-            f"Drive · {intent.description}\n"
+            f"駕駛 · {intent.description}\n"
             f"linear.x={intent.linear_x:g}, angular.z={intent.angular_z:g}, "
             f"{intent.duration_s:g}s"
         ),
@@ -291,24 +319,28 @@ async def _drive_nl(config: AppConfig, rest: str) -> WebResponse:
             "payload": intent.to_payload(),
             "duration": intent.duration_s,
         },
-        danger=f"This drives the robot: {intent.description}.",
+        danger=f"這會驅動機器人：{intent.description}。",
     )
 
 
 async def _route(config: AppConfig, config_path: Path, rest: str) -> WebResponse:
     if not rest:
-        return _error("Usage: /route from A to B")
+        return _error("用法：/route from A to B")
     if not has_registered_capability(config, "navigate"):
-        return _error("Navigation is not registered for this robot profile.")
+        return _error("此機器人設定未註冊導航能力。")
 
     locations = _load_locations(config, config_path)
     out = await route_preview(config, locations, rest)
     if not out.outgoing_action:
-        return _result(_p(out.route_preview))
+        return _error(
+            out.route_preview,
+            run_status=RunStatus.BLOCKED,
+            outcome=TaskOutcome.BLOCKED,
+        )
     return _confirm(
         _p(out.route_preview),
         {"type": "route", "outgoing_action": out.outgoing_action},
-        danger="This sends a navigation goal.",
+        danger="這會送出導航目標。",
     )
 
 
@@ -317,7 +349,7 @@ def _loc(config: AppConfig, config_path: Path, rest: str) -> WebResponse:
     locations = _load_locations(config, config_path)
     if op == "list":
         if not locations:
-            return _result(_p("No locations configured."))
+            return _result(_p("尚未設定地點。"))
         items = "".join(
             f"<li><b>{_esc(loc.name)}</b> <span class='dim'>"
             f"{_esc(', '.join(loc.aliases))}</span></li>"
@@ -329,16 +361,14 @@ def _loc(config: AppConfig, config_path: Path, rest: str) -> WebResponse:
             loc = find_location(locations, arg.strip())
         except LocationNotFoundError as exc:
             names = ", ".join(c.name for c in exc.candidates)
-            return _result(
-                _p(f"'{arg}' not found." + (f" Did you mean: {names}?" if names else ""))
-            )
+            return _result(_p(f"找不到「{arg}」。" + (f"你是否要找：{names}？" if names else "")))
         return _result(
             _p(
-                f"{loc.name}\naliases: {', '.join(loc.aliases) or '(none)'}\n"
+                f"{loc.name}\n別名：{', '.join(loc.aliases) or '（無）'}\n"
                 f"pose: x={loc.pose.x}, y={loc.pose.y}, yaw={loc.pose.yaw}"
             )
         )
-    return _error("Usage: /loc list | /loc show &lt;name&gt;")
+    return _error("用法：/loc list | /loc show <name>")
 
 
 class _WebActionExecutor:
@@ -388,12 +418,20 @@ class _WebActionExecutor:
         handler = handlers.get(kind)
         if handler is None:
             self._audit(action_type, "tool_updated", "failed")
-            return _error("Unknown action.")
+            return _error("不支援的動作。")
         try:
             return await handler(action)
         except Exception as exc:
             self._audit(action_type, "tool_updated", "failed")
-            return _error(f"Error: {exc}")
+            return _error(f"錯誤：{exc}")
+
+    def _ros_action_response(
+        self, action_type: str, execution_status: str, message: str
+    ) -> WebResponse:
+        self._audit(action_type, "tool_updated", execution_status)
+        if execution_status.strip().lower() == "succeeded":
+            return _result(_p(message or "動作已完成。"))
+        return _error(message or "動作未完成。")
 
     async def _drive(self, action: WebAction) -> WebResponse:
         drive_out = await ros2_core.ros_drive(
@@ -404,8 +442,9 @@ class _WebActionExecutor:
             max_linear=self.config.vehicle.max_linear,
             max_angular=self.config.vehicle.max_angular,
         )
-        self._audit("drive", "tool_updated", drive_out.execution_status)
-        return _result(_p(drive_out.result_message or "done"))
+        return self._ros_action_response(
+            "drive", drive_out.execution_status, drive_out.result_message
+        )
 
     async def _publish(self, action: WebAction) -> WebResponse:
         pub_out = await ros2_core.ros_pub_execute(
@@ -415,13 +454,16 @@ class _WebActionExecutor:
             max_linear=self.config.vehicle.max_linear,
             max_angular=self.config.vehicle.max_angular,
         )
-        self._audit("pub", "tool_updated", pub_out.execution_status)
-        return _result(_p(pub_out.result_message or "done"))
+        return self._ros_action_response("pub", pub_out.execution_status, pub_out.result_message)
 
     async def _route(self, action: WebAction) -> WebResponse:
         if not has_registered_capability(self.config, "navigate"):
             self._audit("route", "tool_updated", "blocked")
-            return _error("Navigation is not registered for this robot profile.")
+            return _error(
+                "此機器人設定未註冊導航能力。",
+                run_status=RunStatus.BLOCKED,
+                outcome=TaskOutcome.BLOCKED,
+            )
         route_out = await execute_navigation(
             self.config,
             action["outgoing_action"],
@@ -435,7 +477,11 @@ class _WebActionExecutor:
             task_result.run_status.value,
             outcome=task_result.outcome.value,
         )
-        return _result(_p(navigation_receipt_text(route_out)))
+        return _result(
+            _p(navigation_receipt_text(route_out)),
+            run_status=task_result.run_status,
+            outcome=task_result.outcome,
+        )
 
 
 async def run_web_confirm(

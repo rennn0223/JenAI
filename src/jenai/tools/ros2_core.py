@@ -468,6 +468,16 @@ def _clamp_velocities(
             _clamp_velocities(item, max_linear, max_angular)
 
 
+_VELOCITY_MESSAGE_TYPES = frozenset(
+    {"Twist", "TwistStamped", "AckermannDrive", "AckermannDriveStamped"}
+)
+
+
+def is_velocity_message_type(message_type: str) -> bool:
+    """Return whether a validated ROS message can directly command vehicle motion."""
+    return message_type.rsplit("/", 1)[-1] in _VELOCITY_MESSAGE_TYPES
+
+
 def _safety_clamp(
     payload: Payload,
     max_linear: float = MAX_LINEAR,
@@ -508,10 +518,8 @@ async def ros_pub_execute(
 ) -> RosPubOutput:
     payload = _safety_clamp(payload, max_linear, max_angular, message_type=message_type)
     payload_yaml = _payload_to_yaml(payload)
-    message_name = message_type.rsplit("/", 1)[-1]
-    velocity_types = {"Twist", "TwistStamped", "AckermannDrive", "AckermannDriveStamped"}
     cancel_stop_yaml = (
-        _payload_to_yaml(_zero_like(payload)) if message_name in velocity_types else None
+        _payload_to_yaml(_zero_like(payload)) if is_velocity_message_type(message_type) else None
     )
     result = await ros2_adapter.topic_pub_async(
         topic,

@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { DocsShell } from "@/components/docs-shell";
 import { docPages } from "@/lib/content";
 import { allNavItems } from "@/lib/navigation";
+import { PRODUCT_VERSION } from "@/lib/product";
 
 const slugAliases: Record<string, string> = {
   quickstart: "isaac-sim-quickstart",
@@ -45,7 +46,7 @@ export default async function DocumentationPage({
         </header>
         <div className="article-body">{page.body}</div>
         <footer className="article-footer">
-          <span>JenAI v2.4.0</span>
+          <span>JenAI v{PRODUCT_VERSION}</span>
           <span>Evidence-aware · ROS 2 Jazzy · Isaac Sim 5.1</span>
         </footer>
       </article>

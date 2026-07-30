@@ -97,6 +97,13 @@ Robot runtime side
   Workflow / Navigation Gateway / ROS bridge / Nav2
 ```
 
+ADR 0006 accepts a future single authenticated high-level HTTP Robot Runtime authority. It is
+an architecture direction, not a current production component: no runtime HTTP server is
+registered, no interaction adapter has migrated, and current commands still enter through the
+existing adapters before reaching the shared Navigation Gateway. A future implementation must
+deliver one parity-tested vertical slice before this flow or module map changes. It must not
+expose raw ROS topics, services, actions, `/cmd_vel`, or vendor motion endpoints over HTTP.
+
 NXDog HTTP observer 刻意位於 motion path 之外：Doctor 只能透過它取得 vendor 可觀察狀態，
 不得註冊 Agent motion tool、授權移動或宣稱定位與導航 ready。未來 NXDog motion
 integration 必須通過現有 Navigation Gateway，並遵守相同的批准、取消、evidence、

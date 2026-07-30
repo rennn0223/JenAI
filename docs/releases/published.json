@@ -1,0 +1,12 @@
+{
+  "version": "2.5.1",
+  "tag": "v2.5.1",
+  "commit": "0544db597a536a6b4cc613a5618498360802364a",
+  "published_at": "2026-07-27T20:29:04Z",
+  "github_release_url": "https://github.com/rennn0223/JenAI/releases/tag/v2.5.1",
+  "workflow_runs": {
+    "ci": "https://github.com/rennn0223/JenAI/actions/runs/30302559111",
+    "supply_chain": "https://github.com/rennn0223/JenAI/actions/runs/30302559062",
+    "release": "https://github.com/rennn0223/JenAI/actions/runs/30302598211"
+  }
+}

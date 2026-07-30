@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -225,6 +226,133 @@ def test_main_command_starts_tui(tmp_path: Path, monkeypatch) -> None:
     assert started["active_provider"] == "test"
     assert started["config_path"] == config_path
     assert started["doctor_result"].items
+
+
+def test_main_missing_adjacent_env_does_not_claim_override_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "custom" / "config.toml"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="gpt-test",
+            api_key_env="",
+        ),
+        config_path,
+    )
+    monkeypatch.delenv("JENAI_ENV_FILE", raising=False)
+    monkeypatch.setattr("jenai.cli.main.run_tui", lambda *args, **kwargs: None)
+
+    result = runner.invoke(app, ["--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "JENAI_ENV_FILE points to a missing file" not in result.output
+
+
+def test_main_reports_explicit_missing_env_override(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="gpt-test",
+            api_key_env="",
+        ),
+        config_path,
+    )
+    monkeypatch.setenv("JENAI_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setattr("jenai.cli.main.run_tui", lambda *args, **kwargs: None)
+
+    result = runner.invoke(app, ["--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "JENAI_ENV_FILE points to a missing file" in result.output
+
+
+def test_main_loads_env_next_to_an_explicit_config(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "custom" / "config.toml"
+    env_name = "JENAI_TEST_CUSTOM_CONFIG_KEY"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="gpt-test",
+            api_key_env=env_name,
+        ),
+        config_path,
+    )
+    (config_path.parent / ".env").write_text(f"{env_name}=secret\n", encoding="utf-8")
+    monkeypatch.delenv(env_name, raising=False)
+    observed: dict[str, str | None] = {}
+
+    def fake_run_tui(config, *, config_path, doctor_result):
+        observed["key"] = os.environ.get(env_name)
+
+    monkeypatch.setattr("jenai.cli.main.run_tui", fake_run_tui)
+
+    try:
+        result = runner.invoke(app, ["--config", str(config_path)])
+    finally:
+        os.environ.pop(env_name, None)
+
+    assert result.exit_code == 0
+    assert observed["key"] == "secret"
+
+
+def test_subcommand_loads_env_next_to_its_explicit_config(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "custom" / "config.toml"
+    env_name = "JENAI_TEST_SUBCOMMAND_CONFIG_KEY"
+    save_config(
+        build_minimal_config(
+            provider_name="test",
+            provider="openai",
+            default_model="gpt-test",
+            api_key_env=env_name,
+        ),
+        config_path,
+    )
+    (config_path.parent / ".env").write_text(f"{env_name}=secret\n", encoding="utf-8")
+    monkeypatch.delenv(env_name, raising=False)
+    try:
+        result = runner.invoke(app, ["models", "--config", str(config_path)])
+        observed = os.environ.get(env_name)
+    finally:
+        os.environ.pop(env_name, None)
+    assert result.exit_code == 0
+    assert observed == "secret"
+
+
+def test_subcommand_custom_env_is_not_shadowed_by_default_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    env_name = "JENAI_TEST_ENV_PRECEDENCE_KEY"
+    default_config = tmp_path / "default" / "config.toml"
+    custom_config = tmp_path / "custom" / "config.toml"
+    for path in (default_config, custom_config):
+        save_config(
+            build_minimal_config(
+                provider_name="test",
+                provider="openai",
+                default_model="gpt-test",
+                api_key_env=env_name,
+            ),
+            path,
+        )
+    (default_config.parent / ".env").write_text(f"{env_name}=default-secret\n", encoding="utf-8")
+    (custom_config.parent / ".env").write_text(f"{env_name}=custom-secret\n", encoding="utf-8")
+    monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr("jenai.cli.main.default_config_path", lambda: default_config)
+    try:
+        result = runner.invoke(app, ["models", "--config", str(custom_config)])
+        observed = os.environ.get(env_name)
+    finally:
+        os.environ.pop(env_name, None)
+
+    assert result.exit_code == 0
+    assert observed == "custom-secret"
 
 
 def _config_with_locations(tmp_path: Path) -> Path:

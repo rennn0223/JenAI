@@ -71,13 +71,13 @@ uv run JenAI web
 
 ### 在新機器上安裝（建議：不可變 Release wheel）
 
-目前 repository 是 public；v2.5.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+目前 repository 是 public；v2.5.1 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
 
 請選定正式版本，同時下載該版本的 wheel、constraints 與 `SHA256SUMS`。
 三者必須是**同一個 release**；constraints 固定該版通過發布閘的依賴解析，checksum 用來
 確認下載資產與同一份 manifest 一致。只有 asset 清單實際包含這三項的 release 才適用；
 例如既有 `v1.1.4` 缺少 constraints 與 checksum，不能推定已受這套供應鏈閘驗證；
-目前穩定版請使用 `v2.5.0` 或後續資產完整版本。
+目前穩定版請使用 `v2.5.1` 或後續資產完整版本。
 
 下列已驗證的 copy-paste 流程以 Linux／Ubuntu 為目標，使用系統提供的 GNU
 `sha256sum`。macOS 在 [SUPPORT_MATRIX](docs/operations/SUPPORT_MATRIX.md) 仍是 Experimental；可自行
@@ -214,6 +214,10 @@ setup 欄位預期填 `NVIDIA_API_KEY` 這類變數名稱;若誤貼 key 本體,v
 printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.config/jenai/.env
 # 覆寫路徑：JENAI_ENV_FILE=/path/to/.env jenai
 ```
+
+使用自訂設定檔時（例如 `JenAI --config /lab/config.toml`），JenAI 會預設讀取同目錄的
+`/lab/.env`，不再隱式沿用 `~/.config/jenai/.env`。既有部署請將 `.env` 搬到自訂設定旁、
+以 `JENAI_ENV_FILE` 指向舊檔，或在啟動環境中 export 所需變數。
 
 ### 載具設定（`[vehicle]`）
 

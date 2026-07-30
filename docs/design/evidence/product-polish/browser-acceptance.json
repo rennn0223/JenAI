@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "browser": "Firefox headless via WebDriver",
+  "webui": {
+    "slash_keyboard": "pass",
+    "tab_keyboard": "pass",
+    "narrow_viewport": {
+      "status": "pass",
+      "requested_window": {
+        "width": 390,
+        "height": 844
+      },
+      "effective_inner": {
+        "width": 500,
+        "height": 758
+      }
+    }
+  },
+  "website": {
+    "search_keyboard": "pass",
+    "mobile_menu_keyboard": "pass",
+    "narrow_viewport": {
+      "status": "pass",
+      "requested_window": {
+        "width": 390,
+        "height": 844
+      },
+      "effective_inner": {
+        "width": 500,
+        "height": 758
+      }
+    }
+  }
+}

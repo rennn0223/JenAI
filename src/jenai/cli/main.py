@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +23,13 @@ from jenai.adapters.locations import (
 from jenai.capabilities import has_registered_capability
 from jenai.cli.data import data_app
 from jenai.cli.site import site_app
-from jenai.config import ConfigError, default_config_path, load_config, load_env_file
+from jenai.config import (
+    ConfigError,
+    default_config_path,
+    default_env_file_path,
+    load_config,
+    load_env_file,
+)
 from jenai.config.models import AppConfig
 from jenai.config.setup import run_setup_wizard
 from jenai.doctor import run_doctor
@@ -59,12 +66,18 @@ ConfigOption = Annotated[
 ]
 
 
+def _load_runtime_config(config_path: Path) -> AppConfig:
+    """Load the credentials adjacent to one exact config before parsing it."""
+    load_env_file(default_env_file_path(config_path))
+    return load_config(config_path)
+
+
 def _run_setup_and_reload(config_path: Path) -> AppConfig:
     """Run first-time setup, then validate and return the written config."""
     written = run_setup_wizard(config_path)
     console.print(f"Config written to {written}")
     try:
-        loaded = load_config(written)
+        loaded = _load_runtime_config(written)
     except ConfigError as exc:
         err_console.print(f"[red]Setup wrote an invalid config: {exc}[/red]")
         raise typer.Exit(1) from exc
@@ -80,11 +93,19 @@ def main(
     config: ConfigOption = None,
     debug: Annotated[bool, typer.Option("--debug", help="Show debug details.")] = False,
 ) -> None:
+    if ctx.invoked_subcommand is not None:
+        # Each subcommand loads the env file adjacent to its own --config.
+        # Loading the default file here would make those values impossible to
+        # override because shell-existing values intentionally take precedence.
+        bootstrap_ros_environment()
+        return
+
     # Load API keys from the env file before anything touches a provider, so
-    # every launch mode (uv run, venv script, launcher, subcommands) behaves
+    # every direct TUI launch mode (uv run, venv script, launcher) behaves
     # the same. Shell-exported variables still take precedence over the file.
-    env_result = load_env_file()
-    if env_result.explicit and not env_result.found:
+    config_path = config or default_config_path()
+    env_result = load_env_file(default_env_file_path(config_path))
+    if "JENAI_ENV_FILE" in os.environ and not env_result.found:
         err_console.print(
             f"[yellow]JENAI_ENV_FILE points to a missing file: {env_result.path}[/yellow]"
         )
@@ -94,12 +115,8 @@ def main(
     # provider-only features continue to work.
     bootstrap_ros_environment()
 
-    if ctx.invoked_subcommand is not None:
-        return
-
-    config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError:
         console.print("[bold]No complete JenAI config found.[/bold]")
         loaded = _run_setup_and_reload(config_path)
@@ -181,7 +198,7 @@ def onboard(
 def config(config: ConfigOption = None) -> None:
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -193,7 +210,7 @@ def config(config: ConfigOption = None) -> None:
 def providers(config: ConfigOption = None) -> None:
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -219,7 +236,7 @@ def providers(config: ConfigOption = None) -> None:
 def models(config: ConfigOption = None) -> None:
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -240,7 +257,7 @@ def models(config: ConfigOption = None) -> None:
 def route(text: str, config: ConfigOption = None) -> None:
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -322,7 +339,7 @@ def scaffold(
 
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -382,7 +399,7 @@ def web(
 ) -> None:
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -434,7 +451,7 @@ def mcp(
     """Serve JenAI's robot tools over MCP stdio (for Claude Code/Desktop etc.)."""
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -459,7 +476,7 @@ def daemon(
     """Watch topics and fire rules (see rules.example.toml). Notify-only by default."""
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -515,7 +532,7 @@ def eval_command(
 
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -629,7 +646,7 @@ def help_command() -> None:
 def loc_list(config: ConfigOption = None) -> None:
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -652,7 +669,7 @@ def loc_list(config: ConfigOption = None) -> None:
 def loc_show(name: str, config: ConfigOption = None) -> None:
     config_path = config or default_config_path()
     try:
-        loaded = load_config(config_path)
+        loaded = _load_runtime_config(config_path)
     except ConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc

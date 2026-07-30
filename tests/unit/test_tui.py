@@ -85,13 +85,13 @@ def test_tui_uses_claude_transcript_markers_and_flat_approval_copy() -> None:
         )
     )
     rendered = str(card.render())
-    assert "Do you want to proceed?" in rendered
-    assert "May move the connected robot or simulator." in rendered
-    assert "1. Yes" in rendered
-    assert "2. Yes, and remember this tool for this session" in rendered
-    assert "❯ 3. No" in rendered
+    assert "要繼續嗎？" in rendered
+    assert "可能移動已連線的機器人或模擬器。" in rendered
+    assert "1. 本次允許" in rendered
+    assert "2. 允許，這個 session 不再詢問這項工具" in rendered
+    assert "❯ 3. 不允許" in rendered
     assert card._selected == 2
-    assert "Esc to cancel" in rendered
+    assert "Esc 取消" in rendered
 
 
 def test_tui_p2_host_approval_is_one_shot_and_defaults_to_no() -> None:
@@ -112,9 +112,9 @@ def test_tui_p2_host_approval_is_one_shot_and_defaults_to_no() -> None:
     )
 
     rendered = str(card.render())
-    assert "remember" not in rendered
-    assert "1. Yes" in rendered
-    assert "❯ 2. No" in rendered
+    assert "不再詢問" not in rendered
+    assert "1. 本次允許" in rendered
+    assert "❯ 2. 不允許" in rendered
     assert "3." not in rendered
     assert card._selected == 1
 
@@ -137,11 +137,11 @@ def test_tui_physical_robot_control_approval_defaults_to_no() -> None:
     )
 
     rendered = str(card.render())
-    assert "May move the connected physical robot." in rendered
+    assert "可能移動已連線的實體機器人。" in rendered
     assert "Effect: robot_control" not in rendered
-    assert "1. Yes" in rendered
-    assert "2. Yes, and remember this tool for this session" in rendered
-    assert "❯ 3. No" in rendered
+    assert "1. 本次允許" in rendered
+    assert "2. 允許，這個 session 不再詢問這項工具" in rendered
+    assert "❯ 3. 不允許" in rendered
     assert card._selected == 2
 
 
@@ -190,7 +190,7 @@ def test_tui_welcome_reflows_at_real_wide_narrow_and_compact_viewports(
             assert not list(app.query("#welcome-workspace-meta"))
             assert not list(app.query("#welcome-doctor-status"))
             assert str(app.query_one("#composer-prompt").render()) == ">"
-            assert app.query_one("#composer").placeholder == 'Try "check the robot status"'
+            assert app.query_one("#composer").placeholder == "輸入任務，或按 / 查看指令"
 
             status_left = str(app.query_one("#status-left").render())
             status_right = str(app.query_one("#status-right").render())
@@ -200,13 +200,13 @@ def test_tui_welcome_reflows_at_real_wide_narrow_and_compact_viewports(
                 assert "~/" not in status_right
             else:
                 assert "shift+tab" in status_left
-                assert "~/" in status_right
+                assert str(Path.cwd()) in status_right or "~/" in status_right
 
             if not narrow:
                 titles = [str(item.render()) for item in app.query(".welcome-section-title")]
-                assert titles == ["Tips for getting started", "Recent activity"]
+                assert titles == ["快速開始", "本次操作"]
                 tips = str(app.query_one("#welcome-quick-start").render())
-                assert "/doctor" in tips and "/run <task>" in tips and "/help" in tips
+                assert "直接輸入任務" in tips and "/doctor" in tips and "/help" in tips
 
             for selector in ("#composer-frame", "#composer", "#statusbar"):
                 region = app.query_one(selector).region
@@ -352,18 +352,18 @@ def test_tui_recent_activity_tracks_inputs_redacts_shell_and_clears() -> None:
         app = _app()
         async with app.run_test():
             recent = app.query_one("#welcome-recent")
-            assert "No activity" in str(recent.render())
+            assert "尚無操作紀錄" in str(recent.render())
 
             await app.handle_user_text("/status")
             await app.handle_user_text("! echo secret-value")
             rendered = str(recent.render())
-            assert "now" in rendered
-            assert "! shell command" in rendered
+            assert "剛剛" in rendered
+            assert "! shell 指令" in rendered
             assert "/status" in rendered
             assert "secret-value" not in rendered
 
             await app.handle_user_text("/clear")
-            assert "No activity" in str(recent.render())
+            assert "尚無操作紀錄" in str(recent.render())
 
     asyncio.run(run())
 

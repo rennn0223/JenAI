@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import http.client
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+import pytest
 
 from jenai.config.store import build_minimal_config
 from jenai.state.runs import RunStore
@@ -24,6 +28,19 @@ def _config():
     )
 
 
+def _route_action(name: str = "Dock") -> dict[str, object]:
+    return {
+        "type": "route",
+        "outgoing_action": {
+            "goal": {
+                "name": name,
+                "frame_id": "map",
+                "pose": {"x": -6.0, "y": -1.0, "yaw": 3.142},
+            }
+        },
+    }
+
+
 def test_status_payload_includes_provider_and_transcript(tmp_path: Path) -> None:
     store = RunStore()
     run = store.create_run("session-1", "patrol area A")
@@ -35,6 +52,116 @@ def test_status_payload_includes_provider_and_transcript(tmp_path: Path) -> None
     assert payload["model"] == "gpt-test"
     assert payload["run_count"] == 1
     assert payload["transcript"][0]["summary"] == "patrol area A"
+
+
+def test_status_payload_exposes_safe_monitoring_details_without_raw_actions(
+    tmp_path: Path,
+) -> None:
+    from jenai.schemas import (
+        ApprovalRequest,
+        EffectScope,
+        RiskLevel,
+        RunStatus,
+        ToolCallCategory,
+        ToolCallRecord,
+        ToolCallStatus,
+    )
+
+    store = RunStore()
+    run = store.create_run(
+        "session-1",
+        '/ros pub /cmd {"password":"correct horse battery staple"}',
+    )
+    call = ToolCallRecord(
+        tool_name="navigate",
+        category=ToolCallCategory.ROUTE,
+        input_summary="Authorization: Bearer input-token",
+        output_summary="api_key=output-token",
+        raw_input={"secret": "must-not-leak"},
+        status=ToolCallStatus.AWAITING_APPROVAL,
+        risk_level=RiskLevel.P1,
+        effect_scope=EffectScope.SIM_CONTROL,
+    )
+    store.add_tool_call(run, call)
+    store.add_interruption(
+        run,
+        ApprovalRequest(
+            run_id=run.run_id,
+            tool_call_id=call.tool_call_id,
+            tool_name="navigate",
+            title="前往 Dock",
+            summary="機器人將開始移動；auth_token=approval-token",
+            raw_action="secret raw action",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="需要操作員批准",
+        ),
+    )
+    store.set_status(run, RunStatus.AWAITING_APPROVAL)
+
+    payload = build_status_payload(_config(), tmp_path / "config.toml", run_store=store)
+
+    item = payload["transcript"][0]
+    assert item["status"] == "awaiting_approval"
+    assert "[REDACTED]" in item["approvals"][0]["summary"]
+    assert item["tool_calls"][0]["tool_name"] == "navigate"
+    assert item["tool_calls"][0]["status"] == "awaiting_approval"
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "correct horse battery staple" not in serialized
+    assert "horse battery staple" not in serialized
+    assert "input-token" not in serialized
+    assert "output-token" not in serialized
+    assert "approval-token" not in serialized
+    assert "must-not-leak" not in serialized
+    assert "secret raw action" not in serialized
+
+
+def test_status_payload_redacts_bare_known_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-proj-bare-secret-value"
+    config_path = tmp_path / "config.toml"
+    (tmp_path / ".env").write_text(f"OPENAI_API_KEY={secret}\n", encoding="utf-8")
+    monkeypatch.setenv("JENAI_WEB_TOKEN", "browser-token-secret")
+    store = RunStore()
+    store.create_run(
+        "session-1",
+        f"credential {secret} and browser-token-secret",
+    )
+
+    payload = build_status_payload(_config(), config_path, run_store=store)
+
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert secret not in serialized
+    assert "browser-token-secret" not in serialized
+    assert serialized.count("[REDACTED]") >= 2
+
+
+def test_status_payload_never_hides_active_or_pending_run_behind_history_cap(
+    tmp_path: Path,
+) -> None:
+    from jenai.schemas import RunStatus
+    from jenai.webui.run_tracking import register_confirmation
+
+    store = RunStore()
+    pending = store.create_run("webui", "/route Dock")
+    register_confirmation(
+        store,
+        pending,
+        _config(),
+        _route_action(),
+        "機器人將開始移動。",
+    )
+    for index in range(55):
+        run = store.create_run("webui", f"/status {index}")
+        store.finish(run, status=RunStatus.COMPLETED, final_output="done")
+
+    payload = build_status_payload(_config(), tmp_path / "config.toml", run_store=store)
+
+    visible_ids = {item["run_id"] for item in payload["transcript"]}
+    assert pending.run_id in visible_ids
+    assert payload["run_count"] == 51
 
 
 def test_status_payload_empty_transcript_without_store(tmp_path: Path) -> None:
@@ -134,8 +261,8 @@ def test_render_dashboard_html_renders_doctor_and_ros(tmp_path: Path) -> None:
     payload = build_status_payload(_config(), tmp_path / "config.toml")
     html = render_dashboard_html(payload)
     assert "<h1>JenAI</h1>" in html
-    assert "Environment" in html
-    assert "ROS2 Graph" in html
+    assert "系統檢查" in html
+    assert "ROS 2 Graph" in html
     # Doctor check names surface with friendly (humanized) labels.
     assert "Python" in html
 
@@ -183,13 +310,600 @@ def test_web_access_lines_honest_per_bind(monkeypatch) -> None:
     assert "http://127.0.0.1:8760/?token=tok" in lan
 
 
+def test_webui_command_is_visible_in_status_after_browser_refresh(tmp_path: Path) -> None:
+    store = RunStore()
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=store,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+        body = json.dumps({"text": "/status"}).encode()
+        request = urllib.request.Request(
+            f"{base}/api/command",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            command = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as response:
+            status = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert command["kind"] == "result"
+    assert status["run_count"] == 1
+    assert status["transcript"][0]["summary"] == "/status"
+    assert status["transcript"][0]["status"] == "completed"
+    assert status["transcript"][0]["outcome"] == "succeeded"
+
+
+def test_webui_confirmation_updates_approval_and_tool_monitoring(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import jenai.webui.server as server_module
+
+    async def fake_command(_config, _config_path, text):
+        assert text == "/route Dock"
+        return {
+            "kind": "confirm",
+            "html": "<p>前往 Dock</p>",
+            "danger": "機器人將開始移動。",
+            "action": _route_action(),
+        }
+
+    async def fake_confirm(_config, action, *, config_path):
+        assert action["type"] == "route"
+        return {
+            "kind": "result",
+            "html": "<p>已抵達 Dock，但尚無充電回授。</p>",
+            "run_status": "completed",
+            "outcome": "arrived_unverified",
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", fake_command)
+    monkeypatch.setattr(server_module, "run_web_confirm", fake_confirm)
+    store = RunStore()
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=store,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+
+        def post(path: str, payload: dict[str, object]) -> dict[str, object]:
+            request = urllib.request.Request(
+                f"{base}{path}",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        command = post("/api/command", {"text": "/route Dock"})
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as response:
+            awaiting = json.loads(response.read().decode("utf-8"))
+        confirmed = post("/api/confirm", {"confirm_id": command["confirm_id"]})
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as response:
+            completed = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    pending_run = awaiting["transcript"][0]
+    assert pending_run["status"] == "awaiting_approval"
+    assert pending_run["approvals"][0]["status"] == "pending"
+    assert pending_run["approvals"][0]["summary"] == "機器人將開始移動。"
+    assert pending_run["tool_calls"][0]["tool_name"] == "navigate"
+    assert pending_run["tool_calls"][0]["status"] == "awaiting_approval"
+
+    assert confirmed["kind"] == "result"
+    finished_run = completed["transcript"][0]
+    assert finished_run["status"] == "completed"
+    assert finished_run["outcome"] == "arrived_unverified"
+    assert finished_run["approvals"][0]["status"] == "approved"
+    assert finished_run["tool_calls"][0]["status"] == "succeeded"
+
+
+def test_webui_fragment_keeps_pending_approval_actionable_after_refresh(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import jenai.webui.server as server_module
+
+    async def fake_command(_config, _config_path, _text):
+        return {
+            "kind": "confirm",
+            "html": "<p>前往 Dock</p>",
+            "danger": "機器人將開始移動。",
+            "action": {
+                "type": "route",
+                "outgoing_action": {
+                    "goal": {
+                        "name": "Dock",
+                        "frame_id": "map",
+                        "pose": {"x": -6.0, "y": -1.0, "yaw": 3.142},
+                    }
+                },
+            },
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", fake_command)
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=RunStore(),
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+        request = urllib.request.Request(
+            f"{base}/api/command",
+            data=json.dumps({"text": "/route Dock"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            command = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(f"{base}/fragment", timeout=5) as response:
+            fragment = response.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert f'data-confirm-id="{command["confirm_id"]}"' in fragment
+    assert "monitor-approve" in fragment
+    assert "monitor-reject" in fragment
+    assert 'data-approval-parameter="目標"' in fragment
+    assert ">Dock</span>" in fragment
+    assert 'data-approval-parameter="Frame"' in fragment
+    assert ">map</span>" in fragment
+    assert 'data-approval-parameter="X"' in fragment and ">-6.000</span>" in fragment
+    assert 'data-approval-parameter="Y"' in fragment and ">-1.000</span>" in fragment
+    assert 'data-approval-parameter="Yaw"' in fragment and ">3.142</span>" in fragment
+
+
+def test_webui_fragment_keeps_drive_topic_payload_and_duration_after_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jenai.webui.server as server_module
+
+    async def fake_command(_config, _config_path, _text):
+        return {
+            "kind": "confirm",
+            "html": "<p>驅動機器人</p>",
+            "danger": "這會驅動機器人 2 秒。",
+            "action": {
+                "type": "drive",
+                "topic": "/cmd_vel",
+                "message_type": "geometry_msgs/msg/Twist",
+                "payload": {"linear": {"x": 0.2}, "angular": {"z": 0.0}},
+                "duration": 2.0,
+            },
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", fake_command)
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=RunStore(),
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+        request = urllib.request.Request(
+            f"{base}/api/command",
+            data=json.dumps({"text": "/drive 前進兩秒"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+        with urllib.request.urlopen(f"{base}/fragment", timeout=5) as response:
+            fragment = response.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert 'data-approval-parameter="Topic"' in fragment
+    assert "/cmd_vel" in fragment
+    assert 'data-approval-parameter="Payload"' in fragment
+    assert "0.2" in fragment
+    assert 'data-approval-parameter="Duration"' in fragment
+    assert "2.000 s" in fragment
+    assert "monitor-approve" in fragment
+
+
+def test_webui_fragment_keeps_redacted_ros_payload_without_digests_after_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jenai.webui.server as server_module
+    from jenai.webui.approval_preview import canonical_action_json, canonical_action_sha256
+
+    secret = "vendor<&credential"
+    monkeypatch.setenv("MODEL_AUTH", secret)
+    config = _config()
+    config.provider_profiles["test"].api_key_env = "MODEL_AUTH"
+    action = {
+        "type": "pub",
+        "topic": "/robot/task",
+        "message_type": "std_msgs/msg/String",
+        "payload": {"data": secret},
+    }
+
+    async def fake_command(_config, _config_path, _text):
+        return {
+            "kind": "confirm",
+            "html": "<p>發布訊息：vendor&lt;&amp;credential</p>",
+            "danger": "這會發布一筆 ROS 訊息。",
+            "action": action,
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", fake_command)
+    server = make_server(
+        config,
+        tmp_path / "config.toml",
+        port=0,
+        run_store=RunStore(),
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+        request = urllib.request.Request(
+            f"{base}/api/command",
+            data=json.dumps({"text": "/ros pub /robot/task {}"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            command = response.read().decode("utf-8")
+        with urllib.request.urlopen(f"{base}/fragment", timeout=5) as response:
+            fragment = response.read().decode("utf-8")
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as response:
+            status = response.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert "[REDACTED]" in command
+    assert secret not in command
+    assert 'data-approval-parameter="Payload"' in fragment
+    assert "[REDACTED]" in fragment
+    assert secret not in fragment
+    assert "monitor-approve" in fragment
+    raw_payload_digest = hashlib.sha256(
+        canonical_action_json(action["payload"]).encode("utf-8")
+    ).hexdigest()
+    raw_action_digest = canonical_action_sha256(action)
+    monitoring_projection = json.dumps(
+        build_status_payload(
+            config,
+            tmp_path / "config.toml",
+            run_store=server.RequestHandlerClass.run_store,
+        ),
+        ensure_ascii=False,
+    )
+    for browser_output in (command, fragment, status, monitoring_projection):
+        assert "Payload SHA-256" not in browser_output
+        assert "canonical_action_sha256" not in browser_output
+        assert raw_payload_digest not in browser_output
+        assert raw_action_digest not in browser_output
+
+
+def test_webui_terminal_receipt_persists_only_redacted_operator_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jenai.state.task_receipts import TaskReceiptStore
+
+    provider_secret = "provider-low-entropy"
+    web_secret = "web-token-low-entropy"
+    password = "1234"
+    bearer = "short-bearer"
+    monkeypatch.setenv("MODEL_AUTH", provider_secret)
+    monkeypatch.setenv("JENAI_WEB_TOKEN", web_secret)
+    config = _config()
+    config.provider_profiles["test"].api_key_env = "MODEL_AUTH"
+    receipt_store = TaskReceiptStore(tmp_path / "reports" / "tasks")
+    run_store = RunStore(receipt_store=receipt_store)
+    server = make_server(
+        config,
+        tmp_path / "config.toml",
+        port=0,
+        run_store=run_store,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    raw_request = (
+        f"/status MODEL_AUTH={provider_secret} JENAI_WEB_TOKEN={web_secret} "
+        f"password={password} Authorization: Bearer {bearer}"
+    )
+    try:
+        host, port = server.server_address
+        request = urllib.request.Request(
+            f"http://{host}:{port}/api/command",
+            data=json.dumps({"text": raw_request}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    run = run_store.snapshot_runs()[0]
+    receipt_paths = receipt_store.list_paths()
+    assert len(receipt_paths) == 1
+    receipt = receipt_store.load(receipt_paths[0])
+    assert receipt is not None
+    assert run.user_input == receipt.request
+    assert "[REDACTED]" in receipt.request
+    for secret in (provider_secret, web_secret, password, bearer):
+        assert secret not in run.user_input
+        assert secret not in receipt.request
+
+
+def test_approval_preview_rejects_route_without_exact_pose() -> None:
+    from jenai.webui.approval_preview import build_approval_preview
+
+    with pytest.raises(ValueError, match="frame"):
+        build_approval_preview({"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}})
+
+
+def test_approval_preview_and_parameters_are_immutable() -> None:
+    from pydantic import ValidationError
+
+    from jenai.webui.approval_preview import build_approval_preview
+
+    preview = build_approval_preview(_route_action())
+    with pytest.raises(ValidationError, match="frozen"):
+        preview.display_title = "tampered"
+    with pytest.raises(ValidationError, match="frozen"):
+        preview.parameters[0].value = "tampered"
+
+
+def test_webui_status_refresh_hides_action_when_preview_cannot_be_rebuilt(
+    tmp_path: Path,
+) -> None:
+    from jenai.schemas import ApprovalRequest, EffectScope, RiskLevel, RunStatus
+
+    store = RunStore()
+    run = store.create_run("webui", "/route Dock")
+    approval = ApprovalRequest(
+        run_id=run.run_id,
+        tool_call_id="tool-legacy",
+        tool_name="navigate",
+        title="執行 navigate",
+        summary="這會送出導航目標。",
+        raw_action="route",
+        risk_level=RiskLevel.P1,
+        effect_scope=EffectScope.SIM_CONTROL,
+        justification="legacy record without exact preview",
+    )
+    store.add_interruption(run, approval)
+    store.set_status(run, RunStatus.AWAITING_APPROVAL)
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=store,
+    )
+    server.RequestHandlerClass.pending.put(
+        _route_action(),
+        run_id=run.run_id,
+        tool_call_id=approval.tool_call_id,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        with urllib.request.urlopen(f"http://{host}:{port}/api/status", timeout=5) as response:
+            status = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    refreshed = status["transcript"][0]["approvals"][0]
+    assert "confirm_id" not in refreshed
+    assert refreshed["preview"] is None
+
+
+def test_webui_status_refresh_expires_pending_approval(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import jenai.webui.server as server_module
+
+    async def fake_command(_config, _config_path, _text):
+        return {
+            "kind": "confirm",
+            "html": "<p>前往 Dock</p>",
+            "danger": "機器人將開始移動。",
+            "action": _route_action(),
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", fake_command)
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=RunStore(),
+    )
+    server.RequestHandlerClass.pending._ttl_s = 0.01
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+        request = urllib.request.Request(
+            f"{base}/api/command",
+            data=json.dumps({"text": "/route Dock"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+        time.sleep(0.03)
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as response:
+            status = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    run = status["transcript"][0]
+    assert run["status"] == "blocked"
+    assert run["outcome"] == "blocked"
+    assert run["approvals"][0]["status"] == "rejected"
+
+
+def test_webui_confirm_fails_closed_when_preview_digest_no_longer_matches_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jenai.webui.server as server_module
+    from jenai.webui.run_tracking import register_confirmation
+
+    executed = False
+
+    async def fake_confirm(_config, _action, *, config_path):
+        nonlocal executed
+        executed = True
+        return {"kind": "result", "run_status": "completed", "outcome": "succeeded"}
+
+    monkeypatch.setattr(server_module, "run_web_confirm", fake_confirm)
+    store = RunStore()
+    run = store.create_run("webui", "/route Dock")
+    expected = _route_action()
+    tampered = _route_action("Lab")
+    tool_call_id = register_confirmation(
+        store,
+        run,
+        _config(),
+        expected,
+        "機器人將開始移動。",
+    )
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=store,
+    )
+    confirm_id = server.RequestHandlerClass.pending.put(
+        tampered,
+        run_id=run.run_id,
+        tool_call_id=tool_call_id,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        request = urllib.request.Request(
+            f"http://{host}:{port}/api/confirm",
+            data=json.dumps({"confirm_id": confirm_id}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert result["kind"] == "error"
+    assert "重新送出" in result["html"]
+    assert executed is False
+    assert run.status == "blocked"
+    assert run.interruptions[0].status == "rejected"
+
+
+def test_webui_confirmation_exception_finishes_tracked_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import jenai.webui.server as server_module
+    from jenai.webui.run_tracking import register_confirmation
+    from jenai.webui.server import _Handler, _PendingConfirms
+
+    async def failing_confirm(_config, _action, *, config_path):
+        raise RuntimeError("transport failed")
+
+    monkeypatch.setattr(server_module, "run_web_confirm", failing_confirm)
+    store = RunStore()
+    run = store.create_run("webui", "/route Dock")
+    action = _route_action()
+    tool_call_id = register_confirmation(
+        store,
+        run,
+        _config(),
+        action,
+        "機器人將開始移動。",
+    )
+    pending = _PendingConfirms()
+    confirm_id = pending.put(action, run_id=run.run_id, tool_call_id=tool_call_id)
+    handler = SimpleNamespace(
+        config=_config(),
+        config_path=tmp_path / "config.toml",
+        pending=pending,
+        run_store=store,
+        action_lock=None,
+    )
+
+    try:
+        _Handler._run_confirm(handler, {"confirm_id": confirm_id})
+    except RuntimeError as error:
+        assert str(error) == "transport failed"
+    else:
+        raise AssertionError("expected confirmation failure")
+
+    assert str(run.status) == "failed"
+    assert str(run.outcome) == "failed"
+    assert str(run.interruptions[0].status) == "approved"
+    assert str(run.tool_calls[0].status) == "failed"
+
+
 def test_render_main_is_a_standalone_fragment(tmp_path: Path) -> None:
     from jenai.webui.server import render_main
 
     payload = build_status_payload(_config(), tmp_path / "config.toml")
     fragment = render_main(payload)
     assert "<html" not in fragment  # no page shell
-    assert "Environment" in fragment and "ROS2 Graph" in fragment
+    assert "系統檢查" in fragment and "ROS 2 Graph" in fragment
 
 
 def test_webui_server_serves_html_and_json(tmp_path: Path) -> None:
@@ -205,6 +919,228 @@ def test_webui_server_serves_html_and_json(tmp_path: Path) -> None:
     finally:
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_confirmation_registration_publishes_one_consistent_pending_snapshot() -> None:
+    from jenai.webui.run_tracking import register_confirmation
+
+    tool_audit_started = threading.Event()
+    release_audit = threading.Event()
+
+    class BlockingAudit:
+        def record(self, event_type, **_kwargs):
+            if event_type == "tool_registered":
+                tool_audit_started.set()
+                assert release_audit.wait(timeout=2)
+
+    store = RunStore(audit_store=BlockingAudit())
+    run = store.create_run("webui", "/route Dock")
+    worker = threading.Thread(
+        target=register_confirmation,
+        args=(store, run, _config(), _route_action(), "機器人將開始移動。"),
+    )
+    worker.start()
+    assert tool_audit_started.wait(timeout=2)
+
+    snapshot = store.snapshot_runs()[0]
+    release_audit.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert snapshot.status == "awaiting_approval"
+    assert len(snapshot.tool_calls) == 1
+    assert snapshot.tool_calls[0].status == "awaiting_approval"
+    assert len(snapshot.interruptions) == 1
+    assert snapshot.interruptions[0].status == "pending"
+
+
+def test_confirmation_start_publishes_one_consistent_run_snapshot() -> None:
+    from jenai.webui.run_tracking import register_confirmation, start_confirmation
+
+    approval_audit_started = threading.Event()
+    release_audit = threading.Event()
+
+    class BlockingAudit:
+        def record(self, event_type, **_kwargs):
+            if event_type == "approval_resolved":
+                approval_audit_started.set()
+                assert release_audit.wait(timeout=2)
+
+    store = RunStore(audit_store=BlockingAudit())
+    run = store.create_run("webui", "/route Dock")
+    tool_call_id = register_confirmation(
+        store,
+        run,
+        _config(),
+        _route_action(),
+        "機器人將開始移動。",
+    )
+    worker = threading.Thread(
+        target=start_confirmation,
+        args=(store, run, tool_call_id),
+    )
+    worker.start()
+    assert approval_audit_started.wait(timeout=2)
+
+    snapshot = store.snapshot_runs()[0]
+    release_audit.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert snapshot.interruptions[0].status == "approved"
+    assert snapshot.tool_calls[0].status == "running"
+    assert snapshot.status == "running"
+
+
+def test_confirmation_rejection_publishes_one_consistent_terminal_snapshot() -> None:
+    from jenai.webui.run_tracking import register_confirmation, reject_confirmation
+
+    approval_audit_started = threading.Event()
+    release_audit = threading.Event()
+
+    class BlockingAudit:
+        def record(self, event_type, **_kwargs):
+            if event_type == "approval_resolved":
+                approval_audit_started.set()
+                assert release_audit.wait(timeout=2)
+
+    store = RunStore(audit_store=BlockingAudit())
+    run = store.create_run("webui", "/route Dock")
+    tool_call_id = register_confirmation(
+        store,
+        run,
+        _config(),
+        _route_action(),
+        "機器人將開始移動。",
+    )
+    worker = threading.Thread(
+        target=reject_confirmation,
+        args=(store, run, tool_call_id),
+    )
+    worker.start()
+    assert approval_audit_started.wait(timeout=2)
+
+    snapshot = store.snapshot_runs()[0]
+    release_audit.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert snapshot.interruptions[0].status == "rejected"
+    assert snapshot.tool_calls[0].status == "rejected"
+    assert snapshot.status == "blocked"
+    assert snapshot.outcome == "blocked"
+
+
+def test_confirmation_finish_publishes_one_consistent_terminal_snapshot() -> None:
+    from jenai.task_results import TaskResult
+    from jenai.webui.run_tracking import (
+        finish_confirmation,
+        register_confirmation,
+        start_confirmation,
+    )
+
+    tool_audit_started = threading.Event()
+    release_audit = threading.Event()
+
+    class BlockingAudit:
+        enabled = False
+
+        def record(self, event_type, **_kwargs):
+            if self.enabled and event_type == "tool_updated":
+                tool_audit_started.set()
+                assert release_audit.wait(timeout=2)
+
+    audit = BlockingAudit()
+    store = RunStore(audit_store=audit)
+    run = store.create_run("webui", "/route Dock")
+    tool_call_id = register_confirmation(
+        store,
+        run,
+        _config(),
+        _route_action(),
+        "機器人將開始移動。",
+    )
+    start_confirmation(store, run, tool_call_id)
+    audit.enabled = True
+    worker = threading.Thread(
+        target=finish_confirmation,
+        args=(store, run, tool_call_id),
+        kwargs={
+            "result": TaskResult(
+                run_status="completed",
+                outcome="arrived_unverified",
+            )
+        },
+    )
+    worker.start()
+    assert tool_audit_started.wait(timeout=2)
+
+    snapshot = store.snapshot_runs()[0]
+    release_audit.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert snapshot.tool_calls[0].status == "succeeded"
+    assert snapshot.status == "completed"
+    assert snapshot.outcome == "arrived_unverified"
+
+
+def test_webui_reject_consumes_confirmation_and_updates_monitoring(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import jenai.webui.server as server_module
+
+    async def fake_command(_config, _config_path, _text):
+        return {
+            "kind": "confirm",
+            "html": "<p>前往 Dock</p>",
+            "danger": "機器人將開始移動。",
+            "action": _route_action(),
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", fake_command)
+    store = RunStore()
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=store,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+
+        def post(path: str, payload: dict[str, object]) -> dict[str, object]:
+            request = urllib.request.Request(
+                f"{base}{path}",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        command = post("/api/command", {"text": "/route Dock"})
+        rejected = post("/api/reject", {"confirm_id": command["confirm_id"]})
+        reused = post("/api/confirm", {"confirm_id": command["confirm_id"]})
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as response:
+            status = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert rejected["kind"] == "result"
+    assert "未執行" in rejected["html"]
+    assert reused["kind"] == "error"
+    run = status["transcript"][0]
+    assert run["status"] == "blocked"
+    assert run["outcome"] == "blocked"
+    assert run["approvals"][0]["status"] == "rejected"
+    assert run["tool_calls"][0]["status"] == "rejected"
 
 
 def test_web_command_drive_asks_confirm_not_execute(tmp_path: Path) -> None:
@@ -228,6 +1164,102 @@ def test_web_ros_commands_reject_non_object_payloads(tmp_path: Path) -> None:
     assert "JSON object" in publish["html"]
 
 
+def test_web_command_common_guidance_uses_taiwan_traditional_chinese(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "c.toml"
+    responses = [
+        asyncio.run(run_web_command(_config(), config_path, "")),
+        asyncio.run(run_web_command(_config(), config_path, "/help")),
+        asyncio.run(run_web_command(_config(), config_path, "/ros pub /cmd_vel")),
+        asyncio.run(run_web_command(_config(), config_path, "/unknown")),
+    ]
+    rendered = " ".join(str(item["html"]) for item in responses)
+
+    assert "請輸入指令" in rendered
+    assert "可用指令" in rendered
+    assert "用法：" in rendered
+    assert "不支援的指令" in rendered
+    for english in ("Type a command", "Try:", "Usage:", "Unknown command"):
+        assert english not in rendered
+
+
+@pytest.mark.parametrize(
+    ("deployment_mode", "expected"),
+    (("simulation", "模擬器中的機器人"), ("physical", "實體機器人")),
+)
+def test_web_ros_pub_cmd_vel_approval_names_motion_risk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    deployment_mode: str,
+    expected: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from jenai.webui import commands
+
+    async def valid_publish(_topic, _payload):
+        return SimpleNamespace(
+            ok=True,
+            message_type="geometry_msgs/msg/Twist",
+            error=None,
+        )
+
+    monkeypatch.setattr(commands.ros2_core, "ros_pub_validate", valid_publish)
+    config = _config()
+    config.deployment_mode = deployment_mode
+
+    result = asyncio.run(
+        run_web_command(
+            config,
+            tmp_path / "config.toml",
+            '/ros pub /cmd_vel {"linear":{"x":1.0}}',
+        )
+    )
+
+    assert result["kind"] == "confirm"
+    assert expected in result["danger"]
+    assert "立即移動" in result["danger"]
+
+
+@pytest.mark.parametrize(
+    "message_type",
+    (
+        "geometry_msgs/msg/Twist",
+        "geometry_msgs/msg/TwistStamped",
+        "ackermann_msgs/msg/AckermannDrive",
+        "ackermann_msgs/msg/AckermannDriveStamped",
+    ),
+)
+def test_web_ros_pub_remapped_motion_type_still_names_physical_motion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    message_type: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from jenai.webui import commands
+
+    async def valid_publish(_topic, _payload):
+        return SimpleNamespace(ok=True, message_type=message_type, error=None)
+
+    monkeypatch.setattr(commands.ros2_core, "ros_pub_validate", valid_publish)
+    config = _config()
+    config.deployment_mode = "physical"
+
+    result = asyncio.run(
+        run_web_command(
+            config,
+            tmp_path / "config.toml",
+            '/ros pub /teleop/cmd_vel {"linear":{"x":1.0}}',
+        )
+    )
+
+    assert result["kind"] == "confirm"
+    assert "實體機器人" in result["danger"]
+    assert "立即移動" in result["danger"]
+
+
 def test_web_command_topics_is_read(monkeypatch, tmp_path: Path) -> None:
     from jenai.schemas import RosTopicsOutput, TopicItem
     from jenai.webui import commands
@@ -239,6 +1271,32 @@ def test_web_command_topics_is_read(monkeypatch, tmp_path: Path) -> None:
     res = asyncio.run(run_web_command(_config(), tmp_path / "c.toml", "/ros topics"))
     assert res["kind"] == "result"
     assert "/cmd_vel" in res["html"]
+
+
+def test_web_route_without_resolved_goal_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from jenai.schemas import RouteOutput
+    from jenai.webui import commands
+
+    async def unresolved(_config, _locations, _text):
+        return RouteOutput(
+            input_text="missing place",
+            outgoing_action={},
+            execution_status="blocked",
+            route_preview="找不到指定地點；請選擇已儲存的地點。",
+        )
+
+    monkeypatch.setattr(commands, "route_preview", unresolved)
+    result = asyncio.run(
+        run_web_command(_config(), tmp_path / "config.toml", "/route missing place")
+    )
+
+    assert result["kind"] == "error"
+    assert result["run_status"] == "blocked"
+    assert result["outcome"] == "blocked"
+    assert "找不到指定地點" in result["html"]
 
 
 def test_web_confirm_executes_drive(monkeypatch, tmp_path: Path) -> None:
@@ -278,6 +1336,76 @@ def test_web_confirm_executes_drive(monkeypatch, tmp_path: Path) -> None:
     assert all(event.details["source"] == "webui" for event in events)
 
 
+@pytest.mark.parametrize(
+    ("action_type", "target"),
+    (("drive", "ros_drive"), ("pub", "ros_pub_execute")),
+)
+def test_web_confirm_fails_closed_for_unsuccessful_ros_action(
+    monkeypatch,
+    tmp_path: Path,
+    action_type: str,
+    target: str,
+) -> None:
+    from jenai.schemas import RosPubOutput
+    from jenai.webui import commands
+
+    async def failed_action(*_args, **_kwargs):
+        return RosPubOutput(
+            topic="/cmd_vel",
+            message_type="geometry_msgs/msg/Twist",
+            execution_status="failed",
+            result_message="publisher failed",
+        )
+
+    monkeypatch.setattr(commands.ros2_core, target, failed_action)
+    action = {
+        "type": action_type,
+        "topic": "/cmd_vel",
+        "message_type": "geometry_msgs/msg/Twist",
+        "payload": {"linear": {"x": 0.2}},
+        "duration": 1.0,
+    }
+    result = asyncio.run(run_web_confirm(_config(), action, config_path=tmp_path / "config.toml"))
+    assert result["kind"] == "error"
+    assert result["run_status"] == "failed"
+    assert result["outcome"] == "failed"
+    assert "publisher failed" in result["html"]
+
+
+def test_web_confirm_failed_ros_action_without_message_does_not_claim_completion(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jenai.schemas import RosPubOutput
+    from jenai.webui import commands
+
+    async def failed_action(*_args, **_kwargs):
+        return RosPubOutput(
+            topic="/cmd_vel",
+            message_type="geometry_msgs/msg/Twist",
+            execution_status="failed",
+            result_message="",
+        )
+
+    monkeypatch.setattr(commands.ros2_core, "ros_pub_execute", failed_action)
+    result = asyncio.run(
+        run_web_confirm(
+            _config(),
+            {
+                "type": "pub",
+                "topic": "/cmd_vel",
+                "message_type": "geometry_msgs/msg/Twist",
+                "payload": {"linear": {"x": 0.2}},
+            },
+            config_path=tmp_path / "config.toml",
+        )
+    )
+
+    assert result["kind"] == "error"
+    assert "動作未完成" in result["html"]
+    assert "動作已完成" not in result["html"]
+
+
 def test_web_confirm_navigation_returns_and_audits_product_outcome(monkeypatch, tmp_path) -> None:
     from jenai.schemas import RouteOutput
     from jenai.webui import commands
@@ -292,11 +1420,13 @@ def test_web_confirm_navigation_returns_and_audits_product_outcome(monkeypatch, 
 
     monkeypatch.setattr(commands, "execute_navigation", fake_navigation)
     config_path = tmp_path / "config.toml"
-    action = {"type": "route", "outgoing_action": {"goal": {"name": "Dock"}}}
+    action = _route_action()
     result = asyncio.run(run_web_confirm(_config(), action, config_path=config_path))
 
     assert result["kind"] == "result"
     assert "outcome=arrived_unverified" in result["html"]
+    assert result["run_status"] == "completed"
+    assert result["outcome"] == "arrived_unverified"
     from jenai.state.audit import AuditStore
 
     events = AuditStore(tmp_path / "audit.sqlite3").list_events()
@@ -313,7 +1443,7 @@ def test_web_route_refuses_unregistered_navigation_capability(tmp_path: Path) ->
     result = asyncio.run(run_web_command(config, tmp_path / "config.toml", "/route Dock"))
 
     assert result["kind"] == "error"
-    assert "not registered" in result["html"]
+    assert "未註冊導航能力" in result["html"]
 
 
 def test_web_stop_marks_unconfirmed_navigation_cancel_as_error() -> None:
@@ -332,7 +1462,31 @@ def test_web_stop_marks_unconfirmed_navigation_cancel_as_error() -> None:
     )
 
     assert response["kind"] == "error"
+    assert "實體緊急停止" in response["html"]
     assert "not acknowledged" in response["html"]
+
+
+def test_web_stop_bridge_failure_requires_physical_emergency_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jenai.bridge import BridgeError
+    from jenai.webui import server as server_module
+
+    class BrokenBridge:
+        async def start(self) -> None:
+            raise BridgeError("bridge down")
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "RosBridgeClient", BrokenBridge)
+
+    response = server_module._do_stop(_config())
+
+    assert response["kind"] == "error"
+    assert "軟體停止未送達" in response["html"]
+    assert "實體緊急停止" in response["html"]
+    assert "保持安全距離" in response["html"]
 
 
 def test_web_stop_records_terminal_outcome_receipt_and_audit(tmp_path: Path) -> None:
@@ -422,7 +1576,7 @@ def test_confirm_endpoint_rejects_unknown_id(tmp_path: Path) -> None:
         with urllib.request.urlopen(req, timeout=5) as resp:
             payload = json.loads(resp.read().decode())
         assert payload["kind"] == "error"
-        assert "expired" in payload["html"].lower() or "used" in payload["html"].lower()
+        assert "逾時" in payload["html"] or "已使用" in payload["html"]
     finally:
         thread.join(timeout=5)
         server.server_close()
@@ -448,7 +1602,7 @@ def test_confirm_endpoint_rejects_overlapping_robot_action(tmp_path: Path) -> No
         with urllib.request.urlopen(req, timeout=5) as resp:
             payload = json.loads(resp.read().decode())
         assert payload["kind"] == "error"
-        assert "already running" in payload["html"]
+        assert "正在執行" in payload["html"]
         # A busy response does not consume the one-shot approval; it can be
         # retried after the current robot action finishes.
         assert handler.pending.pop(confirm_id) == action
@@ -557,7 +1711,7 @@ def test_api_map_rejects_non_finite_pose_and_stays_valid_json(tmp_path) -> None:
     assert payload["pose"] is None
     assert payload["pose_error"] == "invalid_pose"
     assert "NaN" not in json.dumps(payload, allow_nan=False)
-    assert "localization invalid (pose contains NaN/inf)" in render_dashboard_html({})
+    assert "定位資料無效（pose 含 NaN／inf）" in render_dashboard_html({})
 
 
 def test_pose_cache_backs_off_after_bridge_failure(monkeypatch) -> None:
@@ -624,13 +1778,150 @@ def _get(url: str, headers: dict | None = None) -> tuple[int, dict[str, str], by
 def test_webui_auth_rejects_missing_and_wrong_token(tmp_path: Path) -> None:
     server, threads, base = _tokened_server(tmp_path, 3)
     try:
-        assert _get(f"{base}/")[0] == 401
-        assert _get(f"{base}/api/status")[0] == 401
-        assert _get(f"{base}/?token=wrong")[0] == 401
+        page_status, _, page_body = _get(f"{base}/")
+        api_status, _, api_body = _get(f"{base}/api/status")
+        wrong_status, _, _ = _get(f"{base}/?token=wrong")
+        assert page_status == api_status == wrong_status == 401
+        assert "請開啟" in page_body.decode("utf-8")
+        assert "未授權" in json.loads(api_body)["html"]
     finally:
         for t in threads:
             t.join(timeout=5)
         server.server_close()
+
+
+def test_webui_concurrent_lifecycle_stress_keeps_terminal_invariants(  # noqa: C901
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jenai.webui.server as server_module
+
+    async def fake_command(_config, _config_path, text):
+        target = text.rsplit(" ", 1)[-1]
+        return {
+            "kind": "confirm",
+            "html": f"<p>前往 {target}</p>",
+            "danger": "機器人將開始移動。",
+            "action": _route_action(target),
+        }
+
+    async def fake_confirm(_config, _action, *, config_path):
+        await asyncio.sleep(0.02)
+        return {
+            "kind": "result",
+            "html": "<p>完成</p>",
+            "run_status": "completed",
+            "outcome": "succeeded",
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", fake_command)
+    monkeypatch.setattr(server_module, "run_web_confirm", fake_confirm)
+    monkeypatch.setattr(
+        server_module,
+        "_do_stop",
+        lambda *args, **kwargs: {"kind": "result", "html": "<p>停止</p>"},
+    )
+    store = RunStore()
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=store,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    errors: list[BaseException] = []
+    confirmations: list[str] = []
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+
+        def post(path: str, payload: dict[str, object]) -> dict[str, object]:
+            request = urllib.request.Request(
+                f"{base}{path}",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        def create(index: int) -> None:
+            try:
+                result = post("/api/command", {"text": f"/route Target-{index}"})
+                confirmations.append(str(result["confirm_id"]))
+            except BaseException as exc:  # captured for assertion in the parent thread
+                errors.append(exc)
+
+        creators = [threading.Thread(target=create, args=(index,)) for index in range(10)]
+        for worker in creators:
+            worker.start()
+        for worker in creators:
+            worker.join(timeout=5)
+        assert len(confirmations) == 10
+
+        def capture(callable_):
+            try:
+                callable_()
+            except BaseException as exc:  # captured for assertion in the parent thread
+                errors.append(exc)
+
+        workers = [
+            threading.Thread(
+                target=capture,
+                args=(lambda: urllib.request.urlopen(f"{base}/api/status", timeout=5).read(),),
+            )
+            for _ in range(50)
+        ]
+        for confirm_id in confirmations:
+            workers.append(
+                threading.Thread(
+                    target=capture,
+                    args=(lambda token=confirm_id: post("/api/confirm", {"confirm_id": token}),),
+                )
+            )
+            workers.append(
+                threading.Thread(
+                    target=capture,
+                    args=(lambda token=confirm_id: post("/api/reject", {"confirm_id": token}),),
+                )
+            )
+        workers.append(
+            threading.Thread(
+                target=capture,
+                args=(lambda: post("/api/stop", {}),),
+            )
+        )
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=8)
+
+        expiring = post("/api/command", {"text": "/route Expiring"})
+        assert expiring["confirm_id"]
+        server.RequestHandlerClass.pending._ttl_s = 0
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5):
+            pass
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert errors == []
+    runs = [run for run in store.snapshot_runs() if run.user_input != "/stop"]
+    assert len(runs) == 11
+    for run in runs:
+        assert run.status in {"completed", "blocked", "interrupted"}
+        assert len(run.interruptions) == 1
+        assert len(run.tool_calls) == 1
+        approval = run.interruptions[0].status
+        tool = run.tool_calls[0].status
+        if run.status == "completed":
+            assert (approval, tool, run.outcome) == ("approved", "succeeded", "succeeded")
+        elif run.status == "blocked":
+            assert (approval, tool, run.outcome) == ("rejected", "rejected", "blocked")
+        else:
+            assert (approval, tool, run.outcome) == ("approved", "failed", "cancelled")
 
 
 def test_webui_auth_accepts_bearer_cookie_and_query(tmp_path: Path) -> None:
@@ -675,6 +1966,71 @@ def test_webui_stop_works_without_token(monkeypatch, tmp_path: Path) -> None:
         for t in threads:
             t.join(timeout=5)
         server.server_close()
+
+
+def test_webui_stop_rejects_tracked_pending_approval(monkeypatch, tmp_path: Path) -> None:
+    import jenai.webui.server as server_module
+
+    async def fake_command(_config, _config_path, _text):
+        return {
+            "kind": "confirm",
+            "html": "<p>前往 Dock</p>",
+            "danger": "機器人將開始移動。",
+            "action": _route_action(),
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", fake_command)
+    monkeypatch.setattr(
+        server_module,
+        "_do_stop",
+        lambda *args, **kwargs: {"kind": "info", "html": "stopped"},
+    )
+    store = RunStore()
+    server = make_server(
+        _config(),
+        tmp_path / "config.toml",
+        port=0,
+        run_store=store,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+
+        command_request = urllib.request.Request(
+            f"{base}/api/command",
+            data=json.dumps({"text": "/route Dock"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(command_request, timeout=5) as response:
+            command = json.loads(response.read().decode("utf-8"))
+
+        stop_request = urllib.request.Request(f"{base}/api/stop", data=b"{}", method="POST")
+        with urllib.request.urlopen(stop_request, timeout=5) as response:
+            assert json.loads(response.read().decode("utf-8"))["kind"] == "info"
+
+        confirm_request = urllib.request.Request(
+            f"{base}/api/confirm",
+            data=json.dumps({"confirm_id": command["confirm_id"]}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(confirm_request, timeout=5) as response:
+            assert json.loads(response.read().decode("utf-8"))["kind"] == "error"
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as response:
+            status = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    run = status["transcript"][0]
+    assert run["status"] == "blocked"
+    assert run["outcome"] == "blocked"
+    assert run["approvals"][0]["status"] == "rejected"
+    assert run["tool_calls"][0]["status"] == "rejected"
 
 
 def test_webui_rejects_non_object_json_body(tmp_path: Path) -> None:
@@ -731,7 +2087,8 @@ def test_webui_rejects_oversized_json_body(tmp_path: Path) -> None:
         )
         response = conn.getresponse()
         assert response.status == 413
-        response.read()
+        payload = json.loads(response.read())
+        assert "過大" in payload["html"]
     finally:
         conn.close()
         for thread in threads:
@@ -777,7 +2134,9 @@ def test_api_frame_honestly_503_without_bridge(tmp_path: Path) -> None:
         host, port = server.server_address
         status, headers, body = _get(f"http://{host}:{port}/api/frame")
         assert status == 503
-        assert json.loads(body)["kind"] == "error"
+        payload = json.loads(body)
+        assert payload["kind"] == "error"
+        assert "無法從" in payload["html"]
     finally:
         thread.join(timeout=5)
         server.server_close()
@@ -864,3 +2223,247 @@ def test_api_topics_endpoint_and_camera_picker(tmp_path: Path, monkeypatch) -> N
     html = render_dashboard_html(build_status_payload(_config(), tmp_path / "config.toml"))
     for needle in ('id="cam-topic"', "api/topics", 'id="api-topics"'):
         assert needle in html
+
+
+def test_webui_stop_cancels_active_confirmation_and_waits_for_cleanup(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    import jenai.webui.server as server_module
+    from jenai.webui.run_tracking import register_confirmation
+    from jenai.webui.server import _ActiveConfirmation, _Handler, _PendingConfirms
+
+    started = threading.Event()
+    cancelled = threading.Event()
+    cleanup_finished = threading.Event()
+    fallback_release = threading.Event()
+
+    async def fake_confirm(_config, action, *, config_path):
+        assert action["type"] == "route"
+        started.set()
+        try:
+            while not fallback_release.is_set():
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError:
+            cancelled.set()
+            await asyncio.sleep(0.05)
+            cleanup_finished.set()
+            raise
+        return {
+            "kind": "result",
+            "html": "<p>late success</p>",
+            "run_status": "completed",
+            "outcome": "succeeded",
+        }
+
+    monkeypatch.setattr(server_module, "run_web_confirm", fake_confirm)
+    monkeypatch.setattr(server_module, "_do_stop", lambda *args, **kwargs: {"kind": "info"})
+    store = RunStore()
+    run = store.create_run("webui", "/route Dock")
+    action = _route_action()
+    tool_call_id = register_confirmation(store, run, _config(), action, "移動機器人。")
+    pending = _PendingConfirms()
+    confirm_id = pending.put(action, run_id=run.run_id, tool_call_id=tool_call_id)
+    active = _ActiveConfirmation()
+    responses: list[dict[str, object]] = []
+    handler = SimpleNamespace(
+        config=_config(),
+        config_path=tmp_path / "config.toml",
+        pending=pending,
+        run_store=store,
+        action_lock=threading.Lock(),
+        active_confirmation=active,
+        pose_cache=None,
+        _send=lambda body, *_args, **_kwargs: responses.append(json.loads(body)),
+        _drain_body=lambda: None,
+    )
+
+    worker = threading.Thread(
+        target=_Handler._run_confirm, args=(handler, {"confirm_id": confirm_id})
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+    _Handler._handle_emergency_stop(handler)
+    was_cancelled = cancelled.wait(timeout=1)
+    was_cleaned = cleanup_finished.wait(timeout=1)
+    fallback_release.set()
+    worker.join(timeout=2)
+
+    assert was_cancelled
+    assert was_cleaned
+    assert not worker.is_alive()
+    assert run.status == "interrupted"
+    assert run.outcome == "cancelled"
+    assert run.tool_calls[0].status == "failed"
+
+
+def test_webui_command_started_before_stop_cannot_escrow_late_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    import jenai.webui.server as server_module
+    from jenai.webui.server import _ActiveConfirmation, _Handler, _PendingConfirms
+
+    started = threading.Event()
+    release = threading.Event()
+
+    async def slow_command(_config, _config_path, _text):
+        started.set()
+        await asyncio.to_thread(release.wait)
+        return {
+            "kind": "confirm",
+            "html": "<p>前往 Dock</p>",
+            "danger": "機器人將開始移動。",
+            "action": _route_action(),
+        }
+
+    monkeypatch.setattr(server_module, "run_web_command", slow_command)
+    monkeypatch.setattr(server_module, "_do_stop", lambda *args, **kwargs: {"kind": "info"})
+    store = RunStore()
+    pending = _PendingConfirms()
+    active = _ActiveConfirmation()
+    responses: list[dict[str, object]] = []
+    handler = SimpleNamespace(
+        config=_config(),
+        config_path=tmp_path / "config.toml",
+        pending=pending,
+        run_store=store,
+        action_lock=threading.Lock(),
+        active_confirmation=active,
+        pose_cache=None,
+        _send=lambda body, *_args, **_kwargs: responses.append(json.loads(body)),
+        _drain_body=lambda: None,
+    )
+    command_result: list[dict[str, object]] = []
+    worker = threading.Thread(
+        target=lambda: command_result.append(
+            _Handler._run_command(handler, {"text": "/route Dock"})
+        )
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+
+    _Handler._handle_emergency_stop(handler)
+    release.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert command_result[0]["kind"] == "error"
+    assert command_result[0]["run_status"] == "blocked"
+    assert "confirm_id" not in command_result[0]
+    assert pending.snapshot() == {}
+    run = store.list_runs()[0]
+    assert run.status == "blocked"
+    assert run.outcome == "blocked"
+
+
+def test_confirmation_persistence_does_not_hold_safety_lock() -> None:
+    from types import SimpleNamespace
+
+    from jenai.task_results import TaskResult
+    from jenai.webui.run_tracking import register_confirmation, start_confirmation
+    from jenai.webui.server import _ActiveConfirmation, _Handler, _PendingConfirmation
+
+    persistence_started = threading.Event()
+    release_persistence = threading.Event()
+
+    class BlockingAudit:
+        enabled = False
+
+        def record(self, event_type, **_kwargs):
+            if self.enabled and event_type == "tool_updated":
+                persistence_started.set()
+                assert release_persistence.wait(timeout=2)
+
+    audit = BlockingAudit()
+    store = RunStore(audit_store=audit)
+    run = store.create_run("webui", "/route Dock")
+    action = _route_action()
+    tool_call_id = register_confirmation(store, run, _config(), action, "移動機器人。")
+    start_confirmation(store, run, tool_call_id)
+    pending = _PendingConfirmation(action, run.run_id, tool_call_id)
+    active = _ActiveConfirmation()
+    assert active.start(pending, active.epoch(), None)
+    audit.enabled = True
+    handler = SimpleNamespace(run_store=store)
+    result = {
+        "kind": "result",
+        "run_status": "completed",
+        "outcome": "arrived_unverified",
+    }
+
+    finisher = threading.Thread(
+        target=_Handler._finish_tracked_confirmation,
+        args=(handler, pending, run, active, result),
+    )
+    finisher.start()
+    assert persistence_started.wait(timeout=2)
+
+    started = time.monotonic()
+    assert active.cancel() is None
+    assert time.monotonic() - started < 0.1
+
+    release_persistence.set()
+    finisher.join(timeout=2)
+    assert not finisher.is_alive()
+    assert run.status == TaskResult(run_status="completed", outcome="arrived_unverified").run_status
+
+
+def test_pending_expiry_and_eviction_finish_correlated_runs() -> None:
+    from jenai.webui.run_tracking import register_confirmation
+    from jenai.webui.server import _invalidate_pending_confirmation, _PendingConfirms
+
+    store = RunStore()
+    config = _config()
+    action = _route_action()
+
+    def correlated_pending(label: str):
+        run = store.create_run("webui", label)
+        tool_call_id = register_confirmation(
+            store,
+            run,
+            config,
+            action,
+            "移動機器人。",
+        )
+        return run, tool_call_id
+
+    def invalidate(pending, reason):
+        _invalidate_pending_confirmation(store, pending, reason)
+
+    evicted_run, evicted_tool = correlated_pending("evicted")
+    expired_run, expired_tool = correlated_pending("expired")
+    bounded = _PendingConfirms(max_entries=1, on_invalidate=invalidate)
+    bounded.put(action, run_id=evicted_run.run_id, tool_call_id=evicted_tool)
+    bounded.put(action, run_id=expired_run.run_id, tool_call_id=expired_tool)
+    assert evicted_run.status == "blocked"
+    assert evicted_run.outcome == "blocked"
+    assert evicted_run.interruptions[0].status == "rejected"
+
+    expiring = _PendingConfirms(ttl_s=0, on_invalidate=invalidate)
+    token = expiring.put(action, run_id=expired_run.run_id, tool_call_id=expired_tool)
+    assert expiring.claim(token) is None
+    assert expired_run.status == "blocked"
+    assert expired_run.outcome == "blocked"
+    assert expired_run.interruptions[0].status == "rejected"
+
+
+def test_active_confirmation_refuses_start_after_stop_epoch() -> None:
+    from jenai.webui.server import _ActiveConfirmation, _PendingConfirmation
+
+    active = _ActiveConfirmation()
+    pending = _PendingConfirmation({"type": "route"})
+    epoch = active.epoch()
+    active.cancel()
+    assert active.start(pending, epoch, None) is False
+
+
+def test_web_response_task_result_rejects_inconsistent_status_and_outcome() -> None:
+    from jenai.webui.run_tracking import web_response_task_result
+
+    result = web_response_task_result({"run_status": "completed", "outcome": "failed"})
+    assert result.run_status == "failed"
+    assert result.outcome == "failed"

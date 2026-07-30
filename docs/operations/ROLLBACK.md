@@ -11,7 +11,7 @@
 
 ## Release wheel：安裝、升級與回滾的共同流程
 
-目前 repository 是 public；v2.5.0 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
+目前 repository 是 public；v2.5.1 Release 公開提供 wheel、matching constraints、CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。
 
 wheel、constraints 與
 `SHA256SUMS` 必須來自**同一個 release**，且 asset 清單必須實際包含它們；例如既有
