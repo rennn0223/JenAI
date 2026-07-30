@@ -1,12 +1,15 @@
 # NXDog Deployment Options
 
-> 推薦：Option C — authenticated Robot Runtime + NXDog Edge Adapter
+> 推薦：Option C — authenticated Robot Runtime Authority + co-located NXDog Adapter
 
-本比較將「Robot Runtime Authority」與「NXDog Edge Adapter」視為不同 module：
+本比較將「Robot Runtime Authority」與「NXDog Adapter」視為不同 module，但 v0 將兩者
+部署在同一 host／deployment unit，不在它們之間建立第二套 wire protocol：
 
-- **Robot Runtime Authority**：JenAI 擁有的唯一命令與 evidence authority。
-- **NXDog Edge Adapter**：在 robot-side ROS 2 環境中，把 platform-neutral command
-  轉成 Nexuni interface，並把 vendor feedback 轉回 typed evidence。
+- **Robot Runtime Authority**：JenAI 擁有的唯一 Task、Workflow、Approval、命令與
+  Evidence authority。
+- **NXDog Adapter**：Authority implementation 內、位於 robot-side ROS 2 環境的
+  Adapter；把 platform-neutral execution 轉成 Nexuni interface，並把 vendor feedback
+  轉回 typed Evidence。
 
 ## Option A：JenAI 直接呼叫 vendor HTTP example
 
@@ -61,23 +64,24 @@ ROS 2 不同 distro 可能在介面完全相同、RMW/QoS 相容時互通，但 
 **結論**：適合實驗診斷，不是預設產品部署。若 vendor 正式支持、license 允許且網路
 隔離充分，可作為受控替代方案。
 
-## Option C：Robot Runtime Authority + NXDog Edge Adapter
+## Option C：Robot Runtime Authority + co-located NXDog Adapter
 
 ```text
-DGX Spark
+DGX Spark callers
 ┌──────────────────────────────────────┐
-│ JenAI Application / Workflow         │
-│ Robot Runtime Authority              │
-│ command lease / safety epoch / event │
+│ Intent Layer / TUI / WebUI / MCP     │
 └──────────────────┬───────────────────┘
-                   │ authenticated, versioned Runtime protocol
+                   │ authenticated public Runtime v0
                    ▼
 Robot-side Orin NX／LAN sidecar
 ┌──────────────────────────────────────┐
-│ NXDog Edge Adapter                   │
-│ local fencing / watchdog / evidence  │
+│ Robot Runtime Authority              │
+│ Workflow / Approval / lease / epoch  │
+│ Completion / Outcome / event journal │
+│ Capability Executor                  │
+│ NXDog Adapter (co-located)           │
 └──────────────────┬───────────────────┘
-                   │ local ROS 2 Foxy
+                   │ internal ports + local ROS 2 Foxy
                    ▼
              nxnav / platform driver
 ```
@@ -85,47 +89,62 @@ Robot-side Orin NX／LAN sidecar
 | 面向 | 評估 |
 |---|---|
 | ROS distro | Foxy/custom interfaces 留在 robot-side deployment |
-| Authentication | Runtime protocol 可要求 token/TLS、robot identity、scope |
-| Command ownership | Authority 擁有全域 lease；Edge 以 fencing token 拒絕 stale command |
-| Cancellation | Edge 保留 goal handle、等待 cancel response、回傳 typed event |
-| Evidence | Edge 保留 ROS source time/frame/covariance/feedback，再包成 `EvidenceEnvelope` |
+| Authentication | caller→Authority 的 Runtime protocol 要求 token/TLS、principal、robot scope |
+| Command ownership | Robot-side Authority 擁有唯一 Task lease、Workflow Instance與safety epoch |
+| Cancellation | Co-located Adapter 保留 goal handle、等待 cancel response、回傳 typed Event |
+| Evidence | Adapter 保留 ROS source time/frame/covariance/feedback，再包成 `EvidenceEnvelope` |
 | Network exposure | 不把 DDS graph 或 vendor raw endpoint暴露給 interaction surfaces |
-| Failure locality | vendor/RMW complexity集中在 Adapter；JenAI caller只理解 Runtime interface |
-| Testability | in-memory backend、Isaac/Nav2 Adapter、NXDog Adapter 共用同一 interface |
-| 成本 | 需部署、升級、auth、reconnect、watchdog、protocol compatibility |
+| Failure locality | vendor/RMW complexity集中在 robot-side Runtime deployment；caller只理解 public Runtime Interface |
+| Testability | in-memory ports、Isaac/Nav2 Adapter、NXDog Adapter 共用同一 Authority contract |
+| 成本 | 需部署、升級、auth、reconnect、watchdog與Runtime protocol compatibility |
 
-**結論**：推薦產品方向。這是 ports-and-adapters seam：Runtime 是 remote-but-owned
-module，NXDog ROS 是 true-external dependency；Edge Adapter 將 vendor complexity
-局部化。
+**結論**：推薦 v0 產品方向。從 caller 觀點，Robot Runtime 是 remote-but-owned module；
+在 Runtime implementation 內，Capability Executor 與 NXDog Adapter 是 co-located
+internal seams，NXDog ROS 才是 true-external dependency。Public protocol只跨
+caller→Authority，不跨Authority→Adapter。
 
-## Authority and Edge responsibilities
+## Authority and co-located Adapter responsibilities
 
 ### Robot Runtime Authority owns
 
 - authenticated robot identity 與 protocol negotiation；
 - one active command lease per robot/domain；
 - monotonic safety epoch 與 stale approval/command invalidation；
-- idempotency、deadline、command lifecycle 與 ordered event sequence；
+- mutable Workflow Instance、deterministic sequencing與bounded retry；
+- idempotency、server-owned timing budgets、command lifecycle 與 ordered event sequence；
 - operator-readable approval preview 與 server-held request digest；
-- task outcome、audit、receipt 與 evidence retention；
+- Completion Contract evaluation、Task Outcome、audit、Receipt 與 Evidence retention；
+- startup reconciliation、authority generation、orphan cleanup與availability admission；
+- Capability Executor composition；
 - interaction surfaces 的 single source of truth。
 
-### NXDog Edge Adapter owns
+### Capability Executor and co-located NXDog Adapter own
 
-- 唯一 robot-side `rclpy` node/executor 與 vendor goal handle；
+- `NavigationGateway` 只處理 navigation／route／movement；
+- `PlatformCommandPort` 處理 indicator／posture／charging non-navigation write；
+- `ObservationPort` 取得 health／pose／velocity／map／battery Evidence；
+- NXDog Adapter持有唯一robot-side `rclpy` node/executor與vendor goal handle；
 - Foxy/custom interface dependency；
-- runtime lease/fencing token validation 的 local enforcement；
+- authority generation／epoch／fencing token 的 local enforcement；
 - action acceptance、feedback、cancel response、terminal result correlation；
 - source timestamp/frame/covariance preservation；
-- robot-side bounded watchdog 與 network-loss safe behaviour；
+- robot-side bounded watchdog 與 public Runtime disconnect behaviour；
 - vendor error → Runtime stable taxonomy translation。
 
-Edge Adapter 不能自行發明 Task Outcome；它提供 evidence，Completion Contract 由
-Runtime/Application 依 Capability 評估。
+Capability Executor與Adapter不能自行發明Task Outcome；它們只提供typed Events與
+Evidence，Completion Contract只由Robot Runtime Authority依Capability評估。
+
+## Future remote Authority／Edge split
+
+若未來因 fleet topology 必須讓 Authority 留在 DGX、Adapter 遠端部署，需另立 Edge
+Control Protocol／ADR，明確處理 mutual authentication、authority generation、boot ID、
+fencing continuity、prepare/execute/cancel/robot-wide STOP、remaining budget、Evidence
+stream、network partition、takeover與restart reconciliation。它不是 Runtime v0，也不能
+重用 public `submit`／`observe`／`stop` 讓 Edge 變成第二個 Task authority。
 
 ## Network and authentication baseline
 
-第一版只可：
+Public caller→Authority transport 第一版只可：
 
 1. Authority loopback bind + generated access token；或
 2. robot LAN 上的 explicit secure deployment，使用 TLS、雙向 identity 或等價的
@@ -133,18 +152,25 @@ Runtime/Application 依 Capability 評估。
 
 此外必須：
 
-- 每個 request 綁定 `robot_id`、`command_id`、`idempotency_key`、
-  `expected_safety_epoch`、deadline 與 request digest。
-- Edge 不接受 ambient proxy、redirect 或任意 vendor path。
+- `StartCapability` request綁定`robot_id`、`idempotency_key`、
+  `expected_safety_epoch`、`requested_timeout_ms`與request digest；`command_id`只由Runtime
+  產生。`ResolveApproval`／`CancelCommand`只引用既有command，不得重置timing budget。
+  Server依Capability policy clamp，並在execution開始時發布accepted execution budget與
+  authoritative server deadline。
+- HTTP/TLS Adapter建立`AuthenticatedPrincipal`；transport-bound client identity只能由
+  credential／TLS導出。Payload的client ID／source surface永遠只是caller claims，不可
+  用於authorization、audit actor、idempotency namespace或trusted classification。
+- Runtime/Adapter 不接受 ambient proxy、redirect 或任意 vendor path。
 - HTTP disconnect 不取消 command；cancel/stop 必須是明確 command。
-- network partition 時 Edge 依 vendor-approved watchdog policy fail safe；未取得正式
-  policy 前不得開啟 motion。
+- Runtime startup reconciliation完成前effectful command保持blocked，STOP仍可用。
+- caller↔Runtime network partition時，robot-side Authority依vendor-approved watchdog
+  policy處理；未取得正式policy前不得開啟motion。
 
 ## Recommended deployment sequence
 
 1. Runtime Protocol v0 + in-memory backend。
 2. 現有 Isaac/Nav2 vertical slice，證明 parity 與 single authority。
-3. NXDog Edge Adapter read-only state/evidence。
+3. NXDog co-located Runtime deployment的read-only state/evidence。
 4. LED command pipeline，套用
    [canonical Evidence-to-outcome policy](CAPABILITY_MAPPING.md#evidence-to-outcome-policy)。
 5. stationary software-stop evidence。

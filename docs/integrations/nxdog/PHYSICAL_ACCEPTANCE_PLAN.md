@@ -11,12 +11,16 @@
 
 ```text
 operator intent
-→ typed Capability
+→ Intent Layer selects typed Capability
 → Robot Runtime Authority
-→ NXDog Edge Adapter
+→ Runtime-owned Approval／Task lifecycle／Completion Contract
+→ Workflow Instance（僅 Workflow Capability）
+→ Capability Executor
+→ NavigationGateway／PlatformCommandPort／ObservationPort
+→ co-located NXDog Adapter
 → vendor interface
 → fresh evidence
-→ honest Task Outcome
+→ Authority-owned honest Task Outcome／Receipt
 ```
 
 每一階段只在上一階段的 prerequisite、evidence 與 cleanup 均通過後開放。失敗場次與
@@ -29,18 +33,42 @@ operator intent
 1. 經 Nexuni 確認該 robot／firmware／interface 組合與允許的測試程序。
 2. 測試區域清空，地面與淨空符合廠商要求；姿態測試另有吊帶或防倒措施。
 3. 現場操作員持有可立即觸發的實體 E-stop，並知道其復歸程序。
-4. 只啟動一個 `RobotRuntimeAuthority` 與一個 NXDog Edge Adapter。
+4. 只啟動一個co-located NXDog Runtime deployment；Authority、Capability Executor與
+   NXDog Adapter都位於同一robot-side companion／LAN sidecar。
 5. TUI、WebUI、MCP 與其他 client 只能呼叫同一 Runtime；不得另連 port `5088` 或
    NXDog ROS 2 motion interface。
-6. runtime、edge、robot、map、site、credential 與 command owner identity 可確認。
-7. safety epoch、command lease 與 Edge fencing 均為 current。
+6. runtime、Adapter、robot、map、site、AuthenticatedPrincipal與command owner identity
+   可確認；caller claim不得取代principal。
+7. authority generation、boot ID、durable safety epoch、command lease與local execution
+   fence均為current，startup reconciliation已完成。
 8. network、heartbeat、pose、velocity 與 required interface freshness 通過。
-9. 沒有 active vendor goal、未完成 approval 或上一場殘留 command。
+9. Reconciliation已證明沒有unknown active vendor goal、未完成Approval或上一場殘留
+   command；effectful admission狀態為available。
 10. 現場操作員已依vendor程序演練實體E-stop與安全復歸。Runtime software STOP的正式
     acceptance屬Phase 2；Phase 1前的外部演練不表示Phase 2已通過。
 
 任一 gate 失敗即停止該場，保存 evidence；不得在同一場臨時調參、重啟或繞過 Runtime
 把結果變成 PASS。
+
+## Startup and restart reconciliation gate
+
+每次Runtime／Adapter restart、credential rotation、robot reconnect或不確定上一場cleanup
+狀態後，必須先執行
+[canonical startup reconciliation](ROBOT_RUNTIME_PROTOCOL_DRAFT.md#startup-reconciliation-and-authority-continuity)：
+
+```text
+acquire single deployment ownership
+→ durable authority generation + safety epoch advance
+→ invalidate old Approval／lease
+→ observe active vendor goal／velocity／robot state
+→ bounded cancel／STOP unknown prior work
+→ reconcile old Task／Event／Receipt
+→ Runtime available
+```
+
+完成前Runtime Health只能是`read_only`、`degraded`或`unavailable`，effectful Task保持
+`blocked`；read-only observation與STOP仍可使用。Unknown prior work不得auto-resume，
+reconciliation失敗不得靠重新送同一command來取得PASS。
 
 ## Required artifact bundle
 
@@ -63,12 +91,17 @@ operator-observation.json
 
 `manifest.json` 至少記錄：
 
-- JenAI、Runtime、Edge Adapter 與 vendor interface revision；
+- JenAI、Runtime、co-located Adapter 與 vendor interface revision；
 - robot ID、firmware／API version；unknown 時不得開始 motion phase；
 - test case、operator、site、map identity、時間與網路拓撲；
 - capability/input schema version、command ID、idempotency key；
-- safety epoch、lease/fencing token的不可逆識別，不保存 credential；
-- source／receive timestamps、event sequence與 evidence limitations；
+- runtime ID、boot ID、authority generation、safety epoch、lease／fencing token的不可逆
+  識別與reconciliation result，不保存credential；
+- authenticated principal ID／credential reference與separate caller claims；
+- requested timeout、accepted execution／postcondition Evidence／cleanup budgets、approval
+  expiry，以及execution／postcondition／cleanup server deadlines；
+- source／receive timestamps、event sequence、content digest、transport security、source
+  assurance／attestation與evidence limitations；
 - reset／reposition／cleanup policy；
 - 所有 config、map、Site Profile與 test definition digest；
 - 實體 E-stop holder 與 observer；不保存個人秘密資料。
@@ -111,9 +144,10 @@ write、service或action。
 
 ### Pass contract
 
-- robot、Runtime與Edge identity一致；
+- robot、Runtime與co-located Adapter identity一致；
 - values能被 typed schema解析，非有限數值與 malformed payload fail closed；
-- source timestamp存在時保留；不存在時明確標示 `freshness=unknown`；
+- source timestamp存在時保留；不存在時明確標示`freshness=unknown`；content digest、
+  transport security與source assurance各自保存，不能互相替代；
 - disconnect、stale heartbeat與missing field均投影為 degraded/unavailable；
 - artifact可重播產生相同 presentation，不包含 secret。
 
@@ -136,7 +170,9 @@ typed set_indicator request
 → operator-readable approval
 → exact server-side action binding
 → Runtime command lease
-→ Edge Adapter
+→ Capability Executor
+→ PlatformCommandPort
+→ co-located NXDog Adapter
 → vendor VUI command
 → command shadow observation
 → Task Receipt
@@ -145,7 +181,10 @@ typed set_indicator request
 ### Pass contract
 
 - duplicate idempotency key不重複送出 vendor command；
-- stale safety epoch／fencing token被拒絕；
+- stale authority generation／safety epoch／fencing token被拒絕；
+- authorization、audit actor與idempotency namespace來自AuthenticatedPrincipal，不採信
+  caller自稱的client ID／source surface；
+- accepted execution budget由Runtime clamp；Approval expiry不消耗execution budget；
 - approval內容顯示顏色／亮度，且不洩漏 transport；
 - vendor publish/request有 evidence；
 - process-local shadow與requested value一致；
@@ -179,7 +218,7 @@ physical stop = operator-observed | unverified
 ### Pass contract
 
 - STOP不等待一般 command queue或模型；
-- STOP前建立的 delayed command被Edge fencing拒絕；
+- STOP前建立的delayed work／callback被co-located execution fence拒絕；
 - fresh velocity持續低於 vendor確認的門檻與時間窗；
 - software evidence與人工 physical observation分開保存；
 - `/stop` HTTP success本身不構成 PASS。
@@ -232,6 +271,9 @@ limitation。人工觀察可作 acceptance evidence，但不能冒充 vendor tel
 - timeout不留下未知狀態的active action；
 - path存在只證明route可計算，不宣稱motion ready。
 
+Execution path必須是`Robot Runtime Authority → Capability Executor → NavigationGateway →
+co-located NXDog navigation Adapter`；不得由PlatformCommandPort或caller直接送action。
+
 ## Phase 5 — Short navigation
 
 ### Prerequisites
@@ -249,6 +291,9 @@ start gate
 → typed navigate
 → approval
 → lease/fencing
+→ Capability Executor
+→ NavigationGateway
+→ co-located NXDog navigation Adapter
 → vendor goal accepted
 → correlated progress events
 → terminal result
@@ -295,6 +340,7 @@ goal active
 ### Pass contract
 
 - STOP具有獨立stop ID與receipt；
+- Runtime internal watchdog／shutdown reason不得由external caller claim冒充；
 -原navigation只有一個terminal outcome；
 -晚到success只能成為audit evidence，不能覆寫`cancelled`；
 -所有interaction surfaces看到相同command、stop與outcome；
@@ -331,8 +377,9 @@ evidence支持實體充電成功。
 
 下列任一情況立即中止，不嘗試在同一場修復後續跑：
 
-- Runtime／Edge／robot identity改變；
-- safety epoch、lease或fencing不一致；
+- Runtime／Adapter／robot identity或authority generation改變；
+- startup reconciliation未完成、失敗或重新進入running；
+- safety epoch、lease或local execution fence不一致；
 - heartbeat、clock、pose、velocity或map evidence stale/unknown；
 -出現第二個motion owner、goal或未授權client；
 -approval/action digest mismatch；
@@ -341,9 +388,10 @@ evidence支持實體充電成功。
 -robot行為與預期不一致、跌倒風險、異音、打滑或進入禁區；
 -實體 E-stop holder要求停止。
 
-cleanup必須嘗試provider-free STOP、撤銷lease/approval、等待bounded terminal evidence、
-保存artifact並關閉Edge handle。若cleanup未確認，場次標為`failed`，後續motion phase
-保持blocked，直到操作員與vendor完成安全復歸。
+cleanup必須嘗試provider-free STOP、撤銷lease/Approval，並在server-owned cleanup window
+內等待相符的terminal／stationary Evidence、保存artifact並關閉Adapter handle。這些
+Evidence只能支撐cleanup或cancel outcome，不能把已timeout Task翻成`succeeded`。若cleanup
+未確認，場次標為`failed`，後續motion phase保持blocked，直到操作員與vendor完成安全復歸。
 
 ## Release claim boundary
 

@@ -33,9 +33,9 @@ definitions。[README][vendor-readme-contract]
 1. 保留 JenAI 現行 NXDog observation-only 狀態。
 2. 不複製 Flask 或 reference-client implementation。
 3. 先釐清授權與 vendor runtime contract。
-4. 若要做 motion，新增 authenticated Robot Runtime companion；所有移動 Capability與
-   Workflow中的移動步驟仍通過共用Navigation Gateway，再由其後方的NXDog Edge
-   Adapter執行。非移動Capability也只能走Runtime的typed internal port，不得直呼vendor。
+4. 若要做 motion，將 Robot Runtime Authority 與 NXDog Adapter 一起部署在 authenticated
+   robot-side companion；所有移動步驟仍通過共用 Navigation Gateway，非移動操作與觀察
+   則通過 Runtime-owned typed internal ports，不得直呼 vendor。
 5. 在註冊 NXDog motion Capability 前，完成不依賴 LLM 的實體 navigation、cancel、
    stop、endpoint 與 Evidence acceptance。
 
@@ -48,7 +48,8 @@ robot-specific SDK 必須留在 seam 的另一側。[Domain Context][jenai-conte
 
 - [Interface Inventory](INTERFACE_INVENTORY.md)：ROS／HTTP shape、names與evidence限制。
 - [Capability Mapping](CAPABILITY_MAPPING.md)：Capability maturity與Completion Contract缺口。
-- [Deployment Options](DEPLOYMENT_OPTIONS.md)：direct HTTP、direct DDS與Edge Adapter比較。
+- [Deployment Options](DEPLOYMENT_OPTIONS.md)：direct HTTP、direct DDS與co-located Runtime
+  deployment比較。
 - [Vendor Gaps](VENDOR_GAPS.md)：需向Nexuni取得的授權、版本、安全與evidence契約。
 - [Robot Runtime Protocol v0 Draft](ROBOT_RUNTIME_PROTOCOL_DRAFT.md)：
   `submit`／`observe`／`stop`三入口與hidden authority model。
@@ -280,7 +281,7 @@ repository-wide reproduction、modification 或 redistribution grant。
 - 不 copy Flask app、reference clients 或 `nxnav_msgs` implementation into JenAI；
 - 不假設 `nxdog_interfaces` 的 package tag 可擴張到 sibling package 或 examples；
 - 不把 repository 稱為 open source；
-- Edge Adapter 優先依賴 vendor 已安裝／vendor 提供的 generated interfaces；
+- co-located NXDog Adapter 優先依賴 vendor 已安裝／vendor 提供的 generated interfaces；
 - 若 JenAI distribution 必須 build 或 redistribute definitions，先取得書面授權與
   attribution／notice requirements。
 
@@ -340,41 +341,43 @@ ADR 0006 已接受「single authenticated high-level HTTP Robot Runtime authorit
 backend**，而不是在現有 surface 增加一個 vendor HTTP tool。產品邊界如下：
 
 ```text
-Agent／Fast Path／TUI／WebUI／MCP
-              │ registered Capability + typed arguments
-              ▼
-JenAI application
-  intent · approval · deterministic Workflow · Completion Contract
-              │
+TUI／WebUI／MCP／Agent／Fast Path
+              │ intent interpretation + registered Capability selection
+              │ typed high-level Task
               ▼
 Single Robot Runtime Authority
-  authentication · command lease · safety epoch · events · Evidence
+  authenticated principal · Approval resource · Workflow Instance
+  command lease · safety epoch · event journal
+  Completion Contract · Task Outcome · Receipt
               │
               ▼
-Navigation Gateway／typed adapter port
-         ┌────┴───────────────┐
-         ▼                    ▼
-Isaac Nav2 Adapter       NXDog Edge Adapter
-                              │ vendor-supported ROS 2 contract
-                              ▼
-                       nxnav／platform driver
+Capability Executor
+  ├─ Navigation Gateway → Isaac/Nav2 or NXDog navigation Adapter
+  ├─ PlatformCommandPort → indicator／posture／charging Adapter
+  └─ ObservationPort → health／pose／velocity／map／battery Evidence
 ```
 
 這個安排保留三項既有產品規則：
 
-1. Agent 只選 registered Capability；正常任務順序、bounded retry、cancel、Evidence、
-   Completion Contract 與返航由 deterministic Workflow 負責。
+1. Agent／Fast Path 只選 registered Capability 與 typed input；Runtime 建立並唯一持有
+   Task lifecycle，且只為 Workflow Capability 建立 mutable Workflow Instance。純 Workflow
+   definition仍負責正常順序、bounded retry、cancel、Evidence requirements與返航，但不在
+   Application建立第二份active state；atomic Capability只使用Runtime-owned單步Task lifecycle。
    [Architecture][jenai-architecture-product]
-2. 所有移動仍通過共用 Navigation Gateway；TUI、WebUI、MCP 與 Agent 不得直接建立
-   NXDog client 或呼叫 vendor motion endpoint。[ADR 0005][jenai-adr-0005]
+2. Capability Executor將navigation送入共用Navigation Gateway，非導航write送入
+   PlatformCommandPort，read-only Evidence送入ObservationPort；TUI、WebUI、MCP 與Agent
+   不得直接建立NXDog client或呼叫vendor endpoint。[ADR 0005][jenai-adr-0005]
 3. 單一 Robot Runtime authority 擁有 per-robot/domain command lease、safety epoch、
-   active command、approval binding、event order 與 immutable Task Receipt；transport
-   disconnect 不等於 command cancellation。[ADR 0006][jenai-adr-0006]
+   Approval、Workflow Instance、active command、Completion Contract、event order、Task
+   Outcome與immutable Receipt；transport disconnect不等於command cancellation。
+   [ADR 0006][jenai-adr-0006]
 
-NXDog Edge Adapter 應部署在能直接存取 robot-side ROS 2 Foxy domain 的 companion。
-中央 JenAI／DGX Spark 只使用 authenticated、high-level Runtime protocol；不為了
-NXDog 讓 Jazzy application process 直接加入 Foxy DDS domain。這是目前的推薦方案，
-不是已完成部署；完整比較見 [Deployment Options](DEPLOYMENT_OPTIONS.md)。
+Protocol v0採co-located topology。Isaac Authority與Isaac/Nav2 Adapter都位於DGX；NXDog
+Authority、Capability Executor與NXDog Adapter一起部署在能直接存取robot-side ROS 2
+Foxy domain的companion／LAN sidecar。中央JenAI／DGX caller只使用authenticated
+high-level Runtime protocol；這條public protocol終止於Authority，不繼續連到Adapter。
+未來若拆分Authority與Adapter，必須另立Edge Control Protocol／ADR。這是推薦方案，不是
+已完成部署；完整比較見[Deployment Options](DEPLOYMENT_OPTIONS.md)。
 
 ## Robot Runtime v0 decision summary
 
@@ -384,22 +387,28 @@ assessment 只固定下列 architecture decisions：
 
 | Decision | Required contract |
 |---|---|
+| Execution owner | Intent Layer只選typed Capability；Runtime唯一持有Approval、Task lifecycle、Completion Contract、Task Outcome與Receipt，並只為Workflow Capability建立Workflow Instance。 |
 | Public semantic surface | `submit(CommandEnvelope)`、`observe(ObservationRequest)`、`stop(StopEnvelope)` 三個入口。 |
 | Wire mapping | `POST /runtime/v0/commands`、`GET /runtime/v0/observations`、`POST /runtime/v0/stop`。 |
-| Command authority | Effectful Workflow 在整段任務持有唯一 per-robot/domain lease；adapter fencing 防止 stale owner。 |
+| Deployment topology | v0 Authority與Adapter co-located；public Runtime protocol只存在caller→Authority。 |
+| Command authority | Authority從Task accepted／awaiting-approval到terminal cleanup管理唯一per-robot/domain lease與local execution fence。 |
+| Identity | AuthenticatedPrincipal由transport建立；transport-bound client identity不得抄用payload。Client ID／source surface永遠只是caller claim。 |
 | Approval | Server 保存 exact canonical action 與 digest；browser 只看 redacted、operator-readable preview，執行前再比對。 |
 | Safety epoch | Global stop 先 durable bump epoch，再 invalidates pending approvals／commands／lease；stop 不因 busy 或 stale caller epoch 被拒絕。 |
 | Idempotency | 同 key＋同 canonical request 回既有 command；同 key＋不同 request fail closed。 |
+| Timing | Caller只要求timeout；Runtime clamp並分開request freshness、approval expiry、execution、postcondition Evidence、cleanup與STOP budgets；TaskStarted必須發布server-accepted execution deadline。 |
 | Observation | Atomic snapshot 加 monotonic `sequence` event stream；sequence 是 replay cursor 與 dedupe key。 |
-| Evidence | Vendor-neutral typed envelope，保留 source、source timestamp、freshness、frame／Map Identity 與 limitation；缺資料不得補造。 |
+| Evidence | Vendor-neutral typed envelope分開source time／freshness、content digest、transport security、source assurance／attestation、frame／Map Identity與limitation；缺資料不得補造。 |
 | Completion | HTTP 2xx、process exit 或 vendor result code 都不是 Task Outcome；只由 Capability-specific Completion Contract 與 Evidence 決定。 |
+| Startup | Durable generation／epoch先前進，再reconcile active vendor work與non-terminal Tasks；完成前effectful admission blocked，STOP仍可用。 |
 | Adapter boundary | Adapter 處理 ROS／vendor transport、goal correlation、bounded cancel／cleanup 與 Evidence normalization，不處理意圖、approval 或 product outcome。 |
 
-Runtime 後方可使用小型 internal adapter port，例如 `describe`、`start`、
-`cancel`、`emergency_stop` 與 `collect_evidence`；它不是 public HTTP API。
-NXDog adapter 在 vendor contract 與 physical acceptance 尚未完成前只能 advertise
-read-only observation。任何 motion operation 必須回 `capability_unavailable`，
-不得 fallback 到未強化的 Flask routes。
+Runtime 後方只有一個 Capability Executor role：navigation通過既有
+`NavigationGateway`，indicator／posture／charging通過`PlatformCommandPort`，state
+Evidence通過read-only `ObservationPort`。這些是internal Interfaces，不是public HTTP
+API。NXDog Adapter在vendor contract與physical acceptance尚未完成前只能advertise
+read-only observation；任何motion operation必須回`capability_unavailable`，不得
+fallback到未強化的Flask routes。
 
 ## Adoption sequence and gates
 
@@ -410,8 +419,8 @@ read-only observation。任何 motion operation 必須回 `capability_unavailabl
 |---|---|---|
 | 0. Planned release baseline | 以獨立 release-only PR 從目前 reviewed main 準備下一個 release candidate；assessment PR 保持 Draft。 | 不夾帶 Runtime 或 NXDog motion；版本號、文件、build、wheel 與 GitHub Release gates 通過後才可宣稱 `v2.6.0` 已驗證／發布。 |
 | 1. Vendor／legal contract | 取得授權、firmware／ROS compatibility、names/QoS、map/frame/time、cancel/stop、watchdog、charging/posture semantics。 | [Vendor Gaps](VENDOR_GAPS.md) 的 motion blockers 有書面答案。 |
-| 2. Runtime parity | 以 in-memory adapter 與現有 Isaac Navigation Gateway 驗證 auth、idempotency、lease、epoch、approval binding、event replay、disconnect、restart reconciliation 與 missing-Evidence outcomes。 | 現有 Isaac approval、cancel、Evidence 與 Task Outcome 無倒退。 |
-| 3. NXDog read-only edge | 將現行 observation snapshot 投影到 common Runtime，保留 stale／timestamp／map limitations。 | 不新增 motion Capability；WebUI 只顯示可證明狀態。 |
+| 2. Runtime parity | 以 in-memory ports 與 co-located Isaac Navigation Gateway 驗證 auth、idempotency、lease、epoch、approval binding、event replay、disconnect、startup reconciliation 與 missing-Evidence outcomes。 | 現有 Isaac approval、cancel、Evidence 與 Task Outcome 無倒退。 |
+| 3. NXDog read-only deployment | 在 robot-side companion co-locate Authority與Adapter，將現行 observation snapshot 投影到 common Runtime並保留 stale／timestamp／map limitations。 | 不新增 motion Capability；WebUI 只顯示可證明狀態。 |
 | 4. Non-motion write | 先做 indicator command，套用 [canonical Evidence-to-outcome policy](CAPABILITY_MAPPING.md#evidence-to-outcome-policy)。 | Auth、lease、approval、idempotency、receipt 與可用 read-back contract 通過。 |
 | 5. Stop contract | 先在靜止狀態演練，再驗 exact cancel correlation、ack、zero-command publication 與 fresh velocity window。 | 明確區分 requested／acknowledged／observed；未證實 physical halt。 |
 | 6. Physical navigation | 不透過 TUI 或 LLM，走同一 Runtime／Navigation Gateway 做 compute-route、短距離 navigate、cancel 與 endpoint Evidence。 | 固定場景與起點下通過 independent physical acceptance、security review 與 blocking code review。 |
@@ -425,9 +434,10 @@ read-only observation。任何 motion operation 必須回 `capability_unavailabl
 
 1. 獨立的 planned next-release PR（目前提議版本為 `v2.6.0`），先完成所有
    release-truth gates 才發布。
-2. Robot Runtime v0 schema、fake adapter、durable state/event tests；不接 NXDog motion。
-3. 現有 Isaac Navigation Gateway parity slice。
-4. NXDog Edge Adapter read-only projection。
+2. Robot Runtime v0 schema、in-memory executor ports、durable state/event/reconciliation tests；
+   不接NXDog motion。
+3. DGX上的co-located Isaac Navigation Gateway parity slice。
+4. robot-side companion上的co-located NXDog read-only projection。
 5. Indicator write／read-back contract（若無 authoritative read-back，維持 `partial`）。
 6. Software stop contract。
 7. Short physical navigation。
@@ -467,10 +477,10 @@ acceptance 與 rollback plan。這份 assessment 不授權其中任何一項實�
    [nxnav metadata][vendor-nxnav-package]
    [platform metadata][vendor-platform-package]
 
-6. **建議採 Edge Adapter，不採 vendor HTTP passthrough。**
-   Common Robot Runtime 應只 expose high-level Capability、Evidence 與 Task Outcome；
-   NXDog-specific ROS／map／cancel／charging details全部留在 edge adapter，並仍通過
-   Navigation Gateway。[ADR 0006][jenai-adr-0006]
+6. **建議採 co-located Runtime＋Adapter，不採 vendor HTTP passthrough。**
+   Common Robot Runtime只expose high-levelTask、Evidence與Task Outcome；NXDog-specific
+   ROS／map／cancel／charging details全部留在co-located Adapter。Navigation只通過
+   NavigationGateway，其他平台功能使用各自internal port。[ADR 0006][jenai-adr-0006]
    [Architecture][jenai-architecture-runtime]
 
 ## Pinned vendor sources

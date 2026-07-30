@@ -28,6 +28,25 @@
 
 這個等級只描述 integration maturity，不取代上述 Evidence-to-outcome policy。
 
+## Runtime execution ownership
+
+Agent／Fast Path只選Capability與typed input。Runtime接受Task後，只有Robot Runtime
+Authority可以建立Approval、Task lifecycle，以及Workflow Capability對應的mutable
+Workflow Instance；Completion Contract evaluation、Task Outcome與Receipt也只有Authority
+能改變。Capability Executor及下列ports只執行Authority已准入的step並回傳typed
+Events／Evidence：
+
+| Internal execution path | Scope |
+|---|---|
+| `NavigationGateway` | `compute_route`、`navigate`及Workflow中的movement；不得承接indicator／posture／charging |
+| `PlatformCommandPort` | `set_indicator`、`set_posture`、`auto_charge`等allowlisted non-navigation write |
+| `ObservationPort` | `inspect_state`與Completion Contract所需的health／pose／velocity／map／battery Evidence |
+| Runtime provider-free STOP | robot-wide epoch invalidation、task cancellation與各port bounded cleanup |
+
+NXDog v0中的Authority、Capability Executor與Adapter在robot-side companion co-locate；
+public Runtime protocol只存在caller→Authority。未來remote Authority→Edge需要獨立ADR，
+不得讓Adapter成為第二個Task authority。
+
 ## Mapping
 
 | JenAI Capability | Nexuni source | 目前等級 | Completion Contract 所需 evidence | 目前缺口 |
@@ -57,8 +76,9 @@ ADR 0005 已允許 `JenAI doctor` 取得 NXDog read-only observations。這些 o
 - charging current flag 不等於已完成 docking/charging。
 
 在 Robot Runtime Protocol v0 中，read-only Adapter 應投影為 `RuntimeState` 與
-`EvidenceEnvelope`，並保留 `observed_at`、`received_at`、source、freshness verdict 與
-limitations；無 source timestamp 時必須明確標記。
+`EvidenceEnvelope`，經`ObservationPort`保留`observed_at`、`received_at`、source、
+freshness verdict、content digest、transport security、source assurance／attestation與
+limitations；無source timestamp時必須明確標記，這些evidence dimensions不得互相替代。
 
 ## `compute_route`
 
@@ -67,13 +87,16 @@ limitations；無 source timestamp 時必須明確標記。
 ```text
 typed route request
 → Robot Runtime Authority
-→ NXDog Edge Adapter
+→ Capability Executor
+→ Navigation Gateway
+→ co-located NXDog navigation Adapter
 → ComputePrmPath／ComputeRoute
 → typed route evidence
 ```
 
-它仍須使用 command ID、deadline、map identity 與 result taxonomy，但不取得 motion
-lease。路徑只可作為 preview/evidence；不能因 path 存在就宣稱 navigation ready。
+它仍須使用command ID、server-clamped execution budget、map identity與result taxonomy，
+但不取得motion lease。路徑只可作為preview/evidence；不能因path存在就宣稱navigation
+ready。
 
 ## `set_indicator`
 
@@ -82,7 +105,11 @@ LED 是第一個低物理風險 write candidate，但需修正「read-back」說
 `vui_current_color`；`GET /color` 只回傳此變數。因此：
 
 ```text
-POST accepted
+Robot Runtime Authority
+→ Capability Executor
+→ PlatformCommandPort
+→ co-located NXDog Adapter
+→ vendor VUI command accepted
 AND
 GET shadow == requested
 ```
@@ -122,7 +149,8 @@ command queue。
 NXDog navigation 要進入 `implemented_unvalidated` 前，必須同時滿足：
 
 1. Robot Runtime Authority 已在 Isaac/Nav2 fake/live vertical slice 驗證。
-2. NXDog Edge Adapter 是唯一持有 vendor ROS action client 的 process。
+2. Robot Runtime Authority與NXDog Adapter已co-locate在唯一robot-side deployment，且只有
+   該Adapter持有vendor ROS action client。
 3. typed request 綁定 active Site Profile 與可驗證 map identity。
 4. action goal acceptance、UUID、feedback、cancel response 與 terminal result 可關聯。
 5. final pose/velocity evidence 具有 source time、frame 與 freshness。
