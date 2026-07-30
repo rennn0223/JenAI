@@ -78,7 +78,7 @@ Machine-readable results: [browser-acceptance.json](evidence/product-polish/brow
 | TUI welcome | Leads with a natural-language task, then `/doctor` and `/help`; the approved visual layout stays intact | wide/narrow renders and `test_tui_ux_copy.py` |
 | Discover a command | `/` opens the palette; keyboard navigation and descriptions use operator language | `test_tui.py`, `test_tui_command_dispatch.py` |
 | Approve motion | Risk and physical effect are explicit; options remain one-time, session, or reject; `Esc` rejects | `test_tui_ux_copy.py`, approval-policy tests |
-| Web monitor | Current task, pending approvals, tool timeline, and current-service run history survive browser refresh; exact redacted action parameters remain visible and digest-bound before approval | `test_webui.py`, `test_webui_ux.py` |
+| Web monitor | Current task, pending approvals, tool timeline, and current-service run history survive browser refresh; exact redacted action parameters remain visible while binding digests stay server-side; persisted WebUI requests are redacted | `test_webui.py`, `test_webui_ux.py` |
 | Web command fails | Input is restored, but response loss is reported as unknown delivery and tells the operator to inspect state before retrying | `test_webui_ux.py` |
 | Web stop is ambiguous | The UI says stop delivery is unconfirmed and directs the operator to the physical emergency stop | `test_webui_ux.py` |
 | Website discovery | Search and mobile navigation respond to real keyboard events in Firefox | `ui_browser_acceptance.py`, browser acceptance manifest |

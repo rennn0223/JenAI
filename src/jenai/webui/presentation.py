@@ -248,7 +248,7 @@ def _build_runs(status: dict[str, Any]) -> tuple[WebRunView, ...]:
                 if parameter.get("label") and parameter.get("value") is not None
             )
             preview_complete = bool(
-                isinstance(preview, dict) and preview.get("canonical_action_sha256") and parameters
+                isinstance(preview, dict) and preview.get("preview_complete") is True and parameters
             )
             approvals.append(
                 WebApprovalView(

@@ -8,11 +8,11 @@ or executable payloads.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from jenai.redaction import redact_sensitive_text
-from jenai.schemas import RunRecord
+from jenai.schemas import ApprovalPreview, RunRecord
 
 _MAX_TERMINAL_RUNS = 50
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "blocked", "interrupted"})
@@ -22,6 +22,24 @@ def _safe_optional(value: str | None, secret_values: tuple[str, ...]) -> str | N
     if value is None:
         return None
     return redact_sensitive_text(value, secret_values=secret_values)
+
+
+def _public_approval_preview(
+    preview: ApprovalPreview | None,
+    *,
+    safe: Callable[[str], str],
+) -> dict[str, Any] | None:
+    if preview is None:
+        return None
+    return {
+        "action_kind": safe(preview.action_kind),
+        "display_title": safe(preview.display_title),
+        "parameters": [
+            {"label": safe(parameter.label), "value": safe(parameter.value)}
+            for parameter in preview.parameters
+        ],
+        "preview_complete": bool(preview.parameters),
+    }
 
 
 def build_monitoring_transcript(
@@ -66,9 +84,7 @@ def build_monitoring_transcript(
                     "risk_level": str(approval.risk_level),
                     "status": str(approval.status),
                     "created_at": approval.created_at.isoformat(),
-                    "preview": approval.preview.model_dump(mode="json")
-                    if approval.preview is not None
-                    else None,
+                    "preview": _public_approval_preview(approval.preview, safe=safe),
                 }
                 for approval in run.interruptions
             ],

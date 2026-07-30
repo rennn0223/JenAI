@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import http.client
 import json
 import threading
@@ -538,28 +539,30 @@ def test_webui_fragment_keeps_drive_topic_payload_and_duration_after_refresh(
     assert "monitor-approve" in fragment
 
 
-def test_webui_fragment_keeps_redacted_ros_payload_after_refresh(
+def test_webui_fragment_keeps_redacted_ros_payload_without_digests_after_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import jenai.webui.server as server_module
+    from jenai.webui.approval_preview import canonical_action_json, canonical_action_sha256
 
     secret = "vendor<&credential"
     monkeypatch.setenv("MODEL_AUTH", secret)
     config = _config()
     config.provider_profiles["test"].api_key_env = "MODEL_AUTH"
+    action = {
+        "type": "pub",
+        "topic": "/robot/task",
+        "message_type": "std_msgs/msg/String",
+        "payload": {"data": secret},
+    }
 
     async def fake_command(_config, _config_path, _text):
         return {
             "kind": "confirm",
             "html": "<p>發布訊息：vendor&lt;&amp;credential</p>",
             "danger": "這會發布一筆 ROS 訊息。",
-            "action": {
-                "type": "pub",
-                "topic": "/robot/task",
-                "message_type": "std_msgs/msg/String",
-                "payload": {"data": secret},
-            },
+            "action": action,
         }
 
     monkeypatch.setattr(server_module, "run_web_command", fake_command)
@@ -584,6 +587,8 @@ def test_webui_fragment_keeps_redacted_ros_payload_after_refresh(
             command = response.read().decode("utf-8")
         with urllib.request.urlopen(f"{base}/fragment", timeout=5) as response:
             fragment = response.read().decode("utf-8")
+        with urllib.request.urlopen(f"{base}/api/status", timeout=5) as response:
+            status = response.read().decode("utf-8")
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -592,10 +597,81 @@ def test_webui_fragment_keeps_redacted_ros_payload_after_refresh(
     assert "[REDACTED]" in command
     assert secret not in command
     assert 'data-approval-parameter="Payload"' in fragment
-    assert "Payload SHA-256" in fragment
     assert "[REDACTED]" in fragment
     assert secret not in fragment
     assert "monitor-approve" in fragment
+    raw_payload_digest = hashlib.sha256(
+        canonical_action_json(action["payload"]).encode("utf-8")
+    ).hexdigest()
+    raw_action_digest = canonical_action_sha256(action)
+    monitoring_projection = json.dumps(
+        build_status_payload(
+            config,
+            tmp_path / "config.toml",
+            run_store=server.RequestHandlerClass.run_store,
+        ),
+        ensure_ascii=False,
+    )
+    for browser_output in (command, fragment, status, monitoring_projection):
+        assert "Payload SHA-256" not in browser_output
+        assert "canonical_action_sha256" not in browser_output
+        assert raw_payload_digest not in browser_output
+        assert raw_action_digest not in browser_output
+
+
+def test_webui_terminal_receipt_persists_only_redacted_operator_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jenai.state.task_receipts import TaskReceiptStore
+
+    provider_secret = "provider-low-entropy"
+    web_secret = "web-token-low-entropy"
+    password = "1234"
+    bearer = "short-bearer"
+    monkeypatch.setenv("MODEL_AUTH", provider_secret)
+    monkeypatch.setenv("JENAI_WEB_TOKEN", web_secret)
+    config = _config()
+    config.provider_profiles["test"].api_key_env = "MODEL_AUTH"
+    receipt_store = TaskReceiptStore(tmp_path / "reports" / "tasks")
+    run_store = RunStore(receipt_store=receipt_store)
+    server = make_server(
+        config,
+        tmp_path / "config.toml",
+        port=0,
+        run_store=run_store,
+    )
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    raw_request = (
+        f"/status MODEL_AUTH={provider_secret} JENAI_WEB_TOKEN={web_secret} "
+        f"password={password} Authorization: Bearer {bearer}"
+    )
+    try:
+        host, port = server.server_address
+        request = urllib.request.Request(
+            f"http://{host}:{port}/api/command",
+            data=json.dumps({"text": raw_request}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    run = run_store.snapshot_runs()[0]
+    receipt_paths = receipt_store.list_paths()
+    assert len(receipt_paths) == 1
+    receipt = receipt_store.load(receipt_paths[0])
+    assert receipt is not None
+    assert run.user_input == receipt.request
+    assert "[REDACTED]" in receipt.request
+    for secret in (provider_secret, web_secret, password, bearer):
+        assert secret not in run.user_input
+        assert secret not in receipt.request
 
 
 def test_approval_preview_rejects_route_without_exact_pose() -> None:

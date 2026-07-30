@@ -85,7 +85,6 @@ def _ros_parameters(
         _parameter("Topic", topic),
         _parameter("Message type", message_type),
         _parameter("Payload", safe_payload),
-        _parameter("Payload SHA-256", hashlib.sha256(payload_json.encode("utf-8")).hexdigest()),
     ]
     if str(action.get("type") or "") == "drive":
         duration = _finite_display(action.get("duration", 1.0))

@@ -723,6 +723,12 @@ class _Handler(BaseHTTPRequestHandler):
         # Snapshot first: its purge callback terminalizes expired approvals before
         # the run transcript is projected for this refresh.
         confirmation_bindings = self.pending.snapshot_bindings() if self.pending is not None else {}
+        stored_preview_digests = {
+            approval.tool_call_id: approval.preview.canonical_action_sha256
+            for run in (self.run_store.snapshot_runs() if self.run_store is not None else ())
+            for approval in run.interruptions
+            if approval.preview is not None
+        }
         if self.status_cache is not None:
             payload = self.status_cache.build_status(
                 self.config,
@@ -735,12 +741,18 @@ class _Handler(BaseHTTPRequestHandler):
             for approval in run.get("approvals", []):
                 binding = confirmation_bindings.get(str(approval.get("tool_call_id") or ""))
                 preview = approval.get("preview")
-                preview_digest = (
-                    str(preview.get("canonical_action_sha256") or "")
-                    if isinstance(preview, dict)
-                    else ""
+                stored_digest = stored_preview_digests.get(str(approval.get("tool_call_id") or ""))
+                preview_complete = bool(
+                    isinstance(preview, dict)
+                    and preview.get("preview_complete") is True
+                    and preview.get("parameters")
                 )
-                if binding is not None and preview_digest and binding[1] == preview_digest:
+                if (
+                    binding is not None
+                    and stored_digest
+                    and binding[1] == stored_digest
+                    and preview_complete
+                ):
                     approval["confirm_id"] = binding[0]
                 elif binding is not None:
                     approval["preview"] = None
@@ -1064,12 +1076,13 @@ class _Handler(BaseHTTPRequestHandler):
         tracker = getattr(self, "active_confirmation", None)
         command_epoch = tracker.epoch() if tracker is not None else 0
         store = self.run_store
-        run = store.create_run("webui", text) if store is not None else None
+        secret_values = _configured_secret_values(self.config, self.config_path)
+        stored_text = redact_sensitive_text(text, secret_values=secret_values)
+        run = store.create_run("webui", stored_text) if store is not None else None
         if run is not None and store is not None:
             store.set_status(run, RunStatus.UNDERSTANDING)
         try:
             result = asyncio.run(run_web_command(self.config, self.config_path, text))
-            secret_values = _configured_secret_values(self.config, self.config_path)
             browser_secret_values = secret_values | {
                 html.escape(value, quote=True) for value in secret_values
             }
