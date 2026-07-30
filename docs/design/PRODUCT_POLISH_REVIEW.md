@@ -91,15 +91,17 @@ Machine-readable results: [browser-acceptance.json](evidence/product-polish/brow
 - Website rendered-output and stylesheet regressions: pass.
 - Generated WebUI JavaScript syntax check: pass.
 - Firefox WebDriver keyboard and measured 500 × 758 inner-viewport responsive acceptance: pass.
-- Targeted WebUI → Isaac STOP acceptance on clean revision
-  `c66d163aefcd6f7644221b8fd99643132bc314af`: pass. An exact, digest-bound
-  `/route map_left_down` approval entered `running`; the same Nav2 goal UUID changed from
-  `executing` (2) to `canceled` (5) after WebUI STOP. The action finished
-  `interrupted`/`cancelled`, no late success was observed, and the separate STOP run recorded a
-  published zero-velocity command.
+- Targeted WebUI → Isaac STOP engineering acceptance on clean revision
+  `c66d163aefcd6f7644221b8fd99643132bc314af`: pass. An exact, digest-bound route approval
+  entered `running`; the same Nav2 goal UUID changed from `executing` (2) to
+  `canceled` (5) after WebUI STOP. The action finished `interrupted`/`cancelled`,
+  no late success was observed, and the separate STOP run recorded a published zero-velocity command.
 - This is simulation action-lifecycle evidence only. The STOP receipt correctly did not claim
   independently observed motion stop; a later odometry sample was near zero, while the post-stop TF
   window was unavailable because of transient extrapolation. No physical NXDog motion or physical
   safety result is claimed.
-- Machine-readable result:
-  [webui-isaac-stop-acceptance.json](evidence/product-polish/webui-isaac-stop-acceptance.json).
+- The raw machine-readable result remains local at
+  `$XDG_CONFIG_HOME/jenai/reports/acceptance/webui-isaac-stop-20260730.json`; SHA-256
+  `164c85eda8ab9e4faf78d9ee0b58a1dbbbeba5a8c54810d81eb1bc4bc671410b`. ROS domain,
+  full USD identity, and map identity were not captured in that run and remain `not recorded`;
+  this is therefore engineering acceptance evidence, not formal HIL evidence.
