@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from jenai.config.models import AppConfig
 from jenai.schemas import (
     ApprovalRequest,
-    ApprovalStatus,
     RiskLevel,
     RunRecord,
     RunStatus,
@@ -17,10 +16,10 @@ from jenai.schemas import (
     ToolCallRecord,
     ToolCallStatus,
 )
-from jenai.schemas.models import utc_now
 from jenai.state.runs import RunStore
 from jenai.task_results import TaskResult, run_status_for_outcome
 from jenai.tools.emergency_stop import emergency_stop_effect_scope
+from jenai.webui.approval_preview import build_approval_preview, canonical_action_sha256
 
 
 def _action_identity(action: dict[str, Any]) -> tuple[str, ToolCallCategory]:
@@ -40,9 +39,12 @@ def register_confirmation(
     config: AppConfig,
     action: dict[str, Any],
     danger: str,
+    *,
+    secret_values: Iterable[str] = (),
 ) -> str:
-    """Attach one pending approval and safe tool summary to a run."""
+    """Attach one pending approval and an exact, action-bound safe preview."""
     tool_name, category = _action_identity(action)
+    preview = build_approval_preview(action, secret_values=secret_values)
     effect_scope = emergency_stop_effect_scope(config)
     call = ToolCallRecord(
         tool_name=tool_name,
@@ -65,22 +67,33 @@ def register_confirmation(
             risk_level=RiskLevel.P1,
             effect_scope=effect_scope,
             justification="WebUI 動作必須經過一次性批准。",
+            preview=preview,
         ),
     )
     store.set_status(run, RunStatus.AWAITING_APPROVAL)
     return call.tool_call_id
 
 
-def start_confirmation(store: RunStore, run: RunRecord, tool_call_id: str) -> None:
-    """Resolve approval and mark its tool as running."""
-    store.resolve_interruption(run, tool_call_id, ApprovalStatus.APPROVED)
-    store.update_tool_call(
-        run,
-        tool_call_id,
-        status=ToolCallStatus.RUNNING,
-        started_at=utc_now(),
+def confirmation_matches_action(
+    run: RunRecord,
+    tool_call_id: str,
+    action: Mapping[str, Any],
+) -> bool:
+    """Require the exact action shown to the operator before execution."""
+    approval = next(
+        (item for item in run.interruptions if item.tool_call_id == tool_call_id),
+        None,
     )
-    store.set_status(run, RunStatus.RUNNING)
+    return bool(
+        approval is not None
+        and approval.preview is not None
+        and approval.preview.canonical_action_sha256 == canonical_action_sha256(action)
+    )
+
+
+def start_confirmation(store: RunStore, run: RunRecord, tool_call_id: str) -> None:
+    """Resolve approval and publish one consistent running snapshot."""
+    store.start_approved_tool(run, tool_call_id)
 
 
 def reject_confirmation(
@@ -91,19 +104,10 @@ def reject_confirmation(
     summary: str = "操作員已取消；動作未執行。",
 ) -> None:
     """Reject a pending action and make the run terminal without executing it."""
-    store.resolve_interruption(run, tool_call_id, ApprovalStatus.REJECTED)
-    store.update_tool_call(
+    store.reject_approval_and_finish(
         run,
         tool_call_id,
-        status=ToolCallStatus.REJECTED,
-        ended_at=utc_now(),
-        output_summary=summary,
-    )
-    store.finish(
-        run,
-        status=RunStatus.BLOCKED,
-        outcome=TaskOutcome.BLOCKED,
-        final_output=summary,
+        summary=summary,
     )
 
 
@@ -153,18 +157,13 @@ def finish_confirmation(
         TaskOutcome.CANCELLED: "WebUI 動作已取消。",
     }
     summary = summaries[result.outcome]
-    store.update_tool_call(
+    store.finish_tool_and_run(
         run,
         tool_call_id,
-        status=ToolCallStatus.SUCCEEDED if result.succeeded else ToolCallStatus.FAILED,
-        ended_at=utc_now(),
-        output_summary=summary,
-    )
-    store.finish(
-        run,
-        status=result.run_status,
+        tool_status=ToolCallStatus.SUCCEEDED if result.succeeded else ToolCallStatus.FAILED,
+        run_status=result.run_status,
         outcome=result.outcome,
-        final_output=summary,
+        summary=summary,
     )
 
 
@@ -175,16 +174,11 @@ def cancel_confirmation(
 ) -> None:
     """Make an already-approved action terminal when emergency stop interrupts it."""
     summary = "急停已中斷這項動作；請以停止回執確認機器人狀態。"
-    store.update_tool_call(
+    store.finish_tool_and_run(
         run,
         tool_call_id,
-        status=ToolCallStatus.FAILED,
-        ended_at=utc_now(),
-        output_summary=summary,
-    )
-    store.finish(
-        run,
-        status=RunStatus.INTERRUPTED,
+        tool_status=ToolCallStatus.FAILED,
+        run_status=RunStatus.INTERRUPTED,
         outcome=TaskOutcome.CANCELLED,
-        final_output=summary,
+        summary=summary,
     )

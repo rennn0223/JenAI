@@ -125,6 +125,12 @@ class RosTopicView:
 
 
 @dataclass(frozen=True, slots=True)
+class WebApprovalParameterView:
+    label: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
 class WebApprovalView:
     approval_id: str
     confirm_id: str | None
@@ -135,6 +141,8 @@ class WebApprovalView:
     status: str
     status_label: str
     created_at: str
+    parameters: tuple[WebApprovalParameterView, ...]
+    preview_complete: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +237,19 @@ def _build_runs(status: dict[str, Any]) -> tuple[WebRunView, ...]:
         approvals: list[WebApprovalView] = []
         for item in _records(raw.get("approvals")):
             state = _status_token(item.get("status"), _APPROVAL_STATUS_LABELS)
+            preview = item.get("preview")
+            raw_parameters = preview.get("parameters") if isinstance(preview, dict) else None
+            parameters = tuple(
+                WebApprovalParameterView(
+                    label=str(parameter.get("label") or ""),
+                    value=str(parameter.get("value") or ""),
+                )
+                for parameter in _records(raw_parameters)
+                if parameter.get("label") and parameter.get("value") is not None
+            )
+            preview_complete = bool(
+                isinstance(preview, dict) and preview.get("canonical_action_sha256") and parameters
+            )
             approvals.append(
                 WebApprovalView(
                     approval_id=str(item.get("approval_id") or ""),
@@ -240,6 +261,8 @@ def _build_runs(status: dict[str, Any]) -> tuple[WebRunView, ...]:
                     status=state,
                     status_label=_APPROVAL_STATUS_LABELS.get(state, "未知"),
                     created_at=str(item.get("created_at") or ""),
+                    parameters=parameters,
+                    preview_complete=preview_complete,
                 )
             )
 

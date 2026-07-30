@@ -272,6 +272,13 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 .monitor-item strong{display:block; font-size:13px; overflow-wrap:anywhere}
 .monitor-item span:not(.monitor-state){display:block; color:var(--muted); font-size:11.5px;
   overflow-wrap:anywhere}
+.approval-parameters{display:grid; gap:4px; margin:8px 0 2px}
+.approval-parameters>div{display:grid; grid-template-columns:minmax(86px,.4fr) minmax(0,1fr);
+  gap:8px; align-items:start}
+.approval-parameters dt{color:var(--muted); font-size:11px}
+.approval-parameters dd{margin:0; min-width:0; color:var(--ink-soft); font:11px ui-monospace,Menlo,monospace;
+  overflow-wrap:anywhere}
+.monitor-warning{margin:8px 0 2px; color:var(--bad); font-size:11.5px}
 .monitor-actions{display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px}
 .monitor-actions .btn-approve,.monitor-actions .btn-cancel{padding:5px 9px; font-size:12px}
 .monitor-empty,.monitor-note{color:var(--muted); font-size:12.5px}

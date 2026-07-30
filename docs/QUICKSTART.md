@@ -117,6 +117,10 @@ JenAI
 
 之後想重來:`JenAI onboard`(會先備份舊設定,金鑰和地點都保留)。
 
+> 升級提醒：使用 `--config /path/to/config.toml` 時，預設金鑰檔現在是同目錄的
+> `/path/to/.env`。原本共用 `~/.config/jenai/.env` 的部署，請搬移檔案、設定
+> `JENAI_ENV_FILE` 指向舊路徑，或在啟動 shell export 對應變數。
+
 ## 4. 健檢
 
 ```bash

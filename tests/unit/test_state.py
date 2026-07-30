@@ -56,6 +56,18 @@ def test_input_history_empty_returns_none() -> None:
     assert history.previous() is None
 
 
+def test_run_store_snapshot_is_consistent_and_detached_from_later_mutation() -> None:
+    store = RunStore()
+    run = store.create_run("session-1", "observe state")
+
+    snapshot = store.snapshot_runs()
+    store.finish(run, status=RunStatus.COMPLETED, final_output="done")
+
+    assert snapshot[0].status == "idle"
+    assert snapshot[0].final_output is None
+    assert store.snapshot_runs()[0].status == "completed"
+
+
 def test_run_store_no_tool_flow_reaches_completed() -> None:
     store = RunStore()
     run = store.create_run("session-1", "do something")

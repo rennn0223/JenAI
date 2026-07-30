@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from jenai.schemas.models import (
+    ApprovalParameter,
+    ApprovalPreview,
     ApprovalRequest,
     ApprovalStatus,
     DoctorCheckItem,
@@ -57,6 +59,8 @@ from jenai.schemas.outputs import (
 )
 
 __all__ = [
+    "ApprovalParameter",
+    "ApprovalPreview",
     "ApprovalRequest",
     "ApprovalStatus",
     "CommandGroup",

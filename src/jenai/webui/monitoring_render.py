@@ -35,7 +35,7 @@ def _current_run(view: WebStatusView) -> str:
 
 
 def _approval_actions(item: WebApprovalView) -> str:
-    if item.confirm_id is None:
+    if item.confirm_id is None or not item.preview_complete:
         return (
             f'<span class="monitor-state state-awaiting_approval">{_esc(item.status_label)}</span>'
         )
@@ -50,6 +50,20 @@ def _approval_actions(item: WebApprovalView) -> str:
     )
 
 
+def _approval_parameters(item: WebApprovalView) -> str:
+    if not item.preview_complete:
+        return '<p class="monitor-warning">批准內容無法完整重建，請重新送出指令。</p>'
+    return (
+        '<dl class="approval-parameters">'
+        + "".join(
+            f'<div data-approval-parameter="{_esc(parameter.label)}">'
+            f"<dt>{_esc(parameter.label)}</dt><dd><span>{_esc(parameter.value)}</span></dd></div>"
+            for parameter in item.parameters
+        )
+        + "</dl>"
+    )
+
+
 def _approval_queue(view: WebStatusView) -> str:
     pending = view.pending_approvals
     if not pending:
@@ -59,7 +73,9 @@ def _approval_queue(view: WebStatusView) -> str:
         + "".join(
             '<div class="monitor-item">'
             f"<div><strong>{_esc(item.title)}</strong>"
-            f"<span>{_esc(item.summary or item.tool_name)}</span></div>"
+            f"<span>{_esc(item.summary or item.tool_name)}</span>"
+            + _approval_parameters(item)
+            + "</div>"
             + _approval_actions(item)
             + "</div>"
             for item in pending

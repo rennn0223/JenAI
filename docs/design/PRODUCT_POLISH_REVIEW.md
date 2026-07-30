@@ -7,11 +7,13 @@
 ## Design contract
 
 - The TUI remains the terminal-first primary interaction surface.
-- The approved transcript layout, dachshund mascot, composer, approval hierarchy, colours,
-  responsive breakpoints, and motion behaviour are unchanged.
+- The approved transcript layout, dachshund mascot, composer, approval hierarchy, colours, and
+  responsive breakpoints are unchanged.
 - The WebUI remains an auxiliary monitoring and approval surface; it does not replace the TUI or
   create a second robot execution path.
-- No Nav2, AMCL, arrival tolerance, endpoint recovery, Capability, or dependency changed.
+- No Nav2 algorithm, AMCL parameter, arrival tolerance, endpoint recovery, Capability, TUI motion
+  path, or dependency changed. WebUI confirmation cancellation and STOP lifecycle semantics did
+  change and therefore require targeted live acceptance before merge.
 
 ## Rendered before / after
 
@@ -76,7 +78,7 @@ Machine-readable results: [browser-acceptance.json](evidence/product-polish/brow
 | TUI welcome | Leads with a natural-language task, then `/doctor` and `/help`; the approved visual layout stays intact | wide/narrow renders and `test_tui_ux_copy.py` |
 | Discover a command | `/` opens the palette; keyboard navigation and descriptions use operator language | `test_tui.py`, `test_tui_command_dispatch.py` |
 | Approve motion | Risk and physical effect are explicit; options remain one-time, session, or reject; `Esc` rejects | `test_tui_ux_copy.py`, approval-policy tests |
-| Web monitor | Current task, pending approvals, tool timeline, and current-service run history survive browser refresh without exposing raw actions | `test_webui.py`, `test_webui_ux.py` |
+| Web monitor | Current task, pending approvals, tool timeline, and current-service run history survive browser refresh; exact redacted action parameters remain visible and digest-bound before approval | `test_webui.py`, `test_webui_ux.py` |
 | Web command fails | Input is restored, but response loss is reported as unknown delivery and tells the operator to inspect state before retrying | `test_webui_ux.py` |
 | Web stop is ambiguous | The UI says stop delivery is unconfirmed and directs the operator to the physical emergency stop | `test_webui_ux.py` |
 | Website discovery | Search and mobile navigation respond to real keyboard events in Firefox | `ui_browser_acceptance.py`, browser acceptance manifest |
@@ -89,5 +91,6 @@ Machine-readable results: [browser-acceptance.json](evidence/product-polish/brow
 - Website rendered-output and stylesheet regressions: pass.
 - Generated WebUI JavaScript syntax check: pass.
 - Firefox WebDriver keyboard and measured 500 × 758 inner-viewport responsive acceptance: pass.
-- Live Isaac Sim and physical NXDog motion were not run because this change does not alter a motion
-  path. No simulation or physical result is claimed.
+- No physical NXDog motion was run or claimed. WebUI confirmation cancellation and STOP lifecycle
+  are production action-lifecycle changes; a targeted WebUI → Isaac STOP acceptance is required and
+  must be recorded before merge. Unit and concurrency tests do not replace that live evidence.

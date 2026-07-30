@@ -26,7 +26,7 @@ from jenai.config.models import AppConfig
 from jenai.config.store import default_env_file_path
 from jenai.doctor import run_doctor
 from jenai.providers.chat import chat_model_name
-from jenai.redaction import known_secret_values
+from jenai.redaction import known_secret_values, redact_sensitive_text
 from jenai.schemas import DoctorResult, RunRecord, RunStatus, TaskOutcome
 from jenai.state.audit import AuditStore
 from jenai.state.emergency_stop import (
@@ -41,11 +41,13 @@ from jenai.tools.safety import (
     NavigationCancelStatus,
     halt_robot_with_receipt,
 )
+from jenai.webui.approval_preview import canonical_action_sha256
 from jenai.webui.commands import WebAction, run_web_command, run_web_confirm
 from jenai.webui.monitoring import build_monitoring_transcript
 from jenai.webui.render import render_dashboard_html, render_main
 from jenai.webui.run_tracking import (
     cancel_confirmation,
+    confirmation_matches_action,
     finish_confirmation,
     register_confirmation,
     reject_confirmation,
@@ -311,18 +313,24 @@ class _PendingConfirms:
             self._notify(expired, "expired")
         return None
 
-    def snapshot(self) -> dict[str, str]:
-        """Return active opaque ids keyed by tool call, purging expired entries."""
+    def snapshot_bindings(self) -> dict[str, tuple[str, str]]:
+        """Return active token/action bindings keyed by tool call."""
         with self._lock:
             expired = self._purge_expired(time.monotonic())
-            tokens = {
-                pending.tool_call_id: token
+            bindings = {
+                pending.tool_call_id: (token, canonical_action_sha256(pending.action))
                 for token, (_, pending) in self._items.items()
                 if pending.tool_call_id is not None
             }
         for pending in expired:
             self._notify(pending, "expired")
-        return tokens
+        return bindings
+
+    def snapshot(self) -> dict[str, str]:
+        """Compatibility view containing only active opaque confirmation ids."""
+        return {
+            tool_call_id: binding[0] for tool_call_id, binding in self.snapshot_bindings().items()
+        }
 
     def clear(self) -> list[_PendingConfirmation]:
         """Revoke every token and return correlations for lifecycle cleanup."""
@@ -533,6 +541,17 @@ def _locations_count(config: AppConfig, config_path: Path) -> int:
         return 0
 
 
+def _configured_secret_values(config: AppConfig, config_path: Path) -> set[str]:
+    names = {
+        profile.api_key_env for profile in config.provider_profiles.values() if profile.api_key_env
+    }
+    names.add("JENAI_WEB_TOKEN")
+    return known_secret_values(
+        default_env_file_path(config_path),
+        environment_names=names,
+    )
+
+
 def build_status_payload(
     config: AppConfig,
     config_path: Path,
@@ -550,10 +569,10 @@ def build_status_payload(
         doctor_result if doctor_result is not None else run_doctor(config_path, include_nav=False)
     )
     profile = config.active_profile()
-    runs = list(run_store.list_runs()) if run_store is not None else []
+    runs = run_store.snapshot_runs() if run_store is not None else []
     transcript = build_monitoring_transcript(
         runs,
-        secret_values=known_secret_values(default_env_file_path(config_path)),
+        secret_values=_configured_secret_values(config, config_path),
     )
     return {
         "provider": profile.name if profile else None,
@@ -670,7 +689,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _status(self) -> dict[str, Any]:
         # Snapshot first: its purge callback terminalizes expired approvals before
         # the run transcript is projected for this refresh.
-        confirmation_tokens = self.pending.snapshot() if self.pending is not None else {}
+        confirmation_bindings = self.pending.snapshot_bindings() if self.pending is not None else {}
         if self.status_cache is not None:
             payload = self.status_cache.build_status(
                 self.config,
@@ -681,9 +700,18 @@ class _Handler(BaseHTTPRequestHandler):
             payload = build_status_payload(self.config, self.config_path, run_store=self.run_store)
         for run in payload.get("transcript", []):
             for approval in run.get("approvals", []):
-                confirm_id = confirmation_tokens.get(str(approval.get("tool_call_id") or ""))
-                if confirm_id is not None:
-                    approval["confirm_id"] = confirm_id
+                binding = confirmation_bindings.get(str(approval.get("tool_call_id") or ""))
+                preview = approval.get("preview")
+                preview_digest = (
+                    str(preview.get("canonical_action_sha256") or "")
+                    if isinstance(preview, dict)
+                    else ""
+                )
+                if binding is not None and preview_digest and binding[1] == preview_digest:
+                    approval["confirm_id"] = binding[0]
+                elif binding is not None:
+                    approval["preview"] = None
+                    approval["summary"] = "批准內容無法完整重建，請重新送出指令。"
         return payload
 
     def _send(self, body: str, content_type: str, status: int = 200) -> None:
@@ -950,6 +978,7 @@ class _Handler(BaseHTTPRequestHandler):
                     self.config,
                     safe_action,
                     str(result.get("danger") or ""),
+                    secret_values=_configured_secret_values(self.config, self.config_path),
                 )
                 result["confirm_id"] = pending_store.put(
                     result.pop("action", {}),
@@ -974,6 +1003,11 @@ class _Handler(BaseHTTPRequestHandler):
             store.set_status(run, RunStatus.UNDERSTANDING)
         try:
             result = asyncio.run(run_web_command(self.config, self.config_path, text))
+            secret_values = _configured_secret_values(self.config, self.config_path)
+            for field in ("html", "danger"):
+                value = result.get(field)
+                if isinstance(value, str):
+                    result[field] = redact_sensitive_text(value, secret_values=secret_values)
         except Exception:
             if run is not None and store is not None:
                 store.finish(
@@ -1116,6 +1150,24 @@ class _Handler(BaseHTTPRequestHandler):
                     "html": ("<p>這項批准已逾時或已使用；請重新送出指令。</p>"),
                 }
             run = _Handler._correlated_confirmation_run(self, pending)
+            if (
+                run is not None
+                and pending.tool_call_id is not None
+                and not confirmation_matches_action(run, pending.tool_call_id, pending.action)
+            ):
+                if self.run_store is not None:
+                    reject_confirmation(
+                        self.run_store,
+                        run,
+                        pending.tool_call_id,
+                        summary="批准內容已變更或無法完整重建；動作未執行。",
+                    )
+                return {
+                    "kind": "error",
+                    "html": "<p>批准內容無法驗證；請重新送出指令。</p>",
+                    "run_status": RunStatus.BLOCKED.value,
+                    "outcome": TaskOutcome.BLOCKED.value,
+                }
             execution = _ConfirmationExecution(
                 lambda: run_web_confirm(
                     self.config,
@@ -1205,6 +1257,12 @@ def lan_addresses() -> list[str]:
     return sorted(addresses)
 
 
+class _JenAIWebServer(ThreadingHTTPServer):
+    """Bound the production HTTP accept backlog for concurrent monitor refreshes."""
+
+    request_queue_size = 128
+
+
 def make_server(
     config: AppConfig,
     config_path: Path,
@@ -1238,7 +1296,7 @@ def make_server(
             "active_confirmation": _ActiveConfirmation(),
         },
     )
-    return ThreadingHTTPServer((host, port), handler)
+    return _JenAIWebServer((host, port), handler)
 
 
 def serve(

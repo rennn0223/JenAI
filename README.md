@@ -215,6 +215,10 @@ printf 'NVIDIA_API_KEY=nvapi-…\n' > ~/.config/jenai/.env && chmod 600 ~/.confi
 # 覆寫路徑：JENAI_ENV_FILE=/path/to/.env jenai
 ```
 
+使用自訂設定檔時（例如 `JenAI --config /lab/config.toml`），JenAI 會預設讀取同目錄的
+`/lab/.env`，不再隱式沿用 `~/.config/jenai/.env`。既有部署請將 `.env` 搬到自訂設定旁、
+以 `JENAI_ENV_FILE` 指向舊檔，或在啟動環境中 export 所需變數。
+
 ### 載具設定（`[vehicle]`）
 
 Vehicle Profile 是載具差異的第一個設定邊界。若新平台已提供相同高階 capability schema，

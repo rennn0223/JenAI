@@ -14,7 +14,8 @@ from typing import Any
 from jenai.redaction import redact_sensitive_text
 from jenai.schemas import RunRecord
 
-_MAX_VISIBLE_RUNS = 50
+_MAX_TERMINAL_RUNS = 50
+_TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "blocked", "interrupted"})
 
 
 def _safe_optional(value: str | None, secret_values: tuple[str, ...]) -> str | None:
@@ -34,7 +35,18 @@ def build_monitoring_transcript(
     def safe(value: str) -> str:
         return redact_sensitive_text(value, secret_values=known_secrets)
 
-    visible = list(runs)[-_MAX_VISIBLE_RUNS:]
+    all_runs = list(runs)
+    retained_terminal = [run for run in all_runs if str(run.status) in _TERMINAL_RUN_STATUSES][
+        -_MAX_TERMINAL_RUNS:
+    ]
+    required = [
+        run
+        for run in all_runs
+        if str(run.status) not in _TERMINAL_RUN_STATUSES
+        or any(str(approval.status) == "pending" for approval in run.interruptions)
+    ]
+    visible_ids = {run.run_id for run in (*required, *retained_terminal)}
+    visible = [run for run in all_runs if run.run_id in visible_ids]
     return [
         {
             "run_id": run.run_id,
@@ -54,6 +66,9 @@ def build_monitoring_transcript(
                     "risk_level": str(approval.risk_level),
                     "status": str(approval.status),
                     "created_at": approval.created_at.isoformat(),
+                    "preview": approval.preview.model_dump(mode="json")
+                    if approval.preview is not None
+                    else None,
                 }
                 for approval in run.interruptions
             ],

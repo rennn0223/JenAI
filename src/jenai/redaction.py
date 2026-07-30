@@ -28,6 +28,7 @@ def known_secret_values(
     credentials: Path | None = None,
     *,
     environment: Mapping[str, str] | None = None,
+    environment_names: Iterable[str] = (),
 ) -> set[str]:
     """Collect configured credential values without exposing their names or locations."""
     values: set[str] = set()
@@ -46,8 +47,11 @@ def known_secret_values(
                 if len(value) >= 4:
                     values.add(value)
     environ = os.environ if environment is None else environment
+    explicit_names = {str(name).strip() for name in environment_names if str(name).strip()}
     for key, value in environ.items():
-        if re.search(r"(?i)(key|token|secret|password)$", key) and len(value) >= 4:
+        if (key in explicit_names or re.search(r"(?i)(key|token|secret|password)$", key)) and len(
+            value
+        ) >= 4:
             values.add(value)
     return values
 
