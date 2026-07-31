@@ -3335,7 +3335,10 @@ def _prepare_capture(
         raise ValueError("No locations_path is configured.")
     locations_snapshot = load_locations_snapshot(locations_path)
     location = find_location(list(locations_snapshot.locations), options.location)
-    raw_action: dict[str, Any] = {"goal": location.model_dump(mode="json")}
+    raw_action: dict[str, Any] = {
+        "capability_id": "navigate",
+        "goal": location.model_dump(mode="json"),
+    }
     bound_action = bind_navigation_action(
         config,
         config_path,
