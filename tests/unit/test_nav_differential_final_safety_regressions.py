@@ -146,6 +146,62 @@ def test_persisted_runtime_identity_never_discloses_raw_dds_configuration(
     assert "dds_profile_sha256" in json.loads(serialized)["runtime_identity"]
 
 
+def test_runtime_identity_uses_script_recorded_nav2_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    rendered_params = state_dir / "nav2-params.yaml.12345"
+    rendered_params.write_text("controller_server: {}\n", encoding="utf-8")
+    (state_dir / "nav2-override-path").write_text(
+        f"{rendered_params}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JENAI_NAV2_STATE_DIR", str(state_dir))
+    monkeypatch.delenv("JENAI_NAV2_OVERRIDE_PARAMS", raising=False)
+    monkeypatch.setattr(runner, "_nav2_runtime_identity", lambda *args, **kwargs: {})
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('version = "0.1.0"\n', encoding="utf-8")
+
+    identity = runner._runtime_identity(
+        AppConfig(deployment_mode="simulation"),
+        config_path,
+        reviewed_git_sha=None,
+        expected_source_root=None,
+        scene_path=None,
+        live_scene_sha256=None,
+        simulation_epoch="epoch-nav2-override",
+    )
+
+    assert identity["nav_params_path"] == str(rendered_params)
+    assert identity["nav_params_sha256"] == hashlib.sha256(rendered_params.read_bytes()).hexdigest()
+
+
+def test_nav2_state_dir_matches_launcher_default_without_xdg_runtime_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("JENAI_NAV2_STATE_DIR", raising=False)
+    monkeypatch.setattr(runner.os, "getuid", lambda: 424242)
+
+    assert runner._nav2_state_dir() == Path("/tmp/jenai-nav2-424242")
+
+
+def test_nav_params_identity_does_not_fall_back_to_stale_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    stale_params = tmp_path / "nav2-params.yaml"
+    stale_params.write_text("controller_server: {}\n", encoding="utf-8")
+    monkeypatch.setenv("JENAI_NAV2_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("JENAI_NAV2_OVERRIDE_PARAMS", str(stale_params))
+
+    assert runner._nav_params_path("nav2") is None
+
+
 @pytest.mark.parametrize("capability_id", ["dock_approach", "area_patrol"])
 def test_target_binding_rejects_non_navigate_capability_before_motion(
     capability_id: str,

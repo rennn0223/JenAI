@@ -731,9 +731,31 @@ def _text_sha256(value: str | None) -> str | None:
 
 
 def _effective_ros_domain(config: AppConfig) -> str:
+    if config.deployment_mode == "simulation":
+        return os.environ.get("ROS_DOMAIN_ID", "0")
     if config.vehicle.domain_id is not None:
         return str(config.vehicle.domain_id)
     return os.environ.get("ROS_DOMAIN_ID", "0")
+
+
+def _nav2_state_dir() -> Path:
+    runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+    return Path(os.environ.get("JENAI_NAV2_STATE_DIR", runtime_dir / f"jenai-nav2-{os.getuid()}"))
+
+
+def _nav_params_path(session: str) -> Path | None:
+    state_dir = _nav2_state_dir()
+    state_file = state_dir / f"{session}-override-path"
+    try:
+        if state_file.is_file() and state_file.stat().st_size <= 4096:
+            lines = state_file.read_text(encoding="utf-8").splitlines()
+            if len(lines) == 1:
+                recorded = Path(lines[0].strip()).expanduser()
+                if recorded.is_absolute():
+                    return recorded.resolve()
+    except (OSError, UnicodeError):
+        pass
+    return None
 
 
 def _normalized_ros_topic(value: str | None) -> str | None:
@@ -1220,11 +1242,7 @@ def _runtime_identity(
 ) -> dict[str, Any]:
     locations_path = config.resolved_locations_path(config_path)
     session = os.environ.get("JENAI_NAV2_TMUX_SESSION", "nav2")
-    nav_params_path = os.environ.get("JENAI_NAV2_OVERRIDE_PARAMS")
-    if not nav_params_path:
-        uid = os.getuid()
-        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/tmp/jenai-nav2-{uid}")
-        nav_params_path = str(Path(runtime_dir) / f"{session}-params.yaml")
+    nav_params_path = _nav_params_path(session)
 
     source_root = Path(jenai.__file__).resolve().parents[2]
     bridge_script_path = source_root / "src" / "jenai" / "bridge" / "ros_bridge.py"
@@ -1248,8 +1266,8 @@ def _runtime_identity(
         "site_locations_sha256": config.site.locations_sha256,
         "locations_path": str(locations_path.resolve()) if locations_path else None,
         "locations_sha256": _sha256(locations_path),
-        "nav_params_path": nav_params_path,
-        "nav_params_sha256": _sha256(Path(nav_params_path)),
+        "nav_params_path": str(nav_params_path) if nav_params_path is not None else None,
+        "nav_params_sha256": _sha256(nav_params_path),
         "ambient_ros_domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
         "bridge_domain_id": bridge_domain_id,
         "rmw_implementation": os.environ.get("RMW_IMPLEMENTATION"),
@@ -4397,7 +4415,7 @@ async def _capture_live_path(
     resources: _CaptureResources,
 ) -> None:
     resources.stage = "bridge_start"
-    bridge = RosBridgeClient(domain_id=config.vehicle.domain_id)
+    bridge = RosBridgeClient(domain_id=int(_effective_ros_domain(config)))
     resources.bridge = bridge
     await bridge.configure_safety(
         watchdog_s=6.0,

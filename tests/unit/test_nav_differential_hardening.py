@@ -27,6 +27,7 @@ from jenai.acceptance.nav_differential_runner import (
     _canonical_json_sha256,
     _cleanup_live_capture,
     _dispatch_timeline,
+    _effective_ros_domain,
     _initial_state,
     _load_calibration,
     _ObservedNavBridge,
@@ -507,8 +508,24 @@ def test_calibration_accepts_matching_live_identities(tmp_path: Path) -> None:
     assert result.status == "VERIFIED"
 
 
-def test_r2_override_is_temporary_and_uses_effective_vehicle_domain() -> None:
+def test_simulation_capture_uses_ambient_domain_instead_of_physical_vehicle_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROS_DOMAIN_ID", "0")
+    config = AppConfig(
+        deployment_mode="simulation",
+        vehicle=VehicleProfile(domain_id=20),
+    )
+
+    assert _effective_ros_domain(config) == "0"
+
+
+def test_r2_override_is_temporary_and_uses_effective_simulation_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROS_DOMAIN_ID", "7")
     base = AppConfig(
+        deployment_mode="simulation",
         vehicle=VehicleProfile(domain_id=7, nav_endpoint_retry_limit=1),
         twin=TwinProfile(enabled=True, domain_id=7),
     )
