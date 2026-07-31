@@ -46,10 +46,7 @@ def _install_persistence_spy(
     def persist(
         path: Path,
         artifact: dict[str, Any],
-        *,
-        overwrite: bool,
     ) -> dict[str, Any]:
-        del overwrite
         assert events[-1] == "cleanup_finished"
         events.append("artifact_persisted")
         payload = copy.deepcopy(artifact)
@@ -83,6 +80,16 @@ def _install_cancellable_capture_body(
 
         async def start(self) -> None:
             return None
+
+        async def runtime_identity(self, *, pin: bool = False) -> object:
+            assert pin is True
+
+            class Identity:
+                @staticmethod
+                def to_payload() -> dict[str, object]:
+                    return {}
+
+            return Identity()
 
     async def block_in_capture_body(
         bridge: object,

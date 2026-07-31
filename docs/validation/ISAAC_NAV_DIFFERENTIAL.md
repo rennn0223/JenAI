@@ -61,6 +61,9 @@ Isaac world pose 不可直接與 ROS map pose 相減。只有已驗證的 `T_map
 - configured map frame、live map frame、calibration `map_frame_id` 一致；
 - immutable measurement contract 保存 canonical ground-truth topic、message type 與 calibration
   payload SHA-256；三者與 artifact／raw topic stream 不一致時 fail closed；
+- capture-time 實際採用的 calibration（包括 `GROUND_TRUTH_UNAVAILABLE`）另以 SHA-256 綁入
+  runtime fingerprint；離線比較會重新計算，不能在兩份 artifact 中協調把原本 verified 的
+  calibration 降級後繼續進入 map-only statistics；
 - ground-truth message 有 fresh header timestamp，frame 等於 `world_frame_id`；
 - T0 scenario start 與真正 dispatch 前的 T1 都必須各有 fresh、可由 raw topic 重新推導的
   world pose 與 calibrated map pose；缺一不可開始 motion；
@@ -100,10 +103,11 @@ Live execution 只允許 `deployment_mode=simulation`，並在送 goal 前 fail 
 
 - CLI 所在 repository root、`jenai.__file__` 對應 source root 與操作員明確提供的
   `--expected-git-sha` 必須指向同一個已 Code Review、clean revision；
-- CLI Python executable／version，以及 ROS bridge process 實際 probe 到的 Python、RMW
-  implementation 與 DDS environment binding 必須完整。DDS 路徑／profile 只保存 canonical
-  digest，不把本機敏感設定內容寫入 artifact；requested RMW 與 effective RMW 不一致時 fail
-  closed；
+- CLI Python executable／version，以及真正執行本場導航的 ROS bridge sidecar 在 `ready`
+  handshake 回報的 PID、Python、ROS domain、effective RMW 與 DDS environment binding 必須
+  完整。Harness 會 pin 該 descriptor，sidecar respawn／identity drift 時 fail closed；不使用另起
+  process 的 middleware probe。DDS 路徑、URI、value 與 profile 內容不寫入 artifact，只保存
+  allowlisted binding 的 canonical digest；requested RMW 與 effective RMW 不一致時 fail closed；
 - config、Site map、locations、rendered Nav2 params、scene SHA 完整；
 - saved location 必須解析成唯一 target。Artifact 以 `resolved_id`、`resolved_name`、locations
   digest、canonical pose／goal 與 Capability 建立不可變 `target_binding`；離線比較會重新驗證
@@ -191,7 +195,7 @@ raw evidence／pose journal 的 artifact 不具 comparison eligibility。
 Preparation、dispatch、cleanup 例外或外部 task cancellation 仍會先完成 shielded cleanup，再
 原子保存可重新載入的 schema-v1 artifact，最後才把 cancellation 傳回 caller；cleanup 自身若
 被取消則記為 `cleanup_failed`，不得遺失 artifact 或保留 success。成功與失敗場次都不得
-刪除。Runtime fingerprint
+刪除；capture 與 comparison output 若已存在會直接拒絕，CLI 不提供 overwrite 選項。Runtime fingerprint
 只用於確認兩場 runtime identity 是否等價，不是防惡意竄改的簽章或 artifact attestation。
 Process-tree identity 能偵測 tmux launch descendants 的替換，但不能單獨證明 ROS graph node 與
 特定 OS PID 的所有權；node uniqueness、runtime parameter snapshots 與 action-server identity

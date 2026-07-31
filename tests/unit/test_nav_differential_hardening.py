@@ -554,14 +554,16 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
         ],
     }
     middleware = {
+        "schema_version": 1,
+        "pid": 4242,
         "rmw_implementation_requested": "rmw_fastrtps_cpp",
         "rmw_implementation_effective": "rmw_fastrtps_cpp",
-        "rmw_discovery_source": "bridge_python_probe",
-        "bridge_python_executable": "/usr/bin/python3.12",
-        "bridge_python_version": "3.12.3",
+        "python_executable": "/usr/bin/python3.12",
+        "python_version": "3.12.3",
+        "ros_domain_id": 7,
         "dds_config_mode": "middleware_default",
         "dds_bindings": {},
-        "dds_config_sha256": "7" * 64,
+        "dds_config_sha256": _canonical_json_sha256({}),
     }
     middleware["descriptor_sha256"] = _canonical_json_sha256(middleware)
     identity: dict[str, Any] = {

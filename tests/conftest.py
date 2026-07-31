@@ -22,11 +22,13 @@ def _canonical_fixture_sha256(payload: object) -> str:
 
 def _differential_middleware_identity() -> dict[str, object]:
     descriptor: dict[str, object] = {
+        "schema_version": 1,
+        "pid": 4242,
         "rmw_implementation_requested": None,
         "rmw_implementation_effective": "rmw_fastrtps_cpp",
-        "rmw_discovery_source": "bridge_python_probe",
-        "bridge_python_executable": "/usr/bin/python3.12",
-        "bridge_python_version": "3.12.3",
+        "python_executable": "/usr/bin/python3.12",
+        "python_version": "3.12.3",
+        "ros_domain_id": 7,
         "dds_config_mode": "middleware_default",
         "dds_bindings": {},
         "dds_config_sha256": _canonical_fixture_sha256({}),
@@ -422,6 +424,7 @@ def differential_artifact_factory():
             "frame_id": "map",
             "locations_sha256": "c" * 64,
             "pose": {"x": goal_x, "y": 2.0, "yaw": 0.0},
+            "resolved_id": "loc-dock",
             "resolved_name": "Dock",
         }
         target_stable_binding = {

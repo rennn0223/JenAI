@@ -10,12 +10,10 @@ from typing import Any, cast
 import pytest
 
 import jenai.acceptance.nav_differential_runner as runner
-from jenai.acceptance.nav_differential import PairClassification
+from jenai.acceptance.nav_differential import CanonicalGoal, PairClassification
 from jenai.config.models import AppConfig
 
 ArtifactFactory = Callable[..., dict[str, object]]
-
-_DEFAULT_DDS_CONFIG_SHA256 = "7" * 64
 
 
 def _canonical_sha256(payload: object) -> str:
@@ -33,17 +31,19 @@ def _middleware_identity(
     *,
     requested_rmw: str | None = None,
     effective_rmw: str = "rmw_fastrtps_cpp",
-    dds_config_sha256: str = _DEFAULT_DDS_CONFIG_SHA256,
+    dds_config_sha256: str | None = None,
 ) -> dict[str, object]:
     descriptor: dict[str, object] = {
+        "schema_version": 1,
+        "pid": 4242,
         "rmw_implementation_requested": requested_rmw,
         "rmw_implementation_effective": effective_rmw,
-        "rmw_discovery_source": "bridge_python_probe",
-        "bridge_python_executable": "/usr/bin/python3.12",
-        "bridge_python_version": "3.12.3",
+        "python_executable": "/usr/bin/python3.12",
+        "python_version": "3.12.3",
+        "ros_domain_id": 7,
         "dds_config_mode": "middleware_default",
         "dds_bindings": {},
-        "dds_config_sha256": dds_config_sha256,
+        "dds_config_sha256": dds_config_sha256 or _canonical_sha256({}),
     }
     return {
         **descriptor,
@@ -73,38 +73,28 @@ def _target_binding(
     resolved_id: str = "loc-dock",
     pose: dict[str, float] | None = None,
 ) -> dict[str, object]:
+    canonical_goal = CanonicalGoal.model_validate(goal)
     bound_pose = pose or {
-        "x": float(goal["x"]),
-        "y": float(goal["y"]),
-        "yaw": float(goal["yaw"]),
+        "x": canonical_goal.x,
+        "y": canonical_goal.y,
+        "yaw": canonical_goal.yaw,
     }
-    record = {
-        "capability_id": "navigate",
-        "frame_id": str(goal["frame_id"]).lstrip("/"),
-        "locations_sha256": "c" * 64,
-        "pose": bound_pose,
-        "resolved_name": resolved_name,
-    }
-    canonical_record_sha256 = _canonical_sha256(record)
-    canonical_goal_sha256 = _canonical_sha256(goal)
-    stable_binding = {
-        "canonical_goal_sha256": canonical_goal_sha256,
-        "canonical_record_sha256": canonical_record_sha256,
-        "capability_id": "navigate",
-        "locations_sha256": "c" * 64,
-    }
-    return {
-        "requested_query": requested_query,
-        "resolved_name": resolved_name,
-        "resolved_id": resolved_id,
-        "frame_id": record["frame_id"],
-        "pose": deepcopy(bound_pose),
-        "capability_id": "navigate",
-        "locations_sha256": "c" * 64,
-        "canonical_record_sha256": canonical_record_sha256,
-        "canonical_goal_sha256": canonical_goal_sha256,
-        "binding_sha256": _canonical_sha256(stable_binding),
-    }
+    bound_goal = CanonicalGoal.from_yaw(
+        frame_id=canonical_goal.frame_id,
+        x=bound_pose["x"],
+        y=bound_pose["y"],
+        yaw=bound_pose["yaw"],
+        stamp_ns=canonical_goal.stamp_ns,
+        clock_domain=canonical_goal.clock_domain,
+        simulation_epoch=canonical_goal.simulation_epoch,
+        stamp_fresh=canonical_goal.stamp_fresh,
+    )
+    return runner._target_binding(
+        requested_query=requested_query,
+        bound_action={"goal": {"name": resolved_name, "id": resolved_id}},
+        goal=bound_goal,
+        locations_sha256="c" * 64,
+    ).model_dump(mode="json")
 
 
 def _bind_artifact_target(
@@ -200,6 +190,52 @@ def test_target_binding_must_match_the_artifact_canonical_goal(
     assert report["classifications"] == [PairClassification.INSUFFICIENT_EVIDENCE]
 
 
+@pytest.mark.parametrize(
+    "digest_field",
+    ["canonical_record_sha256", "binding_sha256"],
+)
+def test_target_binding_digest_commits_the_resolved_id(
+    digest_field: str,
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    artifact = differential_artifact_factory(mode="R1_bridge_nav2")
+    goal = cast(dict[str, Any], artifact["canonical_goal"])
+
+    trusted = _target_binding(goal, resolved_id="loc-dock")
+    forged = _target_binding(goal, resolved_id="forged-id")
+
+    assert trusted[digest_field] != forged[digest_field]
+
+
+def test_target_binding_rejects_resolved_id_changed_without_rehashing(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    artifact = differential_artifact_factory(mode="R1_bridge_nav2")
+    goal = cast(dict[str, Any], artifact["canonical_goal"])
+    forged = _target_binding(goal, resolved_id="loc-dock")
+    forged["resolved_id"] = "forged-id"
+
+    with pytest.raises(ValueError):
+        runner.TargetBinding.model_validate(forged)
+
+
+def test_coordinated_resolved_id_forgery_cannot_enter_comparison(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left = differential_artifact_factory(mode="R1_bridge_nav2")
+    right = differential_artifact_factory(mode="R2_jenai_no_retry")
+    _bind_artifact_target(left)
+    _bind_artifact_target(right)
+    for artifact in (left, right):
+        binding = cast(dict[str, Any], artifact["target_binding"])
+        binding["resolved_id"] = "forged-id"
+
+    report = _comparison(differential_artifact_factory, left=left, right=right)
+
+    assert report["included"] is False
+    assert report["classifications"] == [PairClassification.INSUFFICIENT_EVIDENCE]
+
+
 def test_pairing_gate_rejects_different_resolved_target_bindings(
     differential_artifact_factory: ArtifactFactory,
 ) -> None:
@@ -233,18 +269,10 @@ def test_alias_queries_for_the_same_resolved_target_remain_pairable(
     assert PairClassification.PAIRING_GATE_FAILED not in report["classifications"]
 
 
-def test_runtime_identity_uses_effective_rmw_probe_with_middleware_defaults(
+def test_static_runtime_identity_defers_middleware_evidence_to_live_bridge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    descriptor = _middleware_identity()
-    probe_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    def probe(*args: object, **kwargs: object) -> dict[str, object]:
-        probe_calls.append((args, kwargs))
-        return deepcopy(descriptor)
-
-    monkeypatch.setattr(runner, "_probe_ros_middleware_identity", probe, raising=False)
     monkeypatch.setattr(runner, "_command_output", lambda *args, **kwargs: "")
     monkeypatch.setattr(runner, "_controller_odom_topic", lambda **kwargs: "/chassis/odom")
     monkeypatch.setattr(runner, "_nav2_process_generation", lambda session: None)
@@ -265,10 +293,10 @@ def test_runtime_identity_uses_effective_rmw_probe_with_middleware_defaults(
         simulation_epoch="epoch-01",
     )
 
-    assert len(probe_calls) == 1
-    assert identity["ros_middleware"] == descriptor
-    assert descriptor["rmw_implementation_requested"] is None
-    assert descriptor["dds_config_mode"] == "middleware_default"
+    assert identity["ros_middleware"] is None
+    assert runner._source_identity_failures(identity, require_ros_middleware=False) != [
+        "ros_middleware_identity_missing"
+    ]
 
 
 def test_source_identity_rejects_requested_and_effective_rmw_mismatch(

@@ -97,6 +97,9 @@ def _add_verified_ground_truth(
         "topic": "/isaac/ground_truth",
         "message_type": "geometry_msgs/msg/PoseStamped",
     }
+    identity = cast(dict[str, Any], artifact["runtime_identity"])
+    identity["ground_truth_calibration_effective_sha256"] = _calibration_payload_sha256(calibration)
+    _apply_runtime_fingerprint(identity)
 
     dispatch_samples = [
         _ground_truth_raw_sample(35, 1_000_000_000, x=0.0, y=0.0),
@@ -220,7 +223,7 @@ def _set_ground_truth_start_pose(artifact: dict[str, Any], *, x: float) -> None:
         state["ground_truth_map_pose"] = {"x": x, "y": 0.0, "yaw": 0.0}
 
 
-def _downgrade_ground_truth_to_map_only(artifact: dict[str, Any]) -> None:
+def _tamper_verified_ground_truth_to_unavailable(artifact: dict[str, Any]) -> None:
     artifact["ground_truth_calibration"] = GroundTruthCalibration(
         status="GROUND_TRUTH_UNAVAILABLE",
         scene_sha256="e" * 64,
@@ -484,19 +487,30 @@ def test_raw_backed_verified_ground_truth_pair_is_comparison_eligible(
     assert report["included"] is True
 
 
-def test_configured_but_unverified_ground_truth_remains_map_only_eligible(
+def test_capture_time_verified_ground_truth_cannot_be_coordinately_downgraded(
     differential_artifact_factory: ArtifactFactory,
 ) -> None:
     left = _artifact(differential_artifact_factory, mode="R1_bridge_nav2")
     right = _artifact(differential_artifact_factory, mode="R2_jenai_no_retry")
     for artifact in (left, right):
         _add_verified_ground_truth(artifact)
-        _downgrade_ground_truth_to_map_only(artifact)
+        verified = GroundTruthCalibration.model_validate(artifact["ground_truth_calibration"])
+        contract = cast(dict[str, Any], artifact["measurement_contract"])
+        identity = cast(dict[str, Any], artifact["runtime_identity"])
+        topics = cast(dict[str, Any], artifact["topic_samples"])
+        raw_ground_truth = deepcopy(topics["ground_truth"])
+
+        assert contract["ground_truth_calibration_sha256"] == _calibration_payload_sha256(verified)
+        assert verified.scene_sha256 == identity["scene_sha256"] == identity["live_scene_sha256"]
+        assert verified.map_sha256 == identity["site_map_sha256"] == identity["live_map_sha256"]
+
+        _tamper_verified_ground_truth_to_unavailable(artifact)
+
+        assert topics["ground_truth"] == raw_ground_truth
 
     report = _comparison(differential_artifact_factory, left=left, right=right)
 
-    assert report["included"] is True
-    assert PairClassification.ACTUAL_ENDPOINT_DIFFERENCE not in report["classifications"]
+    _assert_insufficient(report)
 
 
 def test_raw_final_ground_truth_tamper_is_rejected(

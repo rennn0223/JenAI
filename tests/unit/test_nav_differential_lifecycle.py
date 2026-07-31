@@ -272,6 +272,16 @@ def test_cleanup_failure_downgrades_blocked_capture_and_persists(
         async def start(self) -> None:
             return None
 
+        async def runtime_identity(self, *, pin: bool = False) -> object:
+            assert pin is True
+
+            class Identity:
+                @staticmethod
+                def to_payload() -> dict[str, object]:
+                    return {}
+
+            return Identity()
+
     async def no_op_enrich(bridge: object, identity: dict[str, Any]) -> None:
         del bridge, identity
 
@@ -298,7 +308,7 @@ def test_cleanup_failure_downgrades_blocked_capture_and_persists(
     )
     monkeypatch.setattr(runner, "RosBridgeClient", lambda **_: Bridge())
     monkeypatch.setattr(runner, "_enrich_live_identity", no_op_enrich)
-    monkeypatch.setattr(runner, "_source_identity_failures", lambda _: [])
+    monkeypatch.setattr(runner, "_source_identity_failures", lambda _identity, **_kwargs: [])
     monkeypatch.setattr(runner, "_runtime_identity_failures", lambda _: ["forced_identity_block"])
     monkeypatch.setattr(runner, "_safe_cleanup_live_capture", failed_cleanup)
 

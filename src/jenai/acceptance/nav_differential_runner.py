@@ -45,7 +45,7 @@ from jenai.acceptance.nav_differential import (
     evaluate_pairing_gate,
 )
 from jenai.adapters.locations import find_location, load_locations
-from jenai.bridge import BridgeError, RosBridgeClient
+from jenai.bridge import BridgeError, BridgeRuntimeIdentity, RosBridgeClient
 from jenai.config import default_config_path, load_config
 from jenai.config.models import AppConfig
 from jenai.site_assets import bind_navigation_action
@@ -136,7 +136,6 @@ class DifferentialCaptureOptions(BaseModel):
     ground_truth_type: str = "geometry_msgs/msg/PoseStamped"
     execute: bool = False
     confirmation: str = ""
-    overwrite: bool = False
     preflight_sample_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     final_sample_s: float = Field(default=2.0, gt=0, allow_inf_nan=False)
     sample_interval_s: float = Field(default=0.2, gt=0, allow_inf_nan=False)
@@ -191,7 +190,7 @@ class DifferentialCaptureOptions(BaseModel):
             raise ValueError(
                 "Live differential capture requires the active Isaac Stage root-layer SHA-256."
             )
-        if self.output.exists() and not self.overwrite:
+        if self.output.exists():
             raise ValueError(f"Output already exists: {self.output}")
         if self.live_scene_sha256 is not None and self.scene_path is None:
             raise ValueError("live_scene_sha256 requires scene_path")
@@ -302,6 +301,7 @@ class TargetBinding(BaseModel):
             "frame_id": self.frame_id,
             "locations_sha256": self.locations_sha256,
             "pose": self.pose.model_dump(mode="json"),
+            "resolved_id": self.resolved_id,
             "resolved_name": self.resolved_name,
         }
         if self.canonical_record_sha256 != _canonical_json_sha256(record):
@@ -830,78 +830,6 @@ def _nav2_process_generation(
     }
 
 
-_DDS_ENVIRONMENT_BINDINGS = (
-    "FASTRTPS_DEFAULT_PROFILES_FILE",
-    "FASTDDS_DEFAULT_PROFILES_FILE",
-    "CYCLONEDDS_URI",
-    "ROS_DISCOVERY_SERVER",
-    "ROS_AUTOMATIC_DISCOVERY_RANGE",
-    "ROS_STATIC_PEERS",
-)
-
-
-def _dds_environment_bindings() -> dict[str, dict[str, str]]:
-    bindings: dict[str, dict[str, str]] = {}
-    for name in _DDS_ENVIRONMENT_BINDINGS:
-        value = os.environ.get(name)
-        if not value:
-            continue
-        path = Path(value).expanduser()
-        file_digest = _sha256(path)
-        bindings[name] = (
-            {"source": "file", "content_sha256": file_digest}
-            if file_digest is not None
-            else {
-                "source": "environment_value",
-                "value_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
-            }
-        )
-    return bindings
-
-
-def _probe_ros_middleware_identity(*, bridge_domain_id: str) -> dict[str, Any]:
-    requested_rmw = os.environ.get("RMW_IMPLEMENTATION")
-    ros_setup = os.environ.get("ROS_SETUP", "/opt/ros/jazzy/setup.bash")
-    bridge_python = os.environ.get("JENAI_BRIDGE_PYTHON", "/usr/bin/python3")
-    probe_source = (
-        "import json,platform,sys;"
-        "from rclpy.utilities import get_rmw_implementation_identifier;"
-        "print(json.dumps({'python_executable':sys.executable,"
-        "'python_version':platform.python_version(),"
-        "'rmw':get_rmw_implementation_identifier()},sort_keys=True))"
-    )
-    output = _command_output(
-        [
-            "bash",
-            "-c",
-            'set -e; source "$1"; exec "$2" -c "$3"',
-            "jenai-rmw-probe",
-            ros_setup,
-            bridge_python,
-            probe_source,
-        ],
-        env={"ROS_DOMAIN_ID": bridge_domain_id},
-    )
-    probed: dict[str, Any] = {}
-    if output:
-        with contextlib.suppress(json.JSONDecodeError):
-            value = json.loads(output)
-            if isinstance(value, dict):
-                probed = value
-    dds_bindings = _dds_environment_bindings()
-    descriptor: dict[str, Any] = {
-        "rmw_implementation_requested": requested_rmw,
-        "rmw_implementation_effective": probed.get("rmw"),
-        "rmw_discovery_source": "bridge_python_probe",
-        "bridge_python_executable": probed.get("python_executable"),
-        "bridge_python_version": probed.get("python_version"),
-        "dds_config_mode": "environment_binding" if dds_bindings else "middleware_default",
-        "dds_bindings": dds_bindings,
-        "dds_config_sha256": _canonical_json_sha256(dds_bindings),
-    }
-    return {**descriptor, "descriptor_sha256": _canonical_json_sha256(descriptor)}
-
-
 def _runtime_fingerprint(identity: dict[str, Any]) -> str:
     fields = {
         key: identity.get(key)
@@ -942,6 +870,7 @@ def _runtime_fingerprint(identity: dict[str, Any]) -> str:
             "navigate_to_pose_action_count",
             "controller_odom_topic",
             "nav2_process_generation",
+            "ground_truth_calibration_effective_sha256",
         )
     }
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode("utf-8")).hexdigest()
@@ -949,6 +878,18 @@ def _runtime_fingerprint(identity: dict[str, Any]) -> str:
 
 def _apply_runtime_fingerprint(identity: dict[str, Any]) -> None:
     identity["fingerprint"] = _runtime_fingerprint(identity)
+
+
+def _record_ground_truth_calibration(
+    artifact: dict[str, Any],
+    identity: dict[str, Any],
+    calibration: GroundTruthCalibration,
+) -> None:
+    """Bind the effective capture-time calibration to the runtime identity."""
+
+    artifact["ground_truth_calibration"] = calibration.model_dump(mode="json")
+    identity["ground_truth_calibration_effective_sha256"] = _calibration_payload_sha256(calibration)
+    _apply_runtime_fingerprint(identity)
 
 
 def _runtime_identity(
@@ -1001,7 +942,6 @@ def _runtime_identity(
     }
     controller_odom_topic = _controller_odom_topic(ros_env=ros_env)
     nav2_process_generation = _nav2_process_generation(session)
-    ros_middleware = _probe_ros_middleware_identity(bridge_domain_id=bridge_domain_id)
     identity: dict[str, Any] = {
         "git_sha": revision,
         "git_dirty": None if dirty_output is None else bool(dirty_output),
@@ -1029,7 +969,7 @@ def _runtime_identity(
         "ambient_ros_domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
         "bridge_domain_id": bridge_domain_id,
         "rmw_implementation": os.environ.get("RMW_IMPLEMENTATION"),
-        "ros_middleware": ros_middleware,
+        "ros_middleware": None,
         "dds_profile": os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE"),
         "dds_profile_sha256": _sha256(
             Path(os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"])
@@ -2489,7 +2429,7 @@ def _ground_truth_samples(
     return results
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any], *, overwrite: bool) -> None:
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
@@ -2501,10 +2441,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any], *, overwrite: bool) 
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        if overwrite:
-            os.replace(temporary, path)
-        else:
-            os.link(temporary, path)
+        os.link(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -2512,17 +2449,15 @@ def _atomic_write_json(path: Path, payload: dict[str, Any], *, overwrite: bool) 
 def _write_capture_artifact(
     path: Path,
     artifact: dict[str, Any],
-    *,
-    overwrite: bool,
 ) -> dict[str, Any]:
     validated = DifferentialArtifact.model_validate(artifact).model_dump(mode="json")
-    _atomic_write_json(path, validated, overwrite=overwrite)
+    _atomic_write_json(path, validated)
     return validated
 
 
 def _write_comparison_report(path: Path, report: dict[str, Any]) -> dict[str, Any]:
     validated = DifferentialComparisonReport.model_validate(report).model_dump(mode="json")
-    _atomic_write_json(path, validated, overwrite=False)
+    _atomic_write_json(path, validated)
     return validated
 
 
@@ -2658,56 +2593,32 @@ def _valid_python_version(value: object) -> bool:
 
 def _ros_middleware_failures(identity: dict[str, Any]) -> list[str]:
     value = identity.get("ros_middleware")
-    if not isinstance(value, dict):
+    try:
+        descriptor = BridgeRuntimeIdentity.from_payload(value)
+    except BridgeError:
         return ["ros_middleware_identity_missing"]
-    requested = value.get("rmw_implementation_requested")
-    effective = value.get("rmw_implementation_effective")
-    bridge_python = value.get("bridge_python_executable")
-    bridge_version = value.get("bridge_python_version")
-    bindings = value.get("dds_bindings")
-    descriptor_digest = value.get("descriptor_sha256")
-    descriptor_payload = {key: item for key, item in value.items() if key != "descriptor_sha256"}
+    requested = descriptor.rmw_implementation_requested
+    effective = descriptor.rmw_implementation_effective
+    expected_domain = identity.get("bridge_domain_id")
     checks = (
-        (
-            requested is not None and (not isinstance(requested, str) or not requested),
-            "rmw_implementation_requested_invalid",
-        ),
-        (
-            not isinstance(effective, str) or not effective,
-            "rmw_implementation_effective_unavailable",
-        ),
         (
             isinstance(requested, str) and isinstance(effective, str) and requested != effective,
             "rmw_implementation_mismatch",
         ),
         (
-            value.get("rmw_discovery_source") != "bridge_python_probe",
-            "rmw_discovery_source_invalid",
-        ),
-        (
-            not _normalized_absolute_path(bridge_python),
-            "bridge_python_executable_unavailable",
-        ),
-        (not _valid_python_version(bridge_version), "bridge_python_version_invalid"),
-        (
-            value.get("dds_config_mode") not in {"middleware_default", "environment_binding"},
-            "dds_config_mode_invalid",
-        ),
-        (not isinstance(bindings, dict), "dds_bindings_invalid"),
-        (
-            not _valid_sha256(value.get("dds_config_sha256")),
-            "dds_config_digest_invalid",
-        ),
-        (
-            not _valid_sha256(descriptor_digest)
-            or descriptor_digest != _canonical_json_sha256(descriptor_payload),
-            "ros_middleware_descriptor_digest_mismatch",
+            not _valid_domain_id(expected_domain)
+            or descriptor.ros_domain_id != int(cast(str, expected_domain)),
+            "bridge_runtime_domain_mismatch",
         ),
     )
     return [failure for failed, failure in checks if failed]
 
 
-def _source_identity_failures(identity: dict[str, Any]) -> list[str]:
+def _source_identity_failures(
+    identity: dict[str, Any],
+    *,
+    require_ros_middleware: bool = True,
+) -> list[str]:
     required_hashes = (
         "config_sha256",
         "site_map_sha256",
@@ -2800,7 +2711,8 @@ def _source_identity_failures(identity: dict[str, Any]) -> list[str]:
         ),
     )
     failures = [failure for failed, failure in checks if failed]
-    failures.extend(_ros_middleware_failures(identity))
+    if require_ros_middleware:
+        failures.extend(_ros_middleware_failures(identity))
     failures.extend(
         f"missing_{field}" for field in required_hashes if not _valid_sha256(identity.get(field))
     )
@@ -2899,6 +2811,7 @@ def _target_binding(
         "frame_id": goal.frame_id.lstrip("/"),
         "locations_sha256": locations_sha256,
         "pose": pose.model_dump(mode="json"),
+        "resolved_id": resolved_id,
         "resolved_name": resolved_name,
     }
     canonical_goal_sha256 = _canonical_json_sha256(goal.model_dump(mode="json"))
@@ -3366,7 +3279,7 @@ def _complete_without_live_bridge(
 ) -> bool:
     if not options.execute:
         calibration = _load_calibration(options, identity)
-        artifact["ground_truth_calibration"] = calibration.model_dump(mode="json")
+        _record_ground_truth_calibration(artifact, identity, calibration)
         artifact["overall"] = "preflight_only"
         artifact["checks"].append(
             {
@@ -3387,7 +3300,7 @@ def _complete_without_live_bridge(
             }
         )
         return True
-    source_failures = _source_identity_failures(identity)
+    source_failures = _source_identity_failures(identity, require_ros_middleware=False)
     if not source_failures:
         return False
     artifact["overall"] = "blocked"
@@ -3556,7 +3469,6 @@ async def _finalize_capture(
     persisted = _write_capture_artifact(
         options.output,
         artifact,
-        overwrite=options.overwrite,
     )
     if interrupted is not None:
         raise interrupted
@@ -3597,9 +3509,12 @@ async def _capture_live_path(
     )
     await bridge.start()
     resources.stage = "live_identity"
+    bridge_identity = await bridge.runtime_identity(pin=True)
+    identity["ros_middleware"] = bridge_identity.to_payload()
+    _apply_runtime_fingerprint(identity)
     await _enrich_live_identity(bridge, identity)
     calibration = _load_calibration(options, identity)
-    artifact["ground_truth_calibration"] = calibration.model_dump(mode="json")
+    _record_ground_truth_calibration(artifact, identity, calibration)
     identity_failures = _runtime_identity_failures(identity)
     if identity_failures:
         _record_capture_gate_failure(
@@ -4169,6 +4084,11 @@ def _ground_truth_requirement(
         calibration = GroundTruthCalibration.model_validate(raw)
     except ValueError:
         return None, ["ground_truth_calibration_invalid"]
+    effective_digest = identity.get("ground_truth_calibration_effective_sha256")
+    if not _valid_sha256(effective_digest) or effective_digest != _calibration_payload_sha256(
+        calibration
+    ):
+        return None, ["ground_truth_calibration_identity_binding"]
     if calibration.status != "VERIFIED":
         return None, []
     calibration_frame = (calibration.map_frame_id or "").lstrip("/")

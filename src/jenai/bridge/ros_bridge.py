@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from ._node_identity import bridge_node_name
     from ._occupancy import occupancy_grid_identity, sample_occupancy_cell
     from ._protocol import dispatch_request
+    from ._runtime_identity import build_runtime_identity_payload
     from ._server import serve_requests
     from ._watchdog import WatchdogState
 else:
@@ -65,12 +66,14 @@ else:
     from _node_identity import bridge_node_name
     from _occupancy import occupancy_grid_identity, sample_occupancy_cell
     from _protocol import dispatch_request
+    from _runtime_identity import build_runtime_identity_payload
     from _server import serve_requests
     from _watchdog import WatchdogState
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSPresetProfiles
+from rclpy.utilities import get_rmw_implementation_identifier
 
 _STDOUT_LOCK = threading.Lock()
 WirePayload = dict[str, Any]
@@ -1400,7 +1403,17 @@ def main() -> None:
         target=_watchdog_loop, args=(node, watchdog, watchdog_stop), daemon=True
     ).start()
 
-    _emit({"event": "ready"})
+    ready: WirePayload = {"event": "ready"}
+    try:
+        ready["runtime_identity"] = build_runtime_identity_payload(
+            effective_rmw=get_rmw_implementation_identifier(),
+        )
+    except Exception as exc:
+        # The bridge remains backward-compatible for normal callers.  The
+        # differential harness explicitly requires identity and will fail
+        # closed without exposing configuration values in this diagnostic.
+        ready["runtime_identity_error"] = type(exc).__name__
+    _emit(ready)
 
     serve_requests(
         sys.stdin,

@@ -115,16 +115,11 @@ _DIRECT_NAV_SEND_SOURCE_ALLOWLIST = (
     ("tools/nav_live.py", "_dispatch_navigation"),
     ("twin/gate.py", "TwinGate._execute_twin_goal"),
 )
-_NAV_DIFFERENTIAL_FORBIDDEN_IMPORT_DIRS = (
-    "agent",
-    "cli",
-    "daemon",
-    "mcp_server",
-    "runtime",
-    "tools",
-    "tui",
-    "webui",
-    "workflows",
+_NAV_DIFFERENTIAL_RUNNER_MODULE = "jenai.acceptance.nav_differential_runner"
+_NAV_DIFFERENTIAL_RUNNER_IMPORTER_ALLOWLIST = frozenset(
+    {
+        "scripts/isaac_nav_differential.py",
+    }
 )
 
 # `/stop` is deliberately not a vendor literal here: it is JenAI's approved,
@@ -160,6 +155,27 @@ def _imports_of(path: Path, *, package_root: Path = SRC) -> list[str]:
                 if alias.name != "*"
             )
     return found
+
+
+def _direct_importers_of_differential_runner(
+    *, source_root: Path = SRC, repository_root: Path = ROOT
+) -> set[str]:
+    """Return every production source file that directly imports the ADR 0007 runner."""
+
+    candidates = [
+        *source_root.rglob("*.py"),
+        *(repository_root / "scripts").glob("*.py"),
+    ]
+    importers: set[str] = set()
+    for path in candidates:
+        imported_names = _imports_of(path, package_root=source_root)
+        if any(
+            name == _NAV_DIFFERENTIAL_RUNNER_MODULE
+            or name.startswith(f"{_NAV_DIFFERENTIAL_RUNNER_MODULE}.")
+            for name in imported_names
+        ):
+            importers.add(path.relative_to(repository_root).as_posix())
+    return importers
 
 
 def _string_literals_of(path: Path) -> list[tuple[int, str]]:
@@ -437,40 +453,51 @@ def test_direct_nav_send_is_confined_to_reviewed_low_level_seams() -> None:
     )
 
 
-def test_product_layers_cannot_import_the_differential_harness() -> None:
-    """The simulation experiment is never an Agent, UI, Runtime, or Workflow seam."""
+def test_differential_runner_importer_scan_covers_every_production_layer(
+    tmp_path: Path,
+) -> None:
+    """The exact allowlist scanner must not omit acceptance, adapters, bridge, or scripts."""
 
-    forbidden_prefix = "jenai.acceptance.nav_differential_runner"
-    violations: list[str] = []
-    for directory in _NAV_DIFFERENTIAL_FORBIDDEN_IMPORT_DIRS:
-        root = SRC / directory
-        if not root.is_dir():
-            continue
-        for path in root.rglob("*.py"):
-            relative = path.relative_to(SRC).as_posix()
-            violations.extend(
-                f"{relative} imports {name}"
-                for name in _imports_of(path)
-                if name.startswith(forbidden_prefix)
-            )
-    assert not violations, (
-        "ADR 0007 is an acceptance-only simulation exception; product layers cannot import it:\n"
-        + "\n".join(violations)
+    fixture_sources = {
+        "src/jenai/acceptance/facade.py": (
+            "from .nav_differential_runner import capture_navigation_differential\n"
+        ),
+        "src/jenai/adapters/backdoor.py": (
+            "import jenai.acceptance.nav_differential_runner as runner\n"
+        ),
+        "src/jenai/bridge/backdoor.py": ("from jenai.acceptance import nav_differential_runner\n"),
+        "scripts/backdoor.py": (
+            "from jenai.acceptance.nav_differential_runner import DifferentialMode\n"
+        ),
+        "tests/unit/test_backdoor.py": (
+            "from jenai.acceptance.nav_differential_runner import DifferentialMode\n"
+        ),
+    }
+    for relative, source in fixture_sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+    importers = _direct_importers_of_differential_runner(
+        source_root=tmp_path / "src" / "jenai",
+        repository_root=tmp_path,
     )
 
-
-def test_only_the_differential_cli_script_may_import_the_harness() -> None:
-    script_root = ROOT / "scripts"
-    importers = {
-        path.relative_to(ROOT).as_posix()
-        for path in script_root.glob("*.py")
-        if any(
-            name.startswith("jenai.acceptance.nav_differential_runner")
-            for name in _imports_of(path)
-        )
+    assert importers == {
+        "scripts/backdoor.py",
+        "src/jenai/acceptance/facade.py",
+        "src/jenai/adapters/backdoor.py",
+        "src/jenai/bridge/backdoor.py",
     }
 
-    assert importers == {"scripts/isaac_nav_differential.py"}
+
+def test_only_the_dedicated_differential_cli_may_import_the_harness_runner() -> None:
+    importers = _direct_importers_of_differential_runner()
+
+    assert importers == _NAV_DIFFERENTIAL_RUNNER_IMPORTER_ALLOWLIST, (
+        "ADR 0007 is an acceptance-only simulation exception. Direct runner importers changed:\n"
+        + "\n".join(sorted(importers))
+    )
 
 
 def test_scripts_cannot_expand_direct_nav_send_beyond_frozen_e2_debt() -> None:

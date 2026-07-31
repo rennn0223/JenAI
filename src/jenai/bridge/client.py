@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
 import math
 import os
+import re
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,10 +28,179 @@ logger = logging.getLogger(__name__)
 
 BridgePayload = dict[str, Any]
 EventHandler = Callable[[BridgePayload], None]
+_DDS_IDENTITY_BINDINGS = frozenset(
+    {
+        "FASTRTPS_DEFAULT_PROFILES_FILE",
+        "FASTDDS_DEFAULT_PROFILES_FILE",
+        "CYCLONEDDS_URI",
+        "ROS_DISCOVERY_SERVER",
+        "ROS_AUTOMATIC_DISCOVERY_RANGE",
+        "ROS_STATIC_PEERS",
+    }
+)
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_PYTHON_VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[.+-].*)?$")
+_RUNTIME_IDENTITY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "pid",
+        "python_executable",
+        "python_version",
+        "rmw_implementation_requested",
+        "rmw_implementation_effective",
+        "ros_domain_id",
+        "dds_config_mode",
+        "dds_bindings",
+        "dds_config_sha256",
+        "descriptor_sha256",
+    }
+)
 
 
 class BridgeError(Exception):
     """Raised when the ROS bridge is unavailable or an operation fails."""
+
+
+def _identity_sha256(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _runtime_identity_object(payload: object) -> BridgePayload:
+    if not isinstance(payload, dict):
+        raise BridgeError("invalid bridge runtime identity: payload must be an object")
+    if set(payload) != _RUNTIME_IDENTITY_FIELDS or payload.get("schema_version") != 1:
+        raise BridgeError("invalid bridge runtime identity: fields do not match schema v1")
+    return payload
+
+
+def _runtime_identity_int(
+    payload: BridgePayload,
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = payload.get(field)
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise BridgeError(f"invalid bridge runtime identity: {field} is outside its range")
+    return value
+
+
+def _runtime_identity_text(payload: BridgePayload, field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise BridgeError(f"invalid bridge runtime identity: {field} is unavailable")
+    return value
+
+
+def _runtime_identity_bindings(
+    payload: BridgePayload,
+) -> tuple[dict[str, object], tuple[tuple[str, str, str], ...]]:
+    bindings = payload.get("dds_bindings")
+    if not isinstance(bindings, dict) or not set(bindings).issubset(_DDS_IDENTITY_BINDINGS):
+        raise BridgeError("invalid bridge runtime identity: DDS bindings are malformed")
+    parsed: list[tuple[str, str, str]] = []
+    for name, raw_binding in bindings.items():
+        if not isinstance(raw_binding, dict) or set(raw_binding) != {"kind", "sha256"}:
+            raise BridgeError("invalid bridge runtime identity: DDS binding fields are malformed")
+        kind = raw_binding.get("kind")
+        digest = raw_binding.get("sha256")
+        if (
+            kind not in {"file_content", "environment_value"}
+            or not isinstance(digest, str)
+            or _SHA256_PATTERN.fullmatch(digest) is None
+        ):
+            raise BridgeError("invalid bridge runtime identity: DDS binding evidence is malformed")
+        parsed.append((name, kind, digest))
+    expected_mode = "environment_binding" if bindings else "middleware_default"
+    if payload.get("dds_config_mode") != expected_mode:
+        raise BridgeError("invalid bridge runtime identity: DDS mode is inconsistent")
+    return bindings, tuple(sorted(parsed))
+
+
+def _runtime_identity_digest(
+    payload: BridgePayload,
+    field: str,
+    expected_payload: object,
+) -> str:
+    digest = payload.get(field)
+    if (
+        not isinstance(digest, str)
+        or _SHA256_PATTERN.fullmatch(digest) is None
+        or digest != _identity_sha256(expected_payload)
+    ):
+        raise BridgeError(f"invalid bridge runtime identity: {field} does not match")
+    return digest
+
+
+@dataclass(frozen=True, slots=True)
+class BridgeRuntimeIdentity:
+    """Validated identity emitted by the actual rclpy sidecar process."""
+
+    schema_version: int
+    pid: int
+    python_executable: str
+    python_version: str
+    rmw_implementation_requested: str | None
+    rmw_implementation_effective: str
+    ros_domain_id: int
+    dds_config_mode: str
+    dds_bindings: tuple[tuple[str, str, str], ...]
+    dds_config_sha256: str
+    descriptor_sha256: str
+
+    @classmethod
+    def from_payload(cls, payload: object) -> BridgeRuntimeIdentity:
+        parsed = _runtime_identity_object(payload)
+        pid = _runtime_identity_int(parsed, "pid", minimum=1, maximum=2**31 - 1)
+        executable = _runtime_identity_text(parsed, "python_executable")
+        if not os.path.isabs(executable) or os.path.normpath(executable) != executable:
+            raise BridgeError("invalid bridge runtime identity: Python path is not canonical")
+        version = _runtime_identity_text(parsed, "python_version")
+        if _PYTHON_VERSION_PATTERN.fullmatch(version) is None:
+            raise BridgeError("invalid bridge runtime identity: Python version is malformed")
+        requested = parsed.get("rmw_implementation_requested")
+        if requested is not None and (not isinstance(requested, str) or not requested.strip()):
+            raise BridgeError("invalid bridge runtime identity: requested RMW is malformed")
+        effective = _runtime_identity_text(parsed, "rmw_implementation_effective")
+        domain_id = _runtime_identity_int(parsed, "ros_domain_id", minimum=0, maximum=232)
+        bindings, parsed_bindings = _runtime_identity_bindings(parsed)
+        mode = _runtime_identity_text(parsed, "dds_config_mode")
+        dds_digest = _runtime_identity_digest(parsed, "dds_config_sha256", bindings)
+        descriptor = {key: value for key, value in parsed.items() if key != "descriptor_sha256"}
+        descriptor_digest = _runtime_identity_digest(parsed, "descriptor_sha256", descriptor)
+        return cls(
+            schema_version=1,
+            pid=pid,
+            python_executable=executable,
+            python_version=version,
+            rmw_implementation_requested=requested,
+            rmw_implementation_effective=effective,
+            ros_domain_id=domain_id,
+            dds_config_mode=mode,
+            dds_bindings=parsed_bindings,
+            dds_config_sha256=dds_digest,
+            descriptor_sha256=descriptor_digest,
+        )
+
+    def to_payload(self) -> BridgePayload:
+        bindings = {
+            name: {"kind": kind, "sha256": digest} for name, kind, digest in self.dds_bindings
+        }
+        return {
+            "schema_version": self.schema_version,
+            "pid": self.pid,
+            "python_executable": self.python_executable,
+            "python_version": self.python_version,
+            "rmw_implementation_requested": self.rmw_implementation_requested,
+            "rmw_implementation_effective": self.rmw_implementation_effective,
+            "ros_domain_id": self.ros_domain_id,
+            "dds_config_mode": self.dds_config_mode,
+            "dds_bindings": bindings,
+            "dds_config_sha256": self.dds_config_sha256,
+            "descriptor_sha256": self.descriptor_sha256,
+        }
 
 
 def _require_bool(result: BridgePayload, field: str, operation: str) -> bool:
@@ -400,6 +572,8 @@ class RosBridgeClient:
         self._event_handlers: dict[str, list[EventHandler]] = {}
         self._watch_handlers: dict[int, EventHandler] = {}
         self._ready = asyncio.Event()
+        self._ready_runtime_identity_payload: object | None = None
+        self._pinned_runtime_identity: BridgeRuntimeIdentity | None = None
         self._start_lock = asyncio.Lock()
         # Safety config survives the process: once set, EVERY spawn re-arms
         # the watchdog — including silent respawns via request(). Without
@@ -444,6 +618,7 @@ class RosBridgeClient:
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
         if self._domain_id is not None:
             env["ROS_DOMAIN_ID"] = str(self._domain_id)
+        self._ready_runtime_identity_payload = None
         self._proc = await asyncio.create_subprocess_exec(
             *_bridge_process_args(ros_setup, python),
             stdin=asyncio.subprocess.PIPE,
@@ -479,6 +654,14 @@ class RosBridgeClient:
             ready_waiter.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await ready_waiter
+        if self._pinned_runtime_identity is not None:
+            try:
+                current_identity = self._current_runtime_identity()
+                if current_identity != self._pinned_runtime_identity:
+                    raise BridgeError("ROS bridge runtime identity changed after it was pinned")
+            except BridgeError:
+                await self.stop()
+                raise
         if self._safety is not None:
             # Arm the dead-client watchdog on the fresh process. A failure
             # here means the bridge is already broken — fail the start rather
@@ -620,6 +803,7 @@ class RosBridgeClient:
     def _dispatch_event(self, payload: BridgePayload) -> None:
         event = str(payload["event"])
         if event == "ready":
+            self._ready_runtime_identity_payload = payload.get("runtime_identity")
             self._ready.set()
             return
         if event == "watch":
@@ -644,6 +828,26 @@ class RosBridgeClient:
         handlers = self._event_handlers.get(event, [])
         if handler in handlers:
             handlers.remove(handler)
+
+    def _current_runtime_identity(self) -> BridgeRuntimeIdentity:
+        identity = BridgeRuntimeIdentity.from_payload(self._ready_runtime_identity_payload)
+        proc = self._proc
+        if proc is None or proc.pid != identity.pid:
+            raise BridgeError("invalid bridge runtime identity: pid does not match the sidecar")
+        return identity
+
+    async def runtime_identity(self, *, pin: bool = False) -> BridgeRuntimeIdentity:
+        """Return identity from the actual ready sidecar, optionally pinning respawns."""
+
+        if not self.running:
+            await self.start()
+        identity = self._current_runtime_identity()
+        if pin:
+            if self._pinned_runtime_identity is None:
+                self._pinned_runtime_identity = identity
+            elif identity != self._pinned_runtime_identity:
+                raise BridgeError("ROS bridge runtime identity changed after it was pinned")
+        return identity
 
     async def request(
         self, op: str, timeout: float = 10.0, params: BridgePayload | None = None

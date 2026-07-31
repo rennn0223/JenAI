@@ -72,7 +72,6 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help=f"--execute 必須精確提供：{DIFFERENTIAL_EXECUTION_CONFIRMATION}",
     )
-    capture.add_argument("--overwrite", action="store_true")
 
     compare = subcommands.add_parser("compare", help="離線比較一組 R1/R2 artifact")
     compare.add_argument("--r1", type=Path, required=True)
@@ -99,7 +98,6 @@ def _capture(args: argparse.Namespace) -> int:
         ground_truth_type=args.ground_truth_type,
         execute=args.execute,
         confirmation=args.confirm,
-        overwrite=args.overwrite,
     )
     artifact = asyncio.run(capture_navigation_differential(options))
     print(f"{artifact['overall']}: {options.output}")
