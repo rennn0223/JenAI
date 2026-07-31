@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
@@ -528,6 +529,29 @@ def test_r2_override_is_temporary_and_uses_effective_vehicle_domain() -> None:
 def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
     git_sha = "1" * 40
     source_root = "/tmp/JenAI-reviewed"
+    generation = {
+        "boot_id": "12345678-1234-5678-1234-567812345678",
+        "session": "nav2",
+        "session_id": "$1",
+        "session_created": 1000,
+        "pane_id": "%1",
+        "pane_pid": 101,
+        "pane_start_ticks": 1001,
+        "processes": [
+            {
+                "pid": 101,
+                "ppid": 1,
+                "start_ticks": 1001,
+                "cmdline_sha256": "5" * 64,
+            },
+            {
+                "pid": 102,
+                "ppid": 101,
+                "start_ticks": 1002,
+                "cmdline_sha256": "6" * 64,
+            },
+        ],
+    }
     identity: dict[str, Any] = {
         "git_sha": git_sha,
         "git_dirty": False,
@@ -559,6 +583,9 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
             "/bt_navigator": 1,
         },
         "navigate_to_pose_action_count": 1,
+        "controller_odom_topic": "/chassis/odom",
+        "nav2_process_generation": generation,
+        "nav2_process_generation_end": deepcopy(generation),
         "runtime_parameter_sha256": {
             "/amcl": "1" * 64,
             "/controller_server": "2" * 64,
@@ -580,6 +607,17 @@ def test_runtime_identity_blocks_non_simulation_capture() -> None:
 
     assert physical_failures == ["simulation_deployment_mode_required"]
     assert simulation_failures == []
+
+
+@pytest.mark.parametrize("odom_topic", [None, "", "relative", "/bad topic"])
+def test_runtime_identity_requires_valid_effective_controller_odom_topic(
+    odom_topic: object,
+) -> None:
+    identity = _valid_runtime_identity(deployment_mode="simulation")
+    identity["controller_odom_topic"] = odom_topic
+    _apply_runtime_fingerprint(identity)
+
+    assert "controller_odom_topic" in _runtime_identity_failures(identity)
 
 
 def test_cleanup_returns_structured_failures_for_each_failed_step() -> None:

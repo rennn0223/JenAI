@@ -42,6 +42,8 @@ R2 只在 runner 的記憶內建立 `nav_endpoint_retry_limit=0` 的 config copy
   `/navigate_to_pose/_action/status` 推論出的唯一、schema-valid、goal-stamp fresh 新 UUID。
 - 沒有新 UUID、多個候選或 stale candidate 都會使 T1 timeline fail closed；該場為
   `insufficient_evidence`，不得猜測 UUID。
+- dispatch、Nav2 terminal、R2 navigation attempt 與 observed result 使用同一個 command
+  tag 綁定；缺少、重複或互相矛盾的 tag 不能進入 paired comparison。
 
 ## Ground truth 契約
 
@@ -53,7 +55,11 @@ Isaac world pose 不可直接與 ROS map pose 相減。只有已驗證的 `T_map
 - configured scene SHA、操作員擷取的 active Stage SHA、calibration scene SHA 三者一致；
 - Site map SHA、live map digest、calibration map SHA 三者一致；
 - configured map frame、live map frame、calibration `map_frame_id` 一致；
+- immutable measurement contract 保存 canonical ground-truth topic、message type 與 calibration
+  payload SHA-256；三者與 artifact／raw topic stream 不一致時 fail closed；
 - ground-truth message 有 fresh header timestamp，frame 等於 `world_frame_id`；
+- T0 scenario start 與真正 dispatch 前的 T1 都必須各有 fresh、可由 raw topic 重新推導的
+  world pose 與 calibrated map pose；缺一不可開始 motion；
 - 只使用 Nav2 terminal 後 final window 的樣本；
 - 至少 3 筆 distinct、單調且 fresh 的 source timestamps，並覆蓋 2 秒 ROS-time window
   的 begin／tail；
@@ -80,7 +86,9 @@ Calibration JSON 範例：
 
 缺少可信 calibration，或 residual、scene、map、frame 任一 gate 不通過時，會明確記錄
 `GROUND_TRUTH_UNAVAILABLE`。這種 run 不要求 ground-truth samples，仍可進行 ROS map-only
-比較，但不得產生 `ACTUAL_ENDPOINT_DIFFERENCE` 或 localization-vs-ground-truth 結論。
+比較，但不得產生 `ACTUAL_ENDPOINT_DIFFERENCE` 或 localization-vs-ground-truth 結論。若已
+設定 ground-truth topic，runner 仍可保存並重算 raw samples；在 calibration 未通過前，這些
+samples 不會升格為 verified evidence，也不會產生 physical endpoint claim。
 
 ## Live runtime、T0、T1 與 final gate
 
@@ -95,7 +103,12 @@ Live execution 只允許 `deployment_mode=simulation`，並在送 goal 前 fail 
 - `/amcl`、`/controller_server`、`/planner_server`、`/bt_navigator` 各一個；
 - `NavigateToPose` action 唯一；
 - controller／planner／BT navigator lifecycle 為 active；
+- `/controller_server` 實際 `odom_topic` 可讀、能正規化為 absolute ROS topic，且 artifact
+  recorder／measurement contract 使用同一 topic；
 - 必要 runtime parameter dumps 完整。
+- Nav2 tmux navigation pane 與其 descendant process tree 在 motion 前後一致。每個 process
+  綁定 PID、PPID、Linux start ticks 與 command-line digest；採樣競態、缺少 `/proc` 證據或
+  child restart 都會使場次降級。
 
 T0 scenario start 與真正 `nav_send` 前的 T1 dispatch state 都要求：
 
@@ -106,6 +119,7 @@ T0 scenario start 與真正 `nav_send` 前的 T1 dispatch state 都要求：
 - robot stationary；
 - fresh、schema-valid action status；
 - 沒有 active goal。
+- 使用 verified ground truth 時，另要求 fresh world-frame sample 與 calibration 後 map pose。
 
 T1 在 proxy `nav_send` 已被呼叫、但尚未 forward 到真正 bridge 時重新取樣。Runner 先等待
 `preflight_sample_s`（預設 1 秒），且只接受 `nav_send_invoked_host_monotonic_ns` 之後的新
@@ -150,9 +164,16 @@ cleanup_failed
 actual dispatch goal，才能進入 paired comparison。離線入口會重新驗證 source identity 與
 fingerprint、T0/T1 原始 freshness metadata、canonical-vs-actual goal、唯一 UUID、完整 lifecycle
 順序、terminal、final samples、由樣本推導的 median、ground-truth calibration 與 cleanup；不會
-只相信 artifact 內的 `PASS` 字串。Preparation、dispatch 或 cleanup 例外仍會
+只相信 artifact 內的 `PASS` 字串。比較器要求目前的 `evidence_derivation_version`，並以完整
+raw topic samples 重新建立 T0、T1、UUID、final AMCL／odom／ground-truth window；dispatch-end
+snapshot 必須是完整 samples 的 immutable prefix，summary、alias 或 median 被單獨修改都會被
+拒絕。舊式只有 derived summary、沒有 raw evidence 的 artifact 不具 comparison eligibility。
+Preparation、dispatch 或 cleanup 例外仍會
 原子保存可重新載入的 schema-v1 artifact；成功與失敗場次都不得刪除。Runtime fingerprint
 只用於確認兩場 runtime identity 是否等價，不是防惡意竄改的簽章或 artifact attestation。
+Process-tree identity 能偵測 tmux launch descendants 的替換，但不能單獨證明 ROS graph node 與
+特定 OS PID 的所有權；node uniqueness、runtime parameter snapshots 與 action-server identity
+仍是互補證據。
 
 ## Preflight：不移動
 

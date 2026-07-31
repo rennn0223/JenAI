@@ -12,7 +12,7 @@ import math
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _normalized_frame_id(frame_id: str) -> str:
@@ -26,6 +26,37 @@ def _normalized_angle(angle: float) -> float:
     if not math.isfinite(angle):
         raise ValueError("angle must be finite")
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+_CANONICAL_ORIENTATION_TOLERANCE_RAD = 1e-9
+
+
+def _normalized_quaternion(
+    components: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    if not all(math.isfinite(item) for item in components):
+        raise ValueError("quaternion must be finite")
+    scale = max(abs(item) for item in components)
+    if scale == 0.0:
+        raise ValueError("quaternion must have non-zero norm")
+    scaled = tuple(item / scale for item in components)
+    norm = math.hypot(*scaled)
+    return (
+        scaled[0] / norm,
+        scaled[1] / norm,
+        scaled[2] / norm,
+        scaled[3] / norm,
+    )
+
+
+def _quaternion_angular_distance(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    dot = sum(item * other for item, other in zip(left, right, strict=True))
+    sign = 1.0 if dot >= 0.0 else -1.0
+    chord = math.hypot(*(sign * item - other for item, other in zip(left, right, strict=True)))
+    return 4.0 * math.asin(min(1.0, chord / 2.0))
 
 
 class Pose2D(BaseModel):
@@ -59,6 +90,27 @@ class CanonicalGoal(BaseModel):
     clock_domain: str | None = None
     simulation_epoch: str | None = None
     stamp_fresh: bool | None = None
+
+    @field_validator("frame_id")
+    @classmethod
+    def canonicalize_frame_id(cls, frame_id: str) -> str:
+        return _normalized_frame_id(frame_id)
+
+    @model_validator(mode="after")
+    def canonicalize_orientation(self) -> CanonicalGoal:
+        components = (self.qx, self.qy, self.qz, self.qw)
+        normalized = _normalized_quaternion(components)
+        normalized_yaw = _normalized_angle(self.yaw)
+        expected = (0.0, 0.0, math.sin(normalized_yaw / 2.0), math.cos(normalized_yaw / 2.0))
+        angular_distance = _quaternion_angular_distance(normalized, expected)
+        if angular_distance > _CANONICAL_ORIENTATION_TOLERANCE_RAD:
+            raise ValueError("yaw and quaternion must describe the same orientation")
+        object.__setattr__(self, "yaw", normalized_yaw)
+        object.__setattr__(self, "qx", normalized[0])
+        object.__setattr__(self, "qy", normalized[1])
+        object.__setattr__(self, "qz", normalized[2])
+        object.__setattr__(self, "qw", normalized[3])
+        return self
 
     @classmethod
     def from_yaw(
@@ -106,12 +158,7 @@ class CanonicalGoal(BaseModel):
         stamp_fresh: bool | None = None,
     ) -> CanonicalGoal:
         components = (qx, qy, qz, qw)
-        if not all(math.isfinite(item) for item in components):
-            raise ValueError("quaternion must be finite")
-        norm = math.sqrt(sum(item * item for item in components))
-        if norm <= 1e-12:
-            raise ValueError("quaternion must have non-zero norm")
-        normalized = tuple(item / norm for item in components)
+        normalized = _normalized_quaternion(components)
         nqx, nqy, nqz, nqw = normalized
         yaw = _normalized_angle(
             math.atan2(
@@ -172,8 +219,9 @@ def compare_goals(
 
     if position_tolerance_m < 0 or orientation_tolerance_rad < 0:
         raise ValueError("goal comparison tolerances must not be negative")
-    dot = abs(left.qx * right.qx + left.qy * right.qy + left.qz * right.qz + left.qw * right.qw)
-    angular_distance = 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+    left_orientation = (left.qx, left.qy, left.qz, left.qw)
+    right_orientation = (right.qx, right.qy, right.qz, right.qw)
+    angular_distance = _quaternion_angular_distance(left_orientation, right_orientation)
     position_delta = math.hypot(left.x - right.x, left.y - right.y)
     frame_equal = left.frame_id == right.frame_id
     timestamp_compatible = _timestamp_compatible(left, right)
@@ -223,7 +271,12 @@ class GroundTruthCalibration(BaseModel):
             raise ValueError("verified ground truth requires a complete calibration record")
         if self.status == "VERIFIED":
             frames = (self.world_frame_id, self.map_frame_id)
-            if any(not frame or not frame.lstrip("/") for frame in frames):
+            if any(
+                not frame
+                or not frame.lstrip("/")
+                or any(character.isspace() for character in frame)
+                for frame in frames
+            ):
                 raise ValueError("verified ground truth requires non-empty frame identifiers")
         return self
 

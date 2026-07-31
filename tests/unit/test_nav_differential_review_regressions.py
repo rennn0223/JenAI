@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
@@ -267,6 +268,29 @@ def _measurement_contract() -> dict[str, Any]:
 def _runtime_identity() -> dict[str, Any]:
     git_sha = "1" * 40
     source_root = "/tmp/JenAI-reviewed"
+    generation = {
+        "boot_id": "12345678-1234-5678-1234-567812345678",
+        "session": "nav2",
+        "session_id": "$1",
+        "session_created": 1000,
+        "pane_id": "%1",
+        "pane_pid": 101,
+        "pane_start_ticks": 1001,
+        "processes": [
+            {
+                "pid": 101,
+                "ppid": 1,
+                "start_ticks": 1001,
+                "cmdline_sha256": "5" * 64,
+            },
+            {
+                "pid": 102,
+                "ppid": 101,
+                "start_ticks": 1002,
+                "cmdline_sha256": "6" * 64,
+            },
+        ],
+    }
     identity: dict[str, Any] = {
         "git_sha": git_sha,
         "git_dirty": False,
@@ -298,6 +322,9 @@ def _runtime_identity() -> dict[str, Any]:
             "/bt_navigator": 1,
         },
         "navigate_to_pose_action_count": 1,
+        "controller_odom_topic": "/chassis/odom",
+        "nav2_process_generation": generation,
+        "nav2_process_generation_end": deepcopy(generation),
         "runtime_parameter_sha256": {
             "/amcl": "1" * 64,
             "/controller_server": "2" * 64,
@@ -313,14 +340,17 @@ def _state_evidence(
     *,
     pose: Pose2D | None = None,
     covariance: float = 0.01,
+    cutoff_host_ns: int = 80,
+    evaluated_host_ns: int = 100,
 ) -> dict[str, Any]:
     state_pose = (pose or Pose2D(x=0.0, y=0.0, yaw=0.0)).model_dump(mode="json")
+    source_host_ns = evaluated_host_ns - 5
     return {
         "status": "PASS",
         "failures": [],
         "simulation_epoch": "epoch-01",
-        "cutoff_host_monotonic_ns": 80,
-        "evaluated_host_monotonic_ns": 100,
+        "cutoff_host_monotonic_ns": cutoff_host_ns,
+        "evaluated_host_monotonic_ns": evaluated_host_ns,
         "map_to_base": state_pose,
         "amcl_pose": state_pose,
         "odom_pose": state_pose,
@@ -330,14 +360,14 @@ def _state_evidence(
         "stationary": True,
         "active_goal_ids": [],
         "clock_evidence": [
-            {"host_monotonic_ns": 90, "clock_ns": 10_000_000_000},
-            {"host_monotonic_ns": 100, "clock_ns": 11_000_000_000},
+            {"host_monotonic_ns": cutoff_host_ns + 5, "clock_ns": 10_000_000_000},
+            {"host_monotonic_ns": evaluated_host_ns, "clock_ns": 11_000_000_000},
         ],
         "clock_samples_ns": [10_000_000_000, 11_000_000_000],
         "clock_advancing": True,
         "clock_backwards": False,
         "amcl_source": {
-            "host_monotonic_ns": 95,
+            "host_monotonic_ns": source_host_ns,
             "host_age_ns": 5,
             "source_stamp_ns": 10_500_000_000,
             "sample_clock_ns": 10_500_000_000,
@@ -346,7 +376,7 @@ def _state_evidence(
             "fresh": True,
         },
         "odom_source": {
-            "host_monotonic_ns": 95,
+            "host_monotonic_ns": source_host_ns,
             "host_age_ns": 5,
             "source_stamp_ns": 10_500_000_000,
             "sample_clock_ns": 10_500_000_000,
@@ -355,7 +385,7 @@ def _state_evidence(
             "fresh": True,
         },
         "action_status_source": {
-            "host_monotonic_ns": 95,
+            "host_monotonic_ns": source_host_ns,
             "host_age_ns": 5,
             "fresh": True,
             "schema_valid": True,
@@ -408,7 +438,13 @@ def _artifact(
         simulation_epoch="epoch-01",
     ).model_dump(mode="json")
     map_clock_stamps = [10_000_000_000 + (index * 2_000_000_000) // 9 for index in range(10)]
-    return {
+    t1_state = _state_evidence(
+        pose=t1_pose,
+        covariance=t1_covariance,
+        cutoff_host_ns=110,
+        evaluated_host_ns=130,
+    )
+    artifact: dict[str, Any] = {
         "schema_version": 1,
         "run_id": f"run-{mode}",
         "pair_id": "pair-01",
@@ -428,10 +464,7 @@ def _artifact(
             "failures": [],
             "dispatch_count": 1,
             "actual_goal": goal,
-            "state_before_forward": _state_evidence(
-                pose=t1_pose,
-                covariance=t1_covariance,
-            ),
+            "state_before_forward": deepcopy(t1_state),
             "request_host_monotonic_ns": 100,
             "return_host_monotonic_ns": 160,
             "dispatch_observations": [
@@ -440,16 +473,17 @@ def _artifact(
                     "nav_send_forwarded_host_monotonic_ns": 120,
                     "forward_completed_host_monotonic_ns": 130,
                     "actual_goal": goal,
-                    "state_before_forward": _state_evidence(
-                        pose=t1_pose,
-                        covariance=t1_covariance,
-                    ),
+                    "state_before_forward": deepcopy(t1_state),
                 }
             ],
             "nav_send_forwarded_host_monotonic_ns": 120,
             "accepted_goal_observations": [
                 {
                     "goal_uuid": "01" * 16,
+                    "status": 2,
+                    "goal_stamp_ns": 10_500_000_000,
+                    "capture_clock_ns": 11_000_000_000,
+                    "goal_stamp_age_ns": 500_000_000,
                     "goal_stamp_fresh": True,
                     "observed_host_monotonic_ns": 140,
                 }
@@ -503,16 +537,28 @@ def _artifact(
         "final_ground_truth_map_median": None,
         "execution_status": "succeeded",
     }
+    if mode == "R2_jenai_no_retry":
+        artifact["jenai_result"] = {
+            "execution_status": "succeeded",
+            "effective_experimental_config": {"nav_endpoint_retry_limit": 0},
+            "navigation_attempts": [{"tag": "attempt-1"}],
+        }
+    return artifact
 
 
-def test_pairing_rejects_t1_dispatch_pose_difference() -> None:
-    report = compare_differential_artifacts(
-        _artifact(mode="R1_bridge_nav2"),
-        _artifact(
-            mode="R2_jenai_no_retry",
-            t1_pose=Pose2D(x=0.10, y=0.0, yaw=0.0),
-        ),
-    )
+def test_pairing_rejects_t1_dispatch_pose_difference(
+    differential_artifact_factory: Any,
+) -> None:
+    left = cast(dict[str, Any], differential_artifact_factory(mode="R1_bridge_nav2"))
+    right = cast(dict[str, Any], differential_artifact_factory(mode="R2_jenai_no_retry"))
+    timeline = cast(dict[str, Any], right["t1_goal_dispatch"])
+    public_state = cast(dict[str, Any], timeline["state_before_forward"])
+    observations = cast(list[dict[str, Any]], timeline["dispatch_observations"])
+    nested_state = cast(dict[str, Any], observations[0]["state_before_forward"])
+    for state in (public_state, nested_state):
+        state["map_to_base"] = {"x": 0.10, "y": 0.0, "yaw": 0.0}
+
+    report = compare_differential_artifacts(left, right)
 
     assert report["included"] is False
     assert PairClassification.PAIRING_GATE_FAILED in report["classifications"]

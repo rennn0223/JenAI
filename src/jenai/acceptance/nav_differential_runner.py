@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import hashlib
 import json
 import math
@@ -25,9 +26,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 import jenai
 from jenai.acceptance.nav_differential import (
@@ -55,8 +56,16 @@ _CLOCK_TOPIC = "/clock"
 _CLOCK_TYPE = "rosgraph_msgs/msg/Clock"
 _AMCL_TOPIC = "/amcl_pose"
 _AMCL_TYPE = "geometry_msgs/msg/PoseWithCovarianceStamped"
-_ODOM_TOPIC = "/odom"
 _ODOM_TYPE = "nav_msgs/msg/Odometry"
+
+
+def _valid_ros_message_type_name(value: str) -> bool:
+    parts = value.split("/")
+    return (
+        len(parts) == 3
+        and parts[1] == "msg"
+        and all(part.isidentifier() for part in (parts[0], parts[2]))
+    )
 
 
 class DifferentialMode(StrEnum):
@@ -103,6 +112,30 @@ class DifferentialCaptureOptions(BaseModel):
     min_final_ground_truth_samples: int = Field(default=3, ge=2)
     final_wall_timeout_s: float = Field(default=15.0, gt=0, allow_inf_nan=False)
     max_covariance_xy: float = Field(default=0.1, ge=0, allow_inf_nan=False)
+    max_pair_start_position_delta_m: float = Field(default=0.05, ge=0, allow_inf_nan=False)
+    max_pair_start_yaw_delta_rad: float = Field(default=0.05, ge=0, allow_inf_nan=False)
+
+    @field_validator("ground_truth_topic")
+    @classmethod
+    def normalize_ground_truth_topic(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = "/" + value.lstrip("/")
+        if (
+            normalized == "/"
+            or "//" in normalized
+            or any(character.isspace() for character in normalized)
+            or any(segment in {".", ".."} for segment in normalized.split("/"))
+        ):
+            raise ValueError("ground-truth topic must be a valid absolute ROS topic")
+        return normalized
+
+    @field_validator("ground_truth_type")
+    @classmethod
+    def validate_ground_truth_type(cls, value: str) -> str:
+        if not _valid_ros_message_type_name(value):
+            raise ValueError("ground-truth message type must use package/msg/Type")
+        return value
 
     @model_validator(mode="after")
     def execution_requires_confirmation(self) -> DifferentialCaptureOptions:
@@ -161,6 +194,49 @@ class DifferentialMeasurementContract(BaseModel):
     max_start_speed_mps: float = Field(ge=0, allow_inf_nan=False)
     max_start_yaw_rate_rps: float = Field(ge=0, allow_inf_nan=False)
     max_covariance_xy: float = Field(ge=0, allow_inf_nan=False)
+    max_pair_start_position_delta_m: float = Field(default=0.05, ge=0, allow_inf_nan=False)
+    max_pair_start_yaw_delta_rad: float = Field(default=0.05, ge=0, allow_inf_nan=False)
+    ground_truth_topic: str | None = None
+    ground_truth_type: str | None = None
+    ground_truth_calibration_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @field_validator("ground_truth_topic")
+    @classmethod
+    def normalize_ground_truth_topic(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = "/" + value.lstrip("/")
+        if (
+            normalized == "/"
+            or "//" in normalized
+            or any(character.isspace() for character in normalized)
+            or any(segment in {".", ".."} for segment in normalized.split("/"))
+        ):
+            raise ValueError("ground-truth topic must be a valid absolute ROS topic")
+        return normalized
+
+    @field_validator("ground_truth_type")
+    @classmethod
+    def validate_ground_truth_type(cls, value: str | None) -> str | None:
+        if value is not None and not _valid_ros_message_type_name(value):
+            raise ValueError("ground-truth message type must use package/msg/Type")
+        return value
+
+    @model_validator(mode="after")
+    def ground_truth_binding_is_all_or_none(self) -> DifferentialMeasurementContract:
+        values = (
+            self.ground_truth_topic,
+            self.ground_truth_type,
+            self.ground_truth_calibration_sha256,
+        )
+        if any(value is not None for value in values) and any(value is None for value in values):
+            raise ValueError(
+                "ground-truth topic, type, and calibration digest must be bound together"
+            )
+        return self
 
 
 ArtifactOverall = Literal[
@@ -180,6 +256,7 @@ class DifferentialArtifact(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     schema_version: Literal[1] = 1
+    evidence_derivation_version: Literal[1] | None = None
     run_id: str = Field(min_length=1)
     pair_id: str = Field(min_length=1)
     mode: DifferentialMode
@@ -217,9 +294,19 @@ class _TopicRecorder:
         self.samples.append(
             {
                 "host_monotonic_ns": time.monotonic_ns(),
-                "message": message,
+                "message": copy.deepcopy(message),
             }
         )
+
+
+def _snapshot_topic_samples(
+    recorders: dict[str, _TopicRecorder],
+) -> dict[str, list[dict[str, Any]]]:
+    return {
+        key: copy.deepcopy(recorder.samples)
+        for key, recorder in recorders.items()
+        if recorder.samples
+    }
 
 
 def _utc_now() -> str:
@@ -230,6 +317,26 @@ def _sha256(path: Path | None) -> str | None:
     if path is None or not path.is_file():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _calibration_payload_sha256(calibration: GroundTruthCalibration) -> str:
+    payload = json.dumps(
+        calibration.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _calibration_file_payload_sha256(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        calibration = GroundTruthCalibration.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    return _calibration_payload_sha256(calibration)
 
 
 def _command_output(
@@ -270,6 +377,206 @@ def _effective_ros_domain(config: AppConfig) -> str:
     return os.environ.get("ROS_DOMAIN_ID", "0")
 
 
+def _normalized_ros_topic(value: str | None) -> str | None:
+    if value is None:
+        return None
+    topic = "/" + value.strip().strip("\"'").lstrip("/")
+    if (
+        topic == "/"
+        or "//" in topic
+        or any(character.isspace() for character in topic)
+        or any(segment in {".", ".."} for segment in topic.split("/"))
+    ):
+        return None
+    return topic
+
+
+def _controller_odom_topic(*, ros_env: dict[str, str]) -> str | None:
+    value = _command_output(
+        [
+            "ros2",
+            "param",
+            "get",
+            "/controller_server",
+            "odom_topic",
+            "--no-daemon",
+            "--spin-time",
+            "3.0",
+            "--hide-type",
+        ],
+        env=ros_env,
+    )
+    return _normalized_ros_topic(value)
+
+
+def _process_identity(
+    pid: int,
+    *,
+    proc_root: Path = Path("/proc"),
+) -> dict[str, Any] | None:
+    if pid <= 0:
+        return None
+    try:
+        process_root = proc_root / str(pid)
+        value = (process_root / "stat").read_text(encoding="utf-8")
+        cmdline = (process_root / "cmdline").read_bytes()
+    except OSError:
+        return None
+    if not cmdline:
+        return None
+    closing = value.rfind(")")
+    if closing < 0:
+        return None
+    fields = value[closing + 1 :].split()
+    if len(fields) <= 19:
+        return None
+    try:
+        ppid = int(fields[1])
+        start_ticks = int(fields[19])
+    except ValueError:
+        return None
+    if ppid < 0 or start_ticks <= 0:
+        return None
+    return {
+        "pid": pid,
+        "ppid": ppid,
+        "start_ticks": start_ticks,
+        "cmdline_sha256": hashlib.sha256(cmdline).hexdigest(),
+    }
+
+
+def _child_pids(
+    pid: int,
+    *,
+    proc_root: Path = Path("/proc"),
+) -> set[int] | None:
+    try:
+        task_roots = sorted(
+            (entry for entry in (proc_root / str(pid) / "task").iterdir() if entry.is_dir()),
+            key=lambda entry: int(entry.name),
+        )
+    except (OSError, ValueError):
+        return None
+    if not task_roots:
+        return None
+    children: set[int] = set()
+    for task_root in task_roots:
+        try:
+            raw = (task_root / "children").read_text(encoding="utf-8").strip()
+            child_pids = [int(value) for value in raw.split()] if raw else []
+        except (OSError, ValueError):
+            return None
+        if any(child <= 0 for child in child_pids):
+            return None
+        children.update(child_pids)
+    return children
+
+
+def _process_tree_snapshot_once(
+    root_pid: int,
+    *,
+    proc_root: Path = Path("/proc"),
+    max_processes: int = 256,
+) -> list[dict[str, Any]] | None:
+    pending = [root_pid]
+    seen: set[int] = set()
+    identities: list[dict[str, Any]] = []
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        if len(seen) >= max_processes:
+            return None
+        identity = _process_identity(pid, proc_root=proc_root)
+        children = _child_pids(pid, proc_root=proc_root)
+        if identity is None or children is None:
+            return None
+        seen.add(pid)
+        identities.append(identity)
+        pending.extend(sorted(children - seen, reverse=True))
+    return sorted(identities, key=lambda item: int(item["pid"]))
+
+
+def _stable_process_tree_snapshot(
+    root_pid: int,
+    *,
+    proc_root: Path = Path("/proc"),
+) -> list[dict[str, Any]] | None:
+    first = _process_tree_snapshot_once(root_pid, proc_root=proc_root)
+    second = _process_tree_snapshot_once(root_pid, proc_root=proc_root)
+    if first is None or second is None or first != second:
+        return None
+    return first
+
+
+def _tmux_navigation_pane(session: str) -> tuple[str, int, str, int] | None:
+    value = _command_output(
+        [
+            "tmux",
+            "display-message",
+            "-p",
+            "-t",
+            f"{session}:navigation",
+            "#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}",
+        ]
+    )
+    if value is None:
+        return None
+    fields = value.split("\t")
+    if len(fields) != 4:
+        return None
+    session_id, raw_created, pane_id, raw_pid = fields
+    try:
+        created = int(raw_created)
+        pid = int(raw_pid)
+    except ValueError:
+        return None
+    if not session_id or not pane_id or created < 0 or pid <= 0:
+        return None
+    return session_id, created, pane_id, pid
+
+
+def _nav2_process_generation(
+    session: str,
+    *,
+    proc_root: Path = Path("/proc"),
+) -> dict[str, Any] | None:
+    first = _tmux_navigation_pane(session)
+    if first is None:
+        return None
+    session_id, session_created, pane_id, pane_pid = first
+    try:
+        boot_id = (proc_root / "sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    processes = _stable_process_tree_snapshot(pane_pid, proc_root=proc_root)
+    second = _tmux_navigation_pane(session)
+    pane_identity = (
+        next((process for process in processes if process.get("pid") == pane_pid), None)
+        if processes is not None
+        else None
+    )
+    if (
+        second != first
+        or processes is None
+        or len(processes) < 2
+        or pane_identity is None
+        or not boot_id
+    ):
+        return None
+    start_ticks = int(pane_identity["start_ticks"])
+    return {
+        "boot_id": boot_id,
+        "session": session,
+        "session_id": session_id,
+        "session_created": session_created,
+        "pane_id": pane_id,
+        "pane_pid": pane_pid,
+        "pane_start_ticks": start_ticks,
+        "processes": processes,
+    }
+
+
 def _runtime_fingerprint(identity: dict[str, Any]) -> str:
     fields = {
         key: identity.get(key)
@@ -304,6 +611,8 @@ def _runtime_fingerprint(identity: dict[str, Any]) -> str:
             "runtime_parameter_sha256",
             "node_name_counts",
             "navigate_to_pose_action_count",
+            "controller_odom_topic",
+            "nav2_process_generation",
         )
     }
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode("utf-8")).hexdigest()
@@ -324,10 +633,10 @@ def _runtime_identity(
     simulation_epoch: str,
 ) -> dict[str, Any]:
     locations_path = config.resolved_locations_path(config_path)
+    session = os.environ.get("JENAI_NAV2_TMUX_SESSION", "nav2")
     nav_params_path = os.environ.get("JENAI_NAV2_OVERRIDE_PARAMS")
     if not nav_params_path:
         uid = os.getuid()
-        session = os.environ.get("JENAI_NAV2_TMUX_SESSION", "nav2")
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/tmp/jenai-nav2-{uid}")
         nav_params_path = str(Path(runtime_dir) / f"{session}-params.yaml")
 
@@ -361,6 +670,8 @@ def _runtime_identity(
     parameter_hashes = {
         node: _text_sha256(snapshot) for node, snapshot in parameter_snapshots.items()
     }
+    controller_odom_topic = _controller_odom_topic(ros_env=ros_env)
+    nav2_process_generation = _nav2_process_generation(session)
     identity: dict[str, Any] = {
         "git_sha": revision,
         "git_dirty": None if dirty_output is None else bool(dirty_output),
@@ -404,6 +715,9 @@ def _runtime_identity(
         "node_name_counts": node_counts,
         "navigate_to_pose_actions": action_lines,
         "navigate_to_pose_action_count": action_count,
+        "controller_odom_topic": controller_odom_topic,
+        "nav2_tmux_session": session,
+        "nav2_process_generation": nav2_process_generation,
         "controller_lifecycle": _command_output(
             ["ros2", "lifecycle", "get", "/controller_server"], env=ros_env
         ),
@@ -564,6 +878,12 @@ def _quaternion_yaw(orientation: dict[str, Any]) -> float | None:
         return None
     if not all(math.isfinite(value) for value in (x, y, z, w)):
         return None
+    scale = max(abs(value) for value in (x, y, z, w))
+    if scale == 0.0:
+        return None
+    scaled = (x / scale, y / scale, z / scale, w / scale)
+    norm = math.hypot(*scaled)
+    x, y, z, w = (value / norm for value in scaled)
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
@@ -750,6 +1070,85 @@ def _source_metadata(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
     return {key: value for key, value in evidence.items() if key != "message"}
 
 
+def _ground_truth_state_evidence(
+    ground_truth: _TopicRecorder | None,
+    clock: _TopicRecorder,
+    calibration: GroundTruthCalibration | None,
+    *,
+    max_age_s: float,
+    cutoff_host_monotonic_ns: int,
+    current_host_monotonic_ns: int,
+) -> tuple[dict[str, Any], bool]:
+    required = calibration is not None and calibration.status == "VERIFIED"
+    unavailable = {
+        "ground_truth_required": required,
+        "ground_truth_source": None,
+        "ground_truth_source_frame_id": None,
+        "ground_truth_world_pose": None,
+        "ground_truth_map_pose": None,
+    }
+    if not required or ground_truth is None or calibration is None:
+        return unavailable, not required
+    evidence = _latest_topic_evidence(
+        ground_truth,
+        clock,
+        max_age_s=max_age_s,
+        cutoff_host_monotonic_ns=cutoff_host_monotonic_ns,
+        current_host_monotonic_ns=current_host_monotonic_ns,
+    )
+    message = evidence.get("message") if isinstance(evidence, dict) else None
+    header = message.get("header") if isinstance(message, dict) else None
+    source_frame = header.get("frame_id") if isinstance(header, dict) else None
+    world_pose = _pose_from_message(message) if isinstance(message, dict) else None
+    map_pose = calibration.world_to_map(world_pose) if world_pose is not None else None
+    valid = (
+        evidence is not None
+        and evidence.get("fresh") is True
+        and isinstance(source_frame, str)
+        and source_frame.lstrip("/") == str(calibration.world_frame_id).lstrip("/")
+        and world_pose is not None
+        and map_pose is not None
+    )
+    if not valid or world_pose is None or map_pose is None:
+        return unavailable, False
+    return (
+        {
+            "ground_truth_required": True,
+            "ground_truth_source": _source_metadata(evidence),
+            "ground_truth_source_frame_id": source_frame,
+            "ground_truth_world_pose": world_pose.model_dump(mode="json"),
+            "ground_truth_map_pose": map_pose.model_dump(mode="json"),
+        },
+        True,
+    )
+
+
+def _state_clock_evidence(
+    clock: _TopicRecorder,
+    *,
+    window_start_host_ns: int,
+    evaluated_host_ns: int,
+) -> tuple[list[dict[str, int]], list[int]]:
+    evidence = [
+        {
+            "host_monotonic_ns": int(sample["host_monotonic_ns"]),
+            "clock_ns": value,
+        }
+        for sample in clock.samples
+        if type(sample.get("host_monotonic_ns")) is int
+        and window_start_host_ns <= int(sample["host_monotonic_ns"]) <= evaluated_host_ns
+        and isinstance(sample.get("message"), dict)
+        and (value := _clock_ns(sample["message"])) is not None
+    ]
+    return evidence, [item["clock_ns"] for item in evidence]
+
+
+def _fresh_message(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+    if evidence is None or evidence.get("fresh") is not True:
+        return None
+    return cast(dict[str, Any], evidence["message"])
+
+
 def _initial_state(
     *,
     pose: Pose2D | None,
@@ -758,6 +1157,8 @@ def _initial_state(
     odom: _TopicRecorder,
     action_status: _TopicRecorder,
     options: DifferentialCaptureOptions,
+    ground_truth: _TopicRecorder | None = None,
+    calibration: GroundTruthCalibration | None = None,
     cutoff_host_monotonic_ns: int | None = None,
     current_host_monotonic_ns: int | None = None,
 ) -> dict[str, Any]:
@@ -765,18 +1166,11 @@ def _initial_state(
     max_age_ns = int(options.max_topic_age_s * 1_000_000_000)
     cutoff_host_ns = cutoff_host_monotonic_ns or evaluated_host_ns - max_age_ns
     recent_window_start_ns = max(cutoff_host_ns, evaluated_host_ns - max_age_ns)
-    clock_evidence = [
-        {
-            "host_monotonic_ns": int(sample["host_monotonic_ns"]),
-            "clock_ns": value,
-        }
-        for sample in clock.samples
-        if type(sample.get("host_monotonic_ns")) is int
-        and recent_window_start_ns <= int(sample["host_monotonic_ns"]) <= evaluated_host_ns
-        and isinstance(sample.get("message"), dict)
-        and (value := _clock_ns(sample["message"])) is not None
-    ]
-    clock_values = [int(item["clock_ns"]) for item in clock_evidence]
+    clock_evidence, clock_values = _state_clock_evidence(
+        clock,
+        window_start_host_ns=recent_window_start_ns,
+        evaluated_host_ns=evaluated_host_ns,
+    )
     amcl_evidence = _latest_topic_evidence(
         amcl,
         clock,
@@ -797,21 +1191,9 @@ def _initial_state(
         cutoff_host_monotonic_ns=cutoff_host_ns,
         current_host_monotonic_ns=evaluated_host_ns,
     )
-    amcl_message = (
-        cast(dict[str, Any], amcl_evidence["message"])
-        if amcl_evidence is not None and amcl_evidence.get("fresh") is True
-        else None
-    )
-    odom_message = (
-        cast(dict[str, Any], odom_evidence["message"])
-        if odom_evidence is not None and odom_evidence.get("fresh") is True
-        else None
-    )
-    action_message = (
-        cast(dict[str, Any], action_evidence["message"])
-        if action_evidence is not None and action_evidence.get("fresh") is True
-        else None
-    )
+    amcl_message = _fresh_message(amcl_evidence)
+    odom_message = _fresh_message(odom_evidence)
+    action_message = _fresh_message(action_evidence)
     covariance = _covariance_xy(amcl_message) if amcl_message else None
     velocity = _velocity(odom_message) if odom_message else None
     active_goals = _goal_ids(action_message or {}, active_only=True)
@@ -827,6 +1209,14 @@ def _initial_state(
         and velocity[0] <= options.max_start_speed_mps
         and abs(velocity[1]) <= options.max_start_yaw_rate_rps
     )
+    ground_truth_fields, ground_truth_valid = _ground_truth_state_evidence(
+        ground_truth,
+        clock,
+        calibration,
+        max_age_s=options.max_topic_age_s,
+        cutoff_host_monotonic_ns=cutoff_host_ns,
+        current_host_monotonic_ns=evaluated_host_ns,
+    )
     failures = _start_state_failures(
         pose=pose,
         clock_advancing=clock_advancing,
@@ -841,6 +1231,8 @@ def _initial_state(
         active_goals=active_goals,
         max_covariance_xy=options.max_covariance_xy,
     )
+    if ground_truth_fields["ground_truth_required"] is True and not ground_truth_valid:
+        failures.append("ground_truth_start_evidence")
 
     failures = list(dict.fromkeys(failures))
     return {
@@ -865,24 +1257,35 @@ def _initial_state(
         "clock_samples_ns": clock_values,
         "clock_advancing": clock_advancing,
         "clock_backwards": clock_backwards,
+        **ground_truth_fields,
     }
+
+
+def _topic_stream_specs(
+    options: DifferentialCaptureOptions,
+    *,
+    odom_topic: str,
+) -> list[tuple[str, str, str]]:
+    specs = [
+        ("clock", _CLOCK_TOPIC, _CLOCK_TYPE),
+        ("amcl", _AMCL_TOPIC, _AMCL_TYPE),
+        ("odom", odom_topic, _ODOM_TYPE),
+        ("action_status", _ACTION_STATUS_TOPIC, _ACTION_STATUS_TYPE),
+    ]
+    if options.ground_truth_topic:
+        specs.append(("ground_truth", options.ground_truth_topic, options.ground_truth_type))
+    return specs
 
 
 async def _watch_topics(
     bridge: RosBridgeClient,
     recorders: dict[str, _TopicRecorder],
     options: DifferentialCaptureOptions,
+    *,
+    odom_topic: str,
 ) -> list[int]:
-    specs = [
-        ("clock", _CLOCK_TOPIC, _CLOCK_TYPE),
-        ("amcl", _AMCL_TOPIC, _AMCL_TYPE),
-        ("odom", _ODOM_TOPIC, _ODOM_TYPE),
-        ("action_status", _ACTION_STATUS_TOPIC, _ACTION_STATUS_TYPE),
-    ]
-    if options.ground_truth_topic:
-        specs.append(("ground_truth", options.ground_truth_topic, options.ground_truth_type))
     watch_ids: list[int] = []
-    for key, topic, message_type in specs:
+    for key, topic, message_type in _topic_stream_specs(options, odom_topic=odom_topic):
         watch_ids.append(
             await bridge.watch(
                 topic,
@@ -1118,7 +1521,7 @@ def _new_goal_ids(
         capture_clock_ns = _clock_at_host(clock, host_ns)
         for record in _goal_status_records(message):
             goal_id = str(record["goal_uuid"])
-            if goal_id in seen:
+            if goal_id in seen or record.get("status") == 0:
                 continue
             goal_stamp_ns = record.get("goal_stamp_ns")
             age_ns = (
@@ -1291,8 +1694,8 @@ def _valid_final_amcl(
         sample
         for sample in samples
         if sample.get("fresh") is True
-        and isinstance(sample.get("pose"), dict)
-        and isinstance(sample.get("covariance_xy"), (int, float))
+        and _valid_pose_payload(sample.get("pose"))
+        and _finite_number(sample.get("covariance_xy"))
         and math.isfinite(float(sample["covariance_xy"]))
         and 0 <= float(sample["covariance_xy"]) <= max_covariance_xy
     ]
@@ -1303,11 +1706,9 @@ def _valid_final_odom(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sample
         for sample in samples
         if sample.get("fresh") is True
-        and isinstance(sample.get("pose"), dict)
-        and isinstance(sample.get("linear_velocity_mps"), (int, float))
-        and isinstance(sample.get("angular_velocity_rps"), (int, float))
-        and math.isfinite(float(sample["linear_velocity_mps"]))
-        and math.isfinite(float(sample["angular_velocity_rps"]))
+        and _valid_pose_payload(sample.get("pose"))
+        and _finite_number(sample.get("linear_velocity_mps"))
+        and _finite_number(sample.get("angular_velocity_rps"))
     ]
 
 
@@ -1333,10 +1734,11 @@ def _stream_window_failures(
     *,
     min_samples: int,
     start_clock_ns: int | None,
+    end_clock_ns: int | None,
     required_duration_ns: int,
     coverage_slack_ns: int,
 ) -> list[str]:
-    if start_clock_ns is None:
+    if start_clock_ns is None or end_clock_ns is None:
         return [f"final_{name}_coverage_unavailable"]
     stamps = [
         int(sample["source_stamp_ns"])
@@ -1346,6 +1748,8 @@ def _stream_window_failures(
     distinct_stamps = set(stamps)
     target_end_ns = start_clock_ns + required_duration_ns
     failures: list[str] = []
+    if any(stamp < start_clock_ns or stamp > end_clock_ns for stamp in stamps):
+        failures.append(f"final_{name}_sample_outside_window")
     if len(distinct_stamps) < min_samples:
         failures.append(f"insufficient_fresh_final_{name}_samples")
     if any(right < left for left, right in zip(stamps, stamps[1:], strict=False)):
@@ -1399,6 +1803,7 @@ def _final_window_failures(
             fresh_amcl,
             min_samples=min_state_samples,
             start_clock_ns=start_clock_ns,
+            end_clock_ns=end_clock_ns,
             required_duration_ns=required_duration_ns,
             coverage_slack_ns=coverage_slack_ns,
         )
@@ -1409,6 +1814,7 @@ def _final_window_failures(
             fresh_odom,
             min_samples=min_state_samples,
             start_clock_ns=start_clock_ns,
+            end_clock_ns=end_clock_ns,
             required_duration_ns=required_duration_ns,
             coverage_slack_ns=coverage_slack_ns,
         )
@@ -1420,6 +1826,7 @@ def _final_window_failures(
                 verified_ground_truth,
                 min_samples=min_ground_truth_samples,
                 start_clock_ns=start_clock_ns,
+                end_clock_ns=end_clock_ns,
                 required_duration_ns=required_duration_ns,
                 coverage_slack_ns=coverage_slack_ns,
             )
@@ -1708,6 +2115,59 @@ def _valid_domain_id(value: object) -> bool:
     return 0 <= parsed <= 232
 
 
+def _valid_nav2_process_generation(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    try:
+        UUID(str(value.get("boot_id")))
+    except (ValueError, TypeError):
+        return False
+    integer_fields = ("session_created", "pane_pid", "pane_start_ticks")
+    if not (
+        all(type(value.get(field)) is int and int(value[field]) > 0 for field in integer_fields)
+        and isinstance(value.get("session"), str)
+        and bool(value["session"])
+        and isinstance(value.get("session_id"), str)
+        and bool(value["session_id"])
+        and isinstance(value.get("pane_id"), str)
+        and bool(value["pane_id"])
+    ):
+        return False
+    processes = value.get("processes")
+    if not isinstance(processes, list) or len(processes) < 2:
+        return False
+    expected_fields = {"pid", "ppid", "start_ticks", "cmdline_sha256"}
+    pids: list[int] = []
+    for process in processes:
+        if not isinstance(process, dict) or set(process) != expected_fields:
+            return False
+        pid = process.get("pid")
+        ppid = process.get("ppid")
+        start_ticks = process.get("start_ticks")
+        digest = process.get("cmdline_sha256")
+        if (
+            type(pid) is not int
+            or pid <= 0
+            or type(ppid) is not int
+            or ppid < 0
+            or type(start_ticks) is not int
+            or start_ticks <= 0
+            or not _valid_sha256(digest)
+        ):
+            return False
+        pids.append(pid)
+    if pids != sorted(pids) or len(set(pids)) != len(pids):
+        return False
+    pane_pid = int(value["pane_pid"])
+    root = next((process for process in processes if process["pid"] == pane_pid), None)
+    pid_set = set(pids)
+    return (
+        root is not None
+        and root["start_ticks"] == value["pane_start_ticks"]
+        and all(process["pid"] == pane_pid or process["ppid"] in pid_set for process in processes)
+    )
+
+
 def _runtime_stack_failures(identity: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     for field in ("controller_lifecycle", "planner_lifecycle", "bt_navigator_lifecycle"):
@@ -1735,6 +2195,16 @@ def _runtime_stack_failures(identity: dict[str, Any]) -> list[str]:
             "navigate_to_pose_action_uniqueness",
         ),
         (not complete_parameters, "runtime_parameter_snapshot"),
+        (
+            not isinstance(identity.get("controller_odom_topic"), str)
+            or _normalized_ros_topic(cast(str, identity["controller_odom_topic"]))
+            != identity.get("controller_odom_topic"),
+            "controller_odom_topic",
+        ),
+        (
+            not _valid_nav2_process_generation(identity.get("nav2_process_generation")),
+            "nav2_process_generation",
+        ),
     )
     failures.extend(failure for failed, failure in checks if failed)
     return failures
@@ -1854,8 +2324,12 @@ def _source_identity_failures(identity: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(failures))
 
 
-def _runtime_identity_failures(identity: dict[str, Any]) -> list[str]:
-    checks = (
+def _runtime_identity_failures(
+    identity: dict[str, Any],
+    *,
+    require_end_generation: bool = False,
+) -> list[str]:
+    checks: tuple[tuple[bool, str], ...] = (
         (
             identity.get("live_map_sha256") != identity.get("site_map_sha256"),
             "live_map_identity_mismatch",
@@ -1869,6 +2343,11 @@ def _runtime_identity_failures(identity: dict[str, Any]) -> list[str]:
     failures = [*_source_identity_failures(identity)]
     failures.extend(failure for failed, failure in checks if failed)
     failures.extend(_runtime_stack_failures(identity))
+    if require_end_generation and (
+        not _valid_nav2_process_generation(identity.get("nav2_process_generation_end"))
+        or identity.get("nav2_process_generation_end") != identity.get("nav2_process_generation")
+    ):
+        failures.append("nav2_process_generation_changed")
     return list(dict.fromkeys(failures))
 
 
@@ -1888,12 +2367,18 @@ def _measurement_contract(
         max_start_speed_mps=options.max_start_speed_mps,
         max_start_yaw_rate_rps=options.max_start_yaw_rate_rps,
         max_covariance_xy=options.max_covariance_xy,
+        max_pair_start_position_delta_m=options.max_pair_start_position_delta_m,
+        max_pair_start_yaw_delta_rad=options.max_pair_start_yaw_delta_rad,
+        ground_truth_topic=options.ground_truth_topic,
+        ground_truth_type=(options.ground_truth_type if options.ground_truth_topic else None),
+        ground_truth_calibration_sha256=_calibration_file_payload_sha256(options.calibration_path),
     )
 
 
 def _base_artifact(options: DifferentialCaptureOptions) -> dict[str, Any]:
     return {
         "schema_version": 1,
+        "evidence_derivation_version": 1,
         "run_id": f"nav-diff-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:8]}",
         "pair_id": options.pair_id,
         "mode": options.mode,
@@ -1953,6 +2438,7 @@ async def _collect_start_state(
     config: AppConfig,
     recorders: dict[str, _TopicRecorder],
     options: DifferentialCaptureOptions,
+    calibration: GroundTruthCalibration,
 ) -> dict[str, Any]:
     cutoff_host_ns = time.monotonic_ns()
     await asyncio.sleep(options.preflight_sample_s)
@@ -1961,6 +2447,7 @@ async def _collect_start_state(
         config,
         recorders,
         options,
+        calibration,
         cutoff_host_monotonic_ns=cutoff_host_ns,
     )
 
@@ -1970,6 +2457,7 @@ async def _collect_dispatch_state(
     config: AppConfig,
     recorders: dict[str, _TopicRecorder],
     options: DifferentialCaptureOptions,
+    calibration: GroundTruthCalibration,
     *,
     cutoff_host_monotonic_ns: int,
 ) -> dict[str, Any]:
@@ -1990,6 +2478,8 @@ async def _collect_dispatch_state(
         odom=recorders["odom"],
         action_status=recorders["action_status"],
         options=options,
+        ground_truth=recorders["ground_truth"],
+        calibration=calibration,
         cutoff_host_monotonic_ns=cutoff_host_monotonic_ns,
     )
 
@@ -2106,6 +2596,7 @@ async def _record_live_evidence(
             config,
             recorders,
             options,
+            calibration,
             cutoff_host_monotonic_ns=invoked_ns,
         )
 
@@ -2127,9 +2618,7 @@ async def _record_live_evidence(
         )
     finally:
         artifact["dispatch_observations"] = observed_bridge.observations
-        artifact["topic_samples_at_dispatch_end"] = {
-            key: recorder.samples for key, recorder in recorders.items() if recorder.samples
-        }
+        artifact["topic_samples_at_dispatch_end"] = _snapshot_topic_samples(recorders)
     returned_ns = time.monotonic_ns()
     dispatch_ns = (
         observed_bridge.observations[0].get("nav_send_forwarded_host_monotonic_ns")
@@ -2180,9 +2669,7 @@ async def _record_live_evidence(
     artifact["final_ground_truth_map_median"] = (
         gt_median.model_dump(mode="json") if gt_median else None
     )
-    artifact["topic_samples"] = {
-        key: recorder.samples for key, recorder in recorders.items() if recorder.samples
-    }
+    artifact["topic_samples"] = _snapshot_topic_samples(recorders)
     artifact["execution_status"] = (
         str(jenai_result.get("execution_status"))
         if jenai_result is not None
@@ -2364,6 +2851,24 @@ def _complete_without_live_bridge(
     return True
 
 
+def _record_capture_gate_failure(
+    artifact: dict[str, Any],
+    *,
+    check_id: str,
+    detail: str,
+    failures: list[str],
+) -> None:
+    artifact["overall"] = "blocked"
+    artifact["checks"].append(
+        {
+            "id": check_id,
+            "status": "FAIL",
+            "detail": detail,
+            "failures": failures,
+        }
+    )
+
+
 async def _safe_cleanup_live_capture(
     bridge: RosBridgeClient,
     config: AppConfig,
@@ -2398,11 +2903,62 @@ async def _safe_cleanup_live_capture(
         }
 
 
+def _record_end_generation(artifact: dict[str, Any]) -> None:
+    runtime_identity = artifact.get("runtime_identity")
+    if not isinstance(runtime_identity, dict):
+        return
+    session = runtime_identity.get("nav2_tmux_session")
+    end_generation = _nav2_process_generation(session) if isinstance(session, str) else None
+    runtime_identity["nav2_process_generation_end"] = end_generation
+    if end_generation == runtime_identity.get("nav2_process_generation"):
+        return
+    artifact["checks"].append(
+        {
+            "id": "nav2_process_generation_end",
+            "status": "FAIL",
+            "detail": "Nav2 generation changed during the capture.",
+        }
+    )
+    if artifact.get("overall") == "captured":
+        artifact["overall"] = "insufficient_evidence"
+
+
+async def _finalize_capture(
+    artifact: dict[str, Any],
+    options: DifferentialCaptureOptions,
+    *,
+    bridge: RosBridgeClient | None,
+    config: AppConfig | None,
+    watch_ids: list[int],
+    heartbeat: asyncio.Task[None] | None,
+    motion_attempted: bool,
+) -> dict[str, Any]:
+    if bridge is not None and config is not None:
+        cleanup = await _safe_cleanup_live_capture(
+            bridge,
+            config,
+            watch_ids,
+            heartbeat,
+            motion_attempted=motion_attempted,
+        )
+        artifact["cleanup"] = cleanup
+        artifact["final_halt"] = cleanup.get("final_halt")
+        if cleanup["status"] != "PASS":
+            artifact["overall_before_cleanup"] = artifact.get("overall")
+            artifact["overall"] = "cleanup_failed"
+        _record_end_generation(artifact)
+    artifact["finished_at"] = _utc_now()
+    return _write_capture_artifact(
+        options.output,
+        artifact,
+        overwrite=options.overwrite,
+    )
+
+
 async def capture_navigation_differential(
     options: DifferentialCaptureOptions,
 ) -> dict[str, Any]:
     """Capture one R1 or R2 run and persist every valid request outcome."""
-
     options = DifferentialCaptureOptions.model_validate(options)
     artifact = _base_artifact(options)
     config: AppConfig | None = None
@@ -2433,35 +2989,48 @@ async def capture_navigation_differential(
             artifact["ground_truth_calibration"] = calibration.model_dump(mode="json")
             identity_failures = _runtime_identity_failures(identity)
             if identity_failures:
-                artifact["overall"] = "blocked"
-                artifact["checks"].append(
-                    {
-                        "id": "runtime_identity_gate",
-                        "status": "FAIL",
-                        "detail": "Live runtime identity is incomplete or not release-clean.",
-                        "failures": identity_failures,
-                    }
+                _record_capture_gate_failure(
+                    artifact,
+                    check_id="runtime_identity_gate",
+                    detail="Live runtime identity is incomplete or not release-clean.",
+                    failures=identity_failures,
                 )
             else:
                 stage = "topic_watch"
+                odom_topic = str(identity["controller_odom_topic"])
+                artifact["topic_stream_contract"] = {
+                    key: {"topic": topic, "message_type": message_type}
+                    for key, topic, message_type in _topic_stream_specs(
+                        options,
+                        odom_topic=odom_topic,
+                    )
+                }
                 recorders = {
                     key: _TopicRecorder()
                     for key in ("clock", "amcl", "odom", "action_status", "ground_truth")
                 }
-                watch_ids = await _watch_topics(bridge, recorders, options)
+                watch_ids = await _watch_topics(
+                    bridge,
+                    recorders,
+                    options,
+                    odom_topic=odom_topic,
+                )
                 heartbeat = asyncio.create_task(_heartbeat(bridge))
                 stage = "start_gate"
-                t0 = await _collect_start_state(bridge, config, recorders, options)
+                t0 = await _collect_start_state(
+                    bridge,
+                    config,
+                    recorders,
+                    options,
+                    calibration,
+                )
                 artifact["t0_scenario_start"] = t0
                 if t0["status"] != "PASS":
-                    artifact["overall"] = "blocked"
-                    artifact["checks"].append(
-                        {
-                            "id": "pairing_start_gate",
-                            "status": "FAIL",
-                            "detail": "Start state was not eligible for paired execution.",
-                            "failures": t0["failures"],
-                        }
+                    _record_capture_gate_failure(
+                        artifact,
+                        check_id="pairing_start_gate",
+                        detail="Start state was not eligible for paired execution.",
+                        failures=t0["failures"],
                     )
                 else:
                     stage = "motion_dispatch"
@@ -2494,24 +3063,14 @@ async def capture_navigation_differential(
             "detail": str(exc),
         }
     finally:
-        if bridge is not None and config is not None:
-            cleanup = await _safe_cleanup_live_capture(
-                bridge,
-                config,
-                watch_ids,
-                heartbeat,
-                motion_attempted=motion_attempted,
-            )
-            artifact["cleanup"] = cleanup
-            artifact["final_halt"] = cleanup.get("final_halt")
-            if cleanup["status"] != "PASS":
-                artifact["overall_before_cleanup"] = artifact.get("overall")
-                artifact["overall"] = "cleanup_failed"
-        artifact["finished_at"] = _utc_now()
-        artifact = _write_capture_artifact(
-            options.output,
+        artifact = await _finalize_capture(
             artifact,
-            overwrite=options.overwrite,
+            options,
+            bridge=bridge,
+            config=config,
+            watch_ids=watch_ids,
+            heartbeat=heartbeat,
+            motion_attempted=motion_attempted,
         )
     if cancelled is not None:
         raise cancelled
@@ -2590,12 +3149,17 @@ def _valid_pose_payload(value: object) -> bool:
 def _valid_state_clock(state: dict[str, Any]) -> bool:
     values = state.get("clock_samples_ns")
     evidence = state.get("clock_evidence")
+    cutoff_ns = state.get("cutoff_host_monotonic_ns")
+    evaluated_ns = state.get("evaluated_host_monotonic_ns")
     if (
         not isinstance(values, list)
         or len(values) < 2
         or any(type(value) is not int for value in values)
         or not isinstance(evidence, list)
         or len(evidence) != len(values)
+        or type(cutoff_ns) is not int
+        or type(evaluated_ns) is not int
+        or cutoff_ns > evaluated_ns
     ):
         return False
     evidence_hosts: list[int] = []
@@ -2611,6 +3175,7 @@ def _valid_state_clock(state: dict[str, Any]) -> bool:
         evidence_clocks.append(int(item["clock_ns"]))
     return (
         evidence_clocks == values
+        and all(cutoff_ns <= host <= evaluated_ns for host in evidence_hosts)
         and values[-1] > values[0]
         and all(right >= left for left, right in zip(values, values[1:], strict=False))
         and all(
@@ -2625,7 +3190,13 @@ def _valid_covariance(value: object, maximum: float) -> bool:
     return _within_limit(value, maximum) and isinstance(value, (int, float)) and value >= 0
 
 
-def _valid_topic_source(value: object, *, max_age_ns: int) -> bool:
+def _valid_topic_source(
+    value: object,
+    *,
+    max_age_ns: int,
+    cutoff_ns: int | None,
+    evaluated_ns: int | None,
+) -> bool:
     if not isinstance(value, dict) or value.get("fresh") is not True:
         return False
     integer_fields = (
@@ -2640,28 +3211,98 @@ def _valid_topic_source(value: object, *, max_age_ns: int) -> bool:
         return False
     host_age_ns = int(value["host_age_ns"])
     source_age_ns = int(value["source_age_ns"])
+    host_ns = int(value["host_monotonic_ns"])
     return (
-        0 <= host_age_ns <= max_age_ns
+        cutoff_ns is not None
+        and evaluated_ns is not None
+        and cutoff_ns <= host_ns <= evaluated_ns
+        and host_age_ns == evaluated_ns - host_ns
+        and 0 <= host_age_ns <= max_age_ns
         and 0 <= source_age_ns <= max_age_ns
         and int(value["capture_clock_ns"]) - int(value["source_stamp_ns"]) == source_age_ns
     )
 
 
-def _valid_action_source(value: object, *, max_age_ns: int) -> bool:
+def _valid_action_source(
+    value: object,
+    *,
+    max_age_ns: int,
+    cutoff_ns: int | None,
+    evaluated_ns: int | None,
+) -> bool:
+    host_ns = value.get("host_monotonic_ns") if isinstance(value, dict) else None
+    host_age_ns = value.get("host_age_ns") if isinstance(value, dict) else None
     return (
         isinstance(value, dict)
         and value.get("fresh") is True
         and value.get("schema_valid") is True
-        and type(value.get("host_monotonic_ns")) is int
-        and type(value.get("host_age_ns")) is int
-        and 0 <= int(value["host_age_ns"]) <= max_age_ns
+        and type(host_ns) is int
+        and type(host_age_ns) is int
+        and cutoff_ns is not None
+        and evaluated_ns is not None
+        and cutoff_ns <= host_ns <= evaluated_ns
+        and host_age_ns == evaluated_ns - host_ns
+        and 0 <= host_age_ns <= max_age_ns
     )
+
+
+def _ground_truth_state_checks(
+    state: dict[str, Any],
+    calibration: GroundTruthCalibration | None,
+    *,
+    max_age_ns: int,
+    cutoff_ns: int | None,
+    evaluated_ns: int | None,
+    label: str,
+) -> list[tuple[bool, str]]:
+    if calibration is None:
+        return [
+            (
+                state.get("ground_truth_required") is not False
+                or state.get("ground_truth_source") is not None
+                or state.get("ground_truth_source_frame_id") is not None
+                or state.get("ground_truth_world_pose") is not None
+                or state.get("ground_truth_map_pose") is not None,
+                f"{label}_unverified_ground_truth_present",
+            )
+        ]
+    source_frame = state.get("ground_truth_source_frame_id")
+    world_pose = _pose_payload(state.get("ground_truth_world_pose"))
+    map_pose = _pose_payload(state.get("ground_truth_map_pose"))
+    expected_map_pose = calibration.world_to_map(world_pose) if world_pose is not None else None
+    return [
+        (
+            state.get("ground_truth_required") is not True,
+            f"{label}_ground_truth_requirement",
+        ),
+        (
+            not _valid_topic_source(
+                state.get("ground_truth_source"),
+                max_age_ns=max_age_ns,
+                cutoff_ns=cutoff_ns,
+                evaluated_ns=evaluated_ns,
+            ),
+            f"{label}_ground_truth_source",
+        ),
+        (
+            not isinstance(source_frame, str)
+            or source_frame.lstrip("/") != str(calibration.world_frame_id).lstrip("/"),
+            f"{label}_ground_truth_frame",
+        ),
+        (
+            world_pose is None
+            or map_pose is None
+            or not _pose_matches(expected_map_pose, map_pose),
+            f"{label}_ground_truth_pose",
+        ),
+    ]
 
 
 def _state_evidence_failures(
     state: object,
     *,
     contract: DifferentialMeasurementContract,
+    ground_truth_calibration: GroundTruthCalibration | None,
     expected_epoch: str | None,
     label: str,
 ) -> list[str]:
@@ -2672,7 +3313,9 @@ def _state_evidence_failures(
     angular_velocity = state.get("angular_velocity_rps")
     evaluated_ns = state.get("evaluated_host_monotonic_ns")
     cutoff_ns = state.get("cutoff_host_monotonic_ns")
-    checks = (
+    typed_cutoff_ns = cutoff_ns if type(cutoff_ns) is int else None
+    typed_evaluated_ns = evaluated_ns if type(evaluated_ns) is int else None
+    checks: list[tuple[bool, str]] = [
         (
             state.get("status") != "PASS" or state.get("failures") not in ([], ()),
             f"{label}_status",
@@ -2701,21 +3344,46 @@ def _state_evidence_failures(
         (state.get("active_goal_ids") not in ([], ()), f"{label}_active_goal"),
         (not _valid_state_clock(state), f"{label}_clock"),
         (
-            not _valid_topic_source(state.get("amcl_source"), max_age_ns=max_age_ns),
+            not _valid_topic_source(
+                state.get("amcl_source"),
+                max_age_ns=max_age_ns,
+                cutoff_ns=typed_cutoff_ns,
+                evaluated_ns=typed_evaluated_ns,
+            ),
             f"{label}_amcl_source",
         ),
         (
-            not _valid_topic_source(state.get("odom_source"), max_age_ns=max_age_ns),
+            not _valid_topic_source(
+                state.get("odom_source"),
+                max_age_ns=max_age_ns,
+                cutoff_ns=typed_cutoff_ns,
+                evaluated_ns=typed_evaluated_ns,
+            ),
             f"{label}_odom_source",
         ),
         (
-            not _valid_action_source(state.get("action_status_source"), max_age_ns=max_age_ns),
+            not _valid_action_source(
+                state.get("action_status_source"),
+                max_age_ns=max_age_ns,
+                cutoff_ns=typed_cutoff_ns,
+                evaluated_ns=typed_evaluated_ns,
+            ),
             f"{label}_action_status_source",
         ),
         (
             type(evaluated_ns) is not int or type(cutoff_ns) is not int or cutoff_ns > evaluated_ns,
             f"{label}_evaluation_window",
         ),
+    ]
+    checks.extend(
+        _ground_truth_state_checks(
+            state,
+            ground_truth_calibration,
+            max_age_ns=max_age_ns,
+            cutoff_ns=typed_cutoff_ns,
+            evaluated_ns=typed_evaluated_ns,
+            label=label,
+        )
     )
     return [failure for failed, failure in checks if failed]
 
@@ -2815,7 +3483,15 @@ def _ground_truth_requirement(
 ) -> tuple[GroundTruthCalibration | None, list[str]]:
     raw = artifact.get("ground_truth_calibration")
     if raw is None:
-        return None, []
+        binding_present = any(
+            value is not None
+            for value in (
+                contract.ground_truth_topic,
+                contract.ground_truth_type,
+                contract.ground_truth_calibration_sha256,
+            )
+        )
+        return None, (["ground_truth_calibration_missing"] if binding_present else [])
     try:
         calibration = GroundTruthCalibration.model_validate(raw)
     except ValueError:
@@ -2826,6 +3502,12 @@ def _ground_truth_requirement(
     configured_frame = str(identity.get("site_map_frame") or "").lstrip("/")
     live_frame = str(identity.get("live_map_frame") or "").lstrip("/")
     checks = (
+        (
+            contract.ground_truth_topic is None
+            or contract.ground_truth_type is None
+            or contract.ground_truth_calibration_sha256 != _calibration_payload_sha256(calibration),
+            "ground_truth_contract_binding",
+        ),
         (
             calibration.residual_m is None
             or calibration.residual_m > contract.max_calibration_residual_m,
@@ -2917,6 +3599,63 @@ def _validated_final_window_samples(
     )
 
 
+def _final_window_coverage_failures(
+    window: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    map_clock_samples: list[dict[str, Any]],
+    amcl_samples: list[dict[str, Any]],
+    odom_samples: list[dict[str, Any]],
+    ground_truth_samples: list[dict[str, Any]],
+    ground_truth_required: bool,
+    required_duration_ns: int,
+    coverage_slack_ns: int,
+) -> list[str]:
+    start_host_ns = window.get("start_host_monotonic_ns")
+    end_host_ns = window.get("end_host_monotonic_ns")
+    start_clock_ns = window.get("start_clock_ns")
+    end_clock_ns = window.get("end_clock_ns")
+    typed_start_clock = start_clock_ns if type(start_clock_ns) is int else None
+    typed_end_clock = end_clock_ns if type(end_clock_ns) is int else None
+    failures = _clock_window_failures(
+        window.get("clock_samples"),
+        start_host_ns=start_host_ns if type(start_host_ns) is int else None,
+        end_host_ns=end_host_ns if type(end_host_ns) is int else None,
+        start_clock_ns=typed_start_clock,
+        end_clock_ns=typed_end_clock,
+        coverage_slack_ns=coverage_slack_ns,
+    )
+    for name, samples, minimum in (
+        ("map", map_clock_samples, contract.min_final_pose_samples),
+        ("amcl", amcl_samples, contract.min_final_state_samples),
+        ("odom", odom_samples, contract.min_final_state_samples),
+    ):
+        failures.extend(
+            _stream_window_failures(
+                name,
+                samples,
+                min_samples=minimum,
+                start_clock_ns=typed_start_clock,
+                end_clock_ns=typed_end_clock,
+                required_duration_ns=required_duration_ns,
+                coverage_slack_ns=coverage_slack_ns,
+            )
+        )
+    if ground_truth_required:
+        failures.extend(
+            _stream_window_failures(
+                "ground_truth",
+                ground_truth_samples,
+                min_samples=contract.min_final_ground_truth_samples,
+                start_clock_ns=typed_start_clock,
+                end_clock_ns=typed_end_clock,
+                required_duration_ns=required_duration_ns,
+                coverage_slack_ns=coverage_slack_ns,
+            )
+        )
+    return failures
+
+
 def _final_window_evidence_failures(
     window: object,
     *,
@@ -2949,6 +3688,11 @@ def _final_window_evidence_failures(
         contract=contract,
         ground_truth_calibration=ground_truth_calibration,
     )
+    computed_stationary = bool(odom_samples) and all(
+        float(sample["linear_velocity_mps"]) <= contract.max_start_speed_mps
+        and abs(float(sample["angular_velocity_rps"])) <= contract.max_start_yaw_rate_rps
+        for sample in odom_samples
+    )
     checks = (
         (
             window.get("status") != "PASS" or window.get("failures") not in ([], ()),
@@ -2972,7 +3716,10 @@ def _final_window_evidence_failures(
         ),
         (window.get("coverage_slack_ns") != expected_slack_ns, "final_window_coverage_contract"),
         (len(map_samples) < contract.min_final_pose_samples, "final_window_map_samples"),
-        (window.get("stationary") is not True, "final_window_stationary"),
+        (
+            window.get("stationary") is not True or not computed_stationary,
+            "final_window_stationary",
+        ),
         (
             window.get("ground_truth_required") is not ground_truth_required,
             "final_window_ground_truth_requirement",
@@ -2997,42 +3744,18 @@ def _final_window_evidence_failures(
     )
     failures = [*sample_failures, *(failure for failed, failure in checks if failed)]
     failures.extend(
-        _clock_window_failures(
-            window.get("clock_samples"),
-            start_host_ns=start_host_ns if type(start_host_ns) is int else None,
-            end_host_ns=end_host_ns if type(end_host_ns) is int else None,
-            start_clock_ns=start_clock_ns if type(start_clock_ns) is int else None,
-            end_clock_ns=end_clock_ns if type(end_clock_ns) is int else None,
+        _final_window_coverage_failures(
+            window,
+            contract=contract,
+            map_clock_samples=map_clock_samples,
+            amcl_samples=amcl_samples,
+            odom_samples=odom_samples,
+            ground_truth_samples=ground_truth_samples,
+            ground_truth_required=ground_truth_required,
+            required_duration_ns=required_duration_ns,
             coverage_slack_ns=expected_slack_ns,
         )
     )
-    start_clock = start_clock_ns if type(start_clock_ns) is int else None
-    for name, samples, minimum in (
-        ("map", map_clock_samples, contract.min_final_pose_samples),
-        ("amcl", amcl_samples, contract.min_final_state_samples),
-        ("odom", odom_samples, contract.min_final_state_samples),
-    ):
-        failures.extend(
-            _stream_window_failures(
-                name,
-                samples,
-                min_samples=minimum,
-                start_clock_ns=start_clock,
-                required_duration_ns=required_duration_ns,
-                coverage_slack_ns=expected_slack_ns,
-            )
-        )
-    if ground_truth_required:
-        failures.extend(
-            _stream_window_failures(
-                "ground_truth",
-                ground_truth_samples,
-                min_samples=contract.min_final_ground_truth_samples,
-                start_clock_ns=start_clock,
-                required_duration_ns=required_duration_ns,
-                coverage_slack_ns=expected_slack_ns,
-            )
-        )
     return list(dict.fromkeys(failures))
 
 
@@ -3079,9 +3802,13 @@ def _accepted_goal_observation(timeline: dict[str, Any]) -> dict[str, Any] | Non
     return observation if isinstance(observation, dict) else None
 
 
-def _valid_goal_uuid(timeline: dict[str, Any]) -> bool:
+def _valid_goal_uuid(timeline: dict[str, Any], *, max_age_ns: int) -> bool:
     goal_uuid = timeline.get("accepted_goal_uuid")
     observation = _accepted_goal_observation(timeline)
+    status = observation.get("status") if observation is not None else None
+    goal_stamp_ns = observation.get("goal_stamp_ns") if observation is not None else None
+    capture_clock_ns = observation.get("capture_clock_ns") if observation is not None else None
+    stored_age_ns = observation.get("goal_stamp_age_ns") if observation is not None else None
     return (
         isinstance(goal_uuid, str)
         and len(goal_uuid) == 32
@@ -3089,6 +3816,13 @@ def _valid_goal_uuid(timeline: dict[str, Any]) -> bool:
         and timeline.get("goal_uuid_evidence") == "INFERRED_UNIQUE_ACTION_STATUS"
         and observation is not None
         and observation.get("goal_uuid") == goal_uuid
+        and type(status) is int
+        and 1 <= status <= 6
+        and type(goal_stamp_ns) is int
+        and type(capture_clock_ns) is int
+        and type(stored_age_ns) is int
+        and stored_age_ns == capture_clock_ns - goal_stamp_ns
+        and 0 <= stored_age_ns <= max_age_ns
         and observation.get("goal_stamp_fresh") is True
         and type(observation.get("observed_host_monotonic_ns")) is int
     )
@@ -3099,11 +3833,28 @@ def _dispatch_evidence_failures(
     *,
     contract: DifferentialMeasurementContract,
     canonical_goal: CanonicalGoal,
+    ground_truth_calibration: GroundTruthCalibration | None,
 ) -> list[str]:
     timeline = artifact.get("t1_goal_dispatch")
     if not isinstance(timeline, dict):
         return ["t1_timeline_missing"]
     actual_goal = _actual_dispatch_goal(artifact)
+    observations = timeline.get("dispatch_observations")
+    dispatch = (
+        observations[0]
+        if isinstance(observations, list)
+        and len(observations) == 1
+        and isinstance(observations[0], dict)
+        else None
+    )
+    try:
+        nested_goal = (
+            CanonicalGoal.model_validate(dispatch.get("actual_goal"))
+            if isinstance(dispatch, dict)
+            else None
+        )
+    except ValueError:
+        nested_goal = None
     checks = (
         (
             timeline.get("status") != "PASS" or timeline.get("failures") not in ([], ()),
@@ -3114,8 +3865,20 @@ def _dispatch_evidence_failures(
             type(timeline.get("nav_send_forwarded_host_monotonic_ns")) is not int,
             "t1_forward_timestamp",
         ),
-        (not _valid_goal_uuid(timeline), "t1_goal_uuid"),
+        (
+            not _valid_goal_uuid(
+                timeline,
+                max_age_ns=int(contract.max_topic_age_s * 1_000_000_000),
+            ),
+            "t1_goal_uuid",
+        ),
         (actual_goal is None, "actual_dispatch_goal_missing"),
+        (
+            actual_goal is None
+            or nested_goal is None
+            or not compare_goals(actual_goal, nested_goal).equivalent,
+            "actual_dispatch_goal_copy_mismatch",
+        ),
         (
             actual_goal is not None and not compare_goals(canonical_goal, actual_goal).equivalent,
             "actual_dispatch_goal_not_canonical",
@@ -3126,6 +3889,7 @@ def _dispatch_evidence_failures(
         _state_evidence_failures(
             timeline.get("state_before_forward"),
             contract=contract,
+            ground_truth_calibration=ground_truth_calibration,
             expected_epoch=canonical_goal.simulation_epoch,
             label="t1",
         )
@@ -3138,8 +3902,7 @@ def _terminal_evidence_failure(artifact: dict[str, Any]) -> str | None:
     valid = (
         isinstance(terminal, dict)
         and type(terminal.get("observed_host_monotonic_ns")) is int
-        and isinstance(terminal.get("status"), str)
-        and bool(terminal.get("status"))
+        and terminal.get("status") in {"succeeded", "canceled", "aborted", "failed", "rejected"}
     )
     return None if valid else "nav2_terminal_missing"
 
@@ -3186,6 +3949,13 @@ def _lifecycle_evidence_failures(artifact: dict[str, Any]) -> list[str]:
     final_terminal_ns = window.get("terminal_host_monotonic_ns")
     final_start_ns = window.get("start_host_monotonic_ns")
     final_end_ns = window.get("end_host_monotonic_ns")
+    public_t1_state = timeline.get("state_before_forward")
+    dispatch_t1_state = dispatch.get("state_before_forward") if dispatch else None
+    t1_cutoff_ns = (
+        public_t1_state.get("cutoff_host_monotonic_ns")
+        if isinstance(public_t1_state, dict)
+        else None
+    )
     ordered = (
         request_ns,
         invoked_ns,
@@ -3203,9 +3973,81 @@ def _lifecycle_evidence_failures(artifact: dict[str, Any]) -> list[str]:
             not _between_int(accepted_ns, forwarded_ns, returned_ns),
             "goal_status_observation_order",
         ),
+        (
+            type(t1_cutoff_ns) is not int
+            or type(invoked_ns) is not int
+            or t1_cutoff_ns < invoked_ns,
+            "t1_cutoff_precedes_nav_send_invocation",
+        ),
+        (public_t1_state != dispatch_t1_state, "t1_state_copy_mismatch"),
         (final_terminal_ns != terminal_ns, "final_window_terminal_mismatch"),
     )
     return [failure for failed, failure in checks if failed]
+
+
+def _mode_specific_evidence_failures(artifact: dict[str, Any]) -> list[str]:
+    mode = artifact.get("mode")
+    timeline = artifact.get("t1_goal_dispatch")
+    terminal = artifact.get("nav2_terminal")
+    observations = timeline.get("dispatch_observations") if isinstance(timeline, dict) else None
+    dispatch = (
+        observations[0]
+        if isinstance(observations, list)
+        and len(observations) == 1
+        and isinstance(observations[0], dict)
+        else None
+    )
+    dispatch_tag = dispatch.get("tag") if isinstance(dispatch, dict) else None
+    terminal_tag = terminal.get("tag") if isinstance(terminal, dict) else None
+    failures = [
+        "command_tag_binding"
+        for invalid in (
+            not isinstance(dispatch_tag, str) or not dispatch_tag or terminal_tag != dispatch_tag,
+        )
+        if invalid
+    ]
+    if mode != DifferentialMode.R2_JENAI_NO_RETRY.value:
+        return failures
+    result = artifact.get("jenai_result")
+    if not isinstance(result, dict):
+        return [*failures, "r2_jenai_result_missing"]
+    effective = result.get("effective_experimental_config")
+    attempts = result.get("navigation_attempts")
+    attempt = (
+        attempts[0]
+        if isinstance(attempts, list) and len(attempts) == 1 and isinstance(attempts[0], dict)
+        else None
+    )
+    observed_results = result.get("observed_nav_results")
+    matching_results = (
+        [
+            item
+            for item in observed_results
+            if isinstance(item, dict) and item.get("tag") == dispatch_tag
+        ]
+        if isinstance(observed_results, list)
+        else []
+    )
+    checks = (
+        (
+            not isinstance(effective, dict) or effective.get("nav_endpoint_retry_limit") != 0,
+            "r2_retry_limit_not_zero",
+        ),
+        (
+            attempt is None,
+            "r2_navigation_attempt_count",
+        ),
+        (
+            attempt is None or attempt.get("tag") != dispatch_tag,
+            "r2_attempt_tag_binding",
+        ),
+        (
+            len(matching_results) != 1 or matching_results[0] != terminal,
+            "r2_observed_result_binding",
+        ),
+    )
+    failures.extend(failure for failed, failure in checks if failed)
+    return failures
 
 
 def _artifact_contract_and_goal(
@@ -3218,6 +4060,489 @@ def _artifact_contract_and_goal(
         )
     except ValueError:
         return None
+
+
+def _raw_stream_recorder(
+    samples: object,
+    *,
+    required: bool,
+    label: str,
+    stream: str,
+) -> tuple[_TopicRecorder | None, str | None]:
+    if not required and samples is None:
+        return None, None
+    if not isinstance(samples, list) or not samples:
+        return None, f"{label}_{stream}_missing"
+    valid_samples: list[dict[str, Any]] = []
+    for sample in samples:
+        if (
+            not isinstance(sample, dict)
+            or set(sample) != {"host_monotonic_ns", "message"}
+            or type(sample.get("host_monotonic_ns")) is not int
+            or not isinstance(sample.get("message"), dict)
+        ):
+            return None, f"{label}_{stream}_malformed"
+        valid_samples.append(copy.deepcopy(sample))
+    hosts = [int(sample["host_monotonic_ns"]) for sample in valid_samples]
+    if any(right <= left for left, right in zip(hosts, hosts[1:], strict=False)):
+        return None, f"{label}_{stream}_host_order"
+    recorder = _TopicRecorder()
+    recorder.samples = valid_samples
+    return recorder, None
+
+
+def _raw_topic_recorders(
+    value: object,
+    *,
+    required_streams: set[str],
+    optional_streams: set[str] | None = None,
+    label: str,
+) -> tuple[dict[str, _TopicRecorder] | None, list[str]]:
+    if not isinstance(value, dict):
+        return None, [f"{label}_missing"]
+    failures: list[str] = []
+    recorders: dict[str, _TopicRecorder] = {}
+    for stream in required_streams | (optional_streams or set()):
+        recorder, failure = _raw_stream_recorder(
+            value.get(stream),
+            required=stream in required_streams,
+            label=label,
+            stream=stream,
+        )
+        if failure is not None:
+            failures.append(failure)
+        elif recorder is not None:
+            recorders[stream] = recorder
+    if failures:
+        return None, failures
+    clock_values = [
+        _clock_ns(cast(dict[str, Any], sample["message"])) for sample in recorders["clock"].samples
+    ]
+    if any(value is None for value in clock_values):
+        failures.append(f"{label}_clock_malformed")
+    else:
+        typed_clocks = [cast(int, item) for item in clock_values]
+        if any(right < left for left, right in zip(typed_clocks, typed_clocks[1:], strict=False)):
+            failures.append(f"{label}_clock_backwards")
+    for sample in recorders["action_status"].samples:
+        message = cast(dict[str, Any], sample["message"])
+        statuses = message.get("status_list")
+        if not isinstance(statuses, list) or len(_goal_status_records(message)) != len(statuses):
+            failures.append(f"{label}_action_status_malformed")
+            break
+    return (recorders if not failures else None), failures
+
+
+def _offline_state_options(
+    artifact: dict[str, Any],
+    contract: DifferentialMeasurementContract,
+    goal: CanonicalGoal,
+) -> DifferentialCaptureOptions:
+    return DifferentialCaptureOptions.model_construct(
+        output=Path("/offline-differential-artifact.json"),
+        location="offline",
+        pair_id=str(artifact.get("pair_id") or "offline"),
+        mode=DifferentialMode(str(artifact.get("mode"))),
+        simulation_epoch=str(goal.simulation_epoch or ""),
+        reset_policy=ResetPolicy(str(artifact.get("reset_policy"))),
+        preflight_sample_s=contract.preflight_sample_s,
+        final_sample_s=contract.final_sample_s,
+        sample_interval_s=contract.sample_interval_s,
+        max_start_speed_mps=contract.max_start_speed_mps,
+        max_start_yaw_rate_rps=contract.max_start_yaw_rate_rps,
+        max_topic_age_s=contract.max_topic_age_s,
+        max_calibration_residual_m=contract.max_calibration_residual_m,
+        min_final_pose_samples=contract.min_final_pose_samples,
+        min_final_state_samples=contract.min_final_state_samples,
+        min_final_ground_truth_samples=contract.min_final_ground_truth_samples,
+        final_wall_timeout_s=contract.final_wall_timeout_s,
+        max_covariance_xy=contract.max_covariance_xy,
+        max_pair_start_position_delta_m=contract.max_pair_start_position_delta_m,
+        max_pair_start_yaw_delta_rad=contract.max_pair_start_yaw_delta_rad,
+    )
+
+
+def _rederived_state(
+    stored: object,
+    *,
+    recorders: dict[str, _TopicRecorder],
+    options: DifferentialCaptureOptions,
+    ground_truth_calibration: GroundTruthCalibration | None,
+) -> dict[str, Any] | None:
+    if not isinstance(stored, dict):
+        return None
+    pose = _pose_payload(stored.get("map_to_base"))
+    cutoff = stored.get("cutoff_host_monotonic_ns")
+    evaluated = stored.get("evaluated_host_monotonic_ns")
+    if pose is None or type(cutoff) is not int or type(evaluated) is not int:
+        return None
+    return _initial_state(
+        pose=pose,
+        clock=recorders["clock"],
+        amcl=recorders["amcl"],
+        odom=recorders["odom"],
+        action_status=recorders["action_status"],
+        options=options,
+        ground_truth=recorders.get("ground_truth"),
+        calibration=ground_truth_calibration,
+        cutoff_host_monotonic_ns=cutoff,
+        current_host_monotonic_ns=evaluated,
+    )
+
+
+def _raw_snapshot_failures(
+    artifact: dict[str, Any],
+    *,
+    full: dict[str, _TopicRecorder],
+    dispatch: dict[str, _TopicRecorder],
+) -> list[str]:
+    timeline = artifact.get("t1_goal_dispatch")
+    return_ns = timeline.get("return_host_monotonic_ns") if isinstance(timeline, dict) else None
+    failures: list[str] = []
+    for stream, snapshot_recorder in dispatch.items():
+        full_recorder = full.get(stream)
+        if full_recorder is None or full_recorder.samples[: len(snapshot_recorder.samples)] != (
+            snapshot_recorder.samples
+        ):
+            failures.append(f"dispatch_snapshot_{stream}_not_prefix")
+            continue
+        if type(return_ns) is not int or any(
+            int(sample["host_monotonic_ns"]) > return_ns for sample in snapshot_recorder.samples
+        ):
+            failures.append(f"dispatch_snapshot_{stream}_after_return")
+    failures.extend(
+        f"final_{stream}_raw_samples_missing"
+        for stream in ("clock", "amcl", "odom")
+        if stream in full
+        and stream in dispatch
+        and len(full[stream].samples) <= len(dispatch[stream].samples)
+    )
+    return failures
+
+
+def _raw_state_failures(
+    artifact: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    goal: CanonicalGoal,
+    dispatch: dict[str, _TopicRecorder],
+    ground_truth_calibration: GroundTruthCalibration | None,
+) -> list[str]:
+    options = _offline_state_options(artifact, contract, goal)
+    timeline = artifact.get("t1_goal_dispatch")
+    observations = timeline.get("dispatch_observations") if isinstance(timeline, dict) else None
+    nested_state = (
+        observations[0].get("state_before_forward")
+        if isinstance(observations, list)
+        and len(observations) == 1
+        and isinstance(observations[0], dict)
+        else None
+    )
+    states = (
+        ("t0", artifact.get("t0_scenario_start")),
+        ("t1", timeline.get("state_before_forward") if isinstance(timeline, dict) else None),
+        ("t1_dispatch", nested_state),
+    )
+    failures: list[str] = []
+    for label, stored in states:
+        rederived = _rederived_state(
+            stored,
+            recorders=dispatch,
+            options=options,
+            ground_truth_calibration=ground_truth_calibration,
+        )
+        if rederived is None or rederived != stored:
+            failures.append(f"{label}_not_derived_from_raw")
+    return failures
+
+
+def _raw_goal_uuid_failures(
+    artifact: dict[str, Any],
+    *,
+    dispatch: dict[str, _TopicRecorder],
+    contract: DifferentialMeasurementContract,
+) -> list[str]:
+    timeline = artifact.get("t1_goal_dispatch")
+    t0 = artifact.get("t0_scenario_start")
+    if not isinstance(timeline, dict) or not isinstance(t0, dict):
+        return ["goal_uuid_not_derived_from_raw"]
+    before = t0.get("known_goal_ids")
+    dispatched_at = timeline.get("nav_send_forwarded_host_monotonic_ns")
+    if not isinstance(before, list) or type(dispatched_at) is not int:
+        return ["goal_uuid_not_derived_from_raw"]
+    observations = _new_goal_ids(
+        dispatch["action_status"],
+        dispatch["clock"],
+        before={str(item) for item in before},
+        dispatched_at_ns=dispatched_at,
+        max_age_s=contract.max_topic_age_s,
+    )
+    expected_uuid = observations[0].get("goal_uuid") if len(observations) == 1 else None
+    if (
+        timeline.get("accepted_goal_observations") != observations
+        or timeline.get("accepted_goal_uuid") != expected_uuid
+        or timeline.get("goal_uuid_evidence")
+        != (
+            "INFERRED_UNIQUE_ACTION_STATUS"
+            if expected_uuid
+            else "UNAVAILABLE_NO_NEW_STATUS_UUID_OBSERVED"
+        )
+    ):
+        return ["goal_uuid_not_derived_from_raw"]
+    return []
+
+
+def _validated_raw_map_attempts(
+    attempts: object,
+    *,
+    start_host_ns: int,
+    end_host_ns: int,
+    start_clock_ns: int,
+    end_clock_ns: int,
+    expected_frame: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not isinstance(attempts, list):
+        return [], False
+    valid: list[dict[str, Any]] = []
+    success_keys = {
+        "requested_host_monotonic_ns",
+        "observed_host_monotonic_ns",
+        "capture_clock_ns",
+        "fresh",
+        "pose",
+    }
+    failure_keys = {
+        "requested_host_monotonic_ns",
+        "capture_clock_ns",
+        "fresh",
+        "error",
+    }
+    for item in attempts:
+        if not isinstance(item, dict):
+            return [], False
+        requested = item.get("requested_host_monotonic_ns")
+        capture_clock = item.get("capture_clock_ns")
+        if item.get("fresh") is True:
+            observed = item.get("observed_host_monotonic_ns")
+            pose = item.get("pose")
+            if (
+                set(item) != success_keys
+                or type(requested) is not int
+                or type(observed) is not int
+                or type(capture_clock) is not int
+                or not (start_host_ns <= requested <= observed <= end_host_ns)
+                or not (start_clock_ns <= capture_clock <= end_clock_ns)
+                or not isinstance(pose, dict)
+                or not _valid_pose_payload(pose)
+                or str(pose.get("frame_id") or "").lstrip("/") != expected_frame
+                or not isinstance(pose.get("source"), str)
+                or not pose["source"]
+            ):
+                return [], False
+            valid.append(item)
+        elif (
+            set(item) != failure_keys
+            or type(requested) is not int
+            or not (start_host_ns <= requested <= end_host_ns)
+            or (capture_clock is not None and type(capture_clock) is not int)
+            or not isinstance(item.get("error"), str)
+            or not item["error"]
+        ):
+            return [], False
+    return valid, True
+
+
+def _raw_final_window_failures(
+    artifact: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    full: dict[str, _TopicRecorder],
+    ground_truth_calibration: GroundTruthCalibration | None,
+) -> list[str]:
+    window = artifact.get("final_observation_window")
+    if not isinstance(window, dict):
+        return ["final_window_not_derived_from_raw"]
+    start_host = window.get("start_host_monotonic_ns")
+    end_host = window.get("end_host_monotonic_ns")
+    start_clock = window.get("start_clock_ns")
+    end_clock = window.get("end_clock_ns")
+    if any(type(value) is not int for value in (start_host, end_host, start_clock, end_clock)):
+        return ["final_window_not_derived_from_raw"]
+    typed_start_host = cast(int, start_host)
+    typed_end_host = cast(int, end_host)
+    typed_start_clock = cast(int, start_clock)
+    typed_end_clock = cast(int, end_clock)
+    clock_samples, _ = _clock_window_evidence(
+        full["clock"],
+        start_host_ns=typed_start_host,
+        end_host_ns=typed_end_host,
+    )
+    amcl_samples = _window_topic_evidence(
+        full["amcl"],
+        full["clock"],
+        start_host_ns=typed_start_host,
+        end_host_ns=typed_end_host,
+        max_age_s=contract.max_topic_age_s,
+    )
+    odom_samples = _window_topic_evidence(
+        full["odom"],
+        full["clock"],
+        start_host_ns=typed_start_host,
+        end_host_ns=typed_end_host,
+        max_age_s=contract.max_topic_age_s,
+    )
+    _annotate_final_localization_samples(amcl_samples, odom_samples)
+    valid_amcl = _bounded_stream_samples(
+        _valid_final_amcl(amcl_samples, max_covariance_xy=contract.max_covariance_xy),
+        start_clock_ns=typed_start_clock,
+        end_clock_ns=typed_end_clock,
+    )
+    valid_odom = _bounded_stream_samples(
+        _valid_final_odom(odom_samples),
+        start_clock_ns=typed_start_clock,
+        end_clock_ns=typed_end_clock,
+    )
+    raw_ground_truth: list[dict[str, Any]] = []
+    verified_ground_truth: list[dict[str, Any]] = []
+    ground_truth_recorder = full.get("ground_truth")
+    if ground_truth_recorder is not None:
+        raw_ground_truth = _window_topic_evidence(
+            ground_truth_recorder,
+            full["clock"],
+            start_host_ns=typed_start_host,
+            end_host_ns=typed_end_host,
+            max_age_s=contract.max_topic_age_s,
+        )
+        if ground_truth_calibration is not None:
+            verified_ground_truth = _bounded_stream_samples(
+                _ground_truth_samples(raw_ground_truth, ground_truth_calibration),
+                start_clock_ns=typed_start_clock,
+                end_clock_ns=typed_end_clock,
+            )
+    stationary = bool(valid_odom) and all(
+        float(sample["linear_velocity_mps"]) <= contract.max_start_speed_mps
+        and abs(float(sample["angular_velocity_rps"])) <= contract.max_start_yaw_rate_rps
+        for sample in valid_odom
+    )
+    map_samples = window.get("map_pose_samples")
+    expected_frame = str(
+        cast(dict[str, Any], artifact.get("runtime_identity", {})).get("site_map_frame") or ""
+    ).lstrip("/")
+    valid_map_attempts, map_attempts_valid = _validated_raw_map_attempts(
+        window.get("map_pose_attempts"),
+        start_host_ns=typed_start_host,
+        end_host_ns=typed_end_host,
+        start_clock_ns=typed_start_clock,
+        end_clock_ns=typed_end_clock,
+        expected_frame=expected_frame,
+    )
+    checks = (
+        (window.get("clock_samples") != clock_samples, "final_clock_not_derived_from_raw"),
+        (window.get("amcl_samples") != amcl_samples, "final_amcl_window_not_derived_from_raw"),
+        (window.get("valid_amcl_samples") != valid_amcl, "final_amcl_not_derived_from_raw"),
+        (window.get("odom_samples") != odom_samples, "final_odom_window_not_derived_from_raw"),
+        (window.get("valid_odom_samples") != valid_odom, "final_odom_not_derived_from_raw"),
+        (
+            window.get("ground_truth_samples") != raw_ground_truth,
+            "final_ground_truth_window_not_derived_from_raw",
+        ),
+        (
+            window.get("verified_ground_truth_samples") != verified_ground_truth,
+            "final_ground_truth_not_derived_from_raw",
+        ),
+        (window.get("stationary") is not stationary, "final_stationary_not_derived_from_raw"),
+        (not map_attempts_valid, "final_map_attempt_schema"),
+        (map_samples != valid_map_attempts, "final_map_samples_not_derived_from_attempts"),
+        (
+            artifact.get("final_map_pose_samples") != map_samples,
+            "final_map_pose_alias_mismatch",
+        ),
+        (
+            artifact.get("ground_truth_samples") != window.get("verified_ground_truth_samples"),
+            "final_ground_truth_alias_mismatch",
+        ),
+    )
+    return [failure for failed, failure in checks if failed]
+
+
+def _raw_evidence_failures(
+    artifact: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    goal: CanonicalGoal,
+    ground_truth_calibration: GroundTruthCalibration | None,
+) -> list[str]:
+    if artifact.get("evidence_derivation_version") != 1:
+        return ["evidence_derivation_version"]
+    identity = artifact.get("runtime_identity")
+    odom_topic = identity.get("controller_odom_topic") if isinstance(identity, dict) else None
+    expected_streams: dict[str, dict[str, str | None]] = {
+        "clock": {"topic": _CLOCK_TOPIC, "message_type": _CLOCK_TYPE},
+        "amcl": {"topic": _AMCL_TOPIC, "message_type": _AMCL_TYPE},
+        "odom": {"topic": odom_topic, "message_type": _ODOM_TYPE},
+        "action_status": {
+            "topic": _ACTION_STATUS_TOPIC,
+            "message_type": _ACTION_STATUS_TYPE,
+        },
+    }
+    if contract.ground_truth_topic is not None:
+        expected_streams["ground_truth"] = {
+            "topic": contract.ground_truth_topic,
+            "message_type": contract.ground_truth_type,
+        }
+    contract_failures = (
+        []
+        if artifact.get("topic_stream_contract") == expected_streams
+        else ["topic_stream_contract"]
+    )
+    required = {"clock", "amcl", "odom", "action_status"}
+    optional: set[str] = set()
+    if ground_truth_calibration is not None:
+        required.add("ground_truth")
+    elif contract.ground_truth_topic is not None:
+        optional.add("ground_truth")
+    full, failures = _raw_topic_recorders(
+        artifact.get("topic_samples"),
+        required_streams=required,
+        optional_streams=optional,
+        label="raw_topic_samples",
+    )
+    failures.extend(contract_failures)
+    dispatch, dispatch_failures = _raw_topic_recorders(
+        artifact.get("topic_samples_at_dispatch_end"),
+        required_streams=required,
+        optional_streams=optional,
+        label="dispatch_topic_samples",
+    )
+    failures.extend(dispatch_failures)
+    if full is None or dispatch is None:
+        return list(dict.fromkeys(failures))
+    failures.extend(_raw_snapshot_failures(artifact, full=full, dispatch=dispatch))
+    failures.extend(
+        _raw_state_failures(
+            artifact,
+            contract=contract,
+            goal=goal,
+            dispatch=dispatch,
+            ground_truth_calibration=ground_truth_calibration,
+        )
+    )
+    failures.extend(
+        _raw_goal_uuid_failures(
+            artifact,
+            dispatch=dispatch,
+            contract=contract,
+        )
+    )
+    failures.extend(
+        _raw_final_window_failures(
+            artifact,
+            contract=contract,
+            full=full,
+            ground_truth_calibration=ground_truth_calibration,
+        )
+    )
+    return list(dict.fromkeys(failures))
 
 
 def _comparison_eligibility_failure(artifact: dict[str, Any], side: str) -> str | None:
@@ -3249,13 +4574,16 @@ def _comparison_eligibility_failure(artifact: dict[str, Any], side: str) -> str 
     )
     failures = [failure for failed, failure in checks if failed]
     failures.extend(
-        _runtime_identity_failures(identity_dict) if identity_dict else ["runtime_identity_missing"]
+        _runtime_identity_failures(identity_dict, require_end_generation=True)
+        if identity_dict
+        else ["runtime_identity_missing"]
     )
     failures.extend(ground_truth_failures)
     failures.extend(
         _state_evidence_failures(
             artifact.get("t0_scenario_start"),
             contract=contract,
+            ground_truth_calibration=ground_truth_calibration,
             expected_epoch=canonical_goal.simulation_epoch,
             label="t0",
         )
@@ -3265,6 +4593,7 @@ def _comparison_eligibility_failure(artifact: dict[str, Any], side: str) -> str 
             artifact,
             contract=contract,
             canonical_goal=canonical_goal,
+            ground_truth_calibration=ground_truth_calibration,
         )
     )
     if terminal_failure := _terminal_evidence_failure(artifact):
@@ -3280,6 +4609,15 @@ def _comparison_eligibility_failure(artifact: dict[str, Any], side: str) -> str 
         )
     )
     failures.extend(_cleanup_evidence_failures(artifact.get("cleanup")))
+    failures.extend(_mode_specific_evidence_failures(artifact))
+    failures.extend(
+        _raw_evidence_failures(
+            artifact,
+            contract=contract,
+            goal=canonical_goal,
+            ground_truth_calibration=ground_truth_calibration,
+        )
+    )
     if failures:
         return f"{side} artifact is not comparison-eligible: {', '.join(dict.fromkeys(failures))}"
     return None
@@ -3299,6 +4637,20 @@ def _eligible_artifact_pair(
     return left_valid, right_valid, None
 
 
+def _pose_pair_exceeds(
+    left: Pose2D,
+    right: Pose2D,
+    *,
+    position_tolerance_m: float,
+    yaw_tolerance_rad: float,
+) -> bool:
+    yaw_delta = math.atan2(math.sin(left.yaw - right.yaw), math.cos(left.yaw - right.yaw))
+    return (
+        math.hypot(left.x - right.x, left.y - right.y) > position_tolerance_m
+        or abs(yaw_delta) > yaw_tolerance_rad
+    )
+
+
 def _state_pairing_gate(
     left_identity: dict[str, Any],
     right_identity: dict[str, Any],
@@ -3306,6 +4658,8 @@ def _state_pairing_gate(
     right_state: dict[str, Any],
     *,
     max_covariance_xy: float,
+    max_start_position_delta_m: float,
+    max_start_yaw_delta_rad: float,
 ) -> tuple[PairingGateResult | None, str | None]:
     left_start = _artifact_pose(left_state, "map_to_base")
     right_start = _artifact_pose(right_state, "map_to_base")
@@ -3334,6 +4688,8 @@ def _state_pairing_gate(
             right_stationary=right_state.get("stationary") is True,
             left_active_goal=bool(left_state.get("active_goal_ids")),
             right_active_goal=bool(right_state.get("active_goal_ids")),
+            max_start_position_delta_m=max_start_position_delta_m,
+            max_start_yaw_delta_rad=max_start_yaw_delta_rad,
             max_covariance_xy=max_covariance_xy,
         ),
         None,
@@ -3364,6 +4720,8 @@ def _pairing_gate_from_artifacts(
         left_t0,
         right_t0,
         max_covariance_xy=contract.max_covariance_xy,
+        max_start_position_delta_m=contract.max_pair_start_position_delta_m,
+        max_start_yaw_delta_rad=contract.max_pair_start_yaw_delta_rad,
     )
     if t0_gate is None:
         return None, detail
@@ -3373,6 +4731,8 @@ def _pairing_gate_from_artifacts(
         left_dispatch,
         right_dispatch,
         max_covariance_xy=contract.max_covariance_xy,
+        max_start_position_delta_m=contract.max_pair_start_position_delta_m,
+        max_start_yaw_delta_rad=contract.max_pair_start_yaw_delta_rad,
     )
     if t1_gate is None:
         return None, detail
@@ -3387,6 +4747,10 @@ def _pairing_gate_from_artifacts(
             "measurement_contract",
         ),
         (
+            left.get("ground_truth_calibration") != right.get("ground_truth_calibration"),
+            "ground_truth_calibration",
+        ),
+        (
             {str(left.get("mode")), str(right.get("mode"))}
             != {
                 DifferentialMode.R1_BRIDGE_NAV2.value,
@@ -3396,7 +4760,28 @@ def _pairing_gate_from_artifacts(
         ),
     )
     metadata_failures = tuple(failure for failed, failure in metadata_checks if failed)
-    failures = tuple(dict.fromkeys((*t0_gate.failures, *t1_failures, *metadata_failures)))
+    physical_failures: list[str] = []
+    calibration = left.get("ground_truth_calibration")
+    if isinstance(calibration, dict) and calibration.get("status") == "VERIFIED":
+        for label, left_state, right_state in (
+            ("ground_truth_start", left_t0, right_t0),
+            ("ground_truth_dispatch", left_dispatch, right_dispatch),
+        ):
+            left_pose = _pose_payload(left_state.get("ground_truth_map_pose"))
+            right_pose = _pose_payload(right_state.get("ground_truth_map_pose"))
+            if left_pose is None or right_pose is None:
+                physical_failures.append(f"{label}_missing")
+                continue
+            if _pose_pair_exceeds(
+                left_pose,
+                right_pose,
+                position_tolerance_m=contract.max_pair_start_position_delta_m,
+                yaw_tolerance_rad=contract.max_pair_start_yaw_delta_rad,
+            ):
+                physical_failures.append(label)
+    failures = tuple(
+        dict.fromkeys((*t0_gate.failures, *t1_failures, *metadata_failures, *physical_failures))
+    )
     gate = t0_gate.model_copy(
         update={
             "status": PairingGate.FAILED if failures else PairingGate.PASSED,
