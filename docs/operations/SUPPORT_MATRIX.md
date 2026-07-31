@@ -22,7 +22,7 @@
 | Release wheel | CI 建出的 wheel → 隔離環境 → `JenAI`/`jenai`、doctor、uninstall | Validated | 驗的是 wheel，不等同 source install；每版 hash 以 release SHA256SUMS 為準 |
 | Source install | pinned tag/commit + `uv tool install .` | Supported | 需建置工具且依賴解析可能隨時間改變；正式交付優先 wheel + constraints |
 | Development | `uv sync --frozen` + `uv run JenAI` | Supported | `uv.lock` 鎖開發／CI解析；不是一般使用者交付路徑 |
-| DGX Spark host | Ubuntu 24.04.4 LTS、aarch64 | Supported | 主要開發機；候選版 fresh-machine 非作者驗收仍為外部 gate |
+| DGX Spark host | Ubuntu 24.04.4 LTS、aarch64 | Supported | 主要開發機；v2.6.0 的 fresh-machine 非作者驗收仍為外部 gate |
 | Linux without ROS2 | Python 功能、聊天、規劃、eval、scaffold | Supported | ROS/導航指令誠實 unavailable |
 | macOS | Python 套件／TUI | Experimental | ROS2、Isaac、Nav2 路徑未在 CI 或現場驗證 |
 

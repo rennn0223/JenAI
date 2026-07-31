@@ -1,12 +1,12 @@
 {
-  "version": "2.5.1",
-  "tag": "v2.5.1",
-  "commit": "0544db597a536a6b4cc613a5618498360802364a",
-  "published_at": "2026-07-27T20:29:04Z",
-  "github_release_url": "https://github.com/rennn0223/JenAI/releases/tag/v2.5.1",
+  "version": "2.6.0",
+  "tag": "v2.6.0",
+  "commit": "a648576efa35b7f0ed8a376d34ef88ab8c1a5b18",
+  "published_at": "2026-07-31T00:13:05Z",
+  "github_release_url": "https://github.com/rennn0223/JenAI/releases/tag/v2.6.0",
   "workflow_runs": {
-    "ci": "https://github.com/rennn0223/JenAI/actions/runs/30302559111",
-    "supply_chain": "https://github.com/rennn0223/JenAI/actions/runs/30302559062",
-    "release": "https://github.com/rennn0223/JenAI/actions/runs/30302598211"
+    "ci": "https://github.com/rennn0223/JenAI/actions/runs/30592726527",
+    "supply_chain": "https://github.com/rennn0223/JenAI/actions/runs/30592726522",
+    "release": "https://github.com/rennn0223/JenAI/actions/runs/30592758650"
   }
 }

@@ -31,7 +31,7 @@
 
 | 項目 | 指令 | 期望輸出 |
 |---|---|---|
-| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.5.1 發布前本機 1,175 項完整測試、Ruff 與 mypy strict 已通過；全專案 branch coverage 79%，安全鏈 branch coverage 94%；Python 3.12／3.13／3.14、build 與 audit/SBOM 由 PR CI 驗證；最近發布的 v2.5.1 Release workflow 已通過 |
+| 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.6.0 發布前本機 1,352 項完整測試、Ruff 與 mypy strict 已通過；Python 3.12／3.13／3.14、build、coverage gate 與 audit／SBOM 由 CI 及發布流程驗證；最近發布的 v2.6.0 Release workflow 已通過 |
 | Isaac HIL（人工啟動） | Actions → `Isaac HIL Acceptance`，或依 `docs/validation/ISAAC_HIL_ACCEPTANCE.md` 執行 | 一般 CI 絕不動車；精確確認後在 self-hosted runner 驗 route、Nav2 cancel acknowledgement、software halt、完整 scan metadata gate 與可選 Twin verdict。任一 motion 失敗即停止後續 goal，artifact 必含 `final_halt`／`bridge_shutdown`；畸形 wire 回應不得算成功。clean `d942130…855` 本機 artifact 已通過，Twin 同 domain 明記 skip；這不等於已產生 GitHub workflow artifact |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | 最小 `contents: read` 權限；同 ref 新 run 取消舊 run；`test` job（30 分鐘上限）以 Python 3.12／3.13／3.14 matrix 跑 ruff format/lint、全 production code mypy strict、pytest branch coverage（整體 76% 與安全鏈 90% 退步閘）；`build` job（20 分鐘上限）以 `uv build` + 全新 tool 環境驗 wheel lifecycle |
