@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
 import math
 import os
+import re
+import secrets
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
+from ._runtime_identity import BRIDGE_LAUNCH_NONCE_ENV
 from ._wire import EventFrame, ResponseFrame, WireProtocolError, decode_frame, encode_request
 
 _BRIDGE_SCRIPT = Path(__file__).parent / "ros_bridge.py"
@@ -25,10 +31,263 @@ logger = logging.getLogger(__name__)
 
 BridgePayload = dict[str, Any]
 EventHandler = Callable[[BridgePayload], None]
+_DDS_IDENTITY_BINDINGS = frozenset(
+    {
+        "FASTRTPS_DEFAULT_PROFILES_FILE",
+        "FASTDDS_DEFAULT_PROFILES_FILE",
+        "CYCLONEDDS_URI",
+        "ROS_DISCOVERY_SERVER",
+        "ROS_AUTOMATIC_DISCOVERY_RANGE",
+        "ROS_STATIC_PEERS",
+    }
+)
+_ROS_ENVIRONMENT_IDENTITY_BINDINGS = frozenset(
+    {
+        "ROS_SETUP",
+        "ROS_LOCALHOST_ONLY",
+        "ROS_SECURITY_ENABLE",
+        "ROS_SECURITY_STRATEGY",
+        "ROS_SECURITY_KEYSTORE",
+        "SROS2_KEYSTORE",
+    }
+)
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_LAUNCH_NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_PYTHON_VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[.+-].*)?$")
+_RUNTIME_IDENTITY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "pid",
+        "launch_nonce",
+        "boot_id",
+        "process_start_ticks",
+        "python_executable",
+        "python_version",
+        "rmw_implementation_requested",
+        "rmw_implementation_effective",
+        "ros_domain_id",
+        "dds_config_mode",
+        "dds_bindings",
+        "dds_config_sha256",
+        "ros_environment_bindings",
+        "ros_environment_sha256",
+        "descriptor_sha256",
+    }
+)
 
 
 class BridgeError(Exception):
     """Raised when the ROS bridge is unavailable or an operation fails."""
+
+
+def _identity_sha256(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _runtime_identity_object(payload: object) -> BridgePayload:
+    if not isinstance(payload, dict):
+        raise BridgeError("invalid bridge runtime identity: payload must be an object")
+    if set(payload) != _RUNTIME_IDENTITY_FIELDS or payload.get("schema_version") != 1:
+        raise BridgeError("invalid bridge runtime identity: fields do not match schema v1")
+    return payload
+
+
+def _runtime_identity_int(
+    payload: BridgePayload,
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = payload.get(field)
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise BridgeError(f"invalid bridge runtime identity: {field} is outside its range")
+    return value
+
+
+def _runtime_identity_text(payload: BridgePayload, field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise BridgeError(f"invalid bridge runtime identity: {field} is unavailable")
+    return value
+
+
+def _runtime_identity_bindings(
+    payload: BridgePayload,
+) -> tuple[dict[str, object], tuple[tuple[str, str, str], ...]]:
+    bindings = payload.get("dds_bindings")
+    if not isinstance(bindings, dict) or not set(bindings).issubset(_DDS_IDENTITY_BINDINGS):
+        raise BridgeError("invalid bridge runtime identity: DDS bindings are malformed")
+    parsed: list[tuple[str, str, str]] = []
+    for name, raw_binding in bindings.items():
+        if not isinstance(raw_binding, dict) or set(raw_binding) != {"kind", "sha256"}:
+            raise BridgeError("invalid bridge runtime identity: DDS binding fields are malformed")
+        kind = raw_binding.get("kind")
+        digest = raw_binding.get("sha256")
+        if (
+            kind not in {"file_content", "environment_value"}
+            or not isinstance(digest, str)
+            or _SHA256_PATTERN.fullmatch(digest) is None
+        ):
+            raise BridgeError("invalid bridge runtime identity: DDS binding evidence is malformed")
+        parsed.append((name, kind, digest))
+    expected_mode = "environment_binding" if bindings else "middleware_default"
+    if payload.get("dds_config_mode") != expected_mode:
+        raise BridgeError("invalid bridge runtime identity: DDS mode is inconsistent")
+    return bindings, tuple(sorted(parsed))
+
+
+def _runtime_identity_ros_environment_bindings(
+    payload: BridgePayload,
+) -> tuple[dict[str, object], tuple[tuple[str, str, str], ...]]:
+    bindings = payload.get("ros_environment_bindings")
+    if not isinstance(bindings, dict) or not set(bindings).issubset(
+        _ROS_ENVIRONMENT_IDENTITY_BINDINGS
+    ):
+        raise BridgeError("invalid bridge runtime identity: ROS environment bindings are malformed")
+    parsed: list[tuple[str, str, str]] = []
+    for name, raw_binding in bindings.items():
+        if not isinstance(raw_binding, dict) or set(raw_binding) != {"kind", "sha256"}:
+            raise BridgeError(
+                "invalid bridge runtime identity: ROS environment binding fields are malformed"
+            )
+        kind = raw_binding.get("kind")
+        digest = raw_binding.get("sha256")
+        expected_kind = "file_content" if name == "ROS_SETUP" else "environment_value"
+        if (
+            kind != expected_kind
+            or not isinstance(digest, str)
+            or _SHA256_PATTERN.fullmatch(digest) is None
+        ):
+            raise BridgeError(
+                "invalid bridge runtime identity: ROS environment binding evidence is malformed"
+            )
+        parsed.append((name, kind, digest))
+    return bindings, tuple(sorted(parsed))
+
+
+def _runtime_identity_digest(
+    payload: BridgePayload,
+    field: str,
+    expected_payload: object,
+) -> str:
+    digest = payload.get(field)
+    if (
+        not isinstance(digest, str)
+        or _SHA256_PATTERN.fullmatch(digest) is None
+        or digest != _identity_sha256(expected_payload)
+    ):
+        raise BridgeError(f"invalid bridge runtime identity: {field} does not match")
+    return digest
+
+
+@dataclass(frozen=True, slots=True)
+class BridgeRuntimeIdentity:
+    """Validated identity emitted by the actual rclpy sidecar process."""
+
+    schema_version: int
+    pid: int
+    launch_nonce: str
+    boot_id: str
+    process_start_ticks: int
+    python_executable: str
+    python_version: str
+    rmw_implementation_requested: str | None
+    rmw_implementation_effective: str
+    ros_domain_id: int
+    dds_config_mode: str
+    dds_bindings: tuple[tuple[str, str, str], ...]
+    dds_config_sha256: str
+    ros_environment_bindings: tuple[tuple[str, str, str], ...]
+    ros_environment_sha256: str
+    descriptor_sha256: str
+
+    @classmethod
+    def from_payload(cls, payload: object) -> BridgeRuntimeIdentity:
+        parsed = _runtime_identity_object(payload)
+        pid = _runtime_identity_int(parsed, "pid", minimum=1, maximum=2**31 - 1)
+        launch_nonce = _runtime_identity_text(parsed, "launch_nonce")
+        if _LAUNCH_NONCE_PATTERN.fullmatch(launch_nonce) is None:
+            raise BridgeError("invalid bridge runtime identity: launch nonce is malformed")
+        boot_id = _runtime_identity_text(parsed, "boot_id")
+        try:
+            if str(UUID(boot_id)) != boot_id:
+                raise ValueError
+        except ValueError as exc:
+            raise BridgeError("invalid bridge runtime identity: boot ID is malformed") from exc
+        process_start_ticks = _runtime_identity_int(
+            parsed,
+            "process_start_ticks",
+            minimum=1,
+            maximum=2**63 - 1,
+        )
+        executable = _runtime_identity_text(parsed, "python_executable")
+        if not os.path.isabs(executable) or os.path.normpath(executable) != executable:
+            raise BridgeError("invalid bridge runtime identity: Python path is not canonical")
+        version = _runtime_identity_text(parsed, "python_version")
+        if _PYTHON_VERSION_PATTERN.fullmatch(version) is None:
+            raise BridgeError("invalid bridge runtime identity: Python version is malformed")
+        requested = parsed.get("rmw_implementation_requested")
+        if requested is not None and (not isinstance(requested, str) or not requested.strip()):
+            raise BridgeError("invalid bridge runtime identity: requested RMW is malformed")
+        effective = _runtime_identity_text(parsed, "rmw_implementation_effective")
+        domain_id = _runtime_identity_int(parsed, "ros_domain_id", minimum=0, maximum=232)
+        bindings, parsed_bindings = _runtime_identity_bindings(parsed)
+        mode = _runtime_identity_text(parsed, "dds_config_mode")
+        dds_digest = _runtime_identity_digest(parsed, "dds_config_sha256", bindings)
+        ros_bindings, parsed_ros_bindings = _runtime_identity_ros_environment_bindings(parsed)
+        ros_environment_digest = _runtime_identity_digest(
+            parsed,
+            "ros_environment_sha256",
+            ros_bindings,
+        )
+        descriptor = {key: value for key, value in parsed.items() if key != "descriptor_sha256"}
+        descriptor_digest = _runtime_identity_digest(parsed, "descriptor_sha256", descriptor)
+        return cls(
+            schema_version=1,
+            pid=pid,
+            launch_nonce=launch_nonce,
+            boot_id=boot_id,
+            process_start_ticks=process_start_ticks,
+            python_executable=executable,
+            python_version=version,
+            rmw_implementation_requested=requested,
+            rmw_implementation_effective=effective,
+            ros_domain_id=domain_id,
+            dds_config_mode=mode,
+            dds_bindings=parsed_bindings,
+            dds_config_sha256=dds_digest,
+            ros_environment_bindings=parsed_ros_bindings,
+            ros_environment_sha256=ros_environment_digest,
+            descriptor_sha256=descriptor_digest,
+        )
+
+    def to_payload(self) -> BridgePayload:
+        bindings = {
+            name: {"kind": kind, "sha256": digest} for name, kind, digest in self.dds_bindings
+        }
+        return {
+            "schema_version": self.schema_version,
+            "pid": self.pid,
+            "launch_nonce": self.launch_nonce,
+            "boot_id": self.boot_id,
+            "process_start_ticks": self.process_start_ticks,
+            "python_executable": self.python_executable,
+            "python_version": self.python_version,
+            "rmw_implementation_requested": self.rmw_implementation_requested,
+            "rmw_implementation_effective": self.rmw_implementation_effective,
+            "ros_domain_id": self.ros_domain_id,
+            "dds_config_mode": self.dds_config_mode,
+            "dds_bindings": bindings,
+            "dds_config_sha256": self.dds_config_sha256,
+            "ros_environment_bindings": {
+                name: {"kind": kind, "sha256": digest}
+                for name, kind, digest in self.ros_environment_bindings
+            },
+            "ros_environment_sha256": self.ros_environment_sha256,
+            "descriptor_sha256": self.descriptor_sha256,
+        }
 
 
 def _require_bool(result: BridgePayload, field: str, operation: str) -> bool:
@@ -135,6 +394,40 @@ def _bridge_process_args(ros_setup: str, python: str) -> tuple[str, ...]:
     )
 
 
+async def _kill_and_reap_bridge(proc: asyncio.subprocess.Process) -> BridgeError | None:
+    """Force-stop a sidecar and report when process ownership remains unresolved."""
+
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    try:
+        await asyncio.wait_for(proc.wait(), 2.0)
+    except (TimeoutError, OSError):
+        if proc.returncode is None:
+            return BridgeError("ROS bridge could not terminate and reap after kill")
+    if proc.returncode is None:
+        return BridgeError("ROS bridge could not terminate and reap after kill")
+    return None
+
+
+async def _shutdown_bridge_process(proc: asyncio.subprocess.Process) -> BridgeError | None:
+    """Request graceful shutdown, escalating to kill while retaining evidence."""
+
+    if proc.returncode is not None:
+        return None
+    try:
+        stdin = proc.stdin
+        if stdin is None:
+            raise BrokenPipeError("bridge stdin is unavailable")
+        stdin.write(b'{"id": 0, "op": "shutdown"}\n')
+        await stdin.drain()
+        await asyncio.wait_for(proc.wait(), 3.0)
+    except (TimeoutError, OSError, ConnectionResetError):
+        return await _kill_and_reap_bridge(proc)
+    if proc.returncode is None:
+        return BridgeError("ROS bridge could not terminate and reap")
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class HaltEvidence:
     """Validated sidecar publish and Nav2-cancellation evidence."""
@@ -156,6 +449,10 @@ class PoseInfo:
     yaw: float
     frame_id: str
     source: str
+    base_frame: str | None = None
+    initial_stamp_ns: int | None = None
+    stamp_ns: int | None = None
+    fresh_after_request: bool | None = None
 
     @classmethod
     def from_payload(cls, result: BridgePayload) -> PoseInfo:
@@ -396,6 +693,9 @@ class RosBridgeClient:
         self._event_handlers: dict[str, list[EventHandler]] = {}
         self._watch_handlers: dict[int, EventHandler] = {}
         self._ready = asyncio.Event()
+        self._ready_runtime_identity_payload: object | None = None
+        self._expected_launch_nonce: str | None = None
+        self._pinned_runtime_identity: BridgeRuntimeIdentity | None = None
         self._start_lock = asyncio.Lock()
         # Safety config survives the process: once set, EVERY spawn re-arms
         # the watchdog — including silent respawns via request(). Without
@@ -427,6 +727,12 @@ class RosBridgeClient:
         async with self._start_lock:
             if self.running:
                 return
+            retained_proc = self._proc
+            if retained_proc is not None and retained_proc.returncode is None:
+                raise BridgeError(
+                    "ROS bridge process is still live and unreaped after failed shutdown; "
+                    "refusing to spawn another command owner"
+                )
             if not self.available():
                 raise BridgeError("ROS2 is not installed (no setup script or ros2 on PATH).")
             await self._spawn(timeout)
@@ -438,8 +744,13 @@ class RosBridgeClient:
         # never interpolated shell source, so environment values cannot inject
         # an extra command into this safety-critical process boundary.
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
+        launch_nonce = secrets.token_hex(16)
+        env[BRIDGE_LAUNCH_NONCE_ENV] = launch_nonce
+        env["ROS_SETUP"] = ros_setup
         if self._domain_id is not None:
             env["ROS_DOMAIN_ID"] = str(self._domain_id)
+        self._ready_runtime_identity_payload = None
+        self._expected_launch_nonce = launch_nonce
         self._proc = await asyncio.create_subprocess_exec(
             *_bridge_process_args(ros_setup, python),
             stdin=asyncio.subprocess.PIPE,
@@ -475,6 +786,14 @@ class RosBridgeClient:
             ready_waiter.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await ready_waiter
+        if self._pinned_runtime_identity is not None:
+            try:
+                current_identity = self._current_runtime_identity()
+                if current_identity != self._pinned_runtime_identity:
+                    raise BridgeError("ROS bridge runtime identity changed after it was pinned")
+            except BridgeError:
+                await self.stop()
+                raise
         if self._safety is not None:
             # Arm the dead-client watchdog on the fresh process. A failure
             # here means the bridge is already broken — fail the start rather
@@ -487,28 +806,18 @@ class RosBridgeClient:
 
     async def stop(self) -> None:
         """Shut the bridge down cleanly, failing any in-flight requests."""
-        proc, self._proc = self._proc, None
+        proc = self._proc
         reader_task, self._reader_task = self._reader_task, None
         stderr_task, self._stderr_task = self._stderr_task, None
+        termination_error: BridgeError | None = None
         if reader_task is not None:
             reader_task.cancel()
         self._fail_pending(BridgeError("bridge stopped"))
-        if proc is not None and proc.returncode is None:
-            try:
-                stdin = proc.stdin
-                if stdin is None:
-                    raise BrokenPipeError("bridge stdin is unavailable")
-                stdin.write(b'{"id": 0, "op": "shutdown"}\n')
-                await stdin.drain()
-                await asyncio.wait_for(proc.wait(), 3.0)
-            except (TimeoutError, OSError, ConnectionResetError):
-                # kill() races the process's own exit — already-dead is fine.
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                # Reap the killed process — otherwise its transport lingers
-                # until GC (zombie + "Exception ignored in __del__" noise).
-                with contextlib.suppress(TimeoutError, OSError):
-                    await asyncio.wait_for(proc.wait(), 2.0)
+        if proc is not None:
+            termination_error = await _shutdown_bridge_process(proc)
+        if termination_error is None and self._proc is proc:
+            self._proc = None
+            self._expected_launch_nonce = None
         if reader_task is not None:
             # Cancellation is not cleanup until the task has observed it.
             # Keep ownership until its stdout read has unwound so the event
@@ -522,6 +831,8 @@ class RosBridgeClient:
                 stderr_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await stderr_task
+        if termination_error is not None:
+            raise termination_error
 
     @staticmethod
     async def _drain_stderr(
@@ -616,6 +927,7 @@ class RosBridgeClient:
     def _dispatch_event(self, payload: BridgePayload) -> None:
         event = str(payload["event"])
         if event == "ready":
+            self._ready_runtime_identity_payload = payload.get("runtime_identity")
             self._ready.set()
             return
         if event == "watch":
@@ -640,6 +952,33 @@ class RosBridgeClient:
         handlers = self._event_handlers.get(event, [])
         if handler in handlers:
             handlers.remove(handler)
+
+    def _current_runtime_identity(self) -> BridgeRuntimeIdentity:
+        identity = BridgeRuntimeIdentity.from_payload(self._ready_runtime_identity_payload)
+        proc = self._proc
+        if proc is None or proc.pid != identity.pid:
+            raise BridgeError("invalid bridge runtime identity: pid does not match the sidecar")
+        if (
+            self._expected_launch_nonce is None
+            or identity.launch_nonce != self._expected_launch_nonce
+        ):
+            raise BridgeError(
+                "invalid bridge runtime identity: launch nonce does not match the parent"
+            )
+        return identity
+
+    async def runtime_identity(self, *, pin: bool = False) -> BridgeRuntimeIdentity:
+        """Return identity from the actual ready sidecar, optionally pinning respawns."""
+
+        if not self.running:
+            await self.start()
+        identity = self._current_runtime_identity()
+        if pin:
+            if self._pinned_runtime_identity is None:
+                self._pinned_runtime_identity = identity
+            elif identity != self._pinned_runtime_identity:
+                raise BridgeError("ROS bridge runtime identity changed after it was pinned")
+        return identity
 
     async def request(
         self, op: str, timeout: float = 10.0, params: BridgePayload | None = None
@@ -732,13 +1071,39 @@ class RosBridgeClient:
         )
         pose = PoseInfo.from_payload(result)
         if fresh:
-            if not _require_bool(result, "fresh_after_request", "pose"):
+            fresh_after_request = _require_bool(result, "fresh_after_request", "pose")
+            if not fresh_after_request:
                 raise BridgeError(
                     "invalid pose response: fresh_after_request must explicitly be true"
                 )
+            returned_base_frame = _require_text(result, "base_frame", "pose")
+            initial_stamp_ns = _require_int(result, "initial_stamp_ns", "pose")
             stamp_ns = _require_int(result, "stamp_ns", "pose")
-            if stamp_ns <= 0:
-                raise BridgeError("invalid pose response: stamp_ns must be positive")
+            if pose.frame_id != frame_id:
+                raise BridgeError(
+                    "invalid pose response: frame_id must exactly match the requested frame"
+                )
+            if returned_base_frame != base_frame:
+                raise BridgeError(
+                    "invalid pose response: base_frame must exactly match the requested frame"
+                )
+            if initial_stamp_ns <= 0:
+                raise BridgeError("invalid pose response: initial_stamp_ns must be positive")
+            if stamp_ns <= initial_stamp_ns:
+                raise BridgeError(
+                    "invalid pose response: stamp_ns must be newer than initial_stamp_ns"
+                )
+            return PoseInfo(
+                x=pose.x,
+                y=pose.y,
+                yaw=pose.yaw,
+                frame_id=pose.frame_id,
+                source=pose.source,
+                base_frame=returned_base_frame,
+                initial_stamp_ns=initial_stamp_ns,
+                stamp_ns=stamp_ns,
+                fresh_after_request=fresh_after_request,
+            )
         return pose
 
     async def map_cell(self, x: float, y: float, *, timeout: float = 3.0) -> MapCellInfo:

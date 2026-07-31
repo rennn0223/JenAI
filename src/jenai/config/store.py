@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import tomllib
@@ -17,6 +18,15 @@ from jenai.schemas import ModelBindings
 
 class ConfigError(Exception):
     """Raised when a JenAI config file cannot be read or validated."""
+
+
+@dataclass(frozen=True)
+class ConfigSnapshot:
+    """One validated config and the identity of the exact bytes parsed."""
+
+    path: Path
+    config: AppConfig
+    sha256: str
 
 
 def default_config_path() -> Path:
@@ -91,7 +101,9 @@ def load_env_file(path: Path | None = None) -> EnvFileResult:
     )
 
 
-def load_config(path: Path | None = None) -> AppConfig:
+def load_config_snapshot(path: Path | None = None) -> ConfigSnapshot:
+    """Read once, then validate and fingerprint the same config bytes."""
+
     config_path = path or default_config_path()
     try:
         raw = config_path.read_bytes()
@@ -102,7 +114,7 @@ def load_config(path: Path | None = None) -> AppConfig:
 
     try:
         data = tomllib.loads(raw.decode("utf-8"))
-        return AppConfig.model_validate(data)
+        config = AppConfig.model_validate(data)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Config file is not valid TOML: {config_path}") from exc
     except UnicodeDecodeError as exc:
@@ -113,6 +125,16 @@ def load_config(path: Path | None = None) -> AppConfig:
             for error in exc.errors(include_input=False)
         )
         raise ConfigError(f"Config file has invalid JenAI settings: {details}") from exc
+
+    return ConfigSnapshot(
+        path=config_path,
+        config=config,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def load_config(path: Path | None = None) -> AppConfig:
+    return load_config_snapshot(path).config
 
 
 def save_config(config: AppConfig, path: Path | None = None) -> Path:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from jenai.bridge.client import (
     BridgeError,
+    BridgeRuntimeIdentity,
     HaltEvidence,
     MapCellInfo,
     MapIdentityInfo,
@@ -14,6 +15,7 @@ from jenai.bridge.client import (
 
 __all__ = [
     "BridgeError",
+    "BridgeRuntimeIdentity",
     "HaltEvidence",
     "MapCellInfo",
     "MapIdentityInfo",

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import math
 import os
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -58,6 +60,15 @@ class LocationsFileError(Exception):
     """Raised when a locations file cannot be read or validated."""
 
 
+@dataclass(frozen=True)
+class LocationsSnapshot:
+    """Validated locations and the identity of the exact bytes parsed."""
+
+    path: Path
+    locations: tuple[Location, ...]
+    sha256: str
+
+
 class LocationNotFoundError(Exception):
     """Raised when a location query has no exact/alias match.
 
@@ -71,7 +82,9 @@ class LocationNotFoundError(Exception):
         self.candidates = candidates
 
 
-def load_locations(path: Path) -> list[Location]:
+def load_locations_snapshot(path: Path) -> LocationsSnapshot:
+    """Read once, then validate and fingerprint the same locations bytes."""
+
     try:
         raw = path.read_bytes()
     except FileNotFoundError as exc:
@@ -88,9 +101,19 @@ def load_locations(path: Path) -> list[Location]:
 
     entries = data.get("locations", [])
     try:
-        return [Location.model_validate(entry) for entry in entries]
+        locations = tuple(Location.model_validate(entry) for entry in entries)
     except ValidationError as exc:
         raise LocationsFileError(f"Locations file has invalid entries: {exc}") from exc
+
+    return LocationsSnapshot(
+        path=path,
+        locations=locations,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def load_locations(path: Path) -> list[Location]:
+    return list(load_locations_snapshot(path).locations)
 
 
 def load_locations_tolerant(path: Path | None) -> tuple[list[Location], str | None]:

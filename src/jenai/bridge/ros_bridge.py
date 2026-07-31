@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from ._node_identity import bridge_node_name
     from ._occupancy import occupancy_grid_identity, sample_occupancy_cell
     from ._protocol import dispatch_request
+    from ._runtime_identity import build_runtime_identity_payload
     from ._server import serve_requests
     from ._watchdog import WatchdogState
 else:
@@ -65,12 +66,14 @@ else:
     from _node_identity import bridge_node_name
     from _occupancy import occupancy_grid_identity, sample_occupancy_cell
     from _protocol import dispatch_request
+    from _runtime_identity import build_runtime_identity_payload
     from _server import serve_requests
     from _watchdog import WatchdogState
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSPresetProfiles
+from rclpy.utilities import get_rmw_implementation_identifier
 
 _STDOUT_LOCK = threading.Lock()
 WirePayload = dict[str, Any]
@@ -322,7 +325,9 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
             "y": float(translation.y),
             "yaw": _yaw_from_quaternion(rotation),
             "frame_id": frame_id,
+            "base_frame": base_frame,
             "source": f"/tf({frame_id}->{base_frame})",
+            "initial_stamp_ns": initial_stamp_ns,
             "stamp_ns": stamp_ns,
             "fresh_after_request": True,
         }
@@ -1385,40 +1390,64 @@ def _watchdog_loop(node: BridgeNode, state: WatchdogState, stop: threading.Event
 
 
 def main() -> None:
-    rclpy.init()
-    node = BridgeNode()
-    executor = MultiThreadedExecutor(num_threads=4)
-    executor.add_node(node)
-    spin = threading.Thread(target=executor.spin, daemon=True)
-    spin.start()
+    node: BridgeNode | None = None
+    executor: MultiThreadedExecutor | None = None
+    watchdog: WatchdogState | None = None
+    watchdog_stop: threading.Event | None = None
+    initialized = False
+    try:
+        rclpy.init()
+        initialized = True
+        node = BridgeNode()
+        executor = MultiThreadedExecutor(num_threads=4)
+        executor.add_node(node)
+        spin = threading.Thread(target=executor.spin, daemon=True)
+        spin.start()
 
-    watchdog = WatchdogState()
-    watchdog_stop = threading.Event()
-    threading.Thread(
-        target=_watchdog_loop, args=(node, watchdog, watchdog_stop), daemon=True
-    ).start()
+        watchdog = WatchdogState()
+        watchdog_stop = threading.Event()
+        threading.Thread(
+            target=_watchdog_loop,
+            args=(node, watchdog, watchdog_stop),
+            daemon=True,
+        ).start()
 
-    _emit({"event": "ready"})
-
-    serve_requests(
-        sys.stdin,
-        emit=_emit,
-        dispatch=lambda op, params: dispatch_request(node, op, params, watchdog),
-        touch_watchdog=watchdog.touch,
-    )
-
-    watchdog_stop.set()
-    # The client is gone (EOF or shutdown). A robot still executing a goal must
-    # not keep driving unsupervised — same contract as the in-band watchdog.
-    if node.nav_active:
+        ready: WirePayload = {"event": "ready"}
         try:
-            node.halt(watchdog.cmd_vel_topic, watchdog.stamped)
-        except Exception:
-            pass
+            ready["runtime_identity"] = build_runtime_identity_payload(
+                effective_rmw=get_rmw_implementation_identifier(),
+            )
+        except Exception as exc:
+            # The bridge remains backward-compatible for normal callers.  The
+            # differential harness explicitly requires identity and will fail
+            # closed without exposing configuration values in this diagnostic.
+            ready["runtime_identity_error"] = type(exc).__name__
+        _emit(ready)
 
-    executor.shutdown()
-    node.destroy_node()
-    rclpy.shutdown()
+        serve_requests(
+            sys.stdin,
+            emit=_emit,
+            dispatch=lambda op, params: dispatch_request(node, op, params, watchdog),
+            touch_watchdog=watchdog.touch,
+        )
+    finally:
+        if watchdog_stop is not None:
+            watchdog_stop.set()
+        # The client is gone (EOF, shutdown, or request-loop failure). A robot
+        # still executing a goal must not keep driving unsupervised.
+        if node is not None and watchdog is not None:
+            with contextlib.suppress(Exception):
+                if node.nav_active:
+                    node.halt(watchdog.cmd_vel_topic, watchdog.stamped)
+        if executor is not None:
+            with contextlib.suppress(Exception):
+                executor.shutdown()
+        if node is not None:
+            with contextlib.suppress(Exception):
+                node.destroy_node()
+        if initialized:
+            with contextlib.suppress(Exception):
+                rclpy.shutdown()
 
 
 if __name__ == "__main__":

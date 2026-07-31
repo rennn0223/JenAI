@@ -47,7 +47,14 @@ def main() -> None:
         elif op == "pose":
             result = dict(pose)
             if req.get("fresh", False):
-                result.update(stamp_ns=time.monotonic_ns(), fresh_after_request=True)
+                initial_stamp_ns = time.monotonic_ns()
+                result.update(
+                    frame_id=req.get("frame_id", "map"),
+                    base_frame=req.get("base_frame", "base_link"),
+                    initial_stamp_ns=initial_stamp_ns,
+                    stamp_ns=initial_stamp_ns + 1,
+                    fresh_after_request=True,
+                )
             emit({"id": req_id, "ok": True, "result": result})
         elif op == "map_identity":
             emit(
