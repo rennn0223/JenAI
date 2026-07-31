@@ -15,7 +15,11 @@ from jenai.acceptance.nav_differential_runner import (
     DifferentialMode,
     ResetPolicy,
 )
-from jenai.config.models import AppConfig
+from jenai.adapters.locations import save_locations
+from jenai.config.models import AppConfig, SiteProfile
+from jenai.config.store import save_config
+from jenai.schemas import Location, Pose2D
+from jenai.site_assets import fingerprint_locations_file
 
 
 def _options(tmp_path: Path) -> DifferentialCaptureOptions:
@@ -166,3 +170,55 @@ def test_target_binding_rejects_non_navigate_capability_before_motion(
             goal=goal,
             locations_sha256="c" * 64,
         )
+
+
+def test_prepare_capture_marks_regular_saved_location_as_navigate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The documented non-dock preflight must bind the navigate capability."""
+
+    locations_path = tmp_path / "locations.toml"
+    location = Location(
+        name="map_left_down",
+        frame_id="map",
+        pose=Pose2D(x=-8.5, y=-7.5, yaw=0.785),
+    )
+    save_locations([location], locations_path)
+    locations_sha256 = fingerprint_locations_file(locations_path)
+    config_path = tmp_path / "config.toml"
+    save_config(
+        AppConfig(
+            deployment_mode="simulation",
+            route_adapter="nav2",
+            locations_path="locations.toml",
+            site=SiteProfile(
+                site_id="warehouse",
+                display_name="Warehouse",
+                active=True,
+                validated=True,
+                map_sha256="a" * 64,
+                map_frame="map",
+                locations_path="locations.toml",
+                locations_sha256=locations_sha256,
+                validated_routes=[location.name],
+            ),
+        ),
+        config_path,
+    )
+    monkeypatch.setattr(runner, "_runtime_identity", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "_apply_runtime_fingerprint", lambda identity: None)
+    options = DifferentialCaptureOptions(
+        output=tmp_path / "capture.json",
+        config_path=config_path,
+        location=location.name,
+        pair_id="pair-navigate-binding",
+        mode=DifferentialMode.R1_BRIDGE_NAV2,
+        simulation_epoch="epoch-navigate-binding",
+        reset_policy=ResetPolicy.FULL_CLEAN,
+    )
+
+    _path, _config, bound_action, _goal, _identity, binding = runner._prepare_capture(options)
+
+    assert bound_action["capability_id"] == "navigate"
+    assert binding.capability_id == "navigate"
