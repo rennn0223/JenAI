@@ -1,6 +1,6 @@
 # JenAI 現行 Runtime Workflow
 
-> 適用版本：v2.5.1
+> 適用版本：v2.6.0
 >
 > 目的：說明「整個系統如何運作」，供新進工程師與資深機器人工程師進行 Design Review。
 > 本文件不是逐檔程式碼導覽；逐檔閱讀請見 [CODE_TOUR](../CODE_TOUR.md)。

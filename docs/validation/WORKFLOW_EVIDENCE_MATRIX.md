@@ -1,6 +1,6 @@
 # Runtime Workflow Claim-to-Evidence Matrix
 
-> 適用版本：v2.5.1
+> 適用版本：v2.6.0
 >
 > 目的：把 [CURRENT_WORKFLOW](../workflow/CURRENT_WORKFLOW.md) 的主要產品主張對應到
 > 現行實作、回歸測試與 runtime 證據。

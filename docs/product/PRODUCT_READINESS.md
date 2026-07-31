@@ -20,6 +20,13 @@ JenAI v2.5.1 正式版是一個**受監督、具執行邊界的 ROS 2 高階決�
 
 v2.5.1 已於 2026-07-28（臺灣時間）發布。發布前留下的 dirty Isaac Sim／TUI 場次仍只證明當時的候選工作樹；發布完成不會把它們升格成 clean-revision HIL。完整閘門與限制見 `docs/releases/v2.5.1.md`、`docs/validation/ISAAC_HIL_ACCEPTANCE.md` 與 `docs/validation/TUI_LIVE_ACCEPTANCE_2026-07-26.md`。
 
+目前 source／package 版本是 **v2.6.0 未發布候選**，以 main@`21b1579f7cabf99f6b8c9cf95f16c48e2973ed38`
+為功能基線，內容只包含已合併的 NXDog 唯讀觀測（PR #132）與 first-run／WebUI operator
+lifecycle hardening（PR #133）。該 revision 的 [CI](https://github.com/rennn0223/JenAI/actions/runs/30558438907)
+與 [Supply Chain](https://github.com/rennn0223/JenAI/actions/runs/30558439036) 已通過；v2.6.0 tag、
+Release workflow、正式資產、checksum 與 attestations 尚未產生，因此 `published.json` 與公開
+安裝指引仍以 v2.5.1 為最近發布事實。
+
 ## 六角色驗收矩陣
 
 | ID | 角色 | 驗收條件 | 目前證據 | 狀態 | 關閉條件 |
