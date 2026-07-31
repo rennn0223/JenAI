@@ -57,6 +57,9 @@ class FakeNode:
     def unwatch(self, *args, **kwargs):
         return self._call("unwatch", *args, **kwargs)
 
+    def request_nomotion_update(self, *args, **kwargs):
+        return self._call("request_nomotion_update", *args, **kwargs)
+
 
 def test_protocol_ping_pose_and_map_cell_defaults() -> None:
     node = FakeNode()
@@ -213,9 +216,14 @@ def test_watchdog_config_prewarms_halt_publisher() -> None:
         (
             "watch",
             {"watch_id": 7, "topic": "/scan", "msg_type": "sensor_msgs/msg/LaserScan"},
-            ("watch", (7, "/scan", "sensor_msgs/msg/LaserScan", 1.0), {}),
+            ("watch", (7, "/scan", "sensor_msgs/msg/LaserScan", 1.0, "sensor_data"), {}),
         ),
         ("unwatch", {"watch_id": 7}, ("unwatch", (7,), {})),
+        (
+            "request_nomotion_update",
+            {},
+            ("request_nomotion_update", (), {}),
+        ),
     ],
 )
 def test_protocol_maps_remaining_ops(op, payload, expected) -> None:
@@ -224,6 +232,37 @@ def test_protocol_maps_remaining_ops(op, payload, expected) -> None:
     dispatch_request(node, op, payload, WatchdogState())
 
     assert node.calls == [expected]
+
+
+def test_protocol_passes_allowlisted_transient_local_watch_qos() -> None:
+    node = FakeNode()
+
+    dispatch_request(
+        node,
+        "watch",
+        {
+            "watch_id": 7,
+            "topic": "/amcl_pose",
+            "msg_type": "geometry_msgs/msg/PoseWithCovarianceStamped",
+            "throttle": 0.2,
+            "qos_profile": "transient_local",
+        },
+        WatchdogState(),
+    )
+
+    assert node.calls == [
+        (
+            "watch",
+            (
+                7,
+                "/amcl_pose",
+                "geometry_msgs/msg/PoseWithCovarianceStamped",
+                0.2,
+                "transient_local",
+            ),
+            {},
+        )
+    ]
 
 
 def test_protocol_rejects_unknown_operation() -> None:

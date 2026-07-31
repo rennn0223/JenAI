@@ -222,6 +222,7 @@ def _differential_state(
             "fresh": True,
             "schema_valid": True,
         },
+        "amcl_nomotion_update_acknowledged": True,
     }
 
 
@@ -615,7 +616,7 @@ def differential_artifact_factory():
         ]
         artifact: dict[str, object] = {
             "schema_version": 1,
-            "evidence_derivation_version": 2,
+            "evidence_derivation_version": 3,
             "run_id": f"run-{mode}",
             "pair_id": pair_id,
             "mode": mode,
@@ -643,15 +644,25 @@ def differential_artifact_factory():
             "runtime_identity": runtime_identity,
             "pose_observations": pose_observations,
             "topic_stream_contract": {
-                "clock": {"topic": "/clock", "message_type": "rosgraph_msgs/msg/Clock"},
+                "clock": {
+                    "topic": "/clock",
+                    "message_type": "rosgraph_msgs/msg/Clock",
+                    "qos_profile": "sensor_data",
+                },
                 "amcl": {
                     "topic": "/amcl_pose",
                     "message_type": "geometry_msgs/msg/PoseWithCovarianceStamped",
+                    "qos_profile": "transient_local",
                 },
-                "odom": {"topic": "/chassis/odom", "message_type": "nav_msgs/msg/Odometry"},
+                "odom": {
+                    "topic": "/chassis/odom",
+                    "message_type": "nav_msgs/msg/Odometry",
+                    "qos_profile": "sensor_data",
+                },
                 "action_status": {
                     "topic": "/navigate_to_pose/_action/status",
                     "message_type": "action_msgs/msg/GoalStatusArray",
+                    "qos_profile": "transient_local",
                 },
             },
             "checks": [],

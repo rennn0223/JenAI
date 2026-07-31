@@ -77,6 +77,65 @@ def _assert_ineligible(left: dict[str, Any], right: dict[str, Any]) -> None:
     assert report["classifications"] == [PairClassification.INSUFFICIENT_EVIDENCE]
 
 
+def _set_source_lead(artifact: dict[str, Any], lead_ns: int) -> None:
+    source_by_host = {35: 2_000_000_000 + lead_ns, 135: 4_000_000_000 + lead_ns}
+    for snapshot_name in ("topic_samples", "topic_samples_at_dispatch_end"):
+        streams = cast(dict[str, list[dict[str, Any]]], artifact[snapshot_name])
+        for stream_name in ("amcl", "odom"):
+            for sample in streams[stream_name][:2]:
+                host_ns = int(sample["host_monotonic_ns"])
+                stamp_ns = source_by_host[host_ns]
+                message = cast(dict[str, Any], sample["message"])
+                header = cast(dict[str, Any], message["header"])
+                header["stamp"] = {
+                    "sec": stamp_ns // 1_000_000_000,
+                    "nanosec": stamp_ns % 1_000_000_000,
+                }
+    timeline = cast(dict[str, Any], artifact["t1_goal_dispatch"])
+    states = [
+        cast(dict[str, Any], artifact["t0_scenario_start"]),
+        cast(dict[str, Any], timeline["state_before_forward"]),
+        cast(
+            dict[str, Any],
+            cast(list[dict[str, Any]], timeline["dispatch_observations"])[0][
+                "state_before_forward"
+            ],
+        ),
+    ]
+    for state in states:
+        capture_clock_ns = int(cast(dict[str, Any], state["amcl_source"])["capture_clock_ns"])
+        for source_name in ("amcl_source", "odom_source"):
+            source = cast(dict[str, Any], state[source_name])
+            source["source_stamp_ns"] = capture_clock_ns + lead_ns
+            source["source_age_ns"] = -lead_ns
+
+
+def _mark_idle_status_windows(artifact: dict[str, Any]) -> None:
+    for snapshot_name in ("topic_samples", "topic_samples_at_dispatch_end"):
+        streams = cast(dict[str, list[dict[str, Any]]], artifact[snapshot_name])
+        streams["action_status"] = [
+            sample for sample in streams["action_status"] if int(sample["host_monotonic_ns"]) > 140
+        ]
+    timeline = cast(dict[str, Any], artifact["t1_goal_dispatch"])
+    states = [
+        cast(dict[str, Any], artifact["t0_scenario_start"]),
+        cast(dict[str, Any], timeline["state_before_forward"]),
+        cast(
+            dict[str, Any],
+            cast(list[dict[str, Any]], timeline["dispatch_observations"])[0][
+                "state_before_forward"
+            ],
+        ),
+    ]
+    for state in states:
+        state["action_status_source"] = {
+            "fresh": True,
+            "observation": "no_status_observed",
+            "cutoff_host_monotonic_ns": state["cutoff_host_monotonic_ns"],
+            "evaluated_host_monotonic_ns": state["evaluated_host_monotonic_ns"],
+        }
+
+
 def test_complete_raw_backed_pair_remains_comparison_eligible(
     differential_artifact_factory: ArtifactFactory,
 ) -> None:
@@ -85,6 +144,27 @@ def test_complete_raw_backed_pair_remains_comparison_eligible(
     report = compare_differential_artifacts(left, right)
 
     assert report["included"] is True
+
+
+def test_comparison_accepts_bounded_future_source_lead(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    _set_source_lead(left, 100_000_000)
+    _set_source_lead(right, 100_000_000)
+
+    report = compare_differential_artifacts(left, right)
+
+    assert report["included"] is True
+
+
+def test_comparison_rejects_future_source_lead_beyond_sample_interval(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    _set_source_lead(left, 300_000_000)
+
+    _assert_ineligible(left, right)
 
 
 def test_comparison_rejects_missing_raw_evidence(
@@ -101,6 +181,80 @@ def test_comparison_rejects_unknown_evidence_derivation_version(
 ) -> None:
     left, right = _artifact_pair(differential_artifact_factory)
     left["evidence_derivation_version"] = None
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_rejects_missing_nomotion_acknowledgement(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    state = cast(dict[str, Any], left["t0_scenario_start"])
+    state.pop("amcl_nomotion_update_acknowledged")
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_rejects_tampered_action_status_qos_contract(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    streams = cast(dict[str, dict[str, Any]], left["topic_stream_contract"])
+    streams["action_status"]["qos_profile"] = "sensor_data"
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_accepts_idle_status_absence_only_for_observed_windows(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    for artifact in (left, right):
+        cast(dict[str, Any], artifact["measurement_contract"])["preflight_sample_s"] = 1e-8
+        _mark_idle_status_windows(artifact)
+
+    report = compare_differential_artifacts(left, right)
+
+    assert report["included"] is True
+
+
+def test_comparison_rejects_idle_marker_when_status_was_observed_in_window(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    state = cast(dict[str, Any], left["t0_scenario_start"])
+    state["action_status_source"] = {
+        "fresh": True,
+        "observation": "no_status_observed",
+        "cutoff_host_monotonic_ns": state["cutoff_host_monotonic_ns"],
+        "evaluated_host_monotonic_ns": state["evaluated_host_monotonic_ns"],
+    }
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_rejects_idle_marker_when_status_was_observed_before_cutoff(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    _mark_idle_status_windows(left)
+    streams = cast(dict[str, list[dict[str, Any]]], left["topic_samples_at_dispatch_end"])
+    stale = {
+        "host_monotonic_ns": 5,
+        "message": {"status_list": []},
+    }
+    streams["action_status"].insert(0, stale)
+    full = cast(dict[str, list[dict[str, Any]]], left["topic_samples"])
+    full["action_status"].insert(0, stale.copy())
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_rejects_idle_marker_without_full_preflight_duration(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    _mark_idle_status_windows(left)
 
     _assert_ineligible(left, right)
 

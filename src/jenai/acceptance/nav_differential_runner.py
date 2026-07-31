@@ -336,7 +336,7 @@ class DifferentialArtifact(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     schema_version: Literal[1] = 1
-    evidence_derivation_version: Literal[2] | None = None
+    evidence_derivation_version: Literal[3] | None = None
     run_id: str = Field(min_length=1)
     pair_id: str = Field(min_length=1)
     mode: DifferentialMode
@@ -1338,6 +1338,7 @@ def _topic_sample_evidence(
     clock: _TopicRecorder,
     *,
     max_age_s: float,
+    max_future_s: float = 0.0,
     current_host_monotonic_ns: int | None = None,
 ) -> dict[str, Any]:
     host_ns = sample.get("host_monotonic_ns")
@@ -1355,9 +1356,10 @@ def _topic_sample_evidence(
     )
     host_age_ns = evaluated_host_ns - host_ns
     max_age_ns = int(max_age_s * 1_000_000_000)
+    max_future_ns = int(max_future_s * 1_000_000_000)
     fresh = (
         source_age_ns is not None
-        and 0 <= source_age_ns <= max_age_ns
+        and -max_future_ns <= source_age_ns <= max_age_ns
         and 0 <= host_age_ns <= max_age_ns
     )
     return {
@@ -1377,6 +1379,7 @@ def _latest_topic_evidence(
     clock: _TopicRecorder,
     *,
     max_age_s: float,
+    max_future_s: float = 0.0,
     cutoff_host_monotonic_ns: int,
     current_host_monotonic_ns: int,
 ) -> dict[str, Any] | None:
@@ -1394,6 +1397,7 @@ def _latest_topic_evidence(
         candidates[-1],
         clock,
         max_age_s=max_age_s,
+        max_future_s=max_future_s,
         current_host_monotonic_ns=current_host_monotonic_ns,
     )
 
@@ -1405,9 +1409,15 @@ def _window_topic_evidence(
     start_host_ns: int,
     end_host_ns: int,
     max_age_s: float,
+    max_future_s: float = 0.0,
 ) -> list[dict[str, Any]]:
     return [
-        _topic_sample_evidence(sample, clock, max_age_s=max_age_s)
+        _topic_sample_evidence(
+            sample,
+            clock,
+            max_age_s=max_age_s,
+            max_future_s=max_future_s,
+        )
         for sample in recorder.samples
         if type(sample.get("host_monotonic_ns")) is int
         and start_host_ns <= int(sample["host_monotonic_ns"]) <= end_host_ns
@@ -1631,6 +1641,7 @@ def _ground_truth_state_evidence(
     calibration: GroundTruthCalibration | None,
     *,
     max_age_s: float,
+    max_future_s: float,
     cutoff_host_monotonic_ns: int,
     current_host_monotonic_ns: int,
 ) -> tuple[dict[str, Any], bool]:
@@ -1648,6 +1659,7 @@ def _ground_truth_state_evidence(
         ground_truth,
         clock,
         max_age_s=max_age_s,
+        max_future_s=max_future_s,
         cutoff_host_monotonic_ns=cutoff_host_monotonic_ns,
         current_host_monotonic_ns=current_host_monotonic_ns,
     )
@@ -1704,6 +1716,40 @@ def _fresh_message(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
     return cast(dict[str, Any], evidence["message"])
 
 
+def _action_status_window_evidence(
+    action_status: _TopicRecorder,
+    *,
+    max_age_s: float,
+    cutoff_host_ns: int,
+    evaluated_host_ns: int,
+    observation_ready: bool,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
+    evidence = _latest_action_status_evidence(
+        action_status,
+        max_age_s=max_age_s,
+        cutoff_host_monotonic_ns=cutoff_host_ns,
+        current_host_monotonic_ns=evaluated_host_ns,
+    )
+    samples_observed_before_evaluation = [
+        sample
+        for sample in action_status.samples
+        if type(sample.get("host_monotonic_ns")) is int
+        and int(sample["host_monotonic_ns"]) <= evaluated_host_ns
+    ]
+    no_status_observed = observation_ready and not samples_observed_before_evaluation
+    source = (
+        {
+            "fresh": True,
+            "observation": "no_status_observed",
+            "cutoff_host_monotonic_ns": cutoff_host_ns,
+            "evaluated_host_monotonic_ns": evaluated_host_ns,
+        }
+        if no_status_observed
+        else _source_metadata(evidence)
+    )
+    return evidence, source, no_status_observed
+
+
 def _initial_state(
     *,
     pose: Pose2D | None,
@@ -1717,6 +1763,8 @@ def _initial_state(
     calibration: GroundTruthCalibration | None = None,
     cutoff_host_monotonic_ns: int | None = None,
     current_host_monotonic_ns: int | None = None,
+    action_status_observation_ready: bool = False,
+    nomotion_update_acknowledged: bool = False,
 ) -> dict[str, Any]:
     evaluated_host_ns = current_host_monotonic_ns or time.monotonic_ns()
     max_age_ns = int(options.max_topic_age_s * 1_000_000_000)
@@ -1731,6 +1779,7 @@ def _initial_state(
         amcl,
         clock,
         max_age_s=options.max_topic_age_s,
+        max_future_s=options.sample_interval_s,
         cutoff_host_monotonic_ns=cutoff_host_ns,
         current_host_monotonic_ns=evaluated_host_ns,
     )
@@ -1738,14 +1787,16 @@ def _initial_state(
         odom,
         clock,
         max_age_s=options.max_topic_age_s,
+        max_future_s=options.sample_interval_s,
         cutoff_host_monotonic_ns=cutoff_host_ns,
         current_host_monotonic_ns=evaluated_host_ns,
     )
-    action_evidence = _latest_action_status_evidence(
+    action_evidence, action_source, no_status_observed = _action_status_window_evidence(
         action_status,
         max_age_s=options.max_topic_age_s,
-        cutoff_host_monotonic_ns=cutoff_host_ns,
-        current_host_monotonic_ns=evaluated_host_ns,
+        cutoff_host_ns=cutoff_host_ns,
+        evaluated_host_ns=evaluated_host_ns,
+        observation_ready=action_status_observation_ready,
     )
     amcl_message = _fresh_message(amcl_evidence)
     odom_message = _fresh_message(odom_evidence)
@@ -1757,9 +1808,8 @@ def _initial_state(
     amcl_pose = _pose_from_message(amcl_message) if amcl_message else None
     odom_pose = _pose_from_message(odom_message, odometry=True) if odom_message else None
     clock_advancing = len(clock_values) >= 2 and clock_values[-1] > clock_values[0]
-    clock_backwards = any(
-        right < left for left, right in zip(clock_values, clock_values[1:], strict=False)
-    )
+    clock_pairs = zip(clock_values, clock_values[1:], strict=False)
+    clock_backwards = any(right < left for left, right in clock_pairs)
     stationary = (
         velocity is not None
         and velocity[0] <= options.max_start_speed_mps
@@ -1770,6 +1820,7 @@ def _initial_state(
         clock,
         calibration,
         max_age_s=options.max_topic_age_s,
+        max_future_s=options.sample_interval_s,
         cutoff_host_monotonic_ns=cutoff_host_ns,
         current_host_monotonic_ns=evaluated_host_ns,
     )
@@ -1782,14 +1833,16 @@ def _initial_state(
         covariance=covariance,
         odom_fresh=odom_evidence is not None and odom_evidence.get("fresh") is True,
         odom_valid=odom_pose is not None and velocity is not None,
-        action_status_fresh=(action_evidence is not None and action_evidence.get("fresh") is True),
+        action_status_fresh=(action_evidence is not None and action_evidence.get("fresh") is True)
+        or no_status_observed,
         stationary=stationary,
         active_goals=active_goals,
         max_covariance_xy=options.max_covariance_xy,
     )
     if ground_truth_fields["ground_truth_required"] is True and not ground_truth_valid:
         failures.append("ground_truth_start_evidence")
-
+    if not nomotion_update_acknowledged:
+        failures.append("amcl_nomotion_update_unacknowledged")
     failures = list(dict.fromkeys(failures))
     return {
         "status": "PASS" if not failures else "FAIL",
@@ -1804,7 +1857,8 @@ def _initial_state(
         "amcl_source": _source_metadata(amcl_evidence),
         "odom_pose": odom_pose.model_dump(mode="json") if odom_pose else None,
         "odom_source": _source_metadata(odom_evidence),
-        "action_status_source": _source_metadata(action_evidence),
+        "action_status_source": action_source,
+        "amcl_nomotion_update_acknowledged": nomotion_update_acknowledged,
         "linear_velocity_mps": velocity[0] if velocity else None,
         "angular_velocity_rps": velocity[1] if velocity else None,
         "stationary": stationary,
@@ -1822,15 +1876,17 @@ def _topic_stream_specs(
     options: DifferentialCaptureOptions,
     *,
     odom_topic: str,
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, str]]:
     specs = [
-        ("clock", _CLOCK_TOPIC, _CLOCK_TYPE),
-        ("amcl", _AMCL_TOPIC, _AMCL_TYPE),
-        ("odom", odom_topic, _ODOM_TYPE),
-        ("action_status", _ACTION_STATUS_TOPIC, _ACTION_STATUS_TYPE),
+        ("clock", _CLOCK_TOPIC, _CLOCK_TYPE, "sensor_data"),
+        ("amcl", _AMCL_TOPIC, _AMCL_TYPE, "transient_local"),
+        ("odom", odom_topic, _ODOM_TYPE, "sensor_data"),
+        ("action_status", _ACTION_STATUS_TOPIC, _ACTION_STATUS_TYPE, "transient_local"),
     ]
     if options.ground_truth_topic:
-        specs.append(("ground_truth", options.ground_truth_topic, options.ground_truth_type))
+        specs.append(
+            ("ground_truth", options.ground_truth_topic, options.ground_truth_type, "sensor_data")
+        )
     return specs
 
 
@@ -1842,13 +1898,16 @@ async def _watch_topics(
     odom_topic: str,
 ) -> list[int]:
     watch_ids: list[int] = []
-    for key, topic, message_type in _topic_stream_specs(options, odom_topic=odom_topic):
+    for key, topic, message_type, qos_profile in _topic_stream_specs(
+        options, odom_topic=odom_topic
+    ):
         watch_ids.append(
             await bridge.watch(
                 topic,
                 message_type,
                 recorders[key].record,
                 throttle=options.sample_interval_s,
+                qos_profile=qos_profile,
             )
         )
     return watch_ids
@@ -2508,6 +2567,7 @@ def _project_final_streams(
     start_clock_ns: int | None,
     end_clock_ns: int | None,
     max_topic_age_s: float,
+    max_future_source_lead_s: float,
     max_covariance_xy: float,
     max_speed_mps: float,
     max_yaw_rate_rps: float,
@@ -2524,6 +2584,7 @@ def _project_final_streams(
         start_host_ns=start_host_ns,
         end_host_ns=end_host_ns,
         max_age_s=max_topic_age_s,
+        max_future_s=max_future_source_lead_s,
     )
     odom_samples = _window_topic_evidence(
         recorders["odom"],
@@ -2531,6 +2592,7 @@ def _project_final_streams(
         start_host_ns=start_host_ns,
         end_host_ns=end_host_ns,
         max_age_s=max_topic_age_s,
+        max_future_s=max_future_source_lead_s,
     )
     ground_truth_recorder = recorders.get("ground_truth")
     raw_ground_truth = (
@@ -2540,6 +2602,7 @@ def _project_final_streams(
             start_host_ns=start_host_ns,
             end_host_ns=end_host_ns,
             max_age_s=max_topic_age_s,
+            max_future_s=max_future_source_lead_s,
         )
         if ground_truth_recorder is not None
         else []
@@ -2634,6 +2697,7 @@ async def _sample_final_observation_window(
         start_clock_ns=start_clock_ns,
         end_clock_ns=end_clock_ns,
         max_topic_age_s=options.max_topic_age_s,
+        max_future_source_lead_s=options.sample_interval_s,
         max_covariance_xy=options.max_covariance_xy,
         max_speed_mps=options.max_start_speed_mps,
         max_yaw_rate_rps=options.max_start_yaw_rate_rps,
@@ -3267,7 +3331,7 @@ def _measurement_contract(
 def _base_artifact(options: DifferentialCaptureOptions) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "evidence_derivation_version": 2,
+        "evidence_derivation_version": 3,
         "run_id": f"nav-diff-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:8]}",
         "pair_id": options.pair_id,
         "mode": options.mode,
@@ -3409,6 +3473,7 @@ async def _collect_start_state(
     pose_observations: _PoseObservationRecorder,
 ) -> dict[str, Any]:
     cutoff_host_ns = time.monotonic_ns()
+    nomotion_acknowledged = await bridge.request_nomotion_update()
     await asyncio.sleep(options.preflight_sample_s)
     return await _collect_dispatch_state(
         bridge,
@@ -3419,6 +3484,7 @@ async def _collect_start_state(
         pose_observations,
         purpose=PoseLookupPurpose.T0_START,
         cutoff_host_monotonic_ns=cutoff_host_ns,
+        nomotion_update_acknowledged=nomotion_acknowledged,
     )
 
 
@@ -3432,6 +3498,7 @@ async def _collect_dispatch_state(
     *,
     purpose: PoseLookupPurpose,
     cutoff_host_monotonic_ns: int,
+    nomotion_update_acknowledged: bool,
 ) -> dict[str, Any]:
     start_pose, observation_id, _ = await pose_observations.capture(
         bridge,
@@ -3452,6 +3519,8 @@ async def _collect_dispatch_state(
         ground_truth=recorders["ground_truth"],
         calibration=calibration,
         cutoff_host_monotonic_ns=cutoff_host_monotonic_ns,
+        action_status_observation_ready=True,
+        nomotion_update_acknowledged=nomotion_update_acknowledged,
     )
 
 
@@ -3658,6 +3727,7 @@ def _pre_dispatch_observer(
         invoked_ns: int,
     ) -> dict[str, Any]:
         del actual_goal, tag
+        nomotion_acknowledged = await bridge.request_nomotion_update()
         await asyncio.sleep(options.preflight_sample_s)
         state = await _collect_dispatch_state(
             bridge,
@@ -3668,6 +3738,7 @@ def _pre_dispatch_observer(
             pose_observations,
             purpose=PoseLookupPurpose.T1_PRE_DISPATCH,
             cutoff_host_monotonic_ns=invoked_ns,
+            nomotion_update_acknowledged=nomotion_acknowledged,
         )
         input_continuity = _capture_input_continuity(identity)
         map_checkpoint = await _capture_map_identity_checkpoint(
@@ -4444,8 +4515,10 @@ async def _capture_live_path(
     resources.stage = "topic_watch"
     odom_topic = str(identity["controller_odom_topic"])
     artifact["topic_stream_contract"] = {
-        key: {"topic": topic, "message_type": message_type}
-        for key, topic, message_type in _topic_stream_specs(options, odom_topic=odom_topic)
+        key: {"topic": topic, "message_type": message_type, "qos_profile": qos_profile}
+        for key, topic, message_type, qos_profile in _topic_stream_specs(
+            options, odom_topic=odom_topic
+        )
     }
     recorders = {
         key: _TopicRecorder() for key in ("clock", "amcl", "odom", "action_status", "ground_truth")
@@ -4700,6 +4773,7 @@ def _valid_topic_source(
     value: object,
     *,
     max_age_ns: int,
+    max_future_ns: int,
     cutoff_ns: int | None,
     evaluated_ns: int | None,
 ) -> bool:
@@ -4724,7 +4798,7 @@ def _valid_topic_source(
         and cutoff_ns <= host_ns <= evaluated_ns
         and host_age_ns == evaluated_ns - host_ns
         and 0 <= host_age_ns <= max_age_ns
-        and 0 <= source_age_ns <= max_age_ns
+        and -max_future_ns <= source_age_ns <= max_age_ns
         and int(value["capture_clock_ns"]) - int(value["source_stamp_ns"]) == source_age_ns
     )
 
@@ -4733,9 +4807,26 @@ def _valid_action_source(
     value: object,
     *,
     max_age_ns: int,
+    min_observation_ns: int,
     cutoff_ns: int | None,
     evaluated_ns: int | None,
 ) -> bool:
+    if isinstance(value, dict) and value.get("observation") == "no_status_observed":
+        return (
+            set(value)
+            == {
+                "fresh",
+                "observation",
+                "cutoff_host_monotonic_ns",
+                "evaluated_host_monotonic_ns",
+            }
+            and value.get("fresh") is True
+            and cutoff_ns is not None
+            and evaluated_ns is not None
+            and value.get("cutoff_host_monotonic_ns") == cutoff_ns
+            and cutoff_ns <= evaluated_ns
+            and evaluated_ns - cutoff_ns >= min_observation_ns
+        )
     host_ns = value.get("host_monotonic_ns") if isinstance(value, dict) else None
     host_age_ns = value.get("host_age_ns") if isinstance(value, dict) else None
     return (
@@ -4757,6 +4848,7 @@ def _ground_truth_state_checks(
     calibration: GroundTruthCalibration | None,
     *,
     max_age_ns: int,
+    max_future_ns: int,
     cutoff_ns: int | None,
     evaluated_ns: int | None,
     label: str,
@@ -4785,6 +4877,7 @@ def _ground_truth_state_checks(
             not _valid_topic_source(
                 state.get("ground_truth_source"),
                 max_age_ns=max_age_ns,
+                max_future_ns=max_future_ns,
                 cutoff_ns=cutoff_ns,
                 evaluated_ns=evaluated_ns,
             ),
@@ -4815,6 +4908,8 @@ def _state_evidence_failures(
     if not isinstance(state, dict):
         return [f"{label}_missing"]
     max_age_ns = int(contract.max_topic_age_s * 1_000_000_000)
+    max_future_ns = int(contract.sample_interval_s * 1_000_000_000)
+    min_observation_ns = int(contract.preflight_sample_s * 1_000_000_000)
     linear_velocity = state.get("linear_velocity_mps")
     angular_velocity = state.get("angular_velocity_rps")
     evaluated_ns = state.get("evaluated_host_monotonic_ns")
@@ -4853,6 +4948,7 @@ def _state_evidence_failures(
             not _valid_topic_source(
                 state.get("amcl_source"),
                 max_age_ns=max_age_ns,
+                max_future_ns=max_future_ns,
                 cutoff_ns=typed_cutoff_ns,
                 evaluated_ns=typed_evaluated_ns,
             ),
@@ -4862,6 +4958,7 @@ def _state_evidence_failures(
             not _valid_topic_source(
                 state.get("odom_source"),
                 max_age_ns=max_age_ns,
+                max_future_ns=max_future_ns,
                 cutoff_ns=typed_cutoff_ns,
                 evaluated_ns=typed_evaluated_ns,
             ),
@@ -4871,6 +4968,7 @@ def _state_evidence_failures(
             not _valid_action_source(
                 state.get("action_status_source"),
                 max_age_ns=max_age_ns,
+                min_observation_ns=min_observation_ns,
                 cutoff_ns=typed_cutoff_ns,
                 evaluated_ns=typed_evaluated_ns,
             ),
@@ -4886,6 +4984,7 @@ def _state_evidence_failures(
             state,
             ground_truth_calibration,
             max_age_ns=max_age_ns,
+            max_future_ns=max_future_ns,
             cutoff_ns=typed_cutoff_ns,
             evaluated_ns=typed_evaluated_ns,
             label=label,
@@ -5827,12 +5926,13 @@ def _raw_stream_recorder(
     samples: object,
     *,
     required: bool,
+    allow_empty: bool,
     label: str,
     stream: str,
 ) -> tuple[_TopicRecorder | None, str | None]:
     if not required and samples is None:
         return None, None
-    if not isinstance(samples, list) or not samples:
+    if not isinstance(samples, list) or (not samples and not allow_empty):
         return None, f"{label}_{stream}_missing"
     valid_samples: list[dict[str, Any]] = []
     for sample in samples:
@@ -5857,6 +5957,7 @@ def _raw_topic_recorders(
     *,
     required_streams: set[str],
     optional_streams: set[str] | None = None,
+    allow_empty_streams: set[str] | None = None,
     label: str,
 ) -> tuple[dict[str, _TopicRecorder] | None, list[str]]:
     if not isinstance(value, dict):
@@ -5867,6 +5968,7 @@ def _raw_topic_recorders(
         recorder, failure = _raw_stream_recorder(
             value.get(stream),
             required=stream in required_streams,
+            allow_empty=stream in (allow_empty_streams or set()),
             label=label,
             stream=stream,
         )
@@ -5971,6 +6073,11 @@ def _rederived_state(
         calibration=ground_truth_calibration,
         cutoff_host_monotonic_ns=cutoff,
         current_host_monotonic_ns=evaluated,
+        action_status_observation_ready=(
+            isinstance(stored.get("action_status_source"), dict)
+            and stored["action_status_source"].get("observation") == "no_status_observed"
+        ),
+        nomotion_update_acknowledged=(stored.get("amcl_nomotion_update_acknowledged") is True),
     )
 
 
@@ -6392,6 +6499,7 @@ def _raw_final_window_failures(
         start_clock_ns=typed_start_clock,
         end_clock_ns=typed_end_clock,
         max_topic_age_s=contract.max_topic_age_s,
+        max_future_source_lead_s=contract.sample_interval_s,
         max_covariance_xy=contract.max_covariance_xy,
         max_speed_mps=contract.max_start_speed_mps,
         max_yaw_rate_rps=contract.max_start_yaw_rate_rps,
@@ -6476,7 +6584,7 @@ def _raw_evidence_failures(
     goal: CanonicalGoal,
     ground_truth_calibration: GroundTruthCalibration | None,
 ) -> list[str]:
-    if artifact.get("evidence_derivation_version") != 2:
+    if artifact.get("evidence_derivation_version") != 3:
         return ["evidence_derivation_version"]
     pose_observations, pose_failures = _validated_pose_observation_index(artifact)
     if pose_observations is None:
@@ -6486,18 +6594,32 @@ def _raw_evidence_failures(
     identity = artifact.get("runtime_identity")
     odom_topic = identity.get("controller_odom_topic") if isinstance(identity, dict) else None
     expected_streams: dict[str, dict[str, str | None]] = {
-        "clock": {"topic": _CLOCK_TOPIC, "message_type": _CLOCK_TYPE},
-        "amcl": {"topic": _AMCL_TOPIC, "message_type": _AMCL_TYPE},
-        "odom": {"topic": odom_topic, "message_type": _ODOM_TYPE},
+        "clock": {
+            "topic": _CLOCK_TOPIC,
+            "message_type": _CLOCK_TYPE,
+            "qos_profile": "sensor_data",
+        },
+        "amcl": {
+            "topic": _AMCL_TOPIC,
+            "message_type": _AMCL_TYPE,
+            "qos_profile": "transient_local",
+        },
+        "odom": {
+            "topic": odom_topic,
+            "message_type": _ODOM_TYPE,
+            "qos_profile": "sensor_data",
+        },
         "action_status": {
             "topic": _ACTION_STATUS_TOPIC,
             "message_type": _ACTION_STATUS_TYPE,
+            "qos_profile": "transient_local",
         },
     }
     if contract.ground_truth_topic is not None:
         expected_streams["ground_truth"] = {
             "topic": contract.ground_truth_topic,
             "message_type": contract.ground_truth_type,
+            "qos_profile": "sensor_data",
         }
     contract_failures = (
         []
@@ -6514,6 +6636,7 @@ def _raw_evidence_failures(
         artifact.get("topic_samples"),
         required_streams=required,
         optional_streams=optional,
+        allow_empty_streams={"action_status"},
         label="raw_topic_samples",
     )
     failures.extend(contract_failures)
@@ -6522,6 +6645,7 @@ def _raw_evidence_failures(
         artifact.get("topic_samples_at_dispatch_end"),
         required_streams=required,
         optional_streams=optional,
+        allow_empty_streams={"action_status"},
         label="dispatch_topic_samples",
     )
     failures.extend(dispatch_failures)
