@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from jenai.adapters.locations import save_locations
+from jenai.adapters.locations import load_locations_snapshot, save_locations
 from jenai.config.models import AppConfig, PatrolAreaProfile, SiteProfile
 from jenai.schemas import Location, Pose2D
 from jenai.site_assets import (
@@ -117,6 +117,71 @@ def test_navigation_action_is_bound_to_validated_location_content(tmp_path: Path
     tampered["goal"]["pose"]["x"] = 9.0
     with pytest.raises(SiteAssetError, match="does not match"):
         bind_navigation_action(config, tmp_path / "config.toml", tampered)
+
+
+def test_navigation_binding_can_reuse_the_reviewed_locations_snapshot(tmp_path: Path) -> None:
+    locations_path = tmp_path / "locations.toml"
+    reviewed = Location(
+        name="Reviewed Goal",
+        frame_id="map",
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.25),
+    )
+    save_locations([reviewed], locations_path)
+    snapshot = load_locations_snapshot(locations_path)
+    config = AppConfig(
+        locations_path="locations.toml",
+        site=_active_site(
+            locations_path="locations.toml",
+            locations_sha256=snapshot.sha256,
+            validated_routes=[reviewed.name],
+        ),
+    )
+    save_locations(
+        [reviewed.model_copy(update={"pose": Pose2D(x=9.0, y=9.0, yaw=0.25)})],
+        locations_path,
+    )
+
+    bound = bind_navigation_action(
+        config,
+        tmp_path / "config.toml",
+        {"capability_id": "navigate", "goal": reviewed.model_dump(mode="json")},
+        locations_snapshot=snapshot,
+    )
+
+    assert bound["goal"] == reviewed.model_dump(mode="json")
+    with pytest.raises(SiteAssetError, match="Locations identity mismatch"):
+        bind_navigation_action(
+            config,
+            tmp_path / "config.toml",
+            {"capability_id": "navigate", "goal": reviewed.model_dump(mode="json")},
+        )
+
+
+def test_navigation_binding_rejects_snapshot_from_another_locations_path(
+    tmp_path: Path,
+) -> None:
+    expected_path = tmp_path / "locations.toml"
+    other_path = tmp_path / "other.toml"
+    goal = Location(name="Goal", pose=Pose2D(x=1.0, y=2.0, yaw=0.0))
+    save_locations([goal], expected_path)
+    save_locations([goal], other_path)
+    snapshot = load_locations_snapshot(other_path)
+    config = AppConfig(
+        locations_path="locations.toml",
+        site=_active_site(
+            locations_path="locations.toml",
+            locations_sha256=snapshot.sha256,
+            validated_routes=[goal.name],
+        ),
+    )
+
+    with pytest.raises(SiteAssetError, match="different locations path"):
+        bind_navigation_action(
+            config,
+            tmp_path / "config.toml",
+            {"capability_id": "navigate", "goal": goal.model_dump(mode="json")},
+            locations_snapshot=snapshot,
+        )
 
 
 def test_patrol_area_profiles_are_typed_and_unique() -> None:

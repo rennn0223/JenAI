@@ -5,10 +5,12 @@ from __future__ import annotations
 from jenai.config.models import AppConfig, ProviderProfile
 from jenai.config.store import (
     ConfigError,
+    ConfigSnapshot,
     EnvFileResult,
     default_config_path,
     default_env_file_path,
     load_config,
+    load_config_snapshot,
     load_env_file,
     save_config,
 )
@@ -16,11 +18,13 @@ from jenai.config.store import (
 __all__ = [
     "AppConfig",
     "ConfigError",
+    "ConfigSnapshot",
     "EnvFileResult",
     "ProviderProfile",
     "default_config_path",
     "default_env_file_path",
     "load_config",
+    "load_config_snapshot",
     "load_env_file",
     "save_config",
 ]

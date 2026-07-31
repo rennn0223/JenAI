@@ -1390,50 +1390,64 @@ def _watchdog_loop(node: BridgeNode, state: WatchdogState, stop: threading.Event
 
 
 def main() -> None:
-    rclpy.init()
-    node = BridgeNode()
-    executor = MultiThreadedExecutor(num_threads=4)
-    executor.add_node(node)
-    spin = threading.Thread(target=executor.spin, daemon=True)
-    spin.start()
-
-    watchdog = WatchdogState()
-    watchdog_stop = threading.Event()
-    threading.Thread(
-        target=_watchdog_loop, args=(node, watchdog, watchdog_stop), daemon=True
-    ).start()
-
-    ready: WirePayload = {"event": "ready"}
+    node: BridgeNode | None = None
+    executor: MultiThreadedExecutor | None = None
+    watchdog: WatchdogState | None = None
+    watchdog_stop: threading.Event | None = None
+    initialized = False
     try:
-        ready["runtime_identity"] = build_runtime_identity_payload(
-            effective_rmw=get_rmw_implementation_identifier(),
-        )
-    except Exception as exc:
-        # The bridge remains backward-compatible for normal callers.  The
-        # differential harness explicitly requires identity and will fail
-        # closed without exposing configuration values in this diagnostic.
-        ready["runtime_identity_error"] = type(exc).__name__
-    _emit(ready)
+        rclpy.init()
+        initialized = True
+        node = BridgeNode()
+        executor = MultiThreadedExecutor(num_threads=4)
+        executor.add_node(node)
+        spin = threading.Thread(target=executor.spin, daemon=True)
+        spin.start()
 
-    serve_requests(
-        sys.stdin,
-        emit=_emit,
-        dispatch=lambda op, params: dispatch_request(node, op, params, watchdog),
-        touch_watchdog=watchdog.touch,
-    )
+        watchdog = WatchdogState()
+        watchdog_stop = threading.Event()
+        threading.Thread(
+            target=_watchdog_loop,
+            args=(node, watchdog, watchdog_stop),
+            daemon=True,
+        ).start()
 
-    watchdog_stop.set()
-    # The client is gone (EOF or shutdown). A robot still executing a goal must
-    # not keep driving unsupervised — same contract as the in-band watchdog.
-    if node.nav_active:
+        ready: WirePayload = {"event": "ready"}
         try:
-            node.halt(watchdog.cmd_vel_topic, watchdog.stamped)
-        except Exception:
-            pass
+            ready["runtime_identity"] = build_runtime_identity_payload(
+                effective_rmw=get_rmw_implementation_identifier(),
+            )
+        except Exception as exc:
+            # The bridge remains backward-compatible for normal callers.  The
+            # differential harness explicitly requires identity and will fail
+            # closed without exposing configuration values in this diagnostic.
+            ready["runtime_identity_error"] = type(exc).__name__
+        _emit(ready)
 
-    executor.shutdown()
-    node.destroy_node()
-    rclpy.shutdown()
+        serve_requests(
+            sys.stdin,
+            emit=_emit,
+            dispatch=lambda op, params: dispatch_request(node, op, params, watchdog),
+            touch_watchdog=watchdog.touch,
+        )
+    finally:
+        if watchdog_stop is not None:
+            watchdog_stop.set()
+        # The client is gone (EOF, shutdown, or request-loop failure). A robot
+        # still executing a goal must not keep driving unsupervised.
+        if node is not None and watchdog is not None:
+            with contextlib.suppress(Exception):
+                if node.nav_active:
+                    node.halt(watchdog.cmd_vel_topic, watchdog.stamped)
+        if executor is not None:
+            with contextlib.suppress(Exception):
+                executor.shutdown()
+        if node is not None:
+            with contextlib.suppress(Exception):
+                node.destroy_node()
+        if initialized:
+            with contextlib.suppress(Exception):
+                rclpy.shutdown()
 
 
 if __name__ == "__main__":

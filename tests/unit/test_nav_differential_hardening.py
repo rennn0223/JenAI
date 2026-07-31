@@ -310,6 +310,7 @@ def _artifact(*, mode: str, canonical_x: float, actual_x: float) -> dict[str, An
         "measurement_contract": {
             "preflight_sample_s": 1.0,
             "final_sample_s": 2.0,
+            "final_window_start_delay_s": 0.0,
             "sample_interval_s": 0.2,
             "max_topic_age_s": 1.0,
             "max_calibration_residual_m": 0.02,
@@ -556,6 +557,9 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
     middleware = {
         "schema_version": 1,
         "pid": 4242,
+        "launch_nonce": "a" * 32,
+        "boot_id": "12345678-1234-5678-1234-567812345678",
+        "process_start_ticks": 12345,
         "rmw_implementation_requested": "rmw_fastrtps_cpp",
         "rmw_implementation_effective": "rmw_fastrtps_cpp",
         "python_executable": "/usr/bin/python3.12",
@@ -564,6 +568,8 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
         "dds_config_mode": "middleware_default",
         "dds_bindings": {},
         "dds_config_sha256": _canonical_json_sha256({}),
+        "ros_environment_bindings": {},
+        "ros_environment_sha256": _canonical_json_sha256({}),
     }
     middleware["descriptor_sha256"] = _canonical_json_sha256(middleware)
     identity: dict[str, Any] = {
@@ -575,6 +581,8 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
         "expected_git_dirty": False,
         "reviewed_git_sha": git_sha,
         "jenai_import_path": f"{source_root}/src/jenai/__init__.py",
+        "bridge_script_path": f"{source_root}/src/jenai/bridge/ros_bridge.py",
+        "bridge_script_sha256": "f" * 64,
         "python_executable": "/usr/bin/python3.12",
         "python_version": "3.12.3",
         "ros_middleware": middleware,
@@ -600,6 +608,12 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
             "/bt_navigator": 1,
         },
         "navigate_to_pose_action_count": 1,
+        "navigate_to_pose_server_providers": [
+            {
+                "node": "/bt_navigator",
+                "action_type": "nav2_msgs/action/NavigateToPose",
+            }
+        ],
         "controller_odom_topic": "/chassis/odom",
         "nav2_process_generation": generation,
         "nav2_process_generation_end": deepcopy(generation),
@@ -667,6 +681,7 @@ def test_cleanup_returns_structured_failures_for_each_failed_step() -> None:
     assert cleanup["bridge_shutdown"]["status"] == "FAIL"
     assert {failure["step"] for failure in cleanup["failures"]} == {
         "final_halt",
+        "rescue_identity",
         "unwatch",
         "bridge_shutdown",
     }

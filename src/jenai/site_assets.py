@@ -7,7 +7,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from jenai.adapters.locations import LocationsFileError, load_locations
+from jenai.adapters.locations import (
+    LocationsFileError,
+    LocationsSnapshot,
+    load_locations_snapshot,
+)
 from jenai.config.models import AppConfig
 from jenai.schemas import Location
 from jenai.workflows.area_patrol import InspectionPoint, PatrolArea
@@ -72,10 +76,17 @@ def _same_pose(requested: Location, saved: Location) -> bool:
 class _SiteAssetValidator:
     """Own the content-identity and semantic-reference policy for one site."""
 
-    def __init__(self, config: AppConfig, config_path: Path) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        config_path: Path,
+        *,
+        locations_snapshot: LocationsSnapshot | None = None,
+    ) -> None:
         self._config = config
         self._config_path = config_path
         self._site = config.site
+        self._locations_snapshot = locations_snapshot
 
     def validate(self) -> list[Location]:
         self._require_execution_ready()
@@ -98,9 +109,10 @@ class _SiteAssetValidator:
         if locations_path is None:
             raise SiteAssetError("The active Site Profile has no locations file.")
         try:
-            observed_digest = fingerprint_locations_file(locations_path)
-            locations = load_locations(locations_path)
-            return locations, observed_digest
+            snapshot = self._locations_snapshot or load_locations_snapshot(locations_path)
+            if snapshot.path.resolve() != locations_path.resolve():
+                raise SiteAssetError("The reviewed snapshot belongs to a different locations path.")
+            return list(snapshot.locations), snapshot.sha256
         except (OSError, LocationsFileError) as exc:
             raise SiteAssetError(
                 f"Could not load the active Site Profile locations: {exc}"
@@ -144,10 +156,19 @@ class _SiteAssetValidator:
                 )
 
 
-def validate_site_assets(config: AppConfig, config_path: Path) -> list[Location]:
+def validate_site_assets(
+    config: AppConfig,
+    config_path: Path,
+    *,
+    locations_snapshot: LocationsSnapshot | None = None,
+) -> list[Location]:
     """Load and validate every location reference bound by the active profile."""
 
-    return _SiteAssetValidator(config, config_path).validate()
+    return _SiteAssetValidator(
+        config,
+        config_path,
+        locations_snapshot=locations_snapshot,
+    ).validate()
 
 
 def load_site_patrol_areas(
@@ -198,11 +219,17 @@ def bind_navigation_action(
     config: AppConfig,
     config_path: Path,
     outgoing_action: dict[str, object],
+    *,
+    locations_snapshot: LocationsSnapshot | None = None,
 ) -> dict[str, object]:
     """Authorize and canonicalize one goal against the active Site Profile."""
 
     site = config.site
-    locations = validate_site_assets(config, config_path)
+    locations = validate_site_assets(
+        config,
+        config_path,
+        locations_snapshot=locations_snapshot,
+    )
 
     raw_goal = outgoing_action.get("goal")
     if not isinstance(raw_goal, dict):

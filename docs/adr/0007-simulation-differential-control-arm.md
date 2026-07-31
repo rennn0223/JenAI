@@ -41,6 +41,12 @@ This exception is valid only when all of the following conditions hold:
 - the harness owns one watchdog-configured bridge, observes one correlated Nav2 goal lifecycle,
   preserves T0/T1/final evidence, and performs bounded final halt, unwatch, bridge shutdown, and
   durable artifact cleanup;
+- if that primary bridge becomes unavailable after motion was attempted, the harness may create
+  exactly one private safety-replacement bridge on the same verified ROS runtime. The replacement
+  may only execute the existing halt sequence (zero command, cancel-all acknowledgement, zero
+  command) and must then shut down; it may not dispatch a goal, collect the experiment, or become a
+  second authority. Its process identity, runtime compatibility, halt evidence, and shutdown are
+  persisted and revalidated offline;
 - R2 continues to use Navigation Gateway with its experimental retry override confined to an
   in-memory configuration copy;
 - the result remains simulation diagnostic evidence and never becomes a product Task Outcome or a
@@ -54,6 +60,11 @@ The exception does **not** permit:
   endpoint-policy changes;
 - use with a physical robot, NXDog, another vendor adapter, or a remote robot Runtime;
 - another direct bridge dispatch in a script or product module.
+
+The safety replacement is not an additional R1 control arm. It exists only because a process that
+has already accepted motion may crash before cleanup; failure to establish the replacement, prove
+runtime compatibility, acknowledge cancellation, publish zero, or reap the replacement keeps the
+run at `cleanup_failed`.
 
 Existing low-level implementation seams remain unchanged: the bridge protocol dispatcher, the
 Nav2 adapter behind Navigation Gateway, and the isolated Twin Gate may call the bridge operation

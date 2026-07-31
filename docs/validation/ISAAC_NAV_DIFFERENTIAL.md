@@ -24,11 +24,16 @@ simulation-only acceptance control，不是 Capability、產品 navigation path�
 或實體載具介面；Agent、TUI、WebUI、MCP、daemon、NXDog 與一般 script 都不得重用。
 
 R1 的 result timeout 使用目前 `VehicleProfile.nav_timeout_s`，與 R2 的有效 JenAI navigation
-budget 相同，不另設一套 CLI timeout。
+budget 相同，不另設一套 CLI timeout。兩者都在 T1 gate 完成、goal 已實際 forward 後才開始
+計時；R1 不會把 Harness 的 pre-dispatch 取樣時間扣進 Nav2 result budget。
 
 R2 只在 runner 的記憶內建立 `nav_endpoint_retry_limit=0` 的 config copy。若 Twin 與 target
 使用同一有效 ROS domain，也只在該次 copy 暫時停用 Twin。有效 override 會保存於
 `effective_experimental_config`；磁碟設定與 production defaults 不會被改寫。
+
+兩個自動模式都只接受 Site binding 後的 `navigate`。`dock_approach`、`area_patrol` 或其他
+Capability 即使能解析成座標，也會在 bridge 啟動與 motion 前 fail closed；本工具不是一般
+Capability runner。
 
 `R0_rviz` 是人工／bag 證據基準，不由第一版 runner 自動發 goal。R0 必須擷取 RViz 實際送出
 並由 action server 接受的 payload；不可用畫面游標或假設 `/goal_pose` 等於 accepted goal。
@@ -44,7 +49,8 @@ R2 只在 runner 的記憶內建立 `nav_endpoint_retry_limit=0` 的 config copy
 - ROS timestamp 數字不要求跨 run 相等；只檢查 clock domain、simulation epoch 與 freshness。
 - accepted goal UUID 不是 action client 直接回傳，而是在實際 `nav_send` 後，從
   `/navigate_to_pose/_action/status` 推論出的唯一、schema-valid、goal-stamp fresh 新 UUID。
-- 沒有新 UUID、多個候選或 stale candidate 都會使 T1 timeline fail closed；該場為
+- 沒有新 UUID、多個候選、stale candidate，或 UUID 首次觀察時間晚於已綁定的 terminal
+  event，都會使 T1 timeline fail closed；該場為
   `insufficient_evidence`，不得猜測 UUID。
 - dispatch、Nav2 terminal、R2 navigation attempt 與 observed result 使用同一個 command
   tag 綁定；缺少、重複或互相矛盾的 tag 不能進入 paired comparison。
@@ -104,7 +110,9 @@ Live execution 只允許 `deployment_mode=simulation`，並在送 goal 前 fail 
 - CLI 所在 repository root、`jenai.__file__` 對應 source root 與操作員明確提供的
   `--expected-git-sha` 必須指向同一個已 Code Review、clean revision；
 - CLI Python executable／version，以及真正執行本場導航的 ROS bridge sidecar 在 `ready`
-  handshake 回報的 PID、Python、ROS domain、effective RMW 與 DDS environment binding 必須
+  handshake 回報的 parent-generated launch nonce、Linux boot ID、PID／process start ticks、
+  Python、ROS domain、effective RMW、DDS environment binding 與 ROS setup／security environment
+  binding 必須
   完整。Harness 會 pin 該 descriptor，sidecar respawn／identity drift 時 fail closed；不使用另起
   process 的 middleware probe。DDS 路徑、URI、value 與 profile 內容不寫入 artifact，只保存
   allowlisted binding 的 canonical digest；requested RMW 與 effective RMW 不一致時 fail closed；
@@ -120,7 +128,23 @@ Live execution 只允許 `deployment_mode=simulation`，並在送 goal 前 fail 
 - controller／planner／BT navigator lifecycle 為 active；
 - `/controller_server` 實際 `odom_topic` 可讀、能正規化為 absolute ROS topic，且 artifact
   recorder／measurement contract 使用同一 topic；
-- 必要 runtime parameter dumps 完整。
+- 必要 runtime parameter snapshots 完整；artifact 只保存每個 node 的 SHA-256，不保存
+  可能含 credential 的 raw parameter dump。Process inventory 同樣只保存 PID／PPID／start
+  ticks 與 command-line digest，不保存 raw argv。
+
+Config 與 locations 以「同一份 bytes 完成解析與 SHA-256」的 snapshot 綁定；真正 forward
+goal 前會重新檢查 config、locations、實際 `ros_bridge.py` 與 Git HEAD／dirty state。Cleanup
+完成後、artifact 寫入前再檢查一次。任何 TOCTOU drift 都會阻止 motion 或把場次降為
+`insufficient_evidence`。
+
+Nav2 runtime identity 也不是只在啟動時取一次。真正 forward goal 前，以及 final window
+完成後，runner 會重取 node counts、唯一 action provider、lifecycle、controller odom topic、
+tmux process generation 與 runtime parameter digests；pre-dispatch drift 直接阻止 motion，
+執行期間 drift 則使 artifact 不具比較資格。
+
+Live map 不只在 bridge 啟動時取一次：initial、真正 dispatch 前、Nav2 terminal 與 final
+window 後各有完整 digest／frame／geometry checkpoint。同一個 map server process 若切換 map，
+仍會被視為 evidence discontinuity；不能只靠 PID 或 node count 判定相同 runtime。
 - Nav2 tmux navigation pane 與其 descendant process tree 在 motion 前後一致。每個 process
   綁定 PID、PPID、Linux start ticks 與 command-line digest；採樣競態、缺少 `/proc` 證據或
   child restart 都會使場次降級。
@@ -142,12 +166,22 @@ T0 scenario start 與真正 `nav_send` 前的 T1 dispatch state 都要求：
 上的 projection；離線驗證會從 observation ID 重新建立結果，拒絕遺漏、重複、未引用或被協調
 竄改的 summary。Bridge fresh lookup 必須證明 `0 < initial_stamp_ns < stamp_ns`。
 
+R2 在 Nav2 succeeded 後交給 JenAI 0.5 秒 completion contract 的那一次 fresh pose，也會由
+proxy 原樣加入 journal，並綁定 navigation attempt tag、request/completion ROS clock。缺少
+clock binding、clock 倒退或 TF stamp 晚於 completion clock 時均 fail closed。它與稍後的兩秒
+final-window median 是兩份不同證據；缺少前者時不能判斷 `endpoint_mismatch` 是否只是 verdict
+差異。
+
 T1 在 proxy `nav_send` 已被呼叫、但尚未 forward 到真正 bridge 時重新取樣。Runner 先等待
 `preflight_sample_s`（預設 1 秒），且只接受 `nav_send_invoked_host_monotonic_ns` 之後的新
 `/clock`、AMCL、odom 與 action-status evidence；不得重用 T0。T1 失敗時 goal 不會
-forward。
+forward。UUID correlation 的 exclusion baseline 同樣取 T1 已知 goal IDs，不取較舊的 T0
+history。
 
-Nav2 terminal 後的 final window 要求：
+Nav2 terminal 後，R1 與 R2 都以同一個 terminal-relative schedule 等待 5 秒，再開始 final
+window。這會把 R2 固有的 0.5 秒 completion verification 留在共同觀測窗口之前；若 event loop、
+map checkpoint 或 completion verification 使開始時間偏離共同 schedule 超過一個
+`sample_interval_s`，該場會 fail closed。之後的 final window 要求：
 
 - 2.0 秒實際 ROS time；wall time 上限 15 秒；
 - `/clock` 不可暫停或倒退；
@@ -159,15 +193,26 @@ Nav2 terminal 後的 final window 要求：
 
 Wall time 經過不代表 paused Isaac 已完成 final window。
 
+R1 與 R2 的 final window 必須使用相近的 terminal-relative 起點；兩場 offset 差超過一個
+`sample_interval_s` 時 pairing gate 失敗，避免把 completion verification 或無關 checkpoint
+延遲誤判成終點差異。
+
 Cleanup 逐步記錄 final halt、heartbeat、topic unwatch 與 bridge shutdown。Final halt 只證明零速度
 命令發布，以及有 cancel request 時 cancel 已 acknowledged；它明確保存
 `motion_stop_observed=false`。實際 stationary evidence 來自 final odom window。任何 cleanup
 失敗會把 overall 降級為 `cleanup_failed`，不能保留先前的 success claim。
 
+若 motion 已嘗試但 primary bridge 已崩潰或無法提供完整 halt evidence，runner 先停止 heartbeat，
+再建立**恰好一個** safety-only replacement bridge。Replacement 必須與 primary 的 boot、ROS
+domain、RMW、DDS／ROS environment binding 相容且具不同 process instance；它只能執行既定
+zero → cancel-all → zero halt，不能送 goal 或收集實驗資料，且最後必須成功 shutdown。其完整
+identity、halt 與 shutdown 證據會另存並由離線 validator 重驗；任一項不確定仍是
+`cleanup_failed`。這不是第二個導航 authority，也不證明物理車體停止。
+
 ## Measurement contract 與 artifact lifecycle
 
 每個 artifact 維持 schema envelope v1，並要求 `evidence_derivation_version=2`。它保存不可變
-`measurement_contract`，包括取樣期間、freshness、
+`measurement_contract`，包括取樣期間、freshness、共同 terminal-relative final-window delay、
 final ROS-time window、wall timeout、最低樣本數、速度、covariance 與 calibration residual
 門檻。R1／R2 的 measurement contract 不完全相同時，pairing gate 必須失敗。
 
@@ -195,7 +240,11 @@ raw evidence／pose journal 的 artifact 不具 comparison eligibility。
 Preparation、dispatch、cleanup 例外或外部 task cancellation 仍會先完成 shielded cleanup，再
 原子保存可重新載入的 schema-v1 artifact，最後才把 cancellation 傳回 caller；cleanup 自身若
 被取消則記為 `cleanup_failed`，不得遺失 artifact 或保留 success。成功與失敗場次都不得
-刪除；capture 與 comparison output 若已存在會直接拒絕，CLI 不提供 overwrite 選項。Runtime fingerprint
+刪除；capture 在任何 bridge／motion 前直接以 `O_EXCL` 原子保留**實際 artifact path**，並寫入
+可辨識的 recovery marker；sidecar lock 只補充 ownership。成功時 marker 會原子替換成正式
+artifact。Comparison output 使用相同 reservation contract。已存在或已被另一個 writer 保留的
+path 會直接拒絕，CLI 不提供 overwrite 選項；若 motion 後 artifact persistence 失敗，實際
+output path 的 marker 與 sidecar 都會保留為 evidence-loss 標記，不得由下一場靜默重用。Runtime fingerprint
 只用於確認兩場 runtime identity 是否等價，不是防惡意竄改的簽章或 artifact attestation。
 Process-tree identity 能偵測 tmux launch descendants 的替換，但不能單獨證明 ROS graph node 與
 特定 OS PID 的所有權；node uniqueness、runtime parameter snapshots 與 action-server identity

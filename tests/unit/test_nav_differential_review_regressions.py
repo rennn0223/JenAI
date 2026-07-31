@@ -252,6 +252,7 @@ def _measurement_contract() -> dict[str, Any]:
     return {
         "preflight_sample_s": 1.0,
         "final_sample_s": 2.0,
+        "final_window_start_delay_s": 0.0,
         "sample_interval_s": 0.2,
         "max_topic_age_s": 1.0,
         "max_calibration_residual_m": 0.02,
@@ -322,6 +323,12 @@ def _runtime_identity() -> dict[str, Any]:
             "/bt_navigator": 1,
         },
         "navigate_to_pose_action_count": 1,
+        "navigate_to_pose_server_providers": [
+            {
+                "node": "/bt_navigator",
+                "action_type": "nav2_msgs/action/NavigateToPose",
+            }
+        ],
         "controller_odom_topic": "/chassis/odom",
         "nav2_process_generation": generation,
         "nav2_process_generation_end": deepcopy(generation),

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from jenai.config import ConfigError, load_config, save_config
+from jenai.config import ConfigError, load_config, load_config_snapshot, save_config
 from jenai.config.models import AppConfig, ForbiddenZone, VehicleProfile
 from jenai.config.store import build_minimal_config
 
@@ -28,6 +29,30 @@ def test_config_round_trip(tmp_path: Path) -> None:
     assert loaded.model_bindings is not None
     assert loaded.model_bindings.default == "ollama/llama3.2"
     assert loaded.provider_profiles["local"].base_url == "http://localhost:11434"
+
+
+def test_config_snapshot_parses_and_hashes_one_exact_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "config.toml"
+    first = b'version = "0.1.0"\n'
+    second = b'version = "changed-after-first-read"\n'
+    reads = iter((first, second))
+    original_read_bytes = Path.read_bytes
+
+    def changing_read_bytes(candidate: Path) -> bytes:
+        if candidate == path:
+            return next(reads)
+        return original_read_bytes(candidate)
+
+    monkeypatch.setattr(Path, "read_bytes", changing_read_bytes)
+
+    snapshot = load_config_snapshot(path)
+
+    assert snapshot.path == path
+    assert snapshot.config.version == "0.1.0"
+    assert snapshot.sha256 == hashlib.sha256(first).hexdigest()
+    assert next(reads) == second
 
 
 def test_missing_config_raises_config_error(tmp_path: Path) -> None:

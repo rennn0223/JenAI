@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
@@ -44,9 +45,15 @@ from jenai.acceptance.nav_differential import (
     compare_goals,
     evaluate_pairing_gate,
 )
-from jenai.adapters.locations import find_location, load_locations
-from jenai.bridge import BridgeError, BridgeRuntimeIdentity, RosBridgeClient
-from jenai.config import default_config_path, load_config
+from jenai.adapters.locations import find_location, load_locations_snapshot
+from jenai.bridge import (
+    BridgeError,
+    BridgeRuntimeIdentity,
+    MapIdentityInfo,
+    PoseInfo,
+    RosBridgeClient,
+)
+from jenai.config import default_config_path, load_config_snapshot
 from jenai.config.models import AppConfig
 from jenai.site_assets import bind_navigation_action
 from jenai.tools.navigation_gateway import NavigationGateway
@@ -62,6 +69,10 @@ _ODOM_TYPE = "nav_msgs/msg/Odometry"
 _NAV2_TERMINAL_STATUSES = frozenset({"succeeded", "canceled", "aborted", "failed", "rejected"})
 _JENAI_NAVIGATION_EXECUTION_STATUSES = frozenset(
     {"succeeded", "failed", "endpoint_mismatch", "blocked", "referred", "unavailable"}
+)
+_ACTIVE_OUTPUT_RESERVATION: ContextVar[Any] = ContextVar(
+    "jenai_nav_differential_output_reservation",
+    default=None,
 )
 
 
@@ -138,6 +149,7 @@ class DifferentialCaptureOptions(BaseModel):
     confirmation: str = ""
     preflight_sample_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     final_sample_s: float = Field(default=2.0, gt=0, allow_inf_nan=False)
+    final_window_start_delay_s: float = Field(default=5.0, ge=0, allow_inf_nan=False)
     sample_interval_s: float = Field(default=0.2, gt=0, allow_inf_nan=False)
     max_start_speed_mps: float = Field(default=0.02, ge=0, allow_inf_nan=False)
     max_start_yaw_rate_rps: float = Field(default=0.03, ge=0, allow_inf_nan=False)
@@ -208,6 +220,7 @@ class DifferentialMeasurementContract(BaseModel):
 
     preflight_sample_s: float = Field(gt=0, allow_inf_nan=False)
     final_sample_s: float = Field(gt=0, allow_inf_nan=False)
+    final_window_start_delay_s: float = Field(ge=0, allow_inf_nan=False)
     sample_interval_s: float = Field(gt=0, allow_inf_nan=False)
     max_topic_age_s: float = Field(gt=0, allow_inf_nan=False)
     max_calibration_residual_m: float = Field(ge=0, allow_inf_nan=False)
@@ -358,6 +371,7 @@ class DifferentialComparisonReport(BaseModel):
 class PoseLookupPurpose(StrEnum):
     T0_START = "t0_start"
     T1_PRE_DISPATCH = "t1_pre_dispatch"
+    R2_COMPLETION_VERDICT = "r2_completion_verdict"
     FINAL_WINDOW = "final_window"
 
 
@@ -391,6 +405,7 @@ class PoseLookupObservation(BaseModel):
     observation_id: str = Field(min_length=1)
     sequence: int = Field(ge=0)
     purpose: PoseLookupPurpose
+    attempt_tag: str | None = None
     request_host_monotonic_ns: int = Field(ge=0)
     completed_host_monotonic_ns: int = Field(ge=0)
     request_clock_ns: int | None = Field(default=None, ge=0)
@@ -409,6 +424,11 @@ class PoseLookupObservation(BaseModel):
     def validate_outcome(self) -> PoseLookupObservation:
         if self.completed_host_monotonic_ns < self.request_host_monotonic_ns:
             raise ValueError("pose lookup completion must follow its request")
+        if self.purpose is PoseLookupPurpose.R2_COMPLETION_VERDICT:
+            if not isinstance(self.attempt_tag, str) or not self.attempt_tag.strip():
+                raise ValueError("R2 completion pose evidence must name its navigation attempt")
+        elif self.attempt_tag is not None:
+            raise ValueError("only R2 completion pose evidence may name a navigation attempt")
         if self.status == "SUCCESS":
             if (
                 self.result is None
@@ -435,6 +455,87 @@ class _PoseObservationRecorder:
 
     def snapshot(self) -> list[dict[str, Any]]:
         return copy.deepcopy(self._observations)
+
+    def record_external(
+        self,
+        *,
+        purpose: PoseLookupPurpose,
+        attempt_tag: str,
+        requested_ns: int,
+        completed_ns: int,
+        request_clock_ns: int | None = None,
+        completed_clock_ns: int | None = None,
+        frame_id: str,
+        base_frame: str,
+        timeout_s: float,
+        pose: PoseInfo | None = None,
+        error: Exception | None = None,
+    ) -> dict[str, Any]:
+        """Append an exact pose call already made by an acceptance proxy."""
+
+        sequence = len(self._observations)
+        common = {
+            "observation_id": f"pose-{sequence:04d}-{uuid4().hex}",
+            "sequence": sequence,
+            "purpose": purpose,
+            "attempt_tag": attempt_tag,
+            "request_host_monotonic_ns": requested_ns,
+            "completed_host_monotonic_ns": completed_ns,
+            "request_clock_ns": request_clock_ns,
+            "completed_clock_ns": completed_clock_ns,
+            "fresh_requested": True,
+            "frame_id": frame_id,
+            "base_frame": base_frame,
+            "timeout_s": timeout_s,
+        }
+        if error is not None:
+            observation = PoseLookupObservation.model_validate(
+                {
+                    **common,
+                    "status": "ERROR",
+                    "error_type": type(error).__name__,
+                    "error_detail": str(error),
+                }
+            )
+        else:
+            if pose is None:
+                raise ValueError(
+                    "successful external pose observation requires typed pose evidence"
+                )
+            raw_result = {
+                "x": pose.x,
+                "y": pose.y,
+                "yaw": pose.yaw,
+                "frame_id": pose.frame_id,
+                "base_frame": pose.base_frame,
+                "source": pose.source,
+                "initial_stamp_ns": pose.initial_stamp_ns,
+                "stamp_ns": pose.stamp_ns,
+                "fresh_after_request": pose.fresh_after_request,
+            }
+            try:
+                result = PoseLookupResult.model_validate(raw_result)
+            except ValueError as exc:
+                observation = PoseLookupObservation.model_validate(
+                    {
+                        **common,
+                        "status": "ERROR",
+                        "raw_result": raw_result,
+                        "error_type": "InvalidPoseLookupEvidence",
+                        "error_detail": str(exc),
+                    }
+                )
+            else:
+                observation = PoseLookupObservation.model_validate(
+                    {
+                        **common,
+                        "status": "SUCCESS",
+                        "result": result,
+                    }
+                )
+        payload = observation.model_dump(mode="json")
+        self._observations.append(payload)
+        return copy.deepcopy(payload)
 
     async def capture(
         self,
@@ -567,9 +668,14 @@ def _utc_now() -> str:
 
 
 def _sha256(path: Path | None) -> str | None:
-    if path is None or not path.is_file():
+    if path is None:
         return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        if not path.is_file():
+            return None
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def _calibration_payload_sha256(calibration: GroundTruthCalibration) -> str:
@@ -830,6 +936,71 @@ def _nav2_process_generation(
     }
 
 
+def _navigate_to_pose_server_providers(output: str | None) -> list[dict[str, str]] | None:
+    """Parse ``ros2 action info -t`` server identities, failing closed."""
+
+    if not isinstance(output, str):
+        return None
+    lines = output.splitlines()
+    try:
+        heading_index = next(
+            index for index, line in enumerate(lines) if line.startswith("Action servers:")
+        )
+        declared_count = int(lines[heading_index].split(":", 1)[1].strip())
+    except (StopIteration, ValueError, IndexError):
+        return None
+    providers: list[dict[str, str]] = []
+    for raw_line in lines[heading_index + 1 :]:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if " [" not in line or not line.endswith("]"):
+            return None
+        node, raw_type = line.rsplit(" [", 1)
+        action_type = raw_type[:-1]
+        if not node.startswith("/") or not node.strip() or not action_type:
+            return None
+        providers.append({"node": node, "action_type": action_type})
+    if declared_count != len(providers):
+        return None
+    return providers
+
+
+def _pairable_ros_middleware_identity(value: object) -> object:
+    """Project a sidecar descriptor onto fields stable across captures.
+
+    The full PID-bound descriptor remains in each artifact for validation and
+    within-run respawn pinning.  PID and its descriptor digest are deliberately
+    excluded from cross-run compatibility because every CLI capture owns a new
+    sidecar process.
+    """
+
+    try:
+        descriptor = BridgeRuntimeIdentity.from_payload(value)
+    except BridgeError:
+        return value
+    return {
+        "schema_version": descriptor.schema_version,
+        "boot_id": descriptor.boot_id,
+        "python_executable": descriptor.python_executable,
+        "python_version": descriptor.python_version,
+        "rmw_implementation_requested": descriptor.rmw_implementation_requested,
+        "rmw_implementation_effective": descriptor.rmw_implementation_effective,
+        "ros_domain_id": descriptor.ros_domain_id,
+        "dds_config_mode": descriptor.dds_config_mode,
+        "dds_bindings": [
+            {"name": name, "kind": kind, "sha256": digest}
+            for name, kind, digest in descriptor.dds_bindings
+        ],
+        "dds_config_sha256": descriptor.dds_config_sha256,
+        "ros_environment_bindings": [
+            {"name": name, "kind": kind, "sha256": digest}
+            for name, kind, digest in descriptor.ros_environment_bindings
+        ],
+        "ros_environment_sha256": descriptor.ros_environment_sha256,
+    }
+
+
 def _runtime_fingerprint(identity: dict[str, Any]) -> str:
     fields = {
         key: identity.get(key)
@@ -844,6 +1015,7 @@ def _runtime_fingerprint(identity: dict[str, Any]) -> str:
             "jenai_import_path",
             "python_executable",
             "python_version",
+            "bridge_script_sha256",
             "config_sha256",
             "site_id",
             "site_version",
@@ -862,17 +1034,20 @@ def _runtime_fingerprint(identity: dict[str, Any]) -> str:
             "site_map_frame",
             "robot_base_frame",
             "live_map_frame",
+            "live_map_identity_initial",
             "controller_lifecycle",
             "planner_lifecycle",
             "bt_navigator_lifecycle",
             "runtime_parameter_sha256",
             "node_name_counts",
             "navigate_to_pose_action_count",
+            "navigate_to_pose_server_providers",
             "controller_odom_topic",
             "nav2_process_generation",
             "ground_truth_calibration_effective_sha256",
         )
     }
+    fields["ros_middleware"] = _pairable_ros_middleware_identity(identity.get("ros_middleware"))
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -890,6 +1065,147 @@ def _record_ground_truth_calibration(
     artifact["ground_truth_calibration"] = calibration.model_dump(mode="json")
     identity["ground_truth_calibration_effective_sha256"] = _calibration_payload_sha256(calibration)
     _apply_runtime_fingerprint(identity)
+
+
+def _source_revision_identity(
+    source_root: Path,
+    reviewed_root: Path | None,
+    *,
+    reviewed_git_sha: str | None,
+) -> dict[str, Any]:
+    revision = _command_output(["git", "rev-parse", "HEAD"], cwd=source_root)
+    dirty_output = _command_output(["git", "status", "--porcelain"], cwd=source_root)
+    reviewed_revision = (
+        _command_output(["git", "rev-parse", "HEAD"], cwd=reviewed_root)
+        if reviewed_root is not None
+        else None
+    )
+    reviewed_dirty_output = (
+        _command_output(["git", "status", "--porcelain"], cwd=reviewed_root)
+        if reviewed_root is not None
+        else None
+    )
+    return {
+        "git_sha": revision,
+        "git_dirty": None if dirty_output is None else bool(dirty_output),
+        "reviewed_git_sha": reviewed_git_sha,
+        "expected_git_sha": reviewed_revision,
+        "expected_git_dirty": (
+            None if reviewed_dirty_output is None else bool(reviewed_dirty_output)
+        ),
+    }
+
+
+def _nav2_runtime_identity(session: str, *, ros_env: dict[str, str]) -> dict[str, Any]:
+    ros_nodes = _command_output(["ros2", "node", "list"], env=ros_env)
+    node_lines = [line.strip() for line in (ros_nodes or "").splitlines() if line.strip()]
+    required_nodes = ("/amcl", "/controller_server", "/planner_server", "/bt_navigator")
+    node_counts = {name: node_lines.count(name) for name in required_nodes}
+    action_list = _command_output(["ros2", "action", "list", "-t"], env=ros_env)
+    action_lines = [line.strip() for line in (action_list or "").splitlines() if line.strip()]
+    action_info = _command_output(
+        ["ros2", "action", "info", "/navigate_to_pose", "-t"], env=ros_env
+    )
+    parameter_snapshots = {
+        node: _command_output(["ros2", "param", "dump", node], env=ros_env)
+        for node in required_nodes
+    }
+    return {
+        "ros_nodes": ros_nodes,
+        "node_name_counts": node_counts,
+        "navigate_to_pose_actions": action_lines,
+        "navigate_to_pose_action_count": sum(
+            line.split(maxsplit=1)[0] == "/navigate_to_pose" for line in action_lines
+        ),
+        "navigate_to_pose_server_providers": _navigate_to_pose_server_providers(action_info),
+        "controller_odom_topic": _controller_odom_topic(ros_env=ros_env),
+        "nav2_tmux_session": session,
+        "nav2_process_generation": _nav2_process_generation(session),
+        "controller_lifecycle": _command_output(
+            ["ros2", "lifecycle", "get", "/controller_server"], env=ros_env
+        ),
+        "planner_lifecycle": _command_output(
+            ["ros2", "lifecycle", "get", "/planner_server"], env=ros_env
+        ),
+        "bt_navigator_lifecycle": _command_output(
+            ["ros2", "lifecycle", "get", "/bt_navigator"], env=ros_env
+        ),
+        "runtime_parameter_sha256": {
+            node: _text_sha256(snapshot) for node, snapshot in parameter_snapshots.items()
+        },
+        "process_inventory": _safe_matching_process_inventory(),
+    }
+
+
+def _safe_matching_process_inventory() -> list[dict[str, Any]] | None:
+    raw_pids = _command_output(
+        ["pgrep", "-f", "nav2|amcl|controller_server|planner_server|bt_navigator|ros_bridge"]
+    )
+    if raw_pids is None:
+        return None
+    identities: list[dict[str, Any]] = []
+    for value in raw_pids.splitlines():
+        try:
+            pid = int(value.strip())
+        except ValueError:
+            continue
+        identity = _process_identity(pid)
+        if identity is not None:
+            identities.append(identity)
+    return sorted(identities, key=lambda item: int(item["pid"]))
+
+
+_RUNTIME_STACK_CONTINUITY_FIELDS = (
+    "node_name_counts",
+    "navigate_to_pose_action_count",
+    "navigate_to_pose_server_providers",
+    "controller_odom_topic",
+    "nav2_tmux_session",
+    "nav2_process_generation",
+    "controller_lifecycle",
+    "planner_lifecycle",
+    "bt_navigator_lifecycle",
+    "runtime_parameter_sha256",
+)
+
+
+def _runtime_stack_projection(value: dict[str, Any]) -> dict[str, Any]:
+    return {field: copy.deepcopy(value.get(field)) for field in _RUNTIME_STACK_CONTINUITY_FIELDS}
+
+
+def _capture_runtime_stack_checkpoint(
+    identity: dict[str, Any],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    expected = _runtime_stack_projection(identity)
+    session = identity.get("nav2_tmux_session")
+    domain = identity.get("bridge_domain_id")
+    if not isinstance(session, str) or not session or not _valid_domain_id(domain):
+        return {
+            "label": label,
+            "status": "FAIL",
+            "observed_host_monotonic_ns": time.monotonic_ns(),
+            "expected": expected,
+            "observed": None,
+            "failures": ["runtime_stack_identity_unavailable"],
+        }
+    observed = _runtime_stack_projection(
+        _nav2_runtime_identity(session, ros_env={"ROS_DOMAIN_ID": str(domain)})
+    )
+    drift = [
+        f"runtime_stack_{field}_changed"
+        for field in _RUNTIME_STACK_CONTINUITY_FIELDS
+        if observed.get(field) != expected.get(field)
+    ]
+    return {
+        "label": label,
+        "status": "FAIL" if drift else "PASS",
+        "observed_host_monotonic_ns": time.monotonic_ns(),
+        "expected": expected,
+        "observed": observed,
+        "failures": drift,
+    }
 
 
 def _runtime_identity(
@@ -911,50 +1227,18 @@ def _runtime_identity(
         nav_params_path = str(Path(runtime_dir) / f"{session}-params.yaml")
 
     source_root = Path(jenai.__file__).resolve().parents[2]
+    bridge_script_path = source_root / "src" / "jenai" / "bridge" / "ros_bridge.py"
     reviewed_root = expected_source_root.resolve() if expected_source_root is not None else None
     bridge_domain_id = _effective_ros_domain(config)
     ros_env = {"ROS_DOMAIN_ID": bridge_domain_id}
-    revision = _command_output(["git", "rev-parse", "HEAD"], cwd=source_root)
-    dirty_output = _command_output(["git", "status", "--porcelain"], cwd=source_root)
-    reviewed_revision = (
-        _command_output(["git", "rev-parse", "HEAD"], cwd=reviewed_root)
-        if reviewed_root is not None
-        else None
-    )
-    reviewed_dirty_output = (
-        _command_output(["git", "status", "--porcelain"], cwd=reviewed_root)
-        if reviewed_root is not None
-        else None
-    )
-    ros_nodes = _command_output(["ros2", "node", "list"], env=ros_env)
-    node_lines = [line.strip() for line in (ros_nodes or "").splitlines() if line.strip()]
-    required_nodes = ("/amcl", "/controller_server", "/planner_server", "/bt_navigator")
-    node_counts = {name: node_lines.count(name) for name in required_nodes}
-    action_list = _command_output(["ros2", "action", "list", "-t"], env=ros_env)
-    action_lines = [line.strip() for line in (action_list or "").splitlines() if line.strip()]
-    action_count = sum(line.split(maxsplit=1)[0] == "/navigate_to_pose" for line in action_lines)
-    parameter_snapshots = {
-        node: _command_output(["ros2", "param", "dump", node], env=ros_env)
-        for node in required_nodes
-    }
-    parameter_hashes = {
-        node: _text_sha256(snapshot) for node, snapshot in parameter_snapshots.items()
-    }
-    controller_odom_topic = _controller_odom_topic(ros_env=ros_env)
-    nav2_process_generation = _nav2_process_generation(session)
     identity: dict[str, Any] = {
-        "git_sha": revision,
-        "git_dirty": None if dirty_output is None else bool(dirty_output),
         "source_root": str(source_root),
-        "reviewed_git_sha": reviewed_git_sha,
         "expected_source_root": str(reviewed_root) if reviewed_root is not None else None,
-        "expected_git_sha": reviewed_revision,
-        "expected_git_dirty": (
-            None if reviewed_dirty_output is None else bool(reviewed_dirty_output)
-        ),
         "jenai_import_path": str(Path(jenai.__file__).resolve()),
         "python_executable": sys.executable,
         "python_version": platform.python_version(),
+        "bridge_script_path": str(bridge_script_path),
+        "bridge_script_sha256": _sha256(bridge_script_path),
         "deployment_mode": config.deployment_mode,
         "config_path": str(config_path.resolve()),
         "config_sha256": _sha256(config_path),
@@ -970,7 +1254,6 @@ def _runtime_identity(
         "bridge_domain_id": bridge_domain_id,
         "rmw_implementation": os.environ.get("RMW_IMPLEMENTATION"),
         "ros_middleware": None,
-        "dds_profile": os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE"),
         "dds_profile_sha256": _sha256(
             Path(os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"])
             if os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE")
@@ -982,32 +1265,15 @@ def _runtime_identity(
         "live_map_sha256": None,
         "live_map_frame": None,
         "simulation_epoch": simulation_epoch,
-        "ros_nodes": ros_nodes,
-        "node_name_counts": node_counts,
-        "navigate_to_pose_actions": action_lines,
-        "navigate_to_pose_action_count": action_count,
-        "controller_odom_topic": controller_odom_topic,
-        "nav2_tmux_session": session,
-        "nav2_process_generation": nav2_process_generation,
-        "controller_lifecycle": _command_output(
-            ["ros2", "lifecycle", "get", "/controller_server"], env=ros_env
-        ),
-        "planner_lifecycle": _command_output(
-            ["ros2", "lifecycle", "get", "/planner_server"], env=ros_env
-        ),
-        "bt_navigator_lifecycle": _command_output(
-            ["ros2", "lifecycle", "get", "/bt_navigator"], env=ros_env
-        ),
-        "runtime_parameters": parameter_snapshots,
-        "runtime_parameter_sha256": parameter_hashes,
-        "process_inventory": _command_output(
-            [
-                "pgrep",
-                "-af",
-                "nav2|amcl|controller_server|planner_server|bt_navigator|ros_bridge",
-            ]
-        ),
     }
+    identity.update(
+        _source_revision_identity(
+            source_root,
+            reviewed_root,
+            reviewed_git_sha=reviewed_git_sha,
+        )
+    )
+    identity.update(_nav2_runtime_identity(session, ros_env=ros_env))
     _apply_runtime_fingerprint(identity)
     return identity
 
@@ -1581,6 +1847,7 @@ async def _await_tagged_result(
     *,
     tag: str,
     timeout_s: float,
+    timeout_start: asyncio.Event,
 ) -> tuple[dict[str, Any], int]:
     future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
 
@@ -1590,6 +1857,7 @@ async def _await_tagged_result(
 
     bridge.on_event("nav_result", record)
     try:
+        await timeout_start.wait()
         result = await asyncio.wait_for(future, timeout_s)
         return result, time.monotonic_ns()
     finally:
@@ -1603,7 +1871,15 @@ async def _run_r1(
     tag: str,
     timeout_s: float,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    result_task = asyncio.create_task(_await_tagged_result(bridge, tag=tag, timeout_s=timeout_s))
+    timeout_start = asyncio.Event()
+    result_task = asyncio.create_task(
+        _await_tagged_result(
+            bridge,
+            tag=tag,
+            timeout_s=timeout_s,
+            timeout_start=timeout_start,
+        )
+    )
     await asyncio.sleep(0)
     try:
         await bridge.nav_send(
@@ -1613,6 +1889,7 @@ async def _run_r1(
             frame_id=goal.frame_id,
             tag=tag,
         )
+        timeout_start.set()
         terminal, terminal_ns = await result_task
     except BaseException:
         result_task.cancel()
@@ -1701,11 +1978,17 @@ class _ObservedNavBridge:
         simulation_epoch: str,
         expected_goal: CanonicalGoal,
         on_nav_send: Callable[[CanonicalGoal, str, int], Awaitable[dict[str, Any]]],
+        pose_observations: _PoseObservationRecorder | None = None,
+        clock: _TopicRecorder | None = None,
     ) -> None:
         self._delegate = delegate
         self._simulation_epoch = simulation_epoch
         self._expected_goal = expected_goal
         self._on_nav_send = on_nav_send
+        self._pose_observations = pose_observations
+        self._clock = clock
+        self._active_attempt_tag: str | None = None
+        self.verdict_pose_observation_ids: list[str] = []
         self.observations: list[dict[str, Any]] = []
 
     def __getattr__(self, name: str) -> Any:
@@ -1754,8 +2037,74 @@ class _ObservedNavBridge:
                 + ", ".join(str(item) for item in t1_state.get("failures", []))
             )
         observation["nav_send_forwarded_host_monotonic_ns"] = time.monotonic_ns()
-        await self._delegate.nav_send(x, y, yaw, frame_id=frame_id, tag=tag)
+        self._active_attempt_tag = tag
+        try:
+            await self._delegate.nav_send(x, y, yaw, frame_id=frame_id, tag=tag)
+        except BaseException:
+            self._active_attempt_tag = None
+            raise
         observation["forward_completed_host_monotonic_ns"] = time.monotonic_ns()
+
+    async def get_pose(
+        self,
+        timeout: float = 3.0,
+        *,
+        fresh: bool = False,
+        frame_id: str = "map",
+        base_frame: str = "base_link",
+    ) -> PoseInfo:
+        if (
+            not fresh
+            or self._pose_observations is None
+            or self._clock is None
+            or self._active_attempt_tag is None
+        ):
+            return await self._delegate.get_pose(
+                timeout=timeout,
+                fresh=fresh,
+                frame_id=frame_id,
+                base_frame=base_frame,
+            )
+        requested_ns = time.monotonic_ns()
+        request_clock_ns = _clock_at_host(self._clock, requested_ns)
+        try:
+            pose = await self._delegate.get_pose(
+                timeout=timeout,
+                fresh=True,
+                frame_id=frame_id,
+                base_frame=base_frame,
+            )
+        except BridgeError as exc:
+            completed_ns = time.monotonic_ns()
+            recorded = self._pose_observations.record_external(
+                purpose=PoseLookupPurpose.R2_COMPLETION_VERDICT,
+                attempt_tag=self._active_attempt_tag,
+                requested_ns=requested_ns,
+                completed_ns=completed_ns,
+                request_clock_ns=request_clock_ns,
+                completed_clock_ns=_clock_at_host(self._clock, completed_ns),
+                frame_id=frame_id,
+                base_frame=base_frame,
+                timeout_s=timeout,
+                error=exc,
+            )
+            self.verdict_pose_observation_ids.append(str(recorded["observation_id"]))
+            raise
+        completed_ns = time.monotonic_ns()
+        recorded = self._pose_observations.record_external(
+            purpose=PoseLookupPurpose.R2_COMPLETION_VERDICT,
+            attempt_tag=self._active_attempt_tag,
+            requested_ns=requested_ns,
+            completed_ns=completed_ns,
+            request_clock_ns=request_clock_ns,
+            completed_clock_ns=_clock_at_host(self._clock, completed_ns),
+            frame_id=frame_id,
+            base_frame=base_frame,
+            timeout_s=timeout,
+            pose=pose,
+        )
+        self.verdict_pose_observation_ids.append(str(recorded["observation_id"]))
+        return pose
 
 
 async def _dispatch_mode(
@@ -2441,9 +2790,108 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(temporary, path)
+        reservation = _ACTIVE_OUTPUT_RESERVATION.get()
+        if isinstance(reservation, _OutputReservation) and reservation.output == path:
+            reservation.commit_temporary(temporary)
+        else:
+            os.link(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+class _OutputReservation:
+    """Atomically reserve one evidence path before any motion can begin.
+
+    A reservation that survives a motion-attempted persistence failure is an
+    intentional contamination marker: another run must not silently reuse the
+    path after evidence may have been lost.
+    """
+
+    def __init__(
+        self,
+        output: Path,
+        lock_path: Path,
+        reservation_id: str,
+    ) -> None:
+        self.output = output
+        self.path = lock_path
+        self.reservation_id = reservation_id
+        self._context_token: Token[Any] | None = None
+        self._committed = False
+        self._released = False
+
+    @classmethod
+    def acquire(cls, output: Path) -> _OutputReservation:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = output.with_name(f".{output.name}.capture.lock")
+        reservation_id = uuid4().hex
+        marker = {
+            "kind": "jenai-isaac-nav-differential-output-reservation-v1",
+            "output_name": output.name,
+            "pid": os.getpid(),
+            "reservation_id": reservation_id,
+            "reserved_at": _utc_now(),
+            "state": "reserved-before-motion",
+        }
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            output_descriptor = os.open(output, flags, 0o600)
+        except FileExistsError as exc:
+            raise FileExistsError(f"Capture output is already reserved: {output}") from exc
+        try:
+            with os.fdopen(output_descriptor, "w", encoding="utf-8") as stream:
+                json.dump(marker, stream, ensure_ascii=False, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            lock_descriptor = os.open(lock_path, flags, 0o600)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(output_descriptor)
+            output.unlink(missing_ok=True)
+            raise
+        try:
+            with os.fdopen(lock_descriptor, "w", encoding="utf-8") as stream:
+                json.dump(marker, stream, ensure_ascii=False, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            lock_path.unlink(missing_ok=True)
+            output.unlink(missing_ok=True)
+            raise
+        reservation = cls(output, lock_path, reservation_id)
+        reservation._context_token = _ACTIVE_OUTPUT_RESERVATION.set(reservation)
+        return reservation
+
+    def _owns_current_marker(self) -> bool:
+        try:
+            payload = json.loads(self.output.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return (
+            isinstance(payload, dict)
+            and payload.get("kind") == "jenai-isaac-nav-differential-output-reservation-v1"
+            and payload.get("reservation_id") == self.reservation_id
+        )
+
+    def commit_temporary(self, temporary: Path) -> None:
+        if self._released or self._committed or not self._owns_current_marker():
+            raise FileExistsError(f"Capture output reservation was lost: {self.output}")
+        os.replace(temporary, self.output)
+        self._committed = True
+
+    def release(self, *, discard_marker: bool = False) -> None:
+        if self._released:
+            return
+        if discard_marker and not self._committed and self._owns_current_marker():
+            self.output.unlink(missing_ok=True)
+        self.path.unlink(missing_ok=True)
+        if self._context_token is not None and _ACTIVE_OUTPUT_RESERVATION.get() is self:
+            _ACTIVE_OUTPUT_RESERVATION.reset(self._context_token)
+        self._released = True
 
 
 def _write_capture_artifact(
@@ -2456,8 +2904,14 @@ def _write_capture_artifact(
 
 
 def _write_comparison_report(path: Path, report: dict[str, Any]) -> dict[str, Any]:
-    validated = DifferentialComparisonReport.model_validate(report).model_dump(mode="json")
-    _atomic_write_json(path, validated)
+    reservation = _OutputReservation.acquire(path)
+    try:
+        validated = DifferentialComparisonReport.model_validate(report).model_dump(mode="json")
+        _atomic_write_json(path, validated)
+    except BaseException:
+        reservation.release(discard_marker=True)
+        raise
+    reservation.release()
     return validated
 
 
@@ -2542,11 +2996,21 @@ def _runtime_stack_failures(identity: dict[str, Any]) -> list[str]:
         and set(parameter_hashes) == required_nodes
         and all(_valid_sha256(parameter_hashes[node]) for node in required_nodes)
     )
+    providers = identity.get("navigate_to_pose_server_providers")
+    unique_provider = (
+        isinstance(providers, list)
+        and len(providers) == 1
+        and isinstance(providers[0], dict)
+        and set(providers[0]) == {"node", "action_type"}
+        and isinstance(providers[0].get("node"), str)
+        and cast(str, providers[0]["node"]).startswith("/")
+        and providers[0].get("action_type") == "nav2_msgs/action/NavigateToPose"
+    )
     checks = (
         (not unique_nodes, "nav2_node_uniqueness"),
         (
-            identity.get("navigate_to_pose_action_count") != 1,
-            "navigate_to_pose_action_uniqueness",
+            not unique_provider,
+            "navigate_to_pose_server_uniqueness",
         ),
         (not complete_parameters, "runtime_parameter_snapshot"),
         (
@@ -2621,6 +3085,7 @@ def _source_identity_failures(
 ) -> list[str]:
     required_hashes = (
         "config_sha256",
+        "bridge_script_sha256",
         "site_map_sha256",
         "site_locations_sha256",
         "locations_sha256",
@@ -2633,6 +3098,7 @@ def _source_identity_failures(
     fingerprint = identity.get("fingerprint")
     reviewed_git_sha = identity.get("reviewed_git_sha")
     import_path = identity.get("jenai_import_path")
+    bridge_script_path = identity.get("bridge_script_path")
     checks = (
         (not _valid_git_revision(identity.get("git_sha")), "git_revision_unavailable"),
         (identity.get("git_dirty") is not False, "clean_git_revision_required"),
@@ -2659,6 +3125,15 @@ def _source_identity_failures(
                 )
             ),
             "jenai_import_path_mismatch",
+        ),
+        (
+            isinstance(expected_source_root, str)
+            and (
+                not _normalized_absolute_path(bridge_script_path)
+                or Path(str(bridge_script_path))
+                != Path(expected_source_root) / "src" / "jenai" / "bridge" / "ros_bridge.py"
+            ),
+            "bridge_script_path_mismatch",
         ),
         (
             not _normalized_absolute_path(identity.get("python_executable")),
@@ -2752,6 +3227,7 @@ def _measurement_contract(
     return DifferentialMeasurementContract(
         preflight_sample_s=options.preflight_sample_s,
         final_sample_s=options.final_sample_s,
+        final_window_start_delay_s=options.final_window_start_delay_s,
         sample_interval_s=options.sample_interval_s,
         max_topic_age_s=options.max_topic_age_s,
         max_calibration_residual_m=options.max_calibration_residual_m,
@@ -2798,6 +3274,11 @@ def _target_binding(
     goal: CanonicalGoal,
     locations_sha256: object,
 ) -> TargetBinding:
+    capability_id = bound_action.get("capability_id")
+    if capability_id != "navigate":
+        raise ValueError(
+            "Isaac navigation differential capture supports only the navigate capability."
+        )
     raw_location = bound_action.get("goal")
     if not isinstance(raw_location, dict) or not _valid_sha256(locations_sha256):
         raise ValueError("Bound target identity is incomplete.")
@@ -2807,7 +3288,7 @@ def _target_binding(
         raise ValueError("Bound target has no stable saved-location identity.")
     pose = Pose2D(x=goal.x, y=goal.y, yaw=goal.yaw)
     record = {
-        "capability_id": "navigate",
+        "capability_id": capability_id,
         "frame_id": goal.frame_id.lstrip("/"),
         "locations_sha256": locations_sha256,
         "pose": pose.model_dump(mode="json"),
@@ -2819,7 +3300,7 @@ def _target_binding(
     stable_binding = {
         "canonical_goal_sha256": canonical_goal_sha256,
         "canonical_record_sha256": canonical_record_sha256,
-        "capability_id": "navigate",
+        "capability_id": capability_id,
         "locations_sha256": locations_sha256,
     }
     return TargetBinding(
@@ -2828,7 +3309,7 @@ def _target_binding(
         resolved_id=resolved_id,
         frame_id=goal.frame_id,
         pose=pose,
-        capability_id="navigate",
+        capability_id=capability_id,
         locations_sha256=cast(str, locations_sha256),
         canonical_record_sha256=canonical_record_sha256,
         canonical_goal_sha256=canonical_goal_sha256,
@@ -2847,13 +3328,20 @@ def _prepare_capture(
     TargetBinding,
 ]:
     config_path = (options.config_path or default_config_path()).expanduser().resolve()
-    config = load_config(config_path)
+    config_snapshot = load_config_snapshot(config_path)
+    config = config_snapshot.config
     locations_path = config.resolved_locations_path(config_path)
     if locations_path is None:
         raise ValueError("No locations_path is configured.")
-    location = find_location(load_locations(locations_path), options.location)
+    locations_snapshot = load_locations_snapshot(locations_path)
+    location = find_location(list(locations_snapshot.locations), options.location)
     raw_action: dict[str, Any] = {"goal": location.model_dump(mode="json")}
-    bound_action = bind_navigation_action(config, config_path, raw_action)
+    bound_action = bind_navigation_action(
+        config,
+        config_path,
+        raw_action,
+        locations_snapshot=locations_snapshot,
+    )
     raw_goal = bound_action["goal"]
     if not isinstance(raw_goal, dict):
         raise ValueError("Bound navigation goal is not an object.")
@@ -2879,6 +3367,8 @@ def _prepare_capture(
     )
     identity["site_map_frame"] = config.site.map_frame
     identity["robot_base_frame"] = config.vehicle.robot_base_frame
+    identity["config_sha256"] = config_snapshot.sha256
+    identity["locations_sha256"] = locations_snapshot.sha256
     _apply_runtime_fingerprint(identity)
     target_binding = _target_binding(
         requested_query=options.location,
@@ -2965,8 +3455,16 @@ def _dispatch_timeline(
         if not isinstance(state, dict) or state.get("status") != "PASS":
             failures.append("dispatch_state_gate_failed")
 
+    terminal_ns = terminal.get("observed_host_monotonic_ns") if terminal else None
     unique_candidates = {str(item.get("goal_uuid")) for item in goal_observations}
-    fresh_candidates = [item for item in goal_observations if item.get("goal_stamp_fresh") is True]
+    fresh_candidates = [
+        item
+        for item in goal_observations
+        if item.get("goal_stamp_fresh") is True
+        and type(item.get("observed_host_monotonic_ns")) is int
+        and type(terminal_ns) is int
+        and int(item["observed_host_monotonic_ns"]) <= terminal_ns
+    ]
     accepted: dict[str, Any] | None = None
     if len(unique_candidates) == 1 and len(fresh_candidates) == 1:
         accepted = fresh_candidates[0]
@@ -2981,7 +3479,6 @@ def _dispatch_timeline(
         dispatch.get("nav_send_forwarded_host_monotonic_ns") if isinstance(dispatch, dict) else None
     )
     accepted_ns = accepted.get("observed_host_monotonic_ns") if accepted else None
-    terminal_ns = terminal.get("observed_host_monotonic_ns") if terminal else None
     return {
         "status": "PASS" if not failures else "FAIL",
         "failures": failures,
@@ -3030,83 +3527,40 @@ def _dispatch_timeline(
     }
 
 
-async def _record_live_evidence(
+async def _wait_for_terminal_relative_window_start(
+    terminal_host_ns: int,
+    *,
+    delay_s: float,
+) -> int:
+    target_ns = terminal_host_ns + int(delay_s * 1_000_000_000)
+    remaining_ns = target_ns - time.monotonic_ns()
+    if remaining_ns > 0:
+        await asyncio.sleep(remaining_ns / 1_000_000_000.0)
+    return time.monotonic_ns()
+
+
+async def _record_final_live_evidence(
     artifact: dict[str, Any],
     options: DifferentialCaptureOptions,
     bridge: RosBridgeClient,
     config: AppConfig,
-    config_path: Path,
-    goal: CanonicalGoal,
-    bound_action: dict[str, Any],
     calibration: GroundTruthCalibration,
     recorders: dict[str, _TopicRecorder],
-    t0: dict[str, Any],
     pose_observations: _PoseObservationRecorder,
+    terminal: dict[str, Any] | None,
+    jenai_result: dict[str, Any] | None,
+    timeline: dict[str, Any],
+    initial_map_identity: object,
 ) -> None:
-    status_before = set(cast(list[str], t0.get("known_goal_ids", [])))
-
-    async def observe_nav_send(
-        actual_goal: CanonicalGoal,
-        tag: str,
-        invoked_ns: int,
-    ) -> dict[str, Any]:
-        del actual_goal, tag
-        await asyncio.sleep(options.preflight_sample_s)
-        return await _collect_dispatch_state(
-            bridge,
-            config,
-            recorders,
-            options,
-            calibration,
-            pose_observations,
-            purpose=PoseLookupPurpose.T1_PRE_DISPATCH,
-            cutoff_host_monotonic_ns=invoked_ns,
-        )
-
-    observed_bridge = _ObservedNavBridge(
-        bridge,
-        simulation_epoch=options.simulation_epoch,
-        expected_goal=goal,
-        on_nav_send=observe_nav_send,
-    )
-    request_ns = time.monotonic_ns()
-    try:
-        terminal, jenai_result = await _dispatch_mode(
-            options,
-            cast(RosBridgeClient, observed_bridge),
-            config,
-            config_path,
-            goal,
-            bound_action,
-        )
-    finally:
-        artifact["dispatch_observations"] = observed_bridge.observations
-        artifact["topic_samples_at_dispatch_end"] = _snapshot_topic_samples(recorders)
-    returned_ns = time.monotonic_ns()
-    dispatch_ns = (
-        observed_bridge.observations[0].get("nav_send_forwarded_host_monotonic_ns")
-        if len(observed_bridge.observations) == 1
-        else request_ns
-    )
-    goal_observations = _new_goal_ids(
-        recorders["action_status"],
-        recorders["clock"],
-        before=status_before,
-        dispatched_at_ns=int(dispatch_ns) if type(dispatch_ns) is int else request_ns,
-        max_age_s=options.max_topic_age_s,
-    )
-    timeline = _dispatch_timeline(
-        observed_bridge.observations,
-        goal_observations,
-        terminal,
-        request_ns=request_ns,
-        returned_ns=returned_ns,
-    )
-    artifact["t1_goal_dispatch"] = timeline
-    artifact["nav2_terminal"] = terminal
-    artifact["jenai_result"] = jenai_result
-
     terminal_ns = terminal.get("observed_host_monotonic_ns") if terminal else None
+    schedule_release_ns = (
+        await _wait_for_terminal_relative_window_start(
+            terminal_ns,
+            delay_s=options.final_window_start_delay_s,
+        )
+        if type(terminal_ns) is int
+        else None
+    )
     final_window = await _sample_final_observation_window(
         bridge,
         config,
@@ -3116,7 +3570,22 @@ async def _record_live_evidence(
         calibration=calibration,
         pose_observations=pose_observations,
     )
+    final_window["scheduled_start_delay_ns"] = int(
+        options.final_window_start_delay_s * 1_000_000_000
+    )
+    final_window["schedule_release_host_monotonic_ns"] = schedule_release_ns
     artifact["final_observation_window"] = final_window
+    post_final_map = await _capture_map_identity_checkpoint(
+        bridge,
+        label="post_final_window",
+        expected=initial_map_identity,
+    )
+    artifact["post_final_window_map_identity_checkpoint"] = post_final_map
+    post_final_runtime = _capture_runtime_stack_checkpoint(
+        cast(dict[str, Any], artifact["runtime_identity"]),
+        label="post_final_window",
+    )
+    artifact["post_final_window_runtime_stack_checkpoint"] = post_final_runtime
     map_samples = cast(list[dict[str, Any]], final_window["map_pose_samples"])
     median = _median_pose(map_samples)
     artifact["final_map_pose_samples"] = map_samples
@@ -3145,8 +3614,214 @@ async def _record_live_evidence(
         and median is not None
         and terminal is not None
         and artifact["execution_status"] != "unknown"
+        and artifact.get("terminal_map_identity_checkpoint", {}).get("status") == "PASS"
+        and post_final_map["status"] == "PASS"
+        and post_final_runtime["status"] == "PASS"
     )
     artifact["overall"] = "captured" if evidence_complete else "insufficient_evidence"
+
+
+def _pre_dispatch_observer(
+    options: DifferentialCaptureOptions,
+    bridge: RosBridgeClient,
+    config: AppConfig,
+    calibration: GroundTruthCalibration,
+    recorders: dict[str, _TopicRecorder],
+    pose_observations: _PoseObservationRecorder,
+    identity: dict[str, Any],
+    initial_map_identity: object,
+) -> Callable[[CanonicalGoal, str, int], Awaitable[dict[str, Any]]]:
+    async def observe_nav_send(
+        actual_goal: CanonicalGoal,
+        tag: str,
+        invoked_ns: int,
+    ) -> dict[str, Any]:
+        del actual_goal, tag
+        await asyncio.sleep(options.preflight_sample_s)
+        state = await _collect_dispatch_state(
+            bridge,
+            config,
+            recorders,
+            options,
+            calibration,
+            pose_observations,
+            purpose=PoseLookupPurpose.T1_PRE_DISPATCH,
+            cutoff_host_monotonic_ns=invoked_ns,
+        )
+        input_continuity = _capture_input_continuity(identity)
+        map_checkpoint = await _capture_map_identity_checkpoint(
+            bridge,
+            label="pre_dispatch",
+            expected=initial_map_identity,
+        )
+        runtime_checkpoint = _capture_runtime_stack_checkpoint(
+            identity,
+            label="pre_dispatch",
+        )
+        state["input_continuity"] = input_continuity
+        state["map_identity_checkpoint"] = map_checkpoint
+        state["runtime_stack_checkpoint"] = runtime_checkpoint
+        continuity_failures = [
+            *cast(list[str], input_continuity["failures"]),
+            *cast(list[str], map_checkpoint["failures"]),
+            *cast(list[str], runtime_checkpoint["failures"]),
+        ]
+        if continuity_failures:
+            state["status"] = "FAIL"
+            state["failures"] = list(
+                dict.fromkeys([*cast(list[str], state.get("failures", [])), *continuity_failures])
+            )
+        return state
+
+    return observe_nav_send
+
+
+def _observed_dispatch_timeline(
+    observed_bridge: _ObservedNavBridge,
+    recorders: dict[str, _TopicRecorder],
+    options: DifferentialCaptureOptions,
+    terminal: dict[str, Any] | None,
+    *,
+    request_ns: int,
+    returned_ns: int,
+) -> dict[str, Any]:
+    dispatch = observed_bridge.observations[0] if len(observed_bridge.observations) == 1 else None
+    dispatch_ns = (
+        dispatch.get("nav_send_forwarded_host_monotonic_ns")
+        if isinstance(dispatch, dict)
+        else request_ns
+    )
+    dispatch_state = dispatch.get("state_before_forward") if isinstance(dispatch, dict) else None
+    status_before = set(
+        cast(list[str], dispatch_state.get("known_goal_ids", []))
+        if isinstance(dispatch_state, dict)
+        else []
+    )
+    goal_observations = _new_goal_ids(
+        recorders["action_status"],
+        recorders["clock"],
+        before=status_before,
+        dispatched_at_ns=int(dispatch_ns) if type(dispatch_ns) is int else request_ns,
+        max_age_s=options.max_topic_age_s,
+    )
+    return _dispatch_timeline(
+        observed_bridge.observations,
+        goal_observations,
+        terminal,
+        request_ns=request_ns,
+        returned_ns=returned_ns,
+    )
+
+
+async def _record_live_evidence(
+    artifact: dict[str, Any],
+    options: DifferentialCaptureOptions,
+    bridge: RosBridgeClient,
+    config: AppConfig,
+    config_path: Path,
+    goal: CanonicalGoal,
+    bound_action: dict[str, Any],
+    calibration: GroundTruthCalibration,
+    recorders: dict[str, _TopicRecorder],
+    pose_observations: _PoseObservationRecorder,
+) -> None:
+    identity = cast(dict[str, Any], artifact["runtime_identity"])
+    initial_map_identity = identity.get("live_map_identity_initial")
+    observe_nav_send = _pre_dispatch_observer(
+        options,
+        bridge,
+        config,
+        calibration,
+        recorders,
+        pose_observations,
+        identity,
+        initial_map_identity,
+    )
+
+    observed_bridge = _ObservedNavBridge(
+        bridge,
+        simulation_epoch=options.simulation_epoch,
+        expected_goal=goal,
+        on_nav_send=observe_nav_send,
+        pose_observations=(
+            pose_observations if options.mode is DifferentialMode.R2_JENAI_NO_RETRY else None
+        ),
+        clock=recorders["clock"],
+    )
+    terminal_map_task: asyncio.Task[dict[str, Any]] | None = None
+
+    def schedule_terminal_map_checkpoint(event: dict[str, Any]) -> None:
+        nonlocal terminal_map_task
+        if terminal_map_task is not None:
+            return
+        event_tag = event.get("tag")
+        if not isinstance(event_tag, str) or not any(
+            observation.get("tag") == event_tag for observation in observed_bridge.observations
+        ):
+            return
+        terminal_map_task = asyncio.create_task(
+            _capture_map_identity_checkpoint(
+                bridge,
+                label="terminal",
+                expected=initial_map_identity,
+            )
+        )
+
+    observed_bridge.on_event("nav_result", schedule_terminal_map_checkpoint)
+    request_ns = time.monotonic_ns()
+    try:
+        terminal, jenai_result = await _dispatch_mode(
+            options,
+            cast(RosBridgeClient, observed_bridge),
+            config,
+            config_path,
+            goal,
+            bound_action,
+        )
+        if jenai_result is not None:
+            jenai_result["endpoint_pose_observation_ids"] = list(
+                observed_bridge.verdict_pose_observation_ids
+            )
+    finally:
+        observed_bridge.off_event("nav_result", schedule_terminal_map_checkpoint)
+        artifact["dispatch_observations"] = observed_bridge.observations
+        artifact["topic_samples_at_dispatch_end"] = _snapshot_topic_samples(recorders)
+    returned_ns = time.monotonic_ns()
+    timeline = _observed_dispatch_timeline(
+        observed_bridge,
+        recorders,
+        options,
+        terminal,
+        request_ns=request_ns,
+        returned_ns=returned_ns,
+    )
+    artifact["t1_goal_dispatch"] = timeline
+    artifact["nav2_terminal"] = terminal
+    artifact["jenai_result"] = jenai_result
+    artifact["terminal_map_identity_checkpoint"] = (
+        await terminal_map_task
+        if terminal_map_task is not None
+        else {
+            "label": "terminal",
+            "status": "FAIL",
+            "observed_host_monotonic_ns": time.monotonic_ns(),
+            "identity": None,
+            "failures": ["nav2_terminal_map_identity_unavailable"],
+        }
+    )
+    await _record_final_live_evidence(
+        artifact,
+        options,
+        bridge,
+        config,
+        calibration,
+        recorders,
+        pose_observations,
+        terminal,
+        jenai_result,
+        timeline,
+        initial_map_identity,
+    )
 
 
 async def _cleanup_halt(
@@ -3217,6 +3892,94 @@ async def _cleanup_bridge_stop(
     return {"status": "PASS"}, []
 
 
+async def _cancel_cleanup_heartbeat(
+    heartbeat: asyncio.Task[None] | None,
+) -> list[dict[str, str]]:
+    if heartbeat is None:
+        return []
+    heartbeat.cancel()
+    try:
+        await heartbeat
+    except asyncio.CancelledError:
+        return []
+    except Exception as exc:
+        return [{"step": "heartbeat", "detail": str(exc)}]
+    return []
+
+
+async def _cleanup_with_replacement_bridge(
+    config: AppConfig,
+    primary_runtime_identity: object,
+) -> dict[str, Any]:
+    """Use one private bridge solely to publish zero and cancel active goals."""
+
+    try:
+        primary = BridgeRuntimeIdentity.from_payload(primary_runtime_identity)
+    except BridgeError as exc:
+        return {
+            "status": "FAIL",
+            "failures": [{"step": "rescue_identity", "detail": str(exc)}],
+            "runtime_identity": None,
+            "identity_compatible": False,
+            "final_halt": {"status": "FAIL", "detail": "Primary bridge identity unavailable."},
+            "bridge_shutdown": {"status": "SKIP"},
+        }
+
+    replacement = RosBridgeClient(domain_id=primary.ros_domain_id)
+    result: dict[str, Any] = {
+        "status": "FAIL",
+        "failures": [],
+        "runtime_identity": None,
+        "identity_compatible": False,
+        "final_halt": {"status": "FAIL", "detail": "Replacement halt was not attempted."},
+        "bridge_shutdown": {"status": "UNCONFIRMED"},
+    }
+    failures = cast(list[dict[str, str]], result["failures"])
+    try:
+        await replacement.configure_safety(
+            watchdog_s=6.0,
+            cmd_vel_topic=config.vehicle.cmd_vel_topic,
+            stamped=config.vehicle.cmd_vel_stamped,
+            pose_jump_threshold_m=config.vehicle.pose_jump_threshold_m,
+            pose_jump_window_s=config.vehicle.pose_jump_window_s,
+        )
+        await replacement.start(timeout=10.0)
+        replacement_identity = await replacement.runtime_identity(pin=True)
+        replacement_payload = replacement_identity.to_payload()
+        result["runtime_identity"] = replacement_payload
+        compatible = (
+            replacement_identity.pid != primary.pid
+            and (
+                replacement_identity.boot_id != primary.boot_id
+                or replacement_identity.process_start_ticks != primary.process_start_ticks
+            )
+            and replacement_identity.launch_nonce != primary.launch_nonce
+            and _pairable_ros_middleware_identity(replacement_payload)
+            == _pairable_ros_middleware_identity(primary_runtime_identity)
+        )
+        result["identity_compatible"] = compatible
+        if not compatible:
+            failures.append(
+                {"step": "rescue_identity", "detail": "replacement_runtime_identity_mismatch"}
+            )
+        else:
+            halt, halt_failures = await _cleanup_halt(
+                replacement,
+                config,
+                motion_attempted=True,
+            )
+            result["final_halt"] = halt
+            failures.extend(halt_failures)
+    except Exception as exc:
+        failures.append({"step": "rescue_bridge", "detail": str(exc)})
+    finally:
+        shutdown, shutdown_failures = await _cleanup_bridge_stop(replacement)
+        result["bridge_shutdown"] = shutdown
+        failures.extend(shutdown_failures)
+    result["status"] = "PASS" if not failures else "FAIL"
+    return result
+
+
 async def _cleanup_live_capture(
     bridge: RosBridgeClient,
     config: AppConfig,
@@ -3224,26 +3987,136 @@ async def _cleanup_live_capture(
     heartbeat: asyncio.Task[None] | None,
     *,
     motion_attempted: bool,
+    primary_runtime_identity: object = None,
 ) -> dict[str, Any]:
-    halt, failures = await _cleanup_halt(bridge, config, motion_attempted=motion_attempted)
-    if heartbeat is not None:
-        heartbeat.cancel()
-        try:
-            await heartbeat
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            failures.append({"step": "heartbeat", "detail": str(exc)})
-    unwatch, unwatch_failures = await _cleanup_unwatch(bridge, watch_ids)
+    primary_halt, primary_halt_failures = await _cleanup_halt(
+        bridge,
+        config,
+        motion_attempted=motion_attempted,
+    )
+    failures = await _cancel_cleanup_heartbeat(heartbeat)
+    rescue: dict[str, Any] | None = None
+    final_halt = primary_halt
+    if motion_attempted and primary_halt.get("status") != "PASS":
+        rescue = await _cleanup_with_replacement_bridge(config, primary_runtime_identity)
+        final_halt = cast(dict[str, Any], rescue["final_halt"])
+        if rescue["status"] != "PASS":
+            failures.extend(primary_halt_failures)
+            failures.extend(cast(list[dict[str, str]], rescue["failures"]))
+    elif primary_halt.get("status") == "FAIL":
+        failures.extend(primary_halt_failures)
+
+    if bridge.running:
+        unwatch, unwatch_failures = await _cleanup_unwatch(bridge, watch_ids)
+    else:
+        unwatch = {
+            "status": "PASS",
+            "failures": [],
+            "detail": "Primary bridge exited; its process-owned watches are gone.",
+        }
+        unwatch_failures = []
     shutdown, shutdown_failures = await _cleanup_bridge_stop(bridge)
     failures.extend(unwatch_failures)
     failures.extend(shutdown_failures)
     return {
         "status": "PASS" if not failures else "FAIL",
         "failures": failures,
-        "final_halt": halt,
+        "final_halt": final_halt,
+        "primary_halt": primary_halt,
+        "rescue_bridge": rescue,
         "unwatch": unwatch,
         "bridge_shutdown": shutdown,
+    }
+
+
+def _map_identity_payload(value: MapIdentityInfo) -> dict[str, Any]:
+    return {
+        "algorithm": value.algorithm,
+        "digest": value.digest,
+        "frame_id": value.frame_id.lstrip("/"),
+        "source": value.source,
+        "geometry": {
+            "width": value.width,
+            "height": value.height,
+            "resolution": value.resolution,
+            "origin_x": value.origin_x,
+            "origin_y": value.origin_y,
+            "origin_yaw": value.origin_yaw,
+        },
+    }
+
+
+def _map_identity_mismatch(expected: object, observed: object) -> bool:
+    return not isinstance(expected, dict) or not isinstance(observed, dict) or expected != observed
+
+
+async def _capture_map_identity_checkpoint(
+    bridge: RosBridgeClient,
+    *,
+    label: str,
+    expected: object,
+) -> dict[str, Any]:
+    observed_ns = time.monotonic_ns()
+    try:
+        observed = _map_identity_payload(await bridge.map_identity(timeout=3.0))
+    except Exception as exc:
+        return {
+            "label": label,
+            "status": "FAIL",
+            "observed_host_monotonic_ns": observed_ns,
+            "identity": None,
+            "failures": ["live_map_identity_unavailable"],
+            "error_type": type(exc).__name__,
+            "error_detail": str(exc),
+        }
+    failures = ["live_map_identity_changed"] if _map_identity_mismatch(expected, observed) else []
+    return {
+        "label": label,
+        "status": "FAIL" if failures else "PASS",
+        "observed_host_monotonic_ns": time.monotonic_ns(),
+        "identity": observed,
+        "failures": failures,
+    }
+
+
+def _capture_input_continuity(identity: dict[str, Any]) -> dict[str, Any]:
+    """Re-observe the immutable inputs without exposing their raw contents."""
+
+    path_bindings = (
+        ("config_path", "config_sha256", "config_changed_since_prepare"),
+        ("locations_path", "locations_sha256", "locations_changed_since_prepare"),
+        ("bridge_script_path", "bridge_script_sha256", "bridge_source_changed_since_review"),
+    )
+    observed_hashes: dict[str, str | None] = {}
+    failures: list[str] = []
+    for path_field, digest_field, failure in path_bindings:
+        raw_path = identity.get(path_field)
+        try:
+            observed = (
+                _sha256(Path(cast(str, raw_path))) if _normalized_absolute_path(raw_path) else None
+            )
+        except OSError:
+            observed = None
+        observed_hashes[digest_field] = observed
+        if not _valid_sha256(observed) or observed != identity.get(digest_field):
+            failures.append(failure)
+
+    source_root = identity.get("source_root")
+    root = Path(cast(str, source_root)) if _normalized_absolute_path(source_root) else None
+    revision = _command_output(["git", "rev-parse", "HEAD"], cwd=root) if root else None
+    dirty_output = _command_output(["git", "status", "--porcelain"], cwd=root) if root else None
+    dirty = None if dirty_output is None else bool(dirty_output)
+    if revision != identity.get("git_sha"):
+        failures.append("source_revision_changed_since_prepare")
+    if dirty != identity.get("git_dirty"):
+        failures.append("source_dirty_state_changed_since_prepare")
+    return {
+        "status": "FAIL" if failures else "PASS",
+        "observed_host_monotonic_ns": time.monotonic_ns(),
+        "observed_hashes": observed_hashes,
+        "observed_git_sha": revision,
+        "observed_git_dirty": dirty,
+        "failures": list(dict.fromkeys(failures)),
     }
 
 
@@ -3252,6 +4125,7 @@ async def _enrich_live_identity(
     identity: dict[str, Any],
 ) -> None:
     live_map = await bridge.map_identity(timeout=3.0)
+    initial_map_identity = _map_identity_payload(live_map)
     identity.update(
         {
             "live_map_algorithm": live_map.algorithm,
@@ -3266,6 +4140,7 @@ async def _enrich_live_identity(
                 "origin_y": live_map.origin_y,
                 "origin_yaw": live_map.origin_yaw,
             },
+            "live_map_identity_initial": initial_map_identity,
         }
     )
     _apply_runtime_fingerprint(identity)
@@ -3340,6 +4215,7 @@ async def _safe_cleanup_live_capture(
     heartbeat: asyncio.Task[None] | None,
     *,
     motion_attempted: bool,
+    primary_runtime_identity: object = None,
 ) -> dict[str, Any]:
     try:
         return await _cleanup_live_capture(
@@ -3348,6 +4224,7 @@ async def _safe_cleanup_live_capture(
             watch_ids,
             heartbeat,
             motion_attempted=motion_attempted,
+            primary_runtime_identity=primary_runtime_identity,
         )
     except Exception as exc:
         return {
@@ -3443,9 +4320,14 @@ async def _finalize_capture(
     watch_ids: list[int],
     heartbeat: asyncio.Task[None] | None,
     motion_attempted: bool,
+    output_reservation: _OutputReservation | None = None,
 ) -> dict[str, Any]:
     interrupted: asyncio.CancelledError | None = None
     if bridge is not None and config is not None:
+        runtime_identity = artifact.get("runtime_identity")
+        primary_runtime_identity = (
+            runtime_identity.get("ros_middleware") if isinstance(runtime_identity, dict) else None
+        )
         cleanup_task = asyncio.create_task(
             _safe_cleanup_live_capture(
                 bridge,
@@ -3453,6 +4335,7 @@ async def _finalize_capture(
                 watch_ids,
                 heartbeat,
                 motion_attempted=motion_attempted,
+                primary_runtime_identity=primary_runtime_identity,
             )
         )
         cleanup, interrupted = await _await_cleanup_despite_cancellation(
@@ -3465,11 +4348,24 @@ async def _finalize_capture(
             artifact["overall_before_cleanup"] = artifact.get("overall")
             artifact["overall"] = "cleanup_failed"
         _record_end_generation(artifact)
+    identity = artifact.get("runtime_identity")
+    if isinstance(identity, dict) and identity.get("source_root"):
+        post_cleanup_continuity = _capture_input_continuity(identity)
+        artifact["post_cleanup_input_continuity"] = post_cleanup_continuity
+        if post_cleanup_continuity["status"] != "PASS" and artifact.get("overall") == "captured":
+            artifact["overall"] = "insufficient_evidence"
     artifact["finished_at"] = _utc_now()
-    persisted = _write_capture_artifact(
-        options.output,
-        artifact,
-    )
+    try:
+        persisted = _write_capture_artifact(
+            options.output,
+            artifact,
+        )
+    except BaseException:
+        if not motion_attempted and output_reservation is not None:
+            output_reservation.release(discard_marker=True)
+        raise
+    if output_reservation is not None:
+        output_reservation.release()
     if interrupted is not None:
         raise interrupted
     return persisted
@@ -3570,7 +4466,6 @@ async def _capture_live_path(
         bound_action,
         calibration,
         recorders,
-        t0,
         pose_observations,
     )
 
@@ -3581,6 +4476,7 @@ async def capture_navigation_differential(
     """Capture one R1 or R2 run and persist every valid request outcome."""
     options = DifferentialCaptureOptions.model_validate(options)
     artifact = _base_artifact(options)
+    output_reservation = _OutputReservation.acquire(options.output)
     resources = _CaptureResources()
     pose_observations = _PoseObservationRecorder()
     cancelled: asyncio.CancelledError | None = None
@@ -3633,6 +4529,7 @@ async def capture_navigation_differential(
             watch_ids=resources.watch_ids,
             heartbeat=resources.heartbeat,
             motion_attempted=resources.motion_attempted,
+            output_reservation=output_reservation,
         )
     if cancelled is not None:
         raise cancelled
@@ -4265,6 +5162,8 @@ def _final_window_evidence_failures(
     start_clock_ns = window.get("start_clock_ns")
     end_clock_ns = window.get("end_clock_ns")
     required_duration_ns = int(contract.final_sample_s * 1_000_000_000)
+    scheduled_delay_ns = int(contract.final_window_start_delay_s * 1_000_000_000)
+    schedule_release_ns = window.get("schedule_release_host_monotonic_ns")
     expected_slack_ns = int(
         min(contract.max_topic_age_s, contract.sample_interval_s * 2.0) * 1_000_000_000
     )
@@ -4298,6 +5197,20 @@ def _final_window_evidence_failures(
             or start_host_ns < terminal_host_ns
             or end_host_ns < start_host_ns,
             "final_window_terminal_binding",
+        ),
+        (
+            scheduled_delay_ns > 0
+            and (
+                type(start_host_ns) is not int
+                or type(terminal_host_ns) is not int
+                or type(schedule_release_ns) is not int
+                or window.get("scheduled_start_delay_ns") != scheduled_delay_ns
+                or schedule_release_ns < terminal_host_ns + scheduled_delay_ns
+                or schedule_release_ns > start_host_ns
+                or start_host_ns - (terminal_host_ns + scheduled_delay_ns)
+                > int(contract.sample_interval_s * 1_000_000_000)
+            ),
+            "final_window_terminal_schedule",
         ),
         (
             type(start_clock_ns) is not int
@@ -4352,7 +5265,11 @@ def _final_window_evidence_failures(
     return list(dict.fromkeys(failures))
 
 
-def _cleanup_evidence_failures(cleanup: object) -> list[str]:
+def _cleanup_evidence_failures(
+    cleanup: object,
+    *,
+    primary_runtime_identity: object = None,
+) -> list[str]:
     if not isinstance(cleanup, dict):
         return ["cleanup_missing"]
     halt = cleanup.get("final_halt")
@@ -4384,7 +5301,216 @@ def _cleanup_evidence_failures(cleanup: object) -> list[str]:
             "cleanup_bridge_shutdown",
         ),
     )
-    return [failure for failed, failure in checks if failed]
+    failures = [failure for failed, failure in checks if failed]
+    rescue = cleanup.get("rescue_bridge")
+    if rescue is None:
+        return failures
+    primary_halt = cleanup.get("primary_halt")
+    if not isinstance(rescue, dict):
+        return [*failures, "cleanup_rescue_schema"]
+    try:
+        primary = BridgeRuntimeIdentity.from_payload(primary_runtime_identity)
+        replacement = BridgeRuntimeIdentity.from_payload(rescue.get("runtime_identity"))
+    except BridgeError:
+        return [*failures, "cleanup_rescue_identity"]
+    rescue_halt = rescue.get("final_halt")
+    rescue_shutdown = rescue.get("bridge_shutdown")
+    compatible = (
+        replacement.pid != primary.pid
+        and (
+            replacement.boot_id != primary.boot_id
+            or replacement.process_start_ticks != primary.process_start_ticks
+        )
+        and replacement.launch_nonce != primary.launch_nonce
+        and _pairable_ros_middleware_identity(replacement.to_payload())
+        == _pairable_ros_middleware_identity(primary.to_payload())
+    )
+    rescue_checks = (
+        (
+            not isinstance(primary_halt, dict) or primary_halt.get("status") != "FAIL",
+            "cleanup_rescue_without_primary_failure",
+        ),
+        (rescue.get("status") != "PASS", "cleanup_rescue_status"),
+        (rescue.get("failures") not in ([], ()), "cleanup_rescue_failures"),
+        (
+            rescue.get("identity_compatible") is not True or not compatible,
+            "cleanup_rescue_identity",
+        ),
+        (rescue_halt != halt, "cleanup_rescue_halt_binding"),
+        (
+            not isinstance(rescue_shutdown, dict) or rescue_shutdown.get("status") != "PASS",
+            "cleanup_rescue_shutdown",
+        ),
+    )
+    failures.extend(failure for failed, failure in rescue_checks if failed)
+    return failures
+
+
+def _input_continuity_evidence_failures(artifact: dict[str, Any]) -> list[str]:
+    identity = artifact.get("runtime_identity")
+    timeline = artifact.get("t1_goal_dispatch")
+    state = timeline.get("state_before_forward") if isinstance(timeline, dict) else None
+    pre = state.get("input_continuity") if isinstance(state, dict) else None
+    post = artifact.get("post_cleanup_input_continuity")
+    if not isinstance(identity, dict):
+        return ["input_continuity_runtime_identity"]
+    expected_hashes = {
+        field: identity.get(field)
+        for field in ("config_sha256", "locations_sha256", "bridge_script_sha256")
+    }
+    failures: list[str] = []
+    for label, evidence in (("pre_dispatch", pre), ("post_cleanup", post)):
+        if not isinstance(evidence, dict):
+            failures.append(f"{label}_input_continuity_missing")
+            continue
+        observed_ns = evidence.get("observed_host_monotonic_ns")
+        checks = (
+            (evidence.get("status") != "PASS", f"{label}_input_continuity_status"),
+            (evidence.get("failures") not in ([], ()), f"{label}_input_continuity_failures"),
+            (
+                evidence.get("observed_hashes") != expected_hashes,
+                f"{label}_input_continuity_hashes",
+            ),
+            (
+                evidence.get("observed_git_sha") != identity.get("git_sha"),
+                f"{label}_input_continuity_revision",
+            ),
+            (
+                evidence.get("observed_git_dirty") is not identity.get("git_dirty"),
+                f"{label}_input_continuity_dirty",
+            ),
+            (type(observed_ns) is not int or observed_ns < 0, f"{label}_input_continuity_time"),
+        )
+        failures.extend(failure for failed, failure in checks if failed)
+    return failures
+
+
+def _runtime_stack_continuity_failures(artifact: dict[str, Any]) -> list[str]:
+    identity = artifact.get("runtime_identity")
+    timeline = artifact.get("t1_goal_dispatch")
+    state = timeline.get("state_before_forward") if isinstance(timeline, dict) else None
+    pre = state.get("runtime_stack_checkpoint") if isinstance(state, dict) else None
+    post = artifact.get("post_final_window_runtime_stack_checkpoint")
+    if not isinstance(identity, dict):
+        return ["runtime_stack_identity_missing"]
+    expected = _runtime_stack_projection(identity)
+    failures: list[str] = []
+    for label, checkpoint in (("pre_dispatch", pre), ("post_final_window", post)):
+        if not isinstance(checkpoint, dict):
+            failures.append(f"{label}_runtime_stack_missing")
+            continue
+        observed_ns = checkpoint.get("observed_host_monotonic_ns")
+        checks = (
+            (checkpoint.get("label") != label, f"{label}_runtime_stack_label"),
+            (checkpoint.get("status") != "PASS", f"{label}_runtime_stack_status"),
+            (checkpoint.get("failures") not in ([], ()), f"{label}_runtime_stack_failures"),
+            (checkpoint.get("expected") != expected, f"{label}_runtime_stack_expected"),
+            (checkpoint.get("observed") != expected, f"{label}_runtime_stack_changed"),
+            (type(observed_ns) is not int or observed_ns < 0, f"{label}_runtime_stack_time"),
+        )
+        failures.extend(failure for failed, failure in checks if failed)
+
+    dispatch_ns = (
+        timeline.get("nav_send_forwarded_host_monotonic_ns") if isinstance(timeline, dict) else None
+    )
+    pre_ns = pre.get("observed_host_monotonic_ns") if isinstance(pre, dict) else None
+    window = artifact.get("final_observation_window")
+    window_end_ns = window.get("end_host_monotonic_ns") if isinstance(window, dict) else None
+    post_ns = post.get("observed_host_monotonic_ns") if isinstance(post, dict) else None
+    if not (type(pre_ns) is int and type(dispatch_ns) is int and pre_ns <= dispatch_ns):
+        failures.append("pre_dispatch_runtime_stack_timing")
+    if not (type(window_end_ns) is int and type(post_ns) is int and window_end_ns <= post_ns):
+        failures.append("post_final_window_runtime_stack_timing")
+    return list(dict.fromkeys(failures))
+
+
+def _valid_map_identity_payload(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    geometry = value.get("geometry")
+    return (
+        value.get("algorithm") == "sha256-occupancy-grid-v1"
+        and _valid_sha256(value.get("digest"))
+        and isinstance(value.get("frame_id"), str)
+        and bool(value.get("frame_id"))
+        and isinstance(value.get("source"), str)
+        and bool(value.get("source"))
+        and isinstance(geometry, dict)
+        and type(geometry.get("width")) is int
+        and geometry["width"] > 0
+        and type(geometry.get("height")) is int
+        and geometry["height"] > 0
+        and all(
+            _finite_number(geometry.get(field))
+            for field in ("resolution", "origin_x", "origin_y", "origin_yaw")
+        )
+        and float(geometry["resolution"]) > 0.0
+    )
+
+
+def _map_identity_continuity_failures(artifact: dict[str, Any]) -> list[str]:
+    identity = artifact.get("runtime_identity")
+    timeline = artifact.get("t1_goal_dispatch")
+    state = timeline.get("state_before_forward") if isinstance(timeline, dict) else None
+    pre = state.get("map_identity_checkpoint") if isinstance(state, dict) else None
+    terminal_checkpoint = artifact.get("terminal_map_identity_checkpoint")
+    post = artifact.get("post_final_window_map_identity_checkpoint")
+    if not isinstance(identity, dict):
+        return ["map_identity_runtime_identity"]
+    expected = identity.get("live_map_identity_initial")
+    failures: list[str] = []
+    if not _valid_map_identity_payload(expected):
+        failures.append("initial_map_identity_invalid")
+    elif isinstance(expected, dict) and (
+        expected.get("digest") != identity.get("live_map_sha256")
+        or expected.get("frame_id") != identity.get("live_map_frame")
+    ):
+        failures.append("initial_map_identity_alias_mismatch")
+    for label, checkpoint in (
+        ("pre_dispatch", pre),
+        ("terminal", terminal_checkpoint),
+        ("post_final_window", post),
+    ):
+        if not isinstance(checkpoint, dict):
+            failures.append(f"{label}_map_identity_missing")
+            continue
+        observed_ns = checkpoint.get("observed_host_monotonic_ns")
+        checks = (
+            (checkpoint.get("label") != label, f"{label}_map_identity_label"),
+            (checkpoint.get("status") != "PASS", f"{label}_map_identity_status"),
+            (checkpoint.get("failures") not in ([], ()), f"{label}_map_identity_failures"),
+            (checkpoint.get("identity") != expected, f"{label}_map_identity_changed"),
+            (type(observed_ns) is not int or observed_ns < 0, f"{label}_map_identity_time"),
+        )
+        failures.extend(failure for failed, failure in checks if failed)
+
+    dispatch_ns = (
+        timeline.get("nav_send_forwarded_host_monotonic_ns") if isinstance(timeline, dict) else None
+    )
+    pre_ns = pre.get("observed_host_monotonic_ns") if isinstance(pre, dict) else None
+    terminal = artifact.get("nav2_terminal")
+    terminal_ns = terminal.get("observed_host_monotonic_ns") if isinstance(terminal, dict) else None
+    terminal_checkpoint_ns = (
+        terminal_checkpoint.get("observed_host_monotonic_ns")
+        if isinstance(terminal_checkpoint, dict)
+        else None
+    )
+    window = artifact.get("final_observation_window")
+    window_start_ns = window.get("start_host_monotonic_ns") if isinstance(window, dict) else None
+    window_end_ns = window.get("end_host_monotonic_ns") if isinstance(window, dict) else None
+    post_ns = post.get("observed_host_monotonic_ns") if isinstance(post, dict) else None
+    if not (type(pre_ns) is int and type(dispatch_ns) is int and pre_ns <= dispatch_ns):
+        failures.append("pre_dispatch_map_identity_timing")
+    if not (
+        type(terminal_ns) is int
+        and type(terminal_checkpoint_ns) is int
+        and type(window_start_ns) is int
+        and type(window_end_ns) is int
+        and type(post_ns) is int
+        and terminal_ns <= terminal_checkpoint_ns <= window_start_ns <= window_end_ns <= post_ns
+    ):
+        failures.append("terminal_to_post_final_map_identity_timing")
+    return list(dict.fromkeys(failures))
 
 
 def _accepted_goal_observation(timeline: dict[str, Any]) -> dict[str, Any] | None:
@@ -4563,7 +5689,7 @@ def _lifecycle_evidence_failures(artifact: dict[str, Any]) -> list[str]:
         (any(type(value) is not int for value in ordered), "lifecycle_timestamp_missing"),
         (not _nondecreasing_ints(*ordered), "lifecycle_timestamp_order"),
         (
-            not _between_int(accepted_ns, forwarded_ns, returned_ns),
+            not _between_int(accepted_ns, forwarded_ns, terminal_ns),
             "goal_status_observation_order",
         ),
         (
@@ -4761,6 +5887,7 @@ def _offline_state_options(
         reset_policy=ResetPolicy(str(artifact.get("reset_policy"))),
         preflight_sample_s=contract.preflight_sample_s,
         final_sample_s=contract.final_sample_s,
+        final_window_start_delay_s=contract.final_window_start_delay_s,
         sample_interval_s=contract.sample_interval_s,
         max_start_speed_mps=contract.max_start_speed_mps,
         max_start_yaw_rate_rps=contract.max_start_yaw_rate_rps,
@@ -4886,15 +6013,20 @@ def _raw_state_failures(
     )
     failures: list[str] = []
     for label, stored, purpose in states:
+        sensor_state = copy.deepcopy(stored) if isinstance(stored, dict) else stored
+        if isinstance(sensor_state, dict):
+            sensor_state.pop("input_continuity", None)
+            sensor_state.pop("map_identity_checkpoint", None)
+            sensor_state.pop("runtime_stack_checkpoint", None)
         rederived = _rederived_state(
-            stored,
+            sensor_state,
             recorders=dispatch,
             pose_observations=pose_observations,
             expected_purpose=purpose,
             options=options,
             ground_truth_calibration=ground_truth_calibration,
         )
-        if rederived is None or rederived != stored:
+        if rederived is None or rederived != sensor_state:
             failures.append(f"{label}_not_derived_from_raw")
     forwarded_ns = (
         timeline.get("nav_send_forwarded_host_monotonic_ns") if isinstance(timeline, dict) else None
@@ -4929,6 +6061,11 @@ def _pose_observation_failures(
             observation.frame_id.lstrip("/") != expected_frame
             or observation.base_frame.lstrip("/") != expected_base,
             "pose_observation_frame_mismatch",
+        ),
+        (
+            observation.purpose is PoseLookupPurpose.R2_COMPLETION_VERDICT
+            and (observation.request_clock_ns is None or observation.completed_clock_ns is None),
+            "r2_endpoint_pose_clock_missing",
         ),
         (
             observation.request_clock_ns is not None
@@ -5005,7 +6142,18 @@ def _pose_observation_reference_failures(
         else []
     )
     final_ids = [item for item in raw_final_ids if isinstance(item, str)]
-    referenced = {item for item in (t0_id, t1_id, *final_ids) if isinstance(item, str)}
+    result = artifact.get("jenai_result")
+    raw_endpoint_ids = (
+        result.get("endpoint_pose_observation_ids") if isinstance(result, dict) else []
+    )
+    endpoint_ids = (
+        [item for item in raw_endpoint_ids if isinstance(item, str)]
+        if isinstance(raw_endpoint_ids, list)
+        else []
+    )
+    referenced = {
+        item for item in (t0_id, t1_id, *endpoint_ids, *final_ids) if isinstance(item, str)
+    }
     purpose_counts = {
         purpose: sum(observation.purpose is purpose for observation in index.values())
         for purpose in PoseLookupPurpose
@@ -5025,6 +6173,13 @@ def _pose_observation_reference_failures(
             or any(item not in index for item in final_ids),
             "final_pose_observation_references",
         ),
+        (
+            not isinstance(raw_endpoint_ids, list)
+            or len(endpoint_ids) != len(raw_endpoint_ids)
+            or len(endpoint_ids) != len(set(endpoint_ids))
+            or any(item not in index for item in endpoint_ids),
+            "r2_endpoint_pose_observation_references",
+        ),
         (referenced != set(index), "pose_observation_unreferenced_or_missing"),
         (purpose_counts[PoseLookupPurpose.T0_START] != 1, "t0_pose_observation_count"),
         (
@@ -5032,8 +6187,57 @@ def _pose_observation_reference_failures(
             "t1_pose_observation_count",
         ),
         (purpose_counts[PoseLookupPurpose.FINAL_WINDOW] != len(final_ids), "final_pose_count"),
+        (
+            purpose_counts[PoseLookupPurpose.R2_COMPLETION_VERDICT] != len(endpoint_ids),
+            "r2_endpoint_pose_count",
+        ),
     )
     return [failure for failed, failure in checks if failed]
+
+
+def _r2_verdict_pose_failures(
+    artifact: dict[str, Any],
+    index: dict[str, PoseLookupObservation],
+) -> list[str]:
+    result = artifact.get("jenai_result")
+    raw_ids = result.get("endpoint_pose_observation_ids") if isinstance(result, dict) else []
+    ids = raw_ids if isinstance(raw_ids, list) else []
+    endpoint_observations = [index[item] for item in ids if isinstance(item, str) and item in index]
+    if artifact.get("mode") == DifferentialMode.R1_BRIDGE_NAV2.value:
+        return ["r1_has_r2_verdict_pose"] if ids or endpoint_observations else []
+    terminal = artifact.get("nav2_terminal")
+    timeline = artifact.get("t1_goal_dispatch")
+    attempts = result.get("navigation_attempts") if isinstance(result, dict) else None
+    attempt_tag = (
+        attempts[0].get("tag")
+        if isinstance(attempts, list) and len(attempts) == 1 and isinstance(attempts[0], dict)
+        else None
+    )
+    terminal_status = terminal.get("status") if isinstance(terminal, dict) else None
+    terminal_ns = terminal.get("observed_host_monotonic_ns") if isinstance(terminal, dict) else None
+    return_ns = timeline.get("return_host_monotonic_ns") if isinstance(timeline, dict) else None
+    expected_count = 1 if terminal_status == "succeeded" else 0
+    failures: list[str] = []
+    if len(ids) != expected_count or len(endpoint_observations) != expected_count:
+        failures.append("r2_endpoint_pose_count")
+    for observation in endpoint_observations:
+        if (
+            observation.purpose is not PoseLookupPurpose.R2_COMPLETION_VERDICT
+            or observation.attempt_tag != attempt_tag
+        ):
+            failures.append("r2_endpoint_pose_attempt_binding")
+        if not (
+            type(terminal_ns) is int
+            and type(return_ns) is int
+            and terminal_ns
+            <= observation.request_host_monotonic_ns
+            <= observation.completed_host_monotonic_ns
+            <= return_ns
+        ):
+            failures.append("r2_endpoint_pose_timing")
+        if artifact.get("execution_status") == "succeeded" and observation.status != "SUCCESS":
+            failures.append("r2_success_without_endpoint_pose")
+    return list(dict.fromkeys(failures))
 
 
 def _raw_goal_uuid_failures(
@@ -5043,10 +6247,10 @@ def _raw_goal_uuid_failures(
     contract: DifferentialMeasurementContract,
 ) -> list[str]:
     timeline = artifact.get("t1_goal_dispatch")
-    t0 = artifact.get("t0_scenario_start")
-    if not isinstance(timeline, dict) or not isinstance(t0, dict):
+    state = timeline.get("state_before_forward") if isinstance(timeline, dict) else None
+    if not isinstance(timeline, dict) or not isinstance(state, dict):
         return ["goal_uuid_not_derived_from_raw"]
-    before = t0.get("known_goal_ids")
+    before = state.get("known_goal_ids")
     dispatched_at = timeline.get("nav_send_forwarded_host_monotonic_ns")
     if not isinstance(before, list) or type(dispatched_at) is not int:
         return ["goal_uuid_not_derived_from_raw"]
@@ -5257,6 +6461,7 @@ def _raw_evidence_failures(
     if pose_observations is None:
         return pose_failures
     pose_failures.extend(_pose_observation_reference_failures(artifact, pose_observations))
+    pose_failures.extend(_r2_verdict_pose_failures(artifact, pose_observations))
     identity = artifact.get("runtime_identity")
     odom_topic = identity.get("controller_odom_topic") if isinstance(identity, dict) else None
     expected_streams: dict[str, dict[str, str | None]] = {
@@ -5395,7 +6600,15 @@ def _comparison_eligibility_failure(artifact: dict[str, Any], side: str) -> str 
             final_ground_truth_pose=final_ground_truth_pose,
         )
     )
-    failures.extend(_cleanup_evidence_failures(artifact.get("cleanup")))
+    failures.extend(
+        _cleanup_evidence_failures(
+            artifact.get("cleanup"),
+            primary_runtime_identity=identity_dict.get("ros_middleware"),
+        )
+    )
+    failures.extend(_input_continuity_evidence_failures(artifact))
+    failures.extend(_runtime_stack_continuity_failures(artifact))
+    failures.extend(_map_identity_continuity_failures(artifact))
     failures.extend(_mode_specific_evidence_failures(artifact))
     failures.extend(
         _raw_evidence_failures(
@@ -5483,6 +6696,26 @@ def _state_pairing_gate(
     )
 
 
+def _terminal_relative_window_offset_delta_ns(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> int:
+    offsets: list[int] = []
+    for artifact in (left, right):
+        terminal = artifact.get("nav2_terminal")
+        window = artifact.get("final_observation_window")
+        terminal_ns = (
+            terminal.get("observed_host_monotonic_ns") if isinstance(terminal, dict) else None
+        )
+        window_start_ns = (
+            window.get("start_host_monotonic_ns") if isinstance(window, dict) else None
+        )
+        if type(terminal_ns) is not int or type(window_start_ns) is not int:
+            return sys.maxsize
+        offsets.append(window_start_ns - terminal_ns)
+    return abs(offsets[0] - offsets[1])
+
+
 def _pairing_gate_from_artifacts(
     left: dict[str, Any],
     right: dict[str, Any],
@@ -5553,6 +6786,11 @@ def _pairing_gate_from_artifacts(
                 DifferentialMode.R2_JENAI_NO_RETRY.value,
             },
             "differential_modes",
+        ),
+        (
+            _terminal_relative_window_offset_delta_ns(left, right)
+            > int(contract.sample_interval_s * 1_000_000_000),
+            "final_window_terminal_offset",
         ),
     )
     metadata_failures = tuple(failure for failed, failure in metadata_checks if failed)
@@ -5631,7 +6869,11 @@ def compare_differential_artifacts(
         "included": gate.status is PairingGate.PASSED and excluded.isdisjoint(classifications),
         "pairing_gate": gate.model_dump(mode="json"),
         "classifications": classifications,
-        "detail": None,
+        "detail": (
+            "Pairing gate failed: " + ", ".join(gate.failures)
+            if gate.status is PairingGate.FAILED
+            else None
+        ),
     }
 
 

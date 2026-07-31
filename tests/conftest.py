@@ -24,6 +24,9 @@ def _differential_middleware_identity() -> dict[str, object]:
     descriptor: dict[str, object] = {
         "schema_version": 1,
         "pid": 4242,
+        "launch_nonce": "a" * 32,
+        "boot_id": "12345678-1234-5678-1234-567812345678",
+        "process_start_ticks": 12345,
         "rmw_implementation_requested": None,
         "rmw_implementation_effective": "rmw_fastrtps_cpp",
         "python_executable": "/usr/bin/python3.12",
@@ -32,6 +35,8 @@ def _differential_middleware_identity() -> dict[str, object]:
         "dds_config_mode": "middleware_default",
         "dds_bindings": {},
         "dds_config_sha256": _canonical_fixture_sha256({}),
+        "ros_environment_bindings": {},
+        "ros_environment_sha256": _canonical_fixture_sha256({}),
     }
     return {**descriptor, "descriptor_sha256": _canonical_fixture_sha256(descriptor)}
 
@@ -54,6 +59,20 @@ def _differential_runtime_identity(runtime: str) -> dict[str, object]:
 
     git_sha = "1" * 40
     source_root = "/tmp/JenAI-reviewed"
+    map_identity = {
+        "algorithm": "sha256-occupancy-grid-v1",
+        "digest": "b" * 64,
+        "frame_id": "map",
+        "source": "/map",
+        "geometry": {
+            "width": 100,
+            "height": 100,
+            "resolution": 0.05,
+            "origin_x": -1.0,
+            "origin_y": -1.0,
+            "origin_yaw": 0.0,
+        },
+    }
     generation = {
         "boot_id": "12345678-1234-5678-1234-567812345678",
         "session": "nav2",
@@ -86,15 +105,19 @@ def _differential_runtime_identity(runtime: str) -> dict[str, object]:
         "expected_git_dirty": False,
         "reviewed_git_sha": git_sha,
         "jenai_import_path": f"{source_root}/src/jenai/__init__.py",
+        "bridge_script_path": f"{source_root}/src/jenai/bridge/ros_bridge.py",
+        "bridge_script_sha256": "f" * 64,
         "python_executable": "/usr/bin/python3.12",
         "python_version": "3.12.3",
         "ros_middleware": _differential_middleware_identity(),
         "deployment_mode": "simulation",
         "config_sha256": "a" * 64,
+        "config_path": f"{source_root}/config.toml",
         "site_id": runtime,
         "site_map_sha256": "b" * 64,
         "site_locations_sha256": "c" * 64,
         "locations_sha256": "c" * 64,
+        "locations_path": f"{source_root}/locations.toml",
         "nav_params_sha256": "d" * 64,
         "scene_sha256": "e" * 64,
         "live_scene_sha256": "e" * 64,
@@ -102,6 +125,7 @@ def _differential_runtime_identity(runtime: str) -> dict[str, object]:
         "site_map_frame": "map",
         "robot_base_frame": "base_link",
         "live_map_frame": "map",
+        "live_map_identity_initial": map_identity,
         "bridge_domain_id": "7",
         "controller_lifecycle": "active [3]",
         "planner_lifecycle": "active [3]",
@@ -113,6 +137,12 @@ def _differential_runtime_identity(runtime: str) -> dict[str, object]:
             "/bt_navigator": 1,
         },
         "navigate_to_pose_action_count": 1,
+        "navigate_to_pose_server_providers": [
+            {
+                "node": "/bt_navigator",
+                "action_type": "nav2_msgs/action/NavigateToPose",
+            }
+        ],
         "controller_odom_topic": "/chassis/odom",
         "nav2_tmux_session": "nav2",
         "nav2_process_generation": generation,
@@ -324,11 +354,13 @@ def _pose_lookup_observation(
     clock_ns: int,
     x: float,
     y: float,
+    attempt_tag: str | None = None,
 ) -> dict[str, object]:
     return {
         "observation_id": observation_id,
         "sequence": sequence,
         "purpose": purpose,
+        "attempt_tag": attempt_tag,
         "request_host_monotonic_ns": host_ns,
         "completed_host_monotonic_ns": host_ns,
         "request_clock_ns": clock_ns - 2,
@@ -466,6 +498,51 @@ def differential_artifact_factory():
             source_stamp_ns=3_000_000_000,
             map_pose_observation_id="pose-t1",
         )
+        runtime_identity = _differential_runtime_identity(runtime)
+        expected_hashes = {
+            field: runtime_identity[field]
+            for field in ("config_sha256", "locations_sha256", "bridge_script_sha256")
+        }
+        input_continuity = {
+            "status": "PASS",
+            "observed_host_monotonic_ns": 137,
+            "observed_hashes": expected_hashes,
+            "observed_git_sha": runtime_identity["git_sha"],
+            "observed_git_dirty": False,
+            "failures": [],
+        }
+        map_identity = deepcopy(runtime_identity["live_map_identity_initial"])
+        runtime_stack = {
+            field: deepcopy(runtime_identity[field])
+            for field in (
+                "node_name_counts",
+                "navigate_to_pose_action_count",
+                "navigate_to_pose_server_providers",
+                "controller_odom_topic",
+                "nav2_tmux_session",
+                "nav2_process_generation",
+                "controller_lifecycle",
+                "planner_lifecycle",
+                "bt_navigator_lifecycle",
+                "runtime_parameter_sha256",
+            )
+        }
+        t1_state["input_continuity"] = input_continuity
+        t1_state["map_identity_checkpoint"] = {
+            "label": "pre_dispatch",
+            "status": "PASS",
+            "observed_host_monotonic_ns": 138,
+            "identity": deepcopy(map_identity),
+            "failures": [],
+        }
+        t1_state["runtime_stack_checkpoint"] = {
+            "label": "pre_dispatch",
+            "status": "PASS",
+            "observed_host_monotonic_ns": 139,
+            "expected": deepcopy(runtime_stack),
+            "observed": deepcopy(runtime_stack),
+            "failures": [],
+        }
         raw_dispatch, raw_complete = _raw_topic_samples(final_x)
         amcl_samples = _differential_amcl_samples(final_x)
         odom_samples = _differential_odom_samples(final_x)
@@ -486,6 +563,23 @@ def differential_artifact_factory():
             }
             for index, stamp in enumerate(map_clock_stamps)
         ]
+        endpoint_pose_observations = (
+            [
+                _pose_lookup_observation(
+                    observation_id="pose-r2-verdict",
+                    sequence=2,
+                    purpose="r2_completion_verdict",
+                    host_ns=162,
+                    clock_ns=4_800_000_000,
+                    x=final_x,
+                    y=2.0,
+                    attempt_tag="attempt-1",
+                )
+            ]
+            if mode == "R2_jenai_no_retry"
+            else []
+        )
+        final_sequence_offset = 3 if endpoint_pose_observations else 2
         pose_observations = [
             _pose_lookup_observation(
                 observation_id="pose-t0",
@@ -505,10 +599,11 @@ def differential_artifact_factory():
                 x=0.0,
                 y=0.0,
             ),
+            *endpoint_pose_observations,
             *[
                 _pose_lookup_observation(
                     observation_id=f"pose-final-{index}",
-                    sequence=index + 2,
+                    sequence=index + final_sequence_offset,
                     purpose="final_window",
                     host_ns=170 + (index * 60) // 9,
                     clock_ns=stamp,
@@ -529,6 +624,7 @@ def differential_artifact_factory():
             "measurement_contract": {
                 "preflight_sample_s": 1.0,
                 "final_sample_s": 2.0,
+                "final_window_start_delay_s": 0.0,
                 "sample_interval_s": 0.2,
                 "max_topic_age_s": 1.0,
                 "max_calibration_residual_m": 0.02,
@@ -544,7 +640,7 @@ def differential_artifact_factory():
             },
             "started_at": "2026-07-31T00:00:00+00:00",
             "finished_at": "2026-07-31T00:01:00+00:00",
-            "runtime_identity": _differential_runtime_identity(runtime),
+            "runtime_identity": runtime_identity,
             "pose_observations": pose_observations,
             "topic_stream_contract": {
                 "clock": {"topic": "/clock", "message_type": "rosgraph_msgs/msg/Clock"},
@@ -640,6 +736,32 @@ def differential_artifact_factory():
                 "unwatch": {"status": "PASS", "failures": []},
                 "bridge_shutdown": {"status": "PASS"},
             },
+            "terminal_map_identity_checkpoint": {
+                "label": "terminal",
+                "status": "PASS",
+                "observed_host_monotonic_ns": 165,
+                "identity": deepcopy(map_identity),
+                "failures": [],
+            },
+            "post_final_window_map_identity_checkpoint": {
+                "label": "post_final_window",
+                "status": "PASS",
+                "observed_host_monotonic_ns": 235,
+                "identity": deepcopy(map_identity),
+                "failures": [],
+            },
+            "post_final_window_runtime_stack_checkpoint": {
+                "label": "post_final_window",
+                "status": "PASS",
+                "observed_host_monotonic_ns": 236,
+                "expected": deepcopy(runtime_stack),
+                "observed": deepcopy(runtime_stack),
+                "failures": [],
+            },
+            "post_cleanup_input_continuity": {
+                **input_continuity,
+                "observed_host_monotonic_ns": 250,
+            },
             "final_map_pose_median": {"x": final_x, "y": 2.0, "yaw": 0.0},
             "final_map_pose_samples": deepcopy(map_pose_attempts),
             "ground_truth_samples": [],
@@ -652,6 +774,7 @@ def differential_artifact_factory():
             artifact["jenai_result"] = {
                 "execution_status": status,
                 "effective_experimental_config": {"nav_endpoint_retry_limit": 0},
+                "endpoint_pose_observation_ids": ["pose-r2-verdict"],
                 "navigation_attempts": [{"tag": "attempt-1"}],
                 "observed_nav_results": [
                     {

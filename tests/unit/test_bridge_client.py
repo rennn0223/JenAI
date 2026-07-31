@@ -96,6 +96,55 @@ def test_bridge_stop_awaits_reader_and_reaps_transport(fake_bridge) -> None:
     )
 
 
+def test_bridge_stop_failure_prevents_respawn_until_process_is_reaped(
+    monkeypatch,
+) -> None:
+    class FakeStdin:
+        def write(self, _payload: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+    class NeverReapedProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.stdin = FakeStdin()
+            self.kill_called = False
+
+        async def wait(self) -> int:
+            raise TimeoutError
+
+        def kill(self) -> None:
+            self.kill_called = True
+
+    async def run() -> None:
+        client = RosBridgeClient()
+        process = NeverReapedProcess()
+        client._proc = process  # type: ignore[assignment]
+        spawn_called = False
+
+        async def spawn(_timeout: float) -> None:
+            nonlocal spawn_called
+            spawn_called = True
+
+        monkeypatch.setattr(client, "_spawn", spawn)
+        monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+        with pytest.raises(BridgeError, match="terminate.*reap"):
+            await client.stop()
+
+        assert process.kill_called
+        assert client._proc is process
+        with pytest.raises(BridgeError, match="unreaped"):
+            await client.start()
+        with pytest.raises(BridgeError, match="unreaped"):
+            await client.request("ping")
+        assert not spawn_called
+
+    asyncio.run(run())
+
+
 def test_bridge_pose_roundtrip(fake_bridge) -> None:
     async def run() -> None:
         client = RosBridgeClient()
@@ -902,6 +951,7 @@ def _canonical_sha256(payload: object) -> str:
 def _runtime_identity_payload(
     *,
     pid: object = 4242,
+    launch_nonce: object = "a" * 32,
     requested_rmw: object = None,
     effective_rmw: object = "rmw_fastrtps_cpp",
     ros_domain_id: object = 7,
@@ -909,6 +959,9 @@ def _runtime_identity_payload(
     descriptor: dict[str, object] = {
         "schema_version": 1,
         "pid": pid,
+        "launch_nonce": launch_nonce,
+        "boot_id": "12345678-1234-5678-1234-567812345678",
+        "process_start_ticks": 987654,
         "python_executable": "/usr/bin/python3.12",
         "python_version": "3.12.3",
         "rmw_implementation_requested": requested_rmw,
@@ -917,6 +970,10 @@ def _runtime_identity_payload(
         "dds_config_mode": "middleware_default",
         "dds_bindings": {},
         "dds_config_sha256": ("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"),
+        "ros_environment_bindings": {},
+        "ros_environment_sha256": (
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        ),
     }
     return {**descriptor, "descriptor_sha256": _canonical_sha256(descriptor)}
 
@@ -930,6 +987,7 @@ def _ready_identity_bridge_body() -> str:
         "import hashlib, json, os, sys\n"
         f"identity = {descriptor!r}\n"
         "identity['pid'] = os.getpid()\n"
+        "identity['launch_nonce'] = os.environ['JENAI_BRIDGE_LAUNCH_NONCE']\n"
         "encoded = json.dumps(identity, allow_nan=False, ensure_ascii=False, "
         "separators=(',', ':'), sort_keys=True).encode('utf-8')\n"
         "identity['descriptor_sha256'] = hashlib.sha256(encoded).hexdigest()\n"
@@ -955,6 +1013,9 @@ def _environment_identity_bridge_body() -> str:
         "identity = {\n"
         "    'schema_version': 1,\n"
         "    'pid': os.getpid(),\n"
+        "    'launch_nonce': os.environ['JENAI_BRIDGE_LAUNCH_NONCE'],\n"
+        "    'boot_id': '12345678-1234-5678-1234-567812345678',\n"
+        "    'process_start_ticks': 987654,\n"
         "    'python_executable': sys.executable,\n"
         "    'python_version': platform.python_version(),\n"
         "    'rmw_implementation_requested': rmw,\n"
@@ -963,6 +1024,9 @@ def _environment_identity_bridge_body() -> str:
         "    'dds_config_mode': 'middleware_default',\n"
         "    'dds_bindings': {},\n"
         "    'dds_config_sha256': "
+        "'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',\n"
+        "    'ros_environment_bindings': {},\n"
+        "    'ros_environment_sha256': "
         "'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',\n"
         "}\n"
         "encoded = json.dumps(identity, allow_nan=False, ensure_ascii=False, "
@@ -1002,6 +1066,9 @@ def test_bridge_enriched_ready_exposes_actual_typed_runtime_identity(
             assert isinstance(identity, client_module.BridgeRuntimeIdentity)
             assert client._proc is not None
             assert identity.pid == client._proc.pid
+            assert identity.launch_nonce == client._expected_launch_nonce
+            assert identity.boot_id == "12345678-1234-5678-1234-567812345678"
+            assert identity.process_start_ticks == 987654
             assert identity.python_executable == "/usr/bin/python3.12"
             assert identity.rmw_implementation_effective == "rmw_fastrtps_cpp"
             assert identity.ros_domain_id == 7
@@ -1034,6 +1101,9 @@ def test_bridge_bare_ready_remains_ping_compatible_but_has_no_explicit_identity(
         {"schema_version": 2},
         {"pid": True},
         {"pid": 0},
+        {"launch_nonce": "not-a-nonce"},
+        {"boot_id": "not-a-boot-id"},
+        {"process_start_ticks": 0},
         {"python_executable": "python3"},
         {"python_version": "3.12"},
         {"rmw_implementation_requested": ""},
@@ -1054,6 +1124,12 @@ def test_bridge_bare_ready_remains_ping_compatible_but_has_no_explicit_identity(
                 }
             },
         },
+        {
+            "ros_environment_bindings": {
+                "LD_PRELOAD": {"kind": "environment_value", "sha256": "a" * 64}
+            }
+        },
+        {"ros_environment_sha256": "a" * 64},
         {"dds_config_sha256": "a" * 64},
         {"descriptor_sha256": "a" * 64},
     ],
@@ -1071,6 +1147,53 @@ def test_bridge_runtime_identity_rejects_malformed_schema_and_bindings(
 
     with pytest.raises(BridgeError, match="runtime identity"):
         client_module.BridgeRuntimeIdentity.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("forgery", "expected_error"),
+    [("launch_nonce", "launch nonce"), ("pid", "pid does not match")],
+)
+def test_bridge_runtime_identity_rejects_instance_not_bound_to_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forgery: str,
+    expected_error: str,
+) -> None:
+    descriptor = _runtime_identity_payload(launch_nonce="b" * 32)
+    descriptor.pop("descriptor_sha256")
+    bind_pid = "" if forgery == "pid" else "identity['pid'] = os.getpid()\n"
+    bind_nonce = (
+        ""
+        if forgery == "launch_nonce"
+        else "identity['launch_nonce'] = os.environ['JENAI_BRIDGE_LAUNCH_NONCE']\n"
+    )
+    body = (
+        "import hashlib, json, os, sys\n"
+        f"identity = {descriptor!r}\n"
+        f"{bind_pid}"
+        f"{bind_nonce}"
+        "encoded = json.dumps(identity, allow_nan=False, ensure_ascii=False, "
+        "separators=(',', ':'), sort_keys=True).encode('utf-8')\n"
+        "identity['descriptor_sha256'] = hashlib.sha256(encoded).hexdigest()\n"
+        "sys.stdout.write(json.dumps({'event': 'ready', 'runtime_identity': identity}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "for _line in sys.stdin:\n"
+        "    break\n"
+    )
+    monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", _script(tmp_path, body))
+    monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    async def run() -> None:
+        client = RosBridgeClient(domain_id=7)
+        try:
+            await client.start()
+            with pytest.raises(BridgeError, match=expected_error):
+                await client.runtime_identity()
+        finally:
+            await client.stop()
+
+    asyncio.run(run())
 
 
 def test_bridge_pinned_runtime_identity_rejects_respawn_drift(

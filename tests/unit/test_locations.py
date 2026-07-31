@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+
 import pytest
 
 from jenai.adapters.locations import (
@@ -8,6 +11,7 @@ from jenai.adapters.locations import (
     ensure_locations_file,
     find_location,
     load_locations,
+    load_locations_snapshot,
     save_locations,
 )
 from jenai.schemas import Location, Pose2D
@@ -45,6 +49,30 @@ def test_save_and_load_round_trip(tmp_path) -> None:
     assert loaded[0].pose.x == 1.0
     assert loaded[0].description == "Main engineering building"
     assert loaded[1].description is None
+
+
+def test_locations_snapshot_parses_and_hashes_one_exact_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "locations.toml"
+    first = b'[[locations]]\nname = "Dock"\n[locations.pose]\nx = 0.0\ny = 0.0\nyaw = 0.0\n'
+    second = b'[[locations]]\nname = "Changed"\n[locations.pose]\nx = 1.0\ny = 1.0\nyaw = 0.0\n'
+    reads = iter((first, second))
+    original_read_bytes = Path.read_bytes
+
+    def changing_read_bytes(candidate: Path) -> bytes:
+        if candidate == path:
+            return next(reads)
+        return original_read_bytes(candidate)
+
+    monkeypatch.setattr(Path, "read_bytes", changing_read_bytes)
+
+    snapshot = load_locations_snapshot(path)
+
+    assert snapshot.path == path
+    assert [location.name for location in snapshot.locations] == ["Dock"]
+    assert snapshot.sha256 == hashlib.sha256(first).hexdigest()
+    assert next(reads) == second
 
 
 def test_load_missing_file_raises(tmp_path) -> None:

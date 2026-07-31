@@ -36,6 +36,9 @@ def _middleware_identity(
     descriptor: dict[str, object] = {
         "schema_version": 1,
         "pid": 4242,
+        "launch_nonce": "a" * 32,
+        "boot_id": "12345678-1234-5678-1234-567812345678",
+        "process_start_ticks": 12345,
         "rmw_implementation_requested": requested_rmw,
         "rmw_implementation_effective": effective_rmw,
         "python_executable": "/usr/bin/python3.12",
@@ -44,6 +47,8 @@ def _middleware_identity(
         "dds_config_mode": "middleware_default",
         "dds_bindings": {},
         "dds_config_sha256": dds_config_sha256 or _canonical_sha256({}),
+        "ros_environment_bindings": {},
+        "ros_environment_sha256": _canonical_sha256({}),
     }
     return {
         **descriptor,
@@ -91,7 +96,10 @@ def _target_binding(
     )
     return runner._target_binding(
         requested_query=requested_query,
-        bound_action={"goal": {"name": resolved_name, "id": resolved_id}},
+        bound_action={
+            "capability_id": "navigate",
+            "goal": {"name": resolved_name, "id": resolved_id},
+        },
         goal=bound_goal,
         locations_sha256="c" * 64,
     ).model_dump(mode="json")

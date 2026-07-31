@@ -46,6 +46,9 @@ def _runtime_identity_payload(
     descriptor: dict[str, object] = {
         "schema_version": 1,
         "pid": 4242,
+        "launch_nonce": "a" * 32,
+        "boot_id": "12345678-1234-5678-1234-567812345678",
+        "process_start_ticks": 987654,
         "python_executable": "/usr/bin/python3.12",
         "python_version": "3.12.3",
         "rmw_implementation_requested": requested_rmw,
@@ -54,6 +57,10 @@ def _runtime_identity_payload(
         "dds_config_mode": "middleware_default",
         "dds_bindings": {},
         "dds_config_sha256": ("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"),
+        "ros_environment_bindings": {},
+        "ros_environment_sha256": (
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        ),
     }
     return {**descriptor, "descriptor_sha256": _canonical_sha256(descriptor)}
 
@@ -103,14 +110,26 @@ def test_stdlib_runtime_identity_hashes_file_and_value_bindings_without_disclosu
         "CYCLONEDDS_URI",
         "ROS_AUTOMATIC_DISCOVERY_RANGE",
         "ROS_STATIC_PEERS",
+        "ROS_SETUP",
+        "ROS_LOCALHOST_ONLY",
+        "ROS_SECURITY_ENABLE",
+        "ROS_SECURITY_STRATEGY",
+        "ROS_SECURITY_KEYSTORE",
+        "SROS2_KEYSTORE",
     ):
         monkeypatch.delenv(name, raising=False)
 
-    first = runtime_identity.build_runtime_identity_payload(effective_rmw="rmw_fastrtps_cpp")
+    first = runtime_identity.build_runtime_identity_payload(
+        effective_rmw="rmw_fastrtps_cpp",
+        launch_nonce="a" * 32,
+    )
 
     assert set(first) == {
         "schema_version",
         "pid",
+        "launch_nonce",
+        "boot_id",
+        "process_start_ticks",
         "python_executable",
         "python_version",
         "rmw_implementation_requested",
@@ -119,9 +138,15 @@ def test_stdlib_runtime_identity_hashes_file_and_value_bindings_without_disclosu
         "dds_config_mode",
         "dds_bindings",
         "dds_config_sha256",
+        "ros_environment_bindings",
+        "ros_environment_sha256",
         "descriptor_sha256",
     }
     assert first["pid"] == os.getpid()
+    assert first["launch_nonce"] == "a" * 32
+    assert isinstance(first["boot_id"], str)
+    assert isinstance(first["process_start_ticks"], int)
+    assert first["process_start_ticks"] > 0
     assert first["python_executable"] == sys.executable
     assert first["python_version"] == platform.python_version()
     assert first["rmw_implementation_requested"] == "rmw_fastrtps_cpp"
@@ -143,15 +168,91 @@ def test_stdlib_runtime_identity_hashes_file_and_value_bindings_without_disclosu
     assert str(profile) not in serialized
     assert discovery_secret not in serialized
     assert first["dds_config_sha256"] == _canonical_sha256(bindings)
+    assert first["ros_environment_bindings"] == {}
+    assert first["ros_environment_sha256"] == _canonical_sha256({})
     descriptor = {key: value for key, value in first.items() if key != "descriptor_sha256"}
     assert first["descriptor_sha256"] == _canonical_sha256(descriptor)
 
     profile.write_text("<dds>beta</dds>", encoding="utf-8")
-    second = runtime_identity.build_runtime_identity_payload(effective_rmw="rmw_fastrtps_cpp")
+    second = runtime_identity.build_runtime_identity_payload(
+        effective_rmw="rmw_fastrtps_cpp",
+        launch_nonce="a" * 32,
+    )
 
     assert second["dds_bindings"] != first["dds_bindings"]
     assert second["dds_config_sha256"] != first["dds_config_sha256"]
     assert second["descriptor_sha256"] != first["descriptor_sha256"]
+
+
+def test_stdlib_runtime_identity_binds_process_instance_and_ros_launch_environment(
+    tmp_path: Path,
+) -> None:
+    runtime_identity = importlib.import_module("jenai.bridge._runtime_identity")
+    proc_root = tmp_path / "proc"
+    boot_id = "12345678-1234-5678-1234-567812345678"
+    (proc_root / "sys/kernel/random").mkdir(parents=True)
+    (proc_root / "sys/kernel/random/boot_id").write_text(boot_id + "\n", encoding="utf-8")
+    (proc_root / "self").mkdir()
+    # /proc/<pid>/stat field 22 is the process start time in clock ticks.
+    stat_tail = ["S", *(["0"] * 18), "987654"]
+    (proc_root / "self/stat").write_text(
+        f"{os.getpid()} (bridge worker) {' '.join(stat_tail)}\n",
+        encoding="utf-8",
+    )
+    ros_setup = tmp_path / "setup.bash"
+    ros_setup.write_text("export ROS_DISTRO=jazzy\n", encoding="utf-8")
+    environment = {
+        "ROS_DOMAIN_ID": "7",
+        "ROS_SETUP": str(ros_setup),
+        "ROS_LOCALHOST_ONLY": "1",
+        "ROS_SECURITY_ENABLE": "true",
+        "ROS_SECURITY_STRATEGY": "Enforce",
+        "ROS_SECURITY_KEYSTORE": "/private/security-keystore",
+        "SROS2_KEYSTORE": "/private/sros2-keystore",
+    }
+
+    payload = runtime_identity.build_runtime_identity_payload(
+        effective_rmw="rmw_fastrtps_cpp",
+        environment=environment,
+        launch_nonce="a" * 32,
+        proc_root=proc_root,
+    )
+
+    assert payload["launch_nonce"] == "a" * 32
+    assert payload["boot_id"] == boot_id
+    assert payload["process_start_ticks"] == 987654
+    bindings = cast(dict[str, dict[str, str]], payload["ros_environment_bindings"])
+    assert bindings == {
+        "ROS_LOCALHOST_ONLY": {
+            "kind": "environment_value",
+            "sha256": hashlib.sha256(b"1").hexdigest(),
+        },
+        "ROS_SECURITY_ENABLE": {
+            "kind": "environment_value",
+            "sha256": hashlib.sha256(b"true").hexdigest(),
+        },
+        "ROS_SECURITY_KEYSTORE": {
+            "kind": "environment_value",
+            "sha256": hashlib.sha256(b"/private/security-keystore").hexdigest(),
+        },
+        "ROS_SECURITY_STRATEGY": {
+            "kind": "environment_value",
+            "sha256": hashlib.sha256(b"Enforce").hexdigest(),
+        },
+        "ROS_SETUP": {
+            "kind": "file_content",
+            "sha256": hashlib.sha256(ros_setup.read_bytes()).hexdigest(),
+        },
+        "SROS2_KEYSTORE": {
+            "kind": "environment_value",
+            "sha256": hashlib.sha256(b"/private/sros2-keystore").hexdigest(),
+        },
+    }
+    assert payload["ros_environment_sha256"] == _canonical_sha256(bindings)
+    serialized = json.dumps(payload, sort_keys=True)
+    assert str(ros_setup) not in serialized
+    assert "/private/security-keystore" not in serialized
+    assert "/private/sros2-keystore" not in serialized
 
 
 def test_stdlib_runtime_identity_fails_closed_for_unreadable_file_binding(
@@ -163,7 +264,10 @@ def test_stdlib_runtime_identity_fails_closed_for_unreadable_file_binding(
     monkeypatch.setenv("FASTRTPS_DEFAULT_PROFILES_FILE", str(missing_profile))
 
     with pytest.raises(ValueError, match="FASTRTPS_DEFAULT_PROFILES_FILE"):
-        runtime_identity.build_runtime_identity_payload(effective_rmw="rmw_fastrtps_cpp")
+        runtime_identity.build_runtime_identity_payload(
+            effective_rmw="rmw_fastrtps_cpp",
+            launch_nonce="a" * 32,
+        )
 
 
 def test_differential_static_identity_does_not_run_a_second_middleware_probe(

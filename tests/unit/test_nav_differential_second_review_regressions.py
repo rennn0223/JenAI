@@ -659,6 +659,28 @@ def test_pair_rejects_nav2_process_generation_mismatch(
     processes = cast(list[dict[str, Any]], generation["processes"])
     processes[1]["start_ticks"] = 2002
     identity["nav2_process_generation_end"] = deepcopy(generation)
+    timeline = cast(dict[str, Any], right["t1_goal_dispatch"])
+    dispatch_states = [
+        cast(dict[str, Any], timeline["state_before_forward"]),
+        cast(dict[str, Any], cast(list[dict[str, Any]], timeline["dispatch_observations"])[0])[
+            "state_before_forward"
+        ],
+    ]
+    for state in dispatch_states:
+        checkpoint = cast(dict[str, Any], state["runtime_stack_checkpoint"])
+        cast(dict[str, Any], checkpoint["expected"])["nav2_process_generation"] = deepcopy(
+            generation
+        )
+        cast(dict[str, Any], checkpoint["observed"])["nav2_process_generation"] = deepcopy(
+            generation
+        )
+    post_checkpoint = cast(dict[str, Any], right["post_final_window_runtime_stack_checkpoint"])
+    cast(dict[str, Any], post_checkpoint["expected"])["nav2_process_generation"] = deepcopy(
+        generation
+    )
+    cast(dict[str, Any], post_checkpoint["observed"])["nav2_process_generation"] = deepcopy(
+        generation
+    )
     _apply_runtime_fingerprint(identity)
 
     report = _comparison(differential_artifact_factory, left=left, right=right)

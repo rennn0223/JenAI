@@ -95,6 +95,7 @@ def _artifact(mode: str, *, reset_policy: str, pair_id: str = "pair-01") -> dict
         "measurement_contract": {
             "preflight_sample_s": 1.0,
             "final_sample_s": 2.0,
+            "final_window_start_delay_s": 0.0,
             "sample_interval_s": 0.2,
             "max_topic_age_s": 1.0,
             "max_calibration_residual_m": 0.02,

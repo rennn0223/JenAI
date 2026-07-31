@@ -10,12 +10,15 @@ import logging
 import math
 import os
 import re
+import secrets
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
+from ._runtime_identity import BRIDGE_LAUNCH_NONCE_ENV
 from ._wire import EventFrame, ResponseFrame, WireProtocolError, decode_frame, encode_request
 
 _BRIDGE_SCRIPT = Path(__file__).parent / "ros_bridge.py"
@@ -38,12 +41,26 @@ _DDS_IDENTITY_BINDINGS = frozenset(
         "ROS_STATIC_PEERS",
     }
 )
+_ROS_ENVIRONMENT_IDENTITY_BINDINGS = frozenset(
+    {
+        "ROS_SETUP",
+        "ROS_LOCALHOST_ONLY",
+        "ROS_SECURITY_ENABLE",
+        "ROS_SECURITY_STRATEGY",
+        "ROS_SECURITY_KEYSTORE",
+        "SROS2_KEYSTORE",
+    }
+)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_LAUNCH_NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _PYTHON_VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[.+-].*)?$")
 _RUNTIME_IDENTITY_FIELDS = frozenset(
     {
         "schema_version",
         "pid",
+        "launch_nonce",
+        "boot_id",
+        "process_start_ticks",
         "python_executable",
         "python_version",
         "rmw_implementation_requested",
@@ -52,6 +69,8 @@ _RUNTIME_IDENTITY_FIELDS = frozenset(
         "dds_config_mode",
         "dds_bindings",
         "dds_config_sha256",
+        "ros_environment_bindings",
+        "ros_environment_sha256",
         "descriptor_sha256",
     }
 )
@@ -119,6 +138,35 @@ def _runtime_identity_bindings(
     return bindings, tuple(sorted(parsed))
 
 
+def _runtime_identity_ros_environment_bindings(
+    payload: BridgePayload,
+) -> tuple[dict[str, object], tuple[tuple[str, str, str], ...]]:
+    bindings = payload.get("ros_environment_bindings")
+    if not isinstance(bindings, dict) or not set(bindings).issubset(
+        _ROS_ENVIRONMENT_IDENTITY_BINDINGS
+    ):
+        raise BridgeError("invalid bridge runtime identity: ROS environment bindings are malformed")
+    parsed: list[tuple[str, str, str]] = []
+    for name, raw_binding in bindings.items():
+        if not isinstance(raw_binding, dict) or set(raw_binding) != {"kind", "sha256"}:
+            raise BridgeError(
+                "invalid bridge runtime identity: ROS environment binding fields are malformed"
+            )
+        kind = raw_binding.get("kind")
+        digest = raw_binding.get("sha256")
+        expected_kind = "file_content" if name == "ROS_SETUP" else "environment_value"
+        if (
+            kind != expected_kind
+            or not isinstance(digest, str)
+            or _SHA256_PATTERN.fullmatch(digest) is None
+        ):
+            raise BridgeError(
+                "invalid bridge runtime identity: ROS environment binding evidence is malformed"
+            )
+        parsed.append((name, kind, digest))
+    return bindings, tuple(sorted(parsed))
+
+
 def _runtime_identity_digest(
     payload: BridgePayload,
     field: str,
@@ -140,6 +188,9 @@ class BridgeRuntimeIdentity:
 
     schema_version: int
     pid: int
+    launch_nonce: str
+    boot_id: str
+    process_start_ticks: int
     python_executable: str
     python_version: str
     rmw_implementation_requested: str | None
@@ -148,12 +199,29 @@ class BridgeRuntimeIdentity:
     dds_config_mode: str
     dds_bindings: tuple[tuple[str, str, str], ...]
     dds_config_sha256: str
+    ros_environment_bindings: tuple[tuple[str, str, str], ...]
+    ros_environment_sha256: str
     descriptor_sha256: str
 
     @classmethod
     def from_payload(cls, payload: object) -> BridgeRuntimeIdentity:
         parsed = _runtime_identity_object(payload)
         pid = _runtime_identity_int(parsed, "pid", minimum=1, maximum=2**31 - 1)
+        launch_nonce = _runtime_identity_text(parsed, "launch_nonce")
+        if _LAUNCH_NONCE_PATTERN.fullmatch(launch_nonce) is None:
+            raise BridgeError("invalid bridge runtime identity: launch nonce is malformed")
+        boot_id = _runtime_identity_text(parsed, "boot_id")
+        try:
+            if str(UUID(boot_id)) != boot_id:
+                raise ValueError
+        except ValueError as exc:
+            raise BridgeError("invalid bridge runtime identity: boot ID is malformed") from exc
+        process_start_ticks = _runtime_identity_int(
+            parsed,
+            "process_start_ticks",
+            minimum=1,
+            maximum=2**63 - 1,
+        )
         executable = _runtime_identity_text(parsed, "python_executable")
         if not os.path.isabs(executable) or os.path.normpath(executable) != executable:
             raise BridgeError("invalid bridge runtime identity: Python path is not canonical")
@@ -168,11 +236,20 @@ class BridgeRuntimeIdentity:
         bindings, parsed_bindings = _runtime_identity_bindings(parsed)
         mode = _runtime_identity_text(parsed, "dds_config_mode")
         dds_digest = _runtime_identity_digest(parsed, "dds_config_sha256", bindings)
+        ros_bindings, parsed_ros_bindings = _runtime_identity_ros_environment_bindings(parsed)
+        ros_environment_digest = _runtime_identity_digest(
+            parsed,
+            "ros_environment_sha256",
+            ros_bindings,
+        )
         descriptor = {key: value for key, value in parsed.items() if key != "descriptor_sha256"}
         descriptor_digest = _runtime_identity_digest(parsed, "descriptor_sha256", descriptor)
         return cls(
             schema_version=1,
             pid=pid,
+            launch_nonce=launch_nonce,
+            boot_id=boot_id,
+            process_start_ticks=process_start_ticks,
             python_executable=executable,
             python_version=version,
             rmw_implementation_requested=requested,
@@ -181,6 +258,8 @@ class BridgeRuntimeIdentity:
             dds_config_mode=mode,
             dds_bindings=parsed_bindings,
             dds_config_sha256=dds_digest,
+            ros_environment_bindings=parsed_ros_bindings,
+            ros_environment_sha256=ros_environment_digest,
             descriptor_sha256=descriptor_digest,
         )
 
@@ -191,6 +270,9 @@ class BridgeRuntimeIdentity:
         return {
             "schema_version": self.schema_version,
             "pid": self.pid,
+            "launch_nonce": self.launch_nonce,
+            "boot_id": self.boot_id,
+            "process_start_ticks": self.process_start_ticks,
             "python_executable": self.python_executable,
             "python_version": self.python_version,
             "rmw_implementation_requested": self.rmw_implementation_requested,
@@ -199,6 +281,11 @@ class BridgeRuntimeIdentity:
             "dds_config_mode": self.dds_config_mode,
             "dds_bindings": bindings,
             "dds_config_sha256": self.dds_config_sha256,
+            "ros_environment_bindings": {
+                name: {"kind": kind, "sha256": digest}
+                for name, kind, digest in self.ros_environment_bindings
+            },
+            "ros_environment_sha256": self.ros_environment_sha256,
             "descriptor_sha256": self.descriptor_sha256,
         }
 
@@ -305,6 +392,40 @@ def _bridge_process_args(ros_setup: str, python: str) -> tuple[str, ...]:
         python,
         str(_BRIDGE_SCRIPT),
     )
+
+
+async def _kill_and_reap_bridge(proc: asyncio.subprocess.Process) -> BridgeError | None:
+    """Force-stop a sidecar and report when process ownership remains unresolved."""
+
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    try:
+        await asyncio.wait_for(proc.wait(), 2.0)
+    except (TimeoutError, OSError):
+        if proc.returncode is None:
+            return BridgeError("ROS bridge could not terminate and reap after kill")
+    if proc.returncode is None:
+        return BridgeError("ROS bridge could not terminate and reap after kill")
+    return None
+
+
+async def _shutdown_bridge_process(proc: asyncio.subprocess.Process) -> BridgeError | None:
+    """Request graceful shutdown, escalating to kill while retaining evidence."""
+
+    if proc.returncode is not None:
+        return None
+    try:
+        stdin = proc.stdin
+        if stdin is None:
+            raise BrokenPipeError("bridge stdin is unavailable")
+        stdin.write(b'{"id": 0, "op": "shutdown"}\n')
+        await stdin.drain()
+        await asyncio.wait_for(proc.wait(), 3.0)
+    except (TimeoutError, OSError, ConnectionResetError):
+        return await _kill_and_reap_bridge(proc)
+    if proc.returncode is None:
+        return BridgeError("ROS bridge could not terminate and reap")
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,6 +694,7 @@ class RosBridgeClient:
         self._watch_handlers: dict[int, EventHandler] = {}
         self._ready = asyncio.Event()
         self._ready_runtime_identity_payload: object | None = None
+        self._expected_launch_nonce: str | None = None
         self._pinned_runtime_identity: BridgeRuntimeIdentity | None = None
         self._start_lock = asyncio.Lock()
         # Safety config survives the process: once set, EVERY spawn re-arms
@@ -605,6 +727,12 @@ class RosBridgeClient:
         async with self._start_lock:
             if self.running:
                 return
+            retained_proc = self._proc
+            if retained_proc is not None and retained_proc.returncode is None:
+                raise BridgeError(
+                    "ROS bridge process is still live and unreaped after failed shutdown; "
+                    "refusing to spawn another command owner"
+                )
             if not self.available():
                 raise BridgeError("ROS2 is not installed (no setup script or ros2 on PATH).")
             await self._spawn(timeout)
@@ -616,9 +744,13 @@ class RosBridgeClient:
         # never interpolated shell source, so environment values cannot inject
         # an extra command into this safety-critical process boundary.
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
+        launch_nonce = secrets.token_hex(16)
+        env[BRIDGE_LAUNCH_NONCE_ENV] = launch_nonce
+        env["ROS_SETUP"] = ros_setup
         if self._domain_id is not None:
             env["ROS_DOMAIN_ID"] = str(self._domain_id)
         self._ready_runtime_identity_payload = None
+        self._expected_launch_nonce = launch_nonce
         self._proc = await asyncio.create_subprocess_exec(
             *_bridge_process_args(ros_setup, python),
             stdin=asyncio.subprocess.PIPE,
@@ -674,28 +806,18 @@ class RosBridgeClient:
 
     async def stop(self) -> None:
         """Shut the bridge down cleanly, failing any in-flight requests."""
-        proc, self._proc = self._proc, None
+        proc = self._proc
         reader_task, self._reader_task = self._reader_task, None
         stderr_task, self._stderr_task = self._stderr_task, None
+        termination_error: BridgeError | None = None
         if reader_task is not None:
             reader_task.cancel()
         self._fail_pending(BridgeError("bridge stopped"))
-        if proc is not None and proc.returncode is None:
-            try:
-                stdin = proc.stdin
-                if stdin is None:
-                    raise BrokenPipeError("bridge stdin is unavailable")
-                stdin.write(b'{"id": 0, "op": "shutdown"}\n')
-                await stdin.drain()
-                await asyncio.wait_for(proc.wait(), 3.0)
-            except (TimeoutError, OSError, ConnectionResetError):
-                # kill() races the process's own exit — already-dead is fine.
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                # Reap the killed process — otherwise its transport lingers
-                # until GC (zombie + "Exception ignored in __del__" noise).
-                with contextlib.suppress(TimeoutError, OSError):
-                    await asyncio.wait_for(proc.wait(), 2.0)
+        if proc is not None:
+            termination_error = await _shutdown_bridge_process(proc)
+        if termination_error is None and self._proc is proc:
+            self._proc = None
+            self._expected_launch_nonce = None
         if reader_task is not None:
             # Cancellation is not cleanup until the task has observed it.
             # Keep ownership until its stdout read has unwound so the event
@@ -709,6 +831,8 @@ class RosBridgeClient:
                 stderr_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await stderr_task
+        if termination_error is not None:
+            raise termination_error
 
     @staticmethod
     async def _drain_stderr(
@@ -834,6 +958,13 @@ class RosBridgeClient:
         proc = self._proc
         if proc is None or proc.pid != identity.pid:
             raise BridgeError("invalid bridge runtime identity: pid does not match the sidecar")
+        if (
+            self._expected_launch_nonce is None
+            or identity.launch_nonce != self._expected_launch_nonce
+        ):
+            raise BridgeError(
+                "invalid bridge runtime identity: launch nonce does not match the parent"
+            )
         return identity
 
     async def runtime_identity(self, *, pin: bool = False) -> BridgeRuntimeIdentity:
