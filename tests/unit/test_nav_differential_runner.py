@@ -61,6 +61,8 @@ def test_live_capture_requires_exact_motion_confirmation(tmp_path: Path) -> None
         simulation_epoch="epoch-01",
         reset_policy=ResetPolicy.NAV2_RESTART,
         execute=True,
+        expected_source_root=tmp_path,
+        expected_git_sha="1" * 40,
         confirmation=DIFFERENTIAL_EXECUTION_CONFIRMATION,
         scene_path=scene,
         live_scene_sha256="a" * 64,
@@ -150,10 +152,12 @@ def _artifact(
     }
 
 
-def test_artifact_comparison_excludes_runtime_mismatch() -> None:
+def test_artifact_comparison_excludes_runtime_mismatch(
+    differential_artifact_factory,
+) -> None:
     report = compare_differential_artifacts(
-        _artifact(mode="R1_bridge_nav2", runtime="runtime-a"),
-        _artifact(mode="R2_jenai_no_retry", runtime="runtime-b"),
+        differential_artifact_factory(mode="R1_bridge_nav2", runtime="runtime-a"),
+        differential_artifact_factory(mode="R2_jenai_no_retry", runtime="runtime-b"),
     )
 
     assert report["included"] is False
@@ -163,12 +167,16 @@ def test_artifact_comparison_excludes_runtime_mismatch() -> None:
     ]
 
 
-def test_artifact_comparison_detects_jenai_verdict_only_difference() -> None:
+def test_artifact_comparison_detects_jenai_verdict_only_difference(
+    differential_artifact_factory,
+) -> None:
     report = compare_differential_artifacts(
-        _artifact(mode="R1_bridge_nav2", status="succeeded"),
-        _artifact(mode="R2_jenai_no_retry", status="endpoint_mismatch"),
+        differential_artifact_factory(mode="R1_bridge_nav2", status="succeeded"),
+        differential_artifact_factory(mode="R2_jenai_no_retry", status="endpoint_mismatch"),
     )
 
+    assert report["included"] is True
+    assert report["classifications"] == [PairClassification.JENAI_VERDICT_ONLY_DIFFERENCE]
     assert report["included"] is True
     assert report["classifications"] == [PairClassification.JENAI_VERDICT_ONLY_DIFFERENCE]
 

@@ -22,6 +22,7 @@ from jenai.acceptance.nav_differential_runner import (
     DifferentialCaptureOptions,
     DifferentialMode,
     ResetPolicy,
+    _apply_runtime_fingerprint,
     _cleanup_live_capture,
     _dispatch_timeline,
     _initial_state,
@@ -253,6 +254,14 @@ def test_observed_bridge_records_actual_goal_and_t1_before_forwarding() -> None:
         bridge = _ObservedNavBridge(
             cast(Any, Delegate()),
             simulation_epoch="epoch-01",
+            expected_goal=CanonicalGoal.from_yaw(
+                frame_id="map",
+                x=1.25,
+                y=-2.5,
+                yaw=0.75,
+                clock_domain="ros",
+                simulation_epoch="epoch-01",
+            ),
             on_nav_send=observe,
         )
         await bridge.nav_send(1.25, -2.5, 0.75, frame_id="/map", tag="navdiff-test")
@@ -330,10 +339,35 @@ def _artifact(*, mode: str, canonical_x: float, actual_x: float) -> dict[str, An
     }
 
 
-def test_comparison_uses_actual_dispatch_goal_not_precomputed_goal() -> None:
+def test_comparison_rejects_within_artifact_goal_mismatch(
+    differential_artifact_factory: Any,
+) -> None:
+    artifact = differential_artifact_factory(mode="R1_bridge_nav2", goal_x=1.0)
+    timeline = cast(dict[str, Any], artifact["t1_goal_dispatch"])
+    timeline["actual_goal"] = CanonicalGoal.from_yaw(
+        frame_id="map",
+        x=1.5,
+        y=2.0,
+        yaw=0.0,
+        clock_domain="ros",
+        simulation_epoch="epoch",
+    ).model_dump(mode="json")
+
     report = compare_differential_artifacts(
-        _artifact(mode="R1_bridge_nav2", canonical_x=99.0, actual_x=1.0),
-        _artifact(mode="R2_jenai_no_retry", canonical_x=99.0, actual_x=1.5),
+        artifact,
+        differential_artifact_factory(mode="R2_jenai_no_retry", goal_x=1.0),
+    )
+
+    assert report["included"] is False
+    assert report["classifications"] == [PairClassification.INSUFFICIENT_EVIDENCE]
+
+
+def test_comparison_uses_each_verified_actual_dispatch_goal(
+    differential_artifact_factory: Any,
+) -> None:
+    report = compare_differential_artifacts(
+        differential_artifact_factory(mode="R1_bridge_nav2", goal_x=1.0),
+        differential_artifact_factory(mode="R2_jenai_no_retry", goal_x=1.5),
     )
 
     assert report["included"] is False
@@ -492,9 +526,17 @@ def test_r2_override_is_temporary_and_uses_effective_vehicle_domain() -> None:
 
 
 def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
-    return {
-        "git_sha": "abc123",
+    git_sha = "1" * 40
+    source_root = "/tmp/JenAI-reviewed"
+    identity: dict[str, Any] = {
+        "git_sha": git_sha,
         "git_dirty": False,
+        "source_root": source_root,
+        "expected_source_root": source_root,
+        "expected_git_sha": git_sha,
+        "expected_git_dirty": False,
+        "reviewed_git_sha": git_sha,
+        "jenai_import_path": f"{source_root}/src/jenai/__init__.py",
         "deployment_mode": deployment_mode,
         "config_sha256": "a" * 64,
         "site_map_sha256": "b" * 64,
@@ -518,12 +560,14 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
         },
         "navigate_to_pose_action_count": 1,
         "runtime_parameter_sha256": {
-            "/amcl": "1",
-            "/controller_server": "2",
-            "/planner_server": "3",
-            "/bt_navigator": "4",
+            "/amcl": "1" * 64,
+            "/controller_server": "2" * 64,
+            "/planner_server": "3" * 64,
+            "/bt_navigator": "4" * 64,
         },
     }
+    _apply_runtime_fingerprint(identity)
+    return identity
 
 
 def test_runtime_identity_blocks_non_simulation_capture() -> None:
@@ -573,9 +617,11 @@ def test_cleanup_returns_structured_failures_for_each_failed_step() -> None:
     }
 
 
-def test_pairing_rejects_measurement_contract_mismatch() -> None:
-    left = _artifact(mode="R1_bridge_nav2", canonical_x=1.0, actual_x=1.0)
-    right = _artifact(mode="R2_jenai_no_retry", canonical_x=1.0, actual_x=1.0)
+def test_pairing_rejects_measurement_contract_mismatch(
+    differential_artifact_factory: Any,
+) -> None:
+    left = differential_artifact_factory(mode="R1_bridge_nav2")
+    right = differential_artifact_factory(mode="R2_jenai_no_retry")
     contract = cast(dict[str, Any], right["measurement_contract"])
     right["measurement_contract"] = {**contract, "max_topic_age_s": 2.0}
 

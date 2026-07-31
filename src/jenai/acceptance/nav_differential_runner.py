@@ -38,6 +38,7 @@ from jenai.acceptance.nav_differential import (
     PairingGateResult,
     Pose2D,
     classify_pair,
+    compare_goals,
     evaluate_pairing_gate,
 )
 from jenai.adapters.locations import find_location, load_locations
@@ -80,6 +81,8 @@ class DifferentialCaptureOptions(BaseModel):
     simulation_epoch: str = Field(min_length=1)
     reset_policy: ResetPolicy
     config_path: Path | None = None
+    expected_source_root: Path | None = None
+    expected_git_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
     scene_path: Path | None = None
     live_scene_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     calibration_path: Path | None = None
@@ -96,6 +99,8 @@ class DifferentialCaptureOptions(BaseModel):
     max_topic_age_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     max_calibration_residual_m: float = Field(default=0.02, ge=0, allow_inf_nan=False)
     min_final_pose_samples: int = Field(default=10, ge=2)
+    min_final_state_samples: int = Field(default=3, ge=2)
+    min_final_ground_truth_samples: int = Field(default=3, ge=2)
     final_wall_timeout_s: float = Field(default=15.0, gt=0, allow_inf_nan=False)
     max_covariance_xy: float = Field(default=0.1, ge=0, allow_inf_nan=False)
 
@@ -114,6 +119,16 @@ class DifferentialCaptureOptions(BaseModel):
             raise ValueError(
                 "Live differential capture requires an existing absolute USD scene path."
             )
+        if self.execute and (
+            self.expected_source_root is None
+            or not self.expected_source_root.is_absolute()
+            or not self.expected_source_root.is_dir()
+        ):
+            raise ValueError(
+                "Live differential capture requires the absolute reviewed source root."
+            )
+        if self.execute and self.expected_git_sha is None:
+            raise ValueError("Live differential capture requires the reviewed commit SHA.")
         if self.execute and self.live_scene_sha256 is None:
             raise ValueError(
                 "Live differential capture requires the active Isaac Stage root-layer SHA-256."
@@ -140,6 +155,8 @@ class DifferentialMeasurementContract(BaseModel):
     max_topic_age_s: float = Field(gt=0, allow_inf_nan=False)
     max_calibration_residual_m: float = Field(ge=0, allow_inf_nan=False)
     min_final_pose_samples: int = Field(ge=2)
+    min_final_state_samples: int = Field(ge=2)
+    min_final_ground_truth_samples: int = Field(ge=2)
     final_wall_timeout_s: float = Field(gt=0, allow_inf_nan=False)
     max_start_speed_mps: float = Field(ge=0, allow_inf_nan=False)
     max_start_yaw_rate_rps: float = Field(ge=0, allow_inf_nan=False)
@@ -253,12 +270,17 @@ def _effective_ros_domain(config: AppConfig) -> str:
     return os.environ.get("ROS_DOMAIN_ID", "0")
 
 
-def _apply_runtime_fingerprint(identity: dict[str, Any]) -> None:
+def _runtime_fingerprint(identity: dict[str, Any]) -> str:
     fields = {
         key: identity.get(key)
         for key in (
             "git_sha",
             "git_dirty",
+            "source_root",
+            "reviewed_git_sha",
+            "expected_source_root",
+            "expected_git_sha",
+            "expected_git_dirty",
             "jenai_import_path",
             "config_sha256",
             "site_id",
@@ -274,6 +296,7 @@ def _apply_runtime_fingerprint(identity: dict[str, Any]) -> None:
             "scene_sha256",
             "live_scene_sha256",
             "live_map_sha256",
+            "site_map_frame",
             "live_map_frame",
             "controller_lifecycle",
             "planner_lifecycle",
@@ -283,15 +306,19 @@ def _apply_runtime_fingerprint(identity: dict[str, Any]) -> None:
             "navigate_to_pose_action_count",
         )
     }
-    identity["fingerprint"] = hashlib.sha256(
-        json.dumps(fields, sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(fields, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _apply_runtime_fingerprint(identity: dict[str, Any]) -> None:
+    identity["fingerprint"] = _runtime_fingerprint(identity)
 
 
 def _runtime_identity(
     config: AppConfig,
     config_path: Path,
     *,
+    reviewed_git_sha: str | None,
+    expected_source_root: Path | None,
     scene_path: Path | None,
     live_scene_sha256: str | None,
     simulation_epoch: str,
@@ -305,10 +332,21 @@ def _runtime_identity(
         nav_params_path = str(Path(runtime_dir) / f"{session}-params.yaml")
 
     source_root = Path(jenai.__file__).resolve().parents[2]
+    reviewed_root = expected_source_root.resolve() if expected_source_root is not None else None
     bridge_domain_id = _effective_ros_domain(config)
     ros_env = {"ROS_DOMAIN_ID": bridge_domain_id}
     revision = _command_output(["git", "rev-parse", "HEAD"], cwd=source_root)
     dirty_output = _command_output(["git", "status", "--porcelain"], cwd=source_root)
+    reviewed_revision = (
+        _command_output(["git", "rev-parse", "HEAD"], cwd=reviewed_root)
+        if reviewed_root is not None
+        else None
+    )
+    reviewed_dirty_output = (
+        _command_output(["git", "status", "--porcelain"], cwd=reviewed_root)
+        if reviewed_root is not None
+        else None
+    )
     ros_nodes = _command_output(["ros2", "node", "list"], env=ros_env)
     node_lines = [line.strip() for line in (ros_nodes or "").splitlines() if line.strip()]
     required_nodes = ("/amcl", "/controller_server", "/planner_server", "/bt_navigator")
@@ -326,6 +364,13 @@ def _runtime_identity(
     identity: dict[str, Any] = {
         "git_sha": revision,
         "git_dirty": None if dirty_output is None else bool(dirty_output),
+        "source_root": str(source_root),
+        "reviewed_git_sha": reviewed_git_sha,
+        "expected_source_root": str(reviewed_root) if reviewed_root is not None else None,
+        "expected_git_sha": reviewed_revision,
+        "expected_git_dirty": (
+            None if reviewed_dirty_output is None else bool(reviewed_dirty_output)
+        ),
         "jenai_import_path": str(Path(jenai.__file__).resolve()),
         "python_executable": sys.executable,
         "python_version": platform.python_version(),
@@ -424,24 +469,35 @@ def _topic_sample_evidence(
     clock: _TopicRecorder,
     *,
     max_age_s: float,
+    current_host_monotonic_ns: int | None = None,
 ) -> dict[str, Any]:
     host_ns = sample.get("host_monotonic_ns")
     message = sample.get("message")
     if type(host_ns) is not int or not isinstance(message, dict):
         return {"fresh": False, "failure": "malformed_sample"}
+    evaluated_host_ns = current_host_monotonic_ns or host_ns
     source_stamp_ns = _header_stamp_ns(message)
-    capture_clock_ns = _clock_at_host(clock, host_ns)
-    age_ns = (
-        capture_clock_ns - source_stamp_ns
-        if capture_clock_ns is not None and source_stamp_ns is not None
+    sample_clock_ns = _clock_at_host(clock, host_ns)
+    evaluation_clock_ns = _clock_at_host(clock, evaluated_host_ns)
+    source_age_ns = (
+        evaluation_clock_ns - source_stamp_ns
+        if evaluation_clock_ns is not None and source_stamp_ns is not None
         else None
     )
-    fresh = age_ns is not None and 0 <= age_ns <= int(max_age_s * 1_000_000_000)
+    host_age_ns = evaluated_host_ns - host_ns
+    max_age_ns = int(max_age_s * 1_000_000_000)
+    fresh = (
+        source_age_ns is not None
+        and 0 <= source_age_ns <= max_age_ns
+        and 0 <= host_age_ns <= max_age_ns
+    )
     return {
         "host_monotonic_ns": host_ns,
+        "host_age_ns": host_age_ns,
         "source_stamp_ns": source_stamp_ns,
-        "capture_clock_ns": capture_clock_ns,
-        "source_age_ns": age_ns,
+        "sample_clock_ns": sample_clock_ns,
+        "capture_clock_ns": evaluation_clock_ns,
+        "source_age_ns": source_age_ns,
         "fresh": fresh,
         "message": message,
     }
@@ -452,10 +508,25 @@ def _latest_topic_evidence(
     clock: _TopicRecorder,
     *,
     max_age_s: float,
+    cutoff_host_monotonic_ns: int,
+    current_host_monotonic_ns: int,
 ) -> dict[str, Any] | None:
-    if not recorder.samples:
+    candidates = [
+        sample
+        for sample in recorder.samples
+        if type(sample.get("host_monotonic_ns")) is int
+        and cutoff_host_monotonic_ns
+        <= int(sample["host_monotonic_ns"])
+        <= current_host_monotonic_ns
+    ]
+    if not candidates:
         return None
-    return _topic_sample_evidence(recorder.samples[-1], clock, max_age_s=max_age_s)
+    return _topic_sample_evidence(
+        candidates[-1],
+        clock,
+        max_age_s=max_age_s,
+        current_host_monotonic_ns=current_host_monotonic_ns,
+    )
 
 
 def _window_topic_evidence(
@@ -564,16 +635,19 @@ def _goal_status_records(message: dict[str, Any]) -> list[dict[str, Any]]:
         goal_info = entry.get("goal_info")
         goal_id = goal_info.get("goal_id") if isinstance(goal_info, dict) else None
         raw_uuid = goal_id.get("uuid") if isinstance(goal_id, dict) else None
+        raw_status = entry.get("status")
         if (
             not isinstance(raw_uuid, list)
             or len(raw_uuid) != 16
             or any(type(item) is not int or item < 0 or item > 255 for item in raw_uuid)
+            or type(raw_status) is not int
+            or not 0 <= raw_status <= 6
         ):
             continue
         records.append(
             {
                 "goal_uuid": bytes(raw_uuid).hex(),
-                "status": entry.get("status"),
+                "status": raw_status,
                 "goal_stamp_ns": (
                     _stamp_ns(goal_info.get("stamp")) if isinstance(goal_info, dict) else None
                 ),
@@ -601,16 +675,32 @@ def _latest_action_status_evidence(
     recorder: _TopicRecorder,
     *,
     max_age_s: float,
+    cutoff_host_monotonic_ns: int | None = None,
+    current_host_monotonic_ns: int | None = None,
 ) -> dict[str, Any] | None:
-    if not recorder.samples:
+    current_ns = (
+        current_host_monotonic_ns if current_host_monotonic_ns is not None else time.monotonic_ns()
+    )
+    cutoff_ns = (
+        cutoff_host_monotonic_ns
+        if cutoff_host_monotonic_ns is not None
+        else current_ns - int(max_age_s * 1_000_000_000)
+    )
+    candidates = [
+        sample
+        for sample in recorder.samples
+        if type(sample.get("host_monotonic_ns")) is int
+        and cutoff_ns <= int(sample["host_monotonic_ns"]) <= current_ns
+    ]
+    if not candidates:
         return None
-    sample = recorder.samples[-1]
+    sample = candidates[-1]
     host_ns = sample.get("host_monotonic_ns")
     message = sample.get("message")
     if type(host_ns) is not int or not isinstance(message, dict):
         return None
     statuses = message.get("status_list")
-    age_ns = time.monotonic_ns() - host_ns
+    age_ns = current_ns - host_ns
     schema_valid = isinstance(statuses, list) and len(_goal_status_records(message)) == len(
         statuses
     )
@@ -654,6 +744,12 @@ def _start_state_failures(
     return [failure for failed, failure in checks if failed]
 
 
+def _source_metadata(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+    if evidence is None:
+        return None
+    return {key: value for key, value in evidence.items() if key != "message"}
+
+
 def _initial_state(
     *,
     pose: Pose2D | None,
@@ -662,18 +758,44 @@ def _initial_state(
     odom: _TopicRecorder,
     action_status: _TopicRecorder,
     options: DifferentialCaptureOptions,
+    cutoff_host_monotonic_ns: int | None = None,
+    current_host_monotonic_ns: int | None = None,
 ) -> dict[str, Any]:
-    clock_values = [
-        value
+    evaluated_host_ns = current_host_monotonic_ns or time.monotonic_ns()
+    max_age_ns = int(options.max_topic_age_s * 1_000_000_000)
+    cutoff_host_ns = cutoff_host_monotonic_ns or evaluated_host_ns - max_age_ns
+    recent_window_start_ns = max(cutoff_host_ns, evaluated_host_ns - max_age_ns)
+    clock_evidence = [
+        {
+            "host_monotonic_ns": int(sample["host_monotonic_ns"]),
+            "clock_ns": value,
+        }
         for sample in clock.samples
-        if isinstance(sample.get("message"), dict)
+        if type(sample.get("host_monotonic_ns")) is int
+        and recent_window_start_ns <= int(sample["host_monotonic_ns"]) <= evaluated_host_ns
+        and isinstance(sample.get("message"), dict)
         and (value := _clock_ns(sample["message"])) is not None
     ]
-    amcl_evidence = _latest_topic_evidence(amcl, clock, max_age_s=options.max_topic_age_s)
-    odom_evidence = _latest_topic_evidence(odom, clock, max_age_s=options.max_topic_age_s)
+    clock_values = [int(item["clock_ns"]) for item in clock_evidence]
+    amcl_evidence = _latest_topic_evidence(
+        amcl,
+        clock,
+        max_age_s=options.max_topic_age_s,
+        cutoff_host_monotonic_ns=cutoff_host_ns,
+        current_host_monotonic_ns=evaluated_host_ns,
+    )
+    odom_evidence = _latest_topic_evidence(
+        odom,
+        clock,
+        max_age_s=options.max_topic_age_s,
+        cutoff_host_monotonic_ns=cutoff_host_ns,
+        current_host_monotonic_ns=evaluated_host_ns,
+    )
     action_evidence = _latest_action_status_evidence(
         action_status,
         max_age_s=options.max_topic_age_s,
+        cutoff_host_monotonic_ns=cutoff_host_ns,
+        current_host_monotonic_ns=evaluated_host_ns,
     )
     amcl_message = (
         cast(dict[str, Any], amcl_evidence["message"])
@@ -720,28 +842,26 @@ def _initial_state(
         max_covariance_xy=options.max_covariance_xy,
     )
 
-    def source_metadata(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
-        if evidence is None:
-            return None
-        return {key: value for key, value in evidence.items() if key != "message"}
-
     failures = list(dict.fromkeys(failures))
     return {
         "status": "PASS" if not failures else "FAIL",
         "failures": failures,
         "simulation_epoch": options.simulation_epoch,
+        "cutoff_host_monotonic_ns": cutoff_host_ns,
+        "evaluated_host_monotonic_ns": evaluated_host_ns,
         "map_to_base": pose.model_dump(mode="json") if pose else None,
         "amcl_pose": amcl_pose.model_dump(mode="json") if amcl_pose else None,
         "amcl_covariance_xy": covariance,
-        "amcl_source": source_metadata(amcl_evidence),
+        "amcl_source": _source_metadata(amcl_evidence),
         "odom_pose": odom_pose.model_dump(mode="json") if odom_pose else None,
-        "odom_source": source_metadata(odom_evidence),
-        "action_status_source": source_metadata(action_evidence),
+        "odom_source": _source_metadata(odom_evidence),
+        "action_status_source": _source_metadata(action_evidence),
         "linear_velocity_mps": velocity[0] if velocity else None,
         "angular_velocity_rps": velocity[1] if velocity else None,
         "stationary": stationary,
         "active_goal_ids": sorted(active_goals),
         "known_goal_ids": sorted(known_goals),
+        "clock_evidence": clock_evidence,
         "clock_samples_ns": clock_values,
         "clock_advancing": clock_advancing,
         "clock_backwards": clock_backwards,
@@ -903,10 +1023,12 @@ class _ObservedNavBridge:
         delegate: RosBridgeClient,
         *,
         simulation_epoch: str,
+        expected_goal: CanonicalGoal,
         on_nav_send: Callable[[CanonicalGoal, str, int], Awaitable[dict[str, Any]]],
     ) -> None:
         self._delegate = delegate
         self._simulation_epoch = simulation_epoch
+        self._expected_goal = expected_goal
         self._on_nav_send = on_nav_send
         self.observations: list[dict[str, Any]] = []
 
@@ -930,16 +1052,26 @@ class _ObservedNavBridge:
             clock_domain="ros",
             simulation_epoch=self._simulation_epoch,
         )
-        t1_state = await self._on_nav_send(goal, tag, invoked_ns)
+        goal_comparison = compare_goals(self._expected_goal, goal)
         observation: dict[str, Any] = {
             "tag": tag,
             "nav_send_invoked_host_monotonic_ns": invoked_ns,
             "nav_send_forwarded_host_monotonic_ns": None,
             "forward_completed_host_monotonic_ns": None,
             "actual_goal": goal.model_dump(mode="json"),
-            "state_before_forward": t1_state,
+            "goal_comparison": goal_comparison.model_dump(mode="json"),
+            "state_before_forward": None,
         }
         self.observations.append(observation)
+        if not goal_comparison.equivalent:
+            observation["blocked_reason"] = "actual_goal_differs_from_canonical_goal"
+            raise BridgeError(
+                "Differential actual nav_send goal differs from the canonical goal; "
+                "motion was not forwarded."
+            )
+
+        t1_state = await self._on_nav_send(goal, tag, invoked_ns)
+        observation["state_before_forward"] = t1_state
         if t1_state.get("status") != "PASS":
             raise BridgeError(
                 "Differential dispatch state gate failed before nav_send: "
@@ -1179,6 +1311,52 @@ def _valid_final_odom(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _bounded_stream_samples(
+    samples: list[dict[str, Any]],
+    *,
+    start_clock_ns: int | None,
+    end_clock_ns: int | None,
+) -> list[dict[str, Any]]:
+    if start_clock_ns is None or end_clock_ns is None:
+        return []
+    return [
+        sample
+        for sample in samples
+        if type(sample.get("source_stamp_ns")) is int
+        and start_clock_ns <= int(sample["source_stamp_ns"]) <= end_clock_ns
+    ]
+
+
+def _stream_window_failures(
+    name: str,
+    samples: list[dict[str, Any]],
+    *,
+    min_samples: int,
+    start_clock_ns: int | None,
+    required_duration_ns: int,
+    coverage_slack_ns: int,
+) -> list[str]:
+    if start_clock_ns is None:
+        return [f"final_{name}_coverage_unavailable"]
+    stamps = [
+        int(sample["source_stamp_ns"])
+        for sample in samples
+        if type(sample.get("source_stamp_ns")) is int
+    ]
+    distinct_stamps = set(stamps)
+    target_end_ns = start_clock_ns + required_duration_ns
+    failures: list[str] = []
+    if len(distinct_stamps) < min_samples:
+        failures.append(f"insufficient_fresh_final_{name}_samples")
+    if any(right < left for left, right in zip(stamps, stamps[1:], strict=False)):
+        failures.append(f"final_{name}_source_stamp_non_monotonic")
+    if not stamps or min(stamps) > start_clock_ns + coverage_slack_ns:
+        failures.append(f"final_{name}_begin_coverage_missing")
+    if not stamps or max(stamps) < target_end_ns - coverage_slack_ns:
+        failures.append(f"final_{name}_tail_coverage_missing")
+    return failures
+
+
 def _final_window_failures(
     *,
     failures: list[str],
@@ -1186,11 +1364,16 @@ def _final_window_failures(
     start_clock_ns: int | None,
     end_clock_ns: int | None,
     required_duration_ns: int,
+    coverage_slack_ns: int,
     clock_values: list[int],
     valid_map_count: int,
     min_map_count: int,
     fresh_amcl: list[dict[str, Any]],
     fresh_odom: list[dict[str, Any]],
+    min_state_samples: int,
+    verified_ground_truth: list[dict[str, Any]],
+    ground_truth_required: bool,
+    min_ground_truth_samples: int,
     stationary: bool,
 ) -> list[str]:
     checks = (
@@ -1207,11 +1390,41 @@ def _final_window_failures(
             "final_clock_moved_backwards",
         ),
         (valid_map_count < min_map_count, "insufficient_fresh_map_pose_samples"),
-        (not fresh_amcl, "no_fresh_final_amcl_samples"),
-        (not fresh_odom, "no_fresh_final_odom_samples"),
         (not stationary, "robot_not_stationary_in_final_window"),
     )
-    return list(dict.fromkeys([*failures, *(failure for failed, failure in checks if failed)]))
+    combined = [*failures, *(failure for failed, failure in checks if failed)]
+    combined.extend(
+        _stream_window_failures(
+            "amcl",
+            fresh_amcl,
+            min_samples=min_state_samples,
+            start_clock_ns=start_clock_ns,
+            required_duration_ns=required_duration_ns,
+            coverage_slack_ns=coverage_slack_ns,
+        )
+    )
+    combined.extend(
+        _stream_window_failures(
+            "odom",
+            fresh_odom,
+            min_samples=min_state_samples,
+            start_clock_ns=start_clock_ns,
+            required_duration_ns=required_duration_ns,
+            coverage_slack_ns=coverage_slack_ns,
+        )
+    )
+    if ground_truth_required:
+        combined.extend(
+            _stream_window_failures(
+                "ground_truth",
+                verified_ground_truth,
+                min_samples=min_ground_truth_samples,
+                start_clock_ns=start_clock_ns,
+                required_duration_ns=required_duration_ns,
+                coverage_slack_ns=coverage_slack_ns,
+            )
+        )
+    return list(dict.fromkeys(combined))
 
 
 async def _sample_final_observation_window(
@@ -1221,6 +1434,7 @@ async def _sample_final_observation_window(
     recorders: dict[str, _TopicRecorder],
     *,
     terminal_host_ns: int | None,
+    calibration: GroundTruthCalibration | None = None,
 ) -> dict[str, Any]:
     (
         start_host_ns,
@@ -1232,6 +1446,9 @@ async def _sample_final_observation_window(
         failures,
     ) = await _collect_final_map_window(bridge, config, options, recorders["clock"])
     required_duration_ns = int(options.final_sample_s * 1_000_000_000)
+    coverage_slack_ns = int(
+        min(options.max_topic_age_s, options.sample_interval_s * 2.0) * 1_000_000_000
+    )
     map_samples = [
         sample
         for sample in map_attempts
@@ -1256,7 +1473,7 @@ async def _sample_final_observation_window(
         end_host_ns=end_host_ns,
         max_age_s=options.max_topic_age_s,
     )
-    ground_truth_samples = _window_topic_evidence(
+    raw_ground_truth_samples = _window_topic_evidence(
         recorders["ground_truth"],
         recorders["clock"],
         start_host_ns=start_host_ns,
@@ -1264,11 +1481,26 @@ async def _sample_final_observation_window(
         max_age_s=options.max_topic_age_s,
     )
     _annotate_final_localization_samples(amcl_samples, odom_samples)
-    fresh_amcl = _valid_final_amcl(
-        amcl_samples,
-        max_covariance_xy=options.max_covariance_xy,
+    fresh_amcl = _bounded_stream_samples(
+        _valid_final_amcl(amcl_samples, max_covariance_xy=options.max_covariance_xy),
+        start_clock_ns=start_clock_ns,
+        end_clock_ns=end_clock_ns,
     )
-    fresh_odom = _valid_final_odom(odom_samples)
+    fresh_odom = _bounded_stream_samples(
+        _valid_final_odom(odom_samples),
+        start_clock_ns=start_clock_ns,
+        end_clock_ns=end_clock_ns,
+    )
+    ground_truth_required = calibration is not None and calibration.status == "VERIFIED"
+    verified_ground_truth = (
+        _bounded_stream_samples(
+            _ground_truth_samples(raw_ground_truth_samples, calibration),
+            start_clock_ns=start_clock_ns,
+            end_clock_ns=end_clock_ns,
+        )
+        if ground_truth_required and calibration is not None
+        else []
+    )
     stationary = bool(fresh_odom) and all(
         float(sample["linear_velocity_mps"]) <= options.max_start_speed_mps
         and abs(float(sample["angular_velocity_rps"])) <= options.max_start_yaw_rate_rps
@@ -1280,11 +1512,16 @@ async def _sample_final_observation_window(
         start_clock_ns=start_clock_ns,
         end_clock_ns=end_clock_ns,
         required_duration_ns=required_duration_ns,
+        coverage_slack_ns=coverage_slack_ns,
         clock_values=clock_values,
         valid_map_count=len(map_samples),
         min_map_count=options.min_final_pose_samples,
         fresh_amcl=fresh_amcl,
         fresh_odom=fresh_odom,
+        min_state_samples=options.min_final_state_samples,
+        verified_ground_truth=verified_ground_truth,
+        ground_truth_required=ground_truth_required,
+        min_ground_truth_samples=options.min_final_ground_truth_samples,
         stationary=stationary,
     )
     return {
@@ -1296,13 +1533,18 @@ async def _sample_final_observation_window(
         "start_clock_ns": start_clock_ns,
         "end_clock_ns": end_clock_ns,
         "required_duration_ns": required_duration_ns,
+        "coverage_slack_ns": coverage_slack_ns,
         "clock_backwards": clock_backwards,
         "clock_samples": clock_samples,
         "map_pose_samples": map_samples,
         "map_pose_attempts": map_attempts,
         "amcl_samples": amcl_samples,
+        "valid_amcl_samples": fresh_amcl,
         "odom_samples": odom_samples,
-        "ground_truth_samples": ground_truth_samples,
+        "valid_odom_samples": fresh_odom,
+        "ground_truth_samples": raw_ground_truth_samples,
+        "verified_ground_truth_samples": verified_ground_truth,
+        "ground_truth_required": ground_truth_required,
         "stationary": stationary,
     }
 
@@ -1484,7 +1726,7 @@ def _runtime_stack_failures(identity: dict[str, Any]) -> list[str]:
     complete_parameters = (
         isinstance(parameter_hashes, dict)
         and set(parameter_hashes) == required_nodes
-        and all(bool(parameter_hashes[node]) for node in required_nodes)
+        and all(_valid_sha256(parameter_hashes[node]) for node in required_nodes)
     )
     checks = (
         (not unique_nodes, "nav2_node_uniqueness"),
@@ -1498,7 +1740,27 @@ def _runtime_stack_failures(identity: dict[str, Any]) -> list[str]:
     return failures
 
 
-def _runtime_identity_failures(identity: dict[str, Any]) -> list[str]:
+def _valid_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _valid_git_revision(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and 40 <= len(value) <= 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _normalized_absolute_path(value: object) -> bool:
+    return isinstance(value, str) and os.path.isabs(value) and os.path.normpath(value) == value
+
+
+def _source_identity_failures(identity: dict[str, Any]) -> list[str]:
     required_hashes = (
         "config_sha256",
         "site_map_sha256",
@@ -1507,11 +1769,69 @@ def _runtime_identity_failures(identity: dict[str, Any]) -> list[str]:
         "nav_params_sha256",
         "scene_sha256",
         "live_scene_sha256",
-        "live_map_sha256",
     )
+    source_root = identity.get("source_root")
+    expected_source_root = identity.get("expected_source_root")
+    fingerprint = identity.get("fingerprint")
+    reviewed_git_sha = identity.get("reviewed_git_sha")
+    import_path = identity.get("jenai_import_path")
     checks = (
-        (identity.get("git_sha") is None, "git_revision_unavailable"),
+        (not _valid_git_revision(identity.get("git_sha")), "git_revision_unavailable"),
         (identity.get("git_dirty") is not False, "clean_git_revision_required"),
+        (
+            not _normalized_absolute_path(source_root),
+            "source_root_unavailable",
+        ),
+        (
+            not _normalized_absolute_path(expected_source_root),
+            "expected_source_root_unavailable",
+        ),
+        (
+            isinstance(source_root, str)
+            and isinstance(expected_source_root, str)
+            and source_root != expected_source_root,
+            "source_root_mismatch",
+        ),
+        (
+            isinstance(expected_source_root, str)
+            and (
+                not _normalized_absolute_path(import_path)
+                or not Path(str(import_path)).is_relative_to(
+                    Path(expected_source_root) / "src" / "jenai"
+                )
+            ),
+            "jenai_import_path_mismatch",
+        ),
+        (
+            not _valid_git_revision(identity.get("expected_git_sha")),
+            "expected_git_revision_unavailable",
+        ),
+        (
+            identity.get("expected_git_dirty") is not False,
+            "clean_expected_git_revision_required",
+        ),
+        (
+            not _valid_git_revision(reviewed_git_sha),
+            "reviewed_git_revision_unavailable",
+        ),
+        (
+            isinstance(identity.get("git_sha"), str)
+            and isinstance(identity.get("expected_git_sha"), str)
+            and identity.get("git_sha") != identity.get("expected_git_sha"),
+            "source_revision_mismatch",
+        ),
+        (
+            isinstance(identity.get("git_sha"), str)
+            and isinstance(reviewed_git_sha, str)
+            and identity.get("git_sha") != reviewed_git_sha,
+            "reviewed_source_revision_mismatch",
+        ),
+        (
+            isinstance(identity.get("expected_git_sha"), str)
+            and isinstance(reviewed_git_sha, str)
+            and identity.get("expected_git_sha") != reviewed_git_sha,
+            "reviewed_expected_revision_mismatch",
+        ),
         (
             identity.get("deployment_mode") != "simulation",
             "simulation_deployment_mode_required",
@@ -1520,6 +1840,22 @@ def _runtime_identity_failures(identity: dict[str, Any]) -> list[str]:
             identity.get("scene_sha256") != identity.get("live_scene_sha256"),
             "live_scene_identity_mismatch",
         ),
+        (not _valid_domain_id(identity.get("bridge_domain_id")), "invalid_bridge_domain_id"),
+        (not _valid_sha256(fingerprint), "runtime_fingerprint_invalid"),
+        (
+            _valid_sha256(fingerprint) and fingerprint != _runtime_fingerprint(identity),
+            "runtime_fingerprint_mismatch",
+        ),
+    )
+    failures = [failure for failed, failure in checks if failed]
+    failures.extend(
+        f"missing_{field}" for field in required_hashes if not _valid_sha256(identity.get(field))
+    )
+    return list(dict.fromkeys(failures))
+
+
+def _runtime_identity_failures(identity: dict[str, Any]) -> list[str]:
+    checks = (
         (
             identity.get("live_map_sha256") != identity.get("site_map_sha256"),
             "live_map_identity_mismatch",
@@ -1528,10 +1864,10 @@ def _runtime_identity_failures(identity: dict[str, Any]) -> list[str]:
             identity.get("live_map_frame") != identity.get("site_map_frame"),
             "live_map_frame_mismatch",
         ),
-        (not _valid_domain_id(identity.get("bridge_domain_id")), "invalid_bridge_domain_id"),
+        (not _valid_sha256(identity.get("live_map_sha256")), "missing_live_map_sha256"),
     )
-    failures = [failure for failed, failure in checks if failed]
-    failures.extend(f"missing_{field}" for field in required_hashes if not identity.get(field))
+    failures = [*_source_identity_failures(identity)]
+    failures.extend(failure for failed, failure in checks if failed)
     failures.extend(_runtime_stack_failures(identity))
     return list(dict.fromkeys(failures))
 
@@ -1546,6 +1882,8 @@ def _measurement_contract(
         max_topic_age_s=options.max_topic_age_s,
         max_calibration_residual_m=options.max_calibration_residual_m,
         min_final_pose_samples=options.min_final_pose_samples,
+        min_final_state_samples=options.min_final_state_samples,
+        min_final_ground_truth_samples=options.min_final_ground_truth_samples,
         final_wall_timeout_s=options.final_wall_timeout_s,
         max_start_speed_mps=options.max_start_speed_mps,
         max_start_yaw_rate_rps=options.max_start_yaw_rate_rps,
@@ -1599,9 +1937,11 @@ def _prepare_capture(
     identity = _runtime_identity(
         config,
         config_path,
+        expected_source_root=options.expected_source_root,
         scene_path=options.scene_path,
         live_scene_sha256=options.live_scene_sha256,
         simulation_epoch=options.simulation_epoch,
+        reviewed_git_sha=options.expected_git_sha,
     )
     identity["site_map_frame"] = config.site.map_frame
     _apply_runtime_fingerprint(identity)
@@ -1614,8 +1954,15 @@ async def _collect_start_state(
     recorders: dict[str, _TopicRecorder],
     options: DifferentialCaptureOptions,
 ) -> dict[str, Any]:
+    cutoff_host_ns = time.monotonic_ns()
     await asyncio.sleep(options.preflight_sample_s)
-    return await _collect_dispatch_state(bridge, config, recorders, options)
+    return await _collect_dispatch_state(
+        bridge,
+        config,
+        recorders,
+        options,
+        cutoff_host_monotonic_ns=cutoff_host_ns,
+    )
 
 
 async def _collect_dispatch_state(
@@ -1623,6 +1970,8 @@ async def _collect_dispatch_state(
     config: AppConfig,
     recorders: dict[str, _TopicRecorder],
     options: DifferentialCaptureOptions,
+    *,
+    cutoff_host_monotonic_ns: int,
 ) -> dict[str, Any]:
     try:
         pose_info = await bridge.get_pose(
@@ -1641,6 +1990,7 @@ async def _collect_dispatch_state(
         odom=recorders["odom"],
         action_status=recorders["action_status"],
         options=options,
+        cutoff_host_monotonic_ns=cutoff_host_monotonic_ns,
     )
 
 
@@ -1749,12 +2099,20 @@ async def _record_live_evidence(
         tag: str,
         invoked_ns: int,
     ) -> dict[str, Any]:
-        del actual_goal, tag, invoked_ns
-        return await _collect_dispatch_state(bridge, config, recorders, options)
+        del actual_goal, tag
+        await asyncio.sleep(options.preflight_sample_s)
+        return await _collect_dispatch_state(
+            bridge,
+            config,
+            recorders,
+            options,
+            cutoff_host_monotonic_ns=invoked_ns,
+        )
 
     observed_bridge = _ObservedNavBridge(
         bridge,
         simulation_epoch=options.simulation_epoch,
+        expected_goal=goal,
         on_nav_send=observe_nav_send,
     )
     request_ns = time.monotonic_ns()
@@ -1803,6 +2161,7 @@ async def _record_live_evidence(
         options,
         recorders,
         terminal_host_ns=terminal_ns if type(terminal_ns) is int else None,
+        calibration=calibration,
     )
     artifact["final_observation_window"] = final_window
     map_samples = cast(list[dict[str, Any]], final_window["map_pose_samples"])
@@ -1810,10 +2169,7 @@ async def _record_live_evidence(
     artifact["final_map_pose_samples"] = map_samples
     artifact["final_map_pose_median"] = median.model_dump(mode="json") if median else None
 
-    gt_samples = _ground_truth_samples(
-        cast(list[dict[str, Any]], final_window["ground_truth_samples"]),
-        calibration,
-    )
+    gt_samples = cast(list[dict[str, Any]], final_window["verified_ground_truth_samples"])
     artifact["ground_truth_samples"] = gt_samples
     gt_map_poses = [
         {"pose": sample["map_pose"]}
@@ -1982,15 +2338,27 @@ def _complete_without_live_bridge(
             }
         )
         return True
-    if config.deployment_mode == "simulation":
+    if config.deployment_mode != "simulation":
+        artifact["overall"] = "blocked"
+        artifact["checks"].append(
+            {
+                "id": "deployment_mode_gate",
+                "status": "FAIL",
+                "detail": "Differential live capture is simulation-only.",
+                "failures": ["simulation_deployment_mode_required"],
+            }
+        )
+        return True
+    source_failures = _source_identity_failures(identity)
+    if not source_failures:
         return False
     artifact["overall"] = "blocked"
     artifact["checks"].append(
         {
-            "id": "deployment_mode_gate",
+            "id": "source_identity_gate",
             "status": "FAIL",
-            "detail": "Differential live capture is simulation-only.",
-            "failures": ["simulation_deployment_mode_required"],
+            "detail": "The executing source is not the reviewed clean revision.",
+            "failures": source_failures,
         }
     )
     return True
@@ -2189,20 +2557,731 @@ def _actual_dispatch_goal(artifact: dict[str, Any]) -> CanonicalGoal | None:
         return None
 
 
+def _finite_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _within_limit(value: object, maximum: float, *, absolute: bool = False) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return False
+    return (abs(numeric) if absolute else numeric) <= maximum
+
+
+def _pose_payload(value: object) -> Pose2D | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return Pose2D(x=value["x"], y=value["y"], yaw=value["yaw"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _valid_pose_payload(value: object) -> bool:
+    return _pose_payload(value) is not None
+
+
+def _valid_state_clock(state: dict[str, Any]) -> bool:
+    values = state.get("clock_samples_ns")
+    evidence = state.get("clock_evidence")
+    if (
+        not isinstance(values, list)
+        or len(values) < 2
+        or any(type(value) is not int for value in values)
+        or not isinstance(evidence, list)
+        or len(evidence) != len(values)
+    ):
+        return False
+    evidence_hosts: list[int] = []
+    evidence_clocks: list[int] = []
+    for item in evidence:
+        if (
+            not isinstance(item, dict)
+            or type(item.get("host_monotonic_ns")) is not int
+            or type(item.get("clock_ns")) is not int
+        ):
+            return False
+        evidence_hosts.append(int(item["host_monotonic_ns"]))
+        evidence_clocks.append(int(item["clock_ns"]))
+    return (
+        evidence_clocks == values
+        and values[-1] > values[0]
+        and all(right >= left for left, right in zip(values, values[1:], strict=False))
+        and all(
+            right >= left for left, right in zip(evidence_hosts, evidence_hosts[1:], strict=False)
+        )
+        and state.get("clock_advancing") is True
+        and state.get("clock_backwards") is False
+    )
+
+
+def _valid_covariance(value: object, maximum: float) -> bool:
+    return _within_limit(value, maximum) and isinstance(value, (int, float)) and value >= 0
+
+
+def _valid_topic_source(value: object, *, max_age_ns: int) -> bool:
+    if not isinstance(value, dict) or value.get("fresh") is not True:
+        return False
+    integer_fields = (
+        "host_monotonic_ns",
+        "host_age_ns",
+        "source_stamp_ns",
+        "sample_clock_ns",
+        "capture_clock_ns",
+        "source_age_ns",
+    )
+    if any(type(value.get(field)) is not int for field in integer_fields):
+        return False
+    host_age_ns = int(value["host_age_ns"])
+    source_age_ns = int(value["source_age_ns"])
+    return (
+        0 <= host_age_ns <= max_age_ns
+        and 0 <= source_age_ns <= max_age_ns
+        and int(value["capture_clock_ns"]) - int(value["source_stamp_ns"]) == source_age_ns
+    )
+
+
+def _valid_action_source(value: object, *, max_age_ns: int) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("fresh") is True
+        and value.get("schema_valid") is True
+        and type(value.get("host_monotonic_ns")) is int
+        and type(value.get("host_age_ns")) is int
+        and 0 <= int(value["host_age_ns"]) <= max_age_ns
+    )
+
+
+def _state_evidence_failures(
+    state: object,
+    *,
+    contract: DifferentialMeasurementContract,
+    expected_epoch: str | None,
+    label: str,
+) -> list[str]:
+    if not isinstance(state, dict):
+        return [f"{label}_missing"]
+    max_age_ns = int(contract.max_topic_age_s * 1_000_000_000)
+    linear_velocity = state.get("linear_velocity_mps")
+    angular_velocity = state.get("angular_velocity_rps")
+    evaluated_ns = state.get("evaluated_host_monotonic_ns")
+    cutoff_ns = state.get("cutoff_host_monotonic_ns")
+    checks = (
+        (
+            state.get("status") != "PASS" or state.get("failures") not in ([], ()),
+            f"{label}_status",
+        ),
+        (not _valid_pose_payload(state.get("map_to_base")), f"{label}_map_pose"),
+        (not _valid_pose_payload(state.get("amcl_pose")), f"{label}_amcl_pose"),
+        (not _valid_pose_payload(state.get("odom_pose")), f"{label}_odom_pose"),
+        (
+            not _valid_covariance(state.get("amcl_covariance_xy"), contract.max_covariance_xy),
+            f"{label}_amcl_covariance",
+        ),
+        (state.get("simulation_epoch") != expected_epoch, f"{label}_simulation_epoch"),
+        (
+            not _within_limit(linear_velocity, contract.max_start_speed_mps),
+            f"{label}_linear_velocity",
+        ),
+        (
+            not _within_limit(
+                angular_velocity,
+                contract.max_start_yaw_rate_rps,
+                absolute=True,
+            ),
+            f"{label}_angular_velocity",
+        ),
+        (state.get("stationary") is not True, f"{label}_stationary"),
+        (state.get("active_goal_ids") not in ([], ()), f"{label}_active_goal"),
+        (not _valid_state_clock(state), f"{label}_clock"),
+        (
+            not _valid_topic_source(state.get("amcl_source"), max_age_ns=max_age_ns),
+            f"{label}_amcl_source",
+        ),
+        (
+            not _valid_topic_source(state.get("odom_source"), max_age_ns=max_age_ns),
+            f"{label}_odom_source",
+        ),
+        (
+            not _valid_action_source(state.get("action_status_source"), max_age_ns=max_age_ns),
+            f"{label}_action_status_source",
+        ),
+        (
+            type(evaluated_ns) is not int or type(cutoff_ns) is not int or cutoff_ns > evaluated_ns,
+            f"{label}_evaluation_window",
+        ),
+    )
+    return [failure for failed, failure in checks if failed]
+
+
+def _evidence_items(value: object) -> tuple[list[dict[str, Any]], bool]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        return [], False
+    return cast(list[dict[str, Any]], value), True
+
+
+def _valid_map_window_sample(sample: dict[str, Any]) -> bool:
+    return (
+        sample.get("fresh") is True
+        and _valid_pose_payload(sample.get("pose"))
+        and type(sample.get("capture_clock_ns")) is int
+    )
+
+
+def _valid_ground_truth_window_sample(
+    sample: dict[str, Any],
+    calibration: GroundTruthCalibration,
+) -> bool:
+    source_frame = sample.get("source_frame_id")
+    world_pose = _pose_payload(sample.get("world_pose"))
+    map_pose = _pose_payload(sample.get("map_pose"))
+    expected_map_pose = calibration.world_to_map(world_pose) if world_pose is not None else None
+    return (
+        sample.get("fresh") is True
+        and type(sample.get("source_stamp_ns")) is int
+        and isinstance(source_frame, str)
+        and source_frame.lstrip("/") == str(calibration.world_frame_id).lstrip("/")
+        and _pose_matches(expected_map_pose, map_pose)
+    )
+
+
+def _clock_window_failures(
+    samples: object,
+    *,
+    start_host_ns: int | None,
+    end_host_ns: int | None,
+    start_clock_ns: int | None,
+    end_clock_ns: int | None,
+    coverage_slack_ns: int,
+) -> list[str]:
+    items, schema_valid = _evidence_items(samples)
+    if not schema_valid or len(items) < 2:
+        return ["final_clock_samples"]
+    hosts: list[int] = []
+    clocks: list[int] = []
+    for item in items:
+        host_ns = item.get("host_monotonic_ns")
+        clock_ns = item.get("clock_ns")
+        if type(host_ns) is not int or type(clock_ns) is not int:
+            return ["final_clock_sample_schema"]
+        hosts.append(host_ns)
+        clocks.append(clock_ns)
+    failures: list[str] = []
+    if (
+        start_host_ns is None
+        or end_host_ns is None
+        or any(host < start_host_ns or host > end_host_ns for host in hosts)
+        or any(right < left for left, right in zip(hosts, hosts[1:], strict=False))
+    ):
+        failures.append("final_clock_host_order")
+    if any(right < left for left, right in zip(clocks, clocks[1:], strict=False)):
+        failures.append("final_clock_source_order")
+    if (
+        start_clock_ns is None
+        or end_clock_ns is None
+        or clocks[0] > start_clock_ns + coverage_slack_ns
+        or clocks[-1] < end_clock_ns - coverage_slack_ns
+    ):
+        failures.append("final_clock_coverage")
+    return failures
+
+
+def _pose_matches(left: Pose2D | None, right: Pose2D | None, *, tolerance: float = 1e-9) -> bool:
+    if left is None or right is None:
+        return False
+    yaw_delta = math.atan2(math.sin(left.yaw - right.yaw), math.cos(left.yaw - right.yaw))
+    return (
+        math.hypot(left.x - right.x, left.y - right.y) <= tolerance and abs(yaw_delta) <= tolerance
+    )
+
+
+def _derived_median(samples: list[dict[str, Any]], *, pose_key: str) -> Pose2D | None:
+    return _median_pose(
+        [{"pose": sample[pose_key]} for sample in samples if isinstance(sample.get(pose_key), dict)]
+    )
+
+
+def _ground_truth_requirement(
+    artifact: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    identity: dict[str, Any],
+) -> tuple[GroundTruthCalibration | None, list[str]]:
+    raw = artifact.get("ground_truth_calibration")
+    if raw is None:
+        return None, []
+    try:
+        calibration = GroundTruthCalibration.model_validate(raw)
+    except ValueError:
+        return None, ["ground_truth_calibration_invalid"]
+    if calibration.status != "VERIFIED":
+        return None, []
+    calibration_frame = (calibration.map_frame_id or "").lstrip("/")
+    configured_frame = str(identity.get("site_map_frame") or "").lstrip("/")
+    live_frame = str(identity.get("live_map_frame") or "").lstrip("/")
+    checks = (
+        (
+            calibration.residual_m is None
+            or calibration.residual_m > contract.max_calibration_residual_m,
+            "ground_truth_calibration_residual",
+        ),
+        (
+            calibration.scene_sha256 != identity.get("scene_sha256")
+            or calibration.scene_sha256 != identity.get("live_scene_sha256"),
+            "ground_truth_scene_identity",
+        ),
+        (
+            calibration.map_sha256 != identity.get("site_map_sha256")
+            or calibration.map_sha256 != identity.get("live_map_sha256"),
+            "ground_truth_map_identity",
+        ),
+        (
+            not calibration_frame
+            or calibration_frame != configured_frame
+            or calibration_frame != live_frame,
+            "ground_truth_map_frame",
+        ),
+    )
+    failures = [failure for failed, failure in checks if failed]
+    return calibration, failures
+
+
+def _validated_final_window_samples(
+    window: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    ground_truth_calibration: GroundTruthCalibration | None,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[str],
+]:
+    raw_map, map_schema = _evidence_items(window.get("map_pose_samples"))
+    raw_amcl, amcl_schema = _evidence_items(window.get("valid_amcl_samples"))
+    raw_odom, odom_schema = _evidence_items(window.get("valid_odom_samples"))
+    raw_ground_truth, ground_truth_schema = _evidence_items(
+        window.get("verified_ground_truth_samples")
+    )
+    map_samples = [sample for sample in raw_map if _valid_map_window_sample(sample)]
+    amcl_samples = _valid_final_amcl(
+        raw_amcl,
+        max_covariance_xy=contract.max_covariance_xy,
+    )
+    odom_samples = _valid_final_odom(raw_odom)
+    ground_truth_samples = (
+        [
+            sample
+            for sample in raw_ground_truth
+            if _valid_ground_truth_window_sample(sample, ground_truth_calibration)
+        ]
+        if ground_truth_calibration is not None
+        else []
+    )
+    map_clock_samples = [
+        {**sample, "source_stamp_ns": sample["capture_clock_ns"]} for sample in map_samples
+    ]
+    sample_checks: tuple[tuple[bool, str], ...] = (
+        (
+            not map_schema or len(map_samples) != len(raw_map),
+            "final_window_map_sample_schema",
+        ),
+        (
+            not amcl_schema or len(amcl_samples) != len(raw_amcl),
+            "final_window_amcl_sample_schema",
+        ),
+        (
+            not odom_schema or len(odom_samples) != len(raw_odom),
+            "final_window_odom_sample_schema",
+        ),
+        (
+            not ground_truth_schema or len(ground_truth_samples) != len(raw_ground_truth),
+            "final_window_ground_truth_sample_schema",
+        ),
+    )
+    return (
+        map_samples,
+        map_clock_samples,
+        amcl_samples,
+        odom_samples,
+        ground_truth_samples,
+        [failure for failed, failure in sample_checks if failed],
+    )
+
+
+def _final_window_evidence_failures(
+    window: object,
+    *,
+    contract: DifferentialMeasurementContract,
+    ground_truth_calibration: GroundTruthCalibration | None,
+    final_map_pose: Pose2D | None,
+    final_ground_truth_pose: Pose2D | None,
+) -> list[str]:
+    if not isinstance(window, dict):
+        return ["final_window_missing"]
+    start_host_ns = window.get("start_host_monotonic_ns")
+    end_host_ns = window.get("end_host_monotonic_ns")
+    terminal_host_ns = window.get("terminal_host_monotonic_ns")
+    start_clock_ns = window.get("start_clock_ns")
+    end_clock_ns = window.get("end_clock_ns")
+    required_duration_ns = int(contract.final_sample_s * 1_000_000_000)
+    expected_slack_ns = int(
+        min(contract.max_topic_age_s, contract.sample_interval_s * 2.0) * 1_000_000_000
+    )
+    ground_truth_required = ground_truth_calibration is not None
+    (
+        map_samples,
+        map_clock_samples,
+        amcl_samples,
+        odom_samples,
+        ground_truth_samples,
+        sample_failures,
+    ) = _validated_final_window_samples(
+        window,
+        contract=contract,
+        ground_truth_calibration=ground_truth_calibration,
+    )
+    checks = (
+        (
+            window.get("status") != "PASS" or window.get("failures") not in ([], ()),
+            "final_window_status",
+        ),
+        (
+            type(start_host_ns) is not int
+            or type(end_host_ns) is not int
+            or type(terminal_host_ns) is not int
+            or start_host_ns < terminal_host_ns
+            or end_host_ns < start_host_ns,
+            "final_window_terminal_binding",
+        ),
+        (
+            type(start_clock_ns) is not int
+            or type(end_clock_ns) is not int
+            or end_clock_ns - start_clock_ns < required_duration_ns
+            or window.get("required_duration_ns") != required_duration_ns
+            or window.get("clock_backwards") is not False,
+            "final_window_ros_duration",
+        ),
+        (window.get("coverage_slack_ns") != expected_slack_ns, "final_window_coverage_contract"),
+        (len(map_samples) < contract.min_final_pose_samples, "final_window_map_samples"),
+        (window.get("stationary") is not True, "final_window_stationary"),
+        (
+            window.get("ground_truth_required") is not ground_truth_required,
+            "final_window_ground_truth_requirement",
+        ),
+        (
+            not _pose_matches(_derived_median(map_samples, pose_key="pose"), final_map_pose),
+            "final_map_median_not_derived",
+        ),
+        (
+            ground_truth_required
+            and not _pose_matches(
+                _derived_median(ground_truth_samples, pose_key="map_pose"),
+                final_ground_truth_pose,
+            ),
+            "final_ground_truth_median_not_derived",
+        ),
+        (
+            not ground_truth_required
+            and (bool(ground_truth_samples) or final_ground_truth_pose is not None),
+            "unverified_ground_truth_present",
+        ),
+    )
+    failures = [*sample_failures, *(failure for failed, failure in checks if failed)]
+    failures.extend(
+        _clock_window_failures(
+            window.get("clock_samples"),
+            start_host_ns=start_host_ns if type(start_host_ns) is int else None,
+            end_host_ns=end_host_ns if type(end_host_ns) is int else None,
+            start_clock_ns=start_clock_ns if type(start_clock_ns) is int else None,
+            end_clock_ns=end_clock_ns if type(end_clock_ns) is int else None,
+            coverage_slack_ns=expected_slack_ns,
+        )
+    )
+    start_clock = start_clock_ns if type(start_clock_ns) is int else None
+    for name, samples, minimum in (
+        ("map", map_clock_samples, contract.min_final_pose_samples),
+        ("amcl", amcl_samples, contract.min_final_state_samples),
+        ("odom", odom_samples, contract.min_final_state_samples),
+    ):
+        failures.extend(
+            _stream_window_failures(
+                name,
+                samples,
+                min_samples=minimum,
+                start_clock_ns=start_clock,
+                required_duration_ns=required_duration_ns,
+                coverage_slack_ns=expected_slack_ns,
+            )
+        )
+    if ground_truth_required:
+        failures.extend(
+            _stream_window_failures(
+                "ground_truth",
+                ground_truth_samples,
+                min_samples=contract.min_final_ground_truth_samples,
+                start_clock_ns=start_clock,
+                required_duration_ns=required_duration_ns,
+                coverage_slack_ns=expected_slack_ns,
+            )
+        )
+    return list(dict.fromkeys(failures))
+
+
+def _cleanup_evidence_failures(cleanup: object) -> list[str]:
+    if not isinstance(cleanup, dict):
+        return ["cleanup_missing"]
+    halt = cleanup.get("final_halt")
+    unwatch = cleanup.get("unwatch")
+    shutdown = cleanup.get("bridge_shutdown")
+    halt_confirmed = (
+        isinstance(halt, dict)
+        and halt.get("status") == "PASS"
+        and halt.get("zero_velocity_command_published") is True
+        and (
+            halt.get("navigation_cancel_requested") is not True
+            or halt.get("navigation_cancel_acknowledged") is True
+        )
+    )
+    checks = (
+        (
+            cleanup.get("status") != "PASS" or cleanup.get("failures") not in ([], ()),
+            "cleanup_status",
+        ),
+        (not halt_confirmed, "cleanup_final_halt_evidence"),
+        (
+            not isinstance(unwatch, dict)
+            or unwatch.get("status") != "PASS"
+            or unwatch.get("failures") not in ([], ()),
+            "cleanup_unwatch",
+        ),
+        (
+            not isinstance(shutdown, dict) or shutdown.get("status") != "PASS",
+            "cleanup_bridge_shutdown",
+        ),
+    )
+    return [failure for failed, failure in checks if failed]
+
+
+def _accepted_goal_observation(timeline: dict[str, Any]) -> dict[str, Any] | None:
+    observations = timeline.get("accepted_goal_observations")
+    if not isinstance(observations, list) or len(observations) != 1:
+        return None
+    observation = observations[0]
+    return observation if isinstance(observation, dict) else None
+
+
+def _valid_goal_uuid(timeline: dict[str, Any]) -> bool:
+    goal_uuid = timeline.get("accepted_goal_uuid")
+    observation = _accepted_goal_observation(timeline)
+    return (
+        isinstance(goal_uuid, str)
+        and len(goal_uuid) == 32
+        and all(character in "0123456789abcdef" for character in goal_uuid)
+        and timeline.get("goal_uuid_evidence") == "INFERRED_UNIQUE_ACTION_STATUS"
+        and observation is not None
+        and observation.get("goal_uuid") == goal_uuid
+        and observation.get("goal_stamp_fresh") is True
+        and type(observation.get("observed_host_monotonic_ns")) is int
+    )
+
+
+def _dispatch_evidence_failures(
+    artifact: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    canonical_goal: CanonicalGoal,
+) -> list[str]:
+    timeline = artifact.get("t1_goal_dispatch")
+    if not isinstance(timeline, dict):
+        return ["t1_timeline_missing"]
+    actual_goal = _actual_dispatch_goal(artifact)
+    checks = (
+        (
+            timeline.get("status") != "PASS" or timeline.get("failures") not in ([], ()),
+            "t1_timeline_status",
+        ),
+        (timeline.get("dispatch_count") != 1, "t1_dispatch_count"),
+        (
+            type(timeline.get("nav_send_forwarded_host_monotonic_ns")) is not int,
+            "t1_forward_timestamp",
+        ),
+        (not _valid_goal_uuid(timeline), "t1_goal_uuid"),
+        (actual_goal is None, "actual_dispatch_goal_missing"),
+        (
+            actual_goal is not None and not compare_goals(canonical_goal, actual_goal).equivalent,
+            "actual_dispatch_goal_not_canonical",
+        ),
+    )
+    failures = [failure for failed, failure in checks if failed]
+    failures.extend(
+        _state_evidence_failures(
+            timeline.get("state_before_forward"),
+            contract=contract,
+            expected_epoch=canonical_goal.simulation_epoch,
+            label="t1",
+        )
+    )
+    return failures
+
+
+def _terminal_evidence_failure(artifact: dict[str, Any]) -> str | None:
+    terminal = artifact.get("nav2_terminal")
+    valid = (
+        isinstance(terminal, dict)
+        and type(terminal.get("observed_host_monotonic_ns")) is int
+        and isinstance(terminal.get("status"), str)
+        and bool(terminal.get("status"))
+    )
+    return None if valid else "nav2_terminal_missing"
+
+
+def _nondecreasing_ints(*values: object) -> bool:
+    if any(type(value) is not int for value in values):
+        return False
+    integers = [cast(int, value) for value in values]
+    return all(right >= left for left, right in zip(integers, integers[1:], strict=False))
+
+
+def _between_int(value: object, lower: object, upper: object) -> bool:
+    return (
+        type(value) is int and type(lower) is int and type(upper) is int and lower <= value <= upper
+    )
+
+
+def _lifecycle_evidence_failures(artifact: dict[str, Any]) -> list[str]:
+    timeline = artifact.get("t1_goal_dispatch")
+    terminal = artifact.get("nav2_terminal")
+    window = artifact.get("final_observation_window")
+    if (
+        not isinstance(timeline, dict)
+        or not isinstance(terminal, dict)
+        or not isinstance(window, dict)
+    ):
+        return ["lifecycle_evidence_missing"]
+    observations = timeline.get("dispatch_observations")
+    dispatch = (
+        observations[0]
+        if isinstance(observations, list)
+        and len(observations) == 1
+        and isinstance(observations[0], dict)
+        else None
+    )
+    accepted = _accepted_goal_observation(timeline)
+    request_ns = timeline.get("request_host_monotonic_ns")
+    invoked_ns = dispatch.get("nav_send_invoked_host_monotonic_ns") if dispatch else None
+    forwarded_ns = timeline.get("nav_send_forwarded_host_monotonic_ns")
+    completed_ns = dispatch.get("forward_completed_host_monotonic_ns") if dispatch else None
+    accepted_ns = accepted.get("observed_host_monotonic_ns") if accepted else None
+    terminal_ns = terminal.get("observed_host_monotonic_ns")
+    returned_ns = timeline.get("return_host_monotonic_ns")
+    final_terminal_ns = window.get("terminal_host_monotonic_ns")
+    final_start_ns = window.get("start_host_monotonic_ns")
+    final_end_ns = window.get("end_host_monotonic_ns")
+    ordered = (
+        request_ns,
+        invoked_ns,
+        forwarded_ns,
+        completed_ns,
+        terminal_ns,
+        returned_ns,
+        final_start_ns,
+        final_end_ns,
+    )
+    checks = (
+        (any(type(value) is not int for value in ordered), "lifecycle_timestamp_missing"),
+        (not _nondecreasing_ints(*ordered), "lifecycle_timestamp_order"),
+        (
+            not _between_int(accepted_ns, forwarded_ns, returned_ns),
+            "goal_status_observation_order",
+        ),
+        (final_terminal_ns != terminal_ns, "final_window_terminal_mismatch"),
+    )
+    return [failure for failed, failure in checks if failed]
+
+
+def _artifact_contract_and_goal(
+    artifact: dict[str, Any],
+) -> tuple[DifferentialMeasurementContract, CanonicalGoal] | None:
+    try:
+        return (
+            DifferentialMeasurementContract.model_validate(artifact.get("measurement_contract")),
+            CanonicalGoal.model_validate(artifact.get("canonical_goal")),
+        )
+    except ValueError:
+        return None
+
+
 def _comparison_eligibility_failure(artifact: dict[str, Any], side: str) -> str | None:
-    if artifact.get("overall") != "captured":
-        return f"{side} artifact overall is not captured."
-    t0 = artifact.get("t0_scenario_start")
-    if not isinstance(t0, dict) or t0.get("status") != "PASS":
-        return f"{side} T0 start gate did not pass."
-    final_window = artifact.get("final_observation_window")
-    if not isinstance(final_window, dict) or final_window.get("status") != "PASS":
-        return f"{side} final observation window did not pass."
-    cleanup = artifact.get("cleanup")
-    if not isinstance(cleanup, dict) or cleanup.get("status") != "PASS":
-        return f"{side} cleanup did not pass."
-    if _actual_dispatch_goal(artifact) is None:
-        return f"{side} actual dispatch goal evidence is unavailable."
+    parsed = _artifact_contract_and_goal(artifact)
+    if parsed is None:
+        return f"{side} artifact contract or canonical goal is invalid."
+    contract, canonical_goal = parsed
+    identity = artifact.get("runtime_identity")
+    identity_dict = identity if isinstance(identity, dict) else {}
+    execution_status = artifact.get("execution_status")
+    final_map_pose = _artifact_pose(artifact, "final_map_pose_median")
+    final_ground_truth_pose = _artifact_pose(artifact, "final_ground_truth_map_median")
+    ground_truth_calibration, ground_truth_failures = _ground_truth_requirement(
+        artifact,
+        contract=contract,
+        identity=identity_dict,
+    )
+    checks = (
+        (artifact.get("overall") != "captured", "overall_not_captured"),
+        (artifact.get("execution_requested") is not True, "execution_not_requested"),
+        (not isinstance(artifact.get("finished_at"), str), "finished_at_missing"),
+        (final_map_pose is None, "final_map_pose_median_missing"),
+        (
+            not isinstance(execution_status, str)
+            or not execution_status
+            or execution_status == "unknown",
+            "execution_status_missing",
+        ),
+    )
+    failures = [failure for failed, failure in checks if failed]
+    failures.extend(
+        _runtime_identity_failures(identity_dict) if identity_dict else ["runtime_identity_missing"]
+    )
+    failures.extend(ground_truth_failures)
+    failures.extend(
+        _state_evidence_failures(
+            artifact.get("t0_scenario_start"),
+            contract=contract,
+            expected_epoch=canonical_goal.simulation_epoch,
+            label="t0",
+        )
+    )
+    failures.extend(
+        _dispatch_evidence_failures(
+            artifact,
+            contract=contract,
+            canonical_goal=canonical_goal,
+        )
+    )
+    if terminal_failure := _terminal_evidence_failure(artifact):
+        failures.append(terminal_failure)
+    failures.extend(_lifecycle_evidence_failures(artifact))
+    failures.extend(
+        _final_window_evidence_failures(
+            artifact.get("final_observation_window"),
+            contract=contract,
+            ground_truth_calibration=ground_truth_calibration,
+            final_map_pose=final_map_pose,
+            final_ground_truth_pose=final_ground_truth_pose,
+        )
+    )
+    failures.extend(_cleanup_evidence_failures(artifact.get("cleanup")))
+    if failures:
+        return f"{side} artifact is not comparison-eligible: {', '.join(dict.fromkeys(failures))}"
     return None
 
 
@@ -2220,6 +3299,47 @@ def _eligible_artifact_pair(
     return left_valid, right_valid, None
 
 
+def _state_pairing_gate(
+    left_identity: dict[str, Any],
+    right_identity: dict[str, Any],
+    left_state: dict[str, Any],
+    right_state: dict[str, Any],
+    *,
+    max_covariance_xy: float,
+) -> tuple[PairingGateResult | None, str | None]:
+    left_start = _artifact_pose(left_state, "map_to_base")
+    right_start = _artifact_pose(right_state, "map_to_base")
+    if left_start is None or right_start is None:
+        return None, "Comparable map poses are missing."
+    try:
+        left_covariance = float(left_state["amcl_covariance_xy"])
+        right_covariance = float(right_state["amcl_covariance_xy"])
+    except (KeyError, TypeError, ValueError):
+        return None, "Comparable localization covariance is missing."
+    if not all(
+        math.isfinite(value) and value >= 0 for value in (left_covariance, right_covariance)
+    ):
+        return None, "Comparable localization covariance is invalid."
+    return (
+        evaluate_pairing_gate(
+            left_runtime_fingerprint=str(left_identity.get("fingerprint") or ""),
+            right_runtime_fingerprint=str(right_identity.get("fingerprint") or ""),
+            left_epoch=str(left_state.get("simulation_epoch") or ""),
+            right_epoch=str(right_state.get("simulation_epoch") or ""),
+            left_start=left_start,
+            right_start=right_start,
+            left_covariance_xy=left_covariance,
+            right_covariance_xy=right_covariance,
+            left_stationary=left_state.get("stationary") is True,
+            right_stationary=right_state.get("stationary") is True,
+            left_active_goal=bool(left_state.get("active_goal_ids")),
+            right_active_goal=bool(right_state.get("active_goal_ids")),
+            max_covariance_xy=max_covariance_xy,
+        ),
+        None,
+    )
+
+
 def _pairing_gate_from_artifacts(
     left: dict[str, Any],
     right: dict[str, Any],
@@ -2228,32 +3348,36 @@ def _pairing_gate_from_artifacts(
     right_identity = cast(dict[str, Any], right["runtime_identity"])
     left_t0 = cast(dict[str, Any], left["t0_scenario_start"])
     right_t0 = cast(dict[str, Any], right["t0_scenario_start"])
-    left_start = _artifact_pose(left_t0, "map_to_base")
-    right_start = _artifact_pose(right_t0, "map_to_base")
-    if left_start is None or right_start is None:
-        return None, "Comparable start poses are missing."
+    left_t1 = cast(dict[str, Any], left["t1_goal_dispatch"])
+    right_t1 = cast(dict[str, Any], right["t1_goal_dispatch"])
+    left_dispatch = left_t1.get("state_before_forward")
+    right_dispatch = right_t1.get("state_before_forward")
+    if not isinstance(left_dispatch, dict) or not isinstance(right_dispatch, dict):
+        return None, "Comparable T1 dispatch states are missing."
     try:
-        left_covariance = float(left_t0["amcl_covariance_xy"])
-        right_covariance = float(right_t0["amcl_covariance_xy"])
-    except (KeyError, TypeError, ValueError):
-        return None, "Comparable localization covariance is missing."
-    if not all(
-        math.isfinite(value) and value >= 0 for value in (left_covariance, right_covariance)
-    ):
-        return None, "Comparable localization covariance is invalid."
-    gate = evaluate_pairing_gate(
-        left_runtime_fingerprint=str(left_identity.get("fingerprint") or ""),
-        right_runtime_fingerprint=str(right_identity.get("fingerprint") or ""),
-        left_epoch=str(left_t0.get("simulation_epoch") or ""),
-        right_epoch=str(right_t0.get("simulation_epoch") or ""),
-        left_start=left_start,
-        right_start=right_start,
-        left_covariance_xy=left_covariance,
-        right_covariance_xy=right_covariance,
-        left_stationary=left_t0.get("stationary") is True,
-        right_stationary=right_t0.get("stationary") is True,
-        left_active_goal=bool(left_t0.get("active_goal_ids")),
-        right_active_goal=bool(right_t0.get("active_goal_ids")),
+        contract = DifferentialMeasurementContract.model_validate(left["measurement_contract"])
+    except ValueError:
+        return None, "The left measurement contract is invalid."
+    t0_gate, detail = _state_pairing_gate(
+        left_identity,
+        right_identity,
+        left_t0,
+        right_t0,
+        max_covariance_xy=contract.max_covariance_xy,
+    )
+    if t0_gate is None:
+        return None, detail
+    t1_gate, detail = _state_pairing_gate(
+        left_identity,
+        right_identity,
+        left_dispatch,
+        right_dispatch,
+        max_covariance_xy=contract.max_covariance_xy,
+    )
+    if t1_gate is None:
+        return None, detail
+    t1_failures = tuple(
+        f"t1_{failure}" for failure in t1_gate.failures if failure != "runtime_fingerprint"
     )
     metadata_checks = (
         (left.get("pair_id") != right.get("pair_id"), "pair_id"),
@@ -2272,13 +3396,15 @@ def _pairing_gate_from_artifacts(
         ),
     )
     metadata_failures = tuple(failure for failed, failure in metadata_checks if failed)
-    if metadata_failures:
-        gate = gate.model_copy(
-            update={
-                "status": PairingGate.FAILED,
-                "failures": (*gate.failures, *metadata_failures),
-            }
-        )
+    failures = tuple(dict.fromkeys((*t0_gate.failures, *t1_failures, *metadata_failures)))
+    gate = t0_gate.model_copy(
+        update={
+            "status": PairingGate.FAILED if failures else PairingGate.PASSED,
+            "failures": failures,
+            "dispatch_position_delta_m": t1_gate.start_position_delta_m,
+            "dispatch_yaw_delta_rad": t1_gate.start_yaw_delta_rad,
+        }
+    )
     return gate, None
 
 

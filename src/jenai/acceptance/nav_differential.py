@@ -256,6 +256,8 @@ class PairingGateResult(BaseModel):
     failures: tuple[str, ...] = ()
     start_position_delta_m: float = Field(ge=0, allow_inf_nan=False)
     start_yaw_delta_rad: float = Field(ge=0, allow_inf_nan=False)
+    dispatch_position_delta_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    dispatch_yaw_delta_rad: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 def evaluate_pairing_gate(

@@ -126,10 +126,12 @@ def _artifact(mode: str, *, reset_policy: str, pair_id: str = "pair-01") -> dict
     }
 
 
-def test_pair_comparison_rejects_mixed_reset_policy() -> None:
+def test_pair_comparison_rejects_mixed_reset_policy(
+    differential_artifact_factory,
+) -> None:
     report = compare_differential_artifacts(
-        _artifact("R1_bridge_nav2", reset_policy="nav2_restart"),
-        _artifact("R2_jenai_no_retry", reset_policy="isaac_replay"),
+        differential_artifact_factory(mode="R1_bridge_nav2", reset_policy="nav2_restart"),
+        differential_artifact_factory(mode="R2_jenai_no_retry", reset_policy="isaac_replay"),
     )
 
     assert report["included"] is False
@@ -137,10 +139,12 @@ def test_pair_comparison_rejects_mixed_reset_policy() -> None:
     assert "reset_policy" in report["pairing_gate"]["failures"]
 
 
-def test_pair_comparison_requires_one_r1_and_one_r2() -> None:
+def test_pair_comparison_requires_one_r1_and_one_r2(
+    differential_artifact_factory,
+) -> None:
     report = compare_differential_artifacts(
-        _artifact("R1_bridge_nav2", reset_policy="nav2_restart"),
-        _artifact("R1_bridge_nav2", reset_policy="nav2_restart"),
+        differential_artifact_factory(mode="R1_bridge_nav2"),
+        differential_artifact_factory(mode="R1_bridge_nav2"),
     )
 
     assert report["included"] is False

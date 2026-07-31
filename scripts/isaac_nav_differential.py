@@ -17,6 +17,8 @@ from jenai.acceptance.nav_differential_runner import (
     load_and_compare,
 )
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -54,6 +56,10 @@ def _parser() -> argparse.ArgumentParser:
             "操作員從目前 Isaac Stage root layer 另行擷取的 64 字元小寫 SHA-256；--execute 時必填"
         ),
     )
+    capture.add_argument(
+        "--expected-git-sha",
+        help="第二輪 Code Review 通過且要實際驗證的 commit SHA；--execute 時必填",
+    )
     capture.add_argument("--calibration", type=Path, help="已驗證的 T_map_world JSON")
     capture.add_argument("--ground-truth-topic")
     capture.add_argument(
@@ -78,6 +84,8 @@ def _parser() -> argparse.ArgumentParser:
 def _capture(args: argparse.Namespace) -> int:
     options = DifferentialCaptureOptions(
         output=args.output,
+        expected_source_root=_REPOSITORY_ROOT,
+        expected_git_sha=args.expected_git_sha,
         location=args.location,
         pair_id=args.pair_id,
         mode=DifferentialMode(args.mode),

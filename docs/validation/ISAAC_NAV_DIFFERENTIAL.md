@@ -33,7 +33,8 @@ R2 只在 runner 的記憶內建立 `nav_endpoint_retry_limit=0` 的 config copy
 
 - `canonical_goal` 是 location 經 Site binding 後的預期目標。
 - `t1_goal_dispatch.actual_goal` 是 `_ObservedNavBridge.nav_send()` 真正收到的
-  `frame/x/y/yaw`；離線比較使用這份實際 dispatch goal。
+  `frame/x/y/yaw`。Proxy 會先與 `canonical_goal` 比對；不等價時在 T1 取樣與真正
+  bridge `nav_send` 之前 fail closed，因此不會送出 motion。離線比較仍會再次驗證這個綁定。
 - `map` 與 `/map` 正規化為 `map`。
 - quaternion 先正規化；`q` 與 `-q` 視為同一旋轉。
 - ROS timestamp 數字不要求跨 run 相等；只檢查 clock domain、simulation epoch 與 freshness。
@@ -53,7 +54,11 @@ Isaac world pose 不可直接與 ROS map pose 相減。只有已驗證的 `T_map
 - Site map SHA、live map digest、calibration map SHA 三者一致；
 - configured map frame、live map frame、calibration `map_frame_id` 一致；
 - ground-truth message 有 fresh header timestamp，frame 等於 `world_frame_id`；
-- 只使用 Nav2 terminal 後 final window 的樣本。
+- 只使用 Nav2 terminal 後 final window 的樣本；
+- 至少 3 筆 distinct、單調且 fresh 的 source timestamps，並覆蓋 2 秒 ROS-time window
+  的 begin／tail；
+- 每筆 `map_pose` 都必須能由保存的 world pose 與 calibration 重新計算，final median 也由
+  驗證後樣本重新推導。
 
 Calibration JSON 範例：
 
@@ -73,14 +78,16 @@ Calibration JSON 範例：
 }
 ```
 
-缺少可信 calibration 時會明確記錄 `GROUND_TRUTH_UNAVAILABLE`。這種 run 仍可比較 ROS
-map pose，但不得宣稱 Isaac 中的實際車體停偏。
+缺少可信 calibration，或 residual、scene、map、frame 任一 gate 不通過時，會明確記錄
+`GROUND_TRUTH_UNAVAILABLE`。這種 run 不要求 ground-truth samples，仍可進行 ROS map-only
+比較，但不得產生 `ACTUAL_ENDPOINT_DIFFERENCE` 或 localization-vs-ground-truth 結論。
 
 ## Live runtime、T0、T1 與 final gate
 
 Live execution 只允許 `deployment_mode=simulation`，並在送 goal 前 fail closed 檢查：
 
-- clean Git revision、正確 `jenai.__file__`；
+- CLI 所在 repository root、`jenai.__file__` 對應 source root 與操作員明確提供的
+  `--expected-git-sha` 必須指向同一個已 Code Review、clean revision；
 - config、Site map、locations、rendered Nav2 params、scene SHA 完整；
 - `--scene` 檔案 SHA 等於操作員提供的 active Stage root-layer SHA；
 - Site map digest／frame 等於 bridge 觀察到的 live map；
@@ -100,14 +107,19 @@ T0 scenario start 與真正 `nav_send` 前的 T1 dispatch state 都要求：
 - fresh、schema-valid action status；
 - 沒有 active goal。
 
-T1 在實際 `nav_send` 邊界重新取樣；T1 失敗時 goal 不會 forward。
+T1 在 proxy `nav_send` 已被呼叫、但尚未 forward 到真正 bridge 時重新取樣。Runner 先等待
+`preflight_sample_s`（預設 1 秒），且只接受 `nav_send_invoked_host_monotonic_ns` 之後的新
+`/clock`、AMCL、odom 與 action-status evidence；不得重用 T0。T1 失敗時 goal 不會
+forward。
 
 Nav2 terminal 後的 final window 要求：
 
 - 2.0 秒實際 ROS time；wall time 上限 15 秒；
 - `/clock` 不可暫停或倒退；
-- 至少 10 筆 fresh map pose；
-- fresh AMCL／odom，AMCL covariance 仍在門檻內；
+- 至少 10 筆 finite、fresh map pose，且其 ROS clock samples 覆蓋 window begin／tail；
+- AMCL 與 odom 各至少 3 筆 distinct、單調且 fresh 的 source timestamps，覆蓋 window
+  begin／tail，且 pose、covariance／velocity schema 完整；
+- AMCL covariance 仍在門檻內；
 - final odom window 顯示 robot stationary。
 
 Wall time 經過不代表 paused Isaac 已完成 final window。
@@ -135,8 +147,12 @@ cleanup_failed
 ```
 
 只有 `captured` 且 T0、T1、terminal-bound final window、cleanup 全部 PASS，並有可解析的
-actual dispatch goal，才能進入 paired comparison。Preparation、dispatch 或 cleanup 例外仍會
-原子保存可重新載入的 schema-v1 artifact；成功與失敗場次都不得刪除。
+actual dispatch goal，才能進入 paired comparison。離線入口會重新驗證 source identity 與
+fingerprint、T0/T1 原始 freshness metadata、canonical-vs-actual goal、唯一 UUID、完整 lifecycle
+順序、terminal、final samples、由樣本推導的 median、ground-truth calibration 與 cleanup；不會
+只相信 artifact 內的 `PASS` 字串。Preparation、dispatch 或 cleanup 例外仍會
+原子保存可重新載入的 schema-v1 artifact；成功與失敗場次都不得刪除。Runtime fingerprint
+只用於確認兩場 runtime identity 是否等價，不是防惡意竄改的簽章或 artifact attestation。
 
 ## Preflight：不移動
 
@@ -158,11 +174,14 @@ runtime gate，也不代表 pilot ready 或 navigation PASS。
 
 第一個 live pair 是 `pilot-00`，不納入精度統計。開始前：
 
-1. 在 Isaac 目前 Stage 取得 root-layer identifier，確認解析到與 `--scene` 同一檔案。
-2. 對該檔案計算 SHA-256，保存 identifier 與 digest；不可猜場景名稱。
-3. 完成一次明確 pair initialization：載入固定場景、Play、restart Nav2、定位健康、無 active
+1. 從 Code Review 通過的 clean worktree 執行 CLI，記錄 `git rev-parse HEAD`，並將該完整
+   SHA 傳給 `--expected-git-sha`。CLI 會以 script 所在 repository root 綁定 source root；
+   實際 `jenai.__file__`、該 root 的 HEAD 與 reviewed SHA 必須完全一致。
+2. 在 Isaac 目前 Stage 取得 root-layer identifier，確認解析到與 `--scene` 同一檔案。
+3. 對該檔案計算 SHA-256，保存 identifier 與 digest；不可猜場景名稱。
+4. 完成一次明確 pair initialization：載入固定場景、Play、restart Nav2、定位健康、無 active
    goal，然後指定本次 simulation epoch。
-4. `reset_policy` 只是描述 pair 開始前的操作，不會讓 runner 自動 restart、Replay 或
+5. `reset_policy` 只是描述 pair 開始前的操作，不會讓 runner 自動 restart、Replay 或
    reposition。
 
 目前 `--live-scene-sha256` 是操作員另行擷取的 active Stage identity claim。Runner 會把它與
@@ -180,6 +199,7 @@ uv run python scripts/isaac_nav_differential.py capture \
   --reset-policy nav2_restart \
   --scene /absolute/path/to/warehouse.usd \
   --live-scene-sha256 "<active-stage-root-layer-sha256>" \
+  --expected-git-sha "<reviewed-clean-commit-sha>" \
   --output artifacts/nav-diff/pilot-00-r1.json \
   --execute \
   --confirm "I UNDERSTAND THIS WILL MOVE THE ISAAC SIM ROBOT"
@@ -197,6 +217,7 @@ uv run python scripts/isaac_nav_differential.py capture \
   --reset-policy nav2_restart \
   --scene /absolute/path/to/warehouse.usd \
   --live-scene-sha256 "<active-stage-root-layer-sha256>" \
+  --expected-git-sha "<reviewed-clean-commit-sha>" \
   --output artifacts/nav-diff/pilot-00-r2.json \
   --execute \
   --confirm "I UNDERSTAND THIS WILL MOVE THE ISAAC SIM ROBOT"

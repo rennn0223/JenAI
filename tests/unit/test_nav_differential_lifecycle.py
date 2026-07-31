@@ -59,7 +59,6 @@ def _recorders(
     clock_samples: list[tuple[int, int]],
     ground_truth_samples: list[tuple[int, int, float]] | None = None,
 ) -> dict[str, runner._TopicRecorder]:
-    telemetry_stamp_ns = max(clock_ns for host_ns, clock_ns in clock_samples if host_ns <= 150)
     recorders = {
         key: runner._TopicRecorder()
         for key in ("clock", "amcl", "odom", "action_status", "ground_truth")
@@ -70,15 +69,17 @@ def _recorders(
     ]
     recorders["amcl"].samples = [
         {
-            "host_monotonic_ns": 150,
-            "message": _amcl_message(stamp_ns=telemetry_stamp_ns),
+            "host_monotonic_ns": host_ns,
+            "message": _amcl_message(stamp_ns=clock_ns),
         }
+        for host_ns, clock_ns in clock_samples
     ]
     recorders["odom"].samples = [
         {
-            "host_monotonic_ns": 150,
-            "message": _odom_message(stamp_ns=telemetry_stamp_ns),
+            "host_monotonic_ns": host_ns,
+            "message": _odom_message(stamp_ns=clock_ns),
         }
+        for host_ns, clock_ns in clock_samples
     ]
     recorders["ground_truth"].samples = [
         {
@@ -98,6 +99,8 @@ def _options(tmp_path: Path, **overrides: Any) -> DifferentialCaptureOptions:
         "mode": DifferentialMode.R1_BRIDGE_NAV2,
         "simulation_epoch": "epoch-01",
         "reset_policy": ResetPolicy.NAV2_RESTART,
+        "expected_source_root": tmp_path,
+        "expected_git_sha": "1" * 40,
         "min_final_pose_samples": 2,
     }
     values.update(overrides)
@@ -294,6 +297,7 @@ def test_cleanup_failure_downgrades_blocked_capture_and_persists(
     )
     monkeypatch.setattr(runner, "RosBridgeClient", lambda **_: Bridge())
     monkeypatch.setattr(runner, "_enrich_live_identity", no_op_enrich)
+    monkeypatch.setattr(runner, "_source_identity_failures", lambda _: [])
     monkeypatch.setattr(runner, "_runtime_identity_failures", lambda _: ["forced_identity_block"])
     monkeypatch.setattr(runner, "_safe_cleanup_live_capture", failed_cleanup)
 
