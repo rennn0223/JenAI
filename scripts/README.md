@@ -12,7 +12,7 @@
 | `isaac_nav2.sh` | Isaac Sim／Nova Carter 的 Nav2 start、stop、restart、status；啟動時產生暫存參數副本，套用並讀回驗證 DWB／goal checker／AMCL 模擬精度 profile。健康工作階段可先 `/dock` 再 restart；只有卡牆、定位漂移、模擬時間重置或固定基準重播才需 Stop／Play。 |
 | `render_nav2_params.py` | 對 vendor Nav2 YAML 的暫存副本進行結構化覆寫；不修改原始套件檔。預設 AMCL `alpha1..5=0.01` 與 update threshold `0.02` 僅供固定 Isaac 模擬 profile，實體車須另行校正。 |
 | `isaac_hil_acceptance.py` | 唯讀 preflight 或明確批准的 Isaac Sim live 驗收；經正式 NavigationGateway 跑 route、cancel、hard stop 與可選 Twin verdict，輸出不可覆寫 JSON。見 [ISAAC_HIL_ACCEPTANCE](../docs/validation/ISAAC_HIL_ACCEPTANCE.md)。 |
-| `isaac_nav_differential.py` | Observation-only Nav2／JenAI 差分工具：分開保存 `R1_bridge_nav2` 與 `R2_jenai_no_retry` artifact，以 action status UUID、TF／AMCL／odom、runtime fingerprint 與可選 map-frame ground truth 做 paired comparison。見 [ISAAC_NAV_DIFFERENTIAL](../docs/validation/ISAAC_NAV_DIFFERENTIAL.md)。 |
+| `isaac_nav_differential.py` | Simulation-only、observation-only Nav2／JenAI 差分工具：保存 schema-v1 `R1_bridge_nav2`／`R2_jenai_no_retry` artifact，驗 clean live scene／map／Nav2 identity、T0、actual-nav-send T1、推論出的唯一 fresh action-status UUID、terminal-bound ROS-time final window 與 structured cleanup，再做 paired comparison。見 [ISAAC_NAV_DIFFERENTIAL](../docs/validation/ISAAC_NAV_DIFFERENTIAL.md)。 |
 
 指令細節與數據回填對照見 [docs/validation/EXPERIMENTS.md](../docs/validation/EXPERIMENTS.md)。
 soak/e2/e4/usability 為 stdlib+repo 內依賴;b4_driver 只需 tmux。

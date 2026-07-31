@@ -83,6 +83,8 @@ def test_ground_truth_requires_verified_map_world_calibration() -> None:
         scene_sha256="a" * 64,
         map_sha256="b" * 64,
         source="fiducial survey",
+        world_frame_id="world",
+        map_frame_id="map",
         translation_x_m=1.0,
         translation_y_m=-1.0,
         rotation_yaw_rad=math.pi / 2,
@@ -166,6 +168,50 @@ def test_classification_distinguishes_verdict_only_from_actual_endpoint() -> Non
         localization_divergence_threshold_m=0.05,
     )
     assert PairClassification.ACTUAL_ENDPOINT_DIFFERENCE in actual_endpoint
+
+
+def test_classification_preserves_map_position_and_yaw_differences() -> None:
+    canonical = CanonicalGoal.from_yaw(frame_id="map", x=1.0, y=2.0, yaw=0.0)
+    gate = evaluate_pairing_gate(
+        left_runtime_fingerprint="runtime",
+        right_runtime_fingerprint="runtime",
+        left_epoch="epoch-1",
+        right_epoch="epoch-1",
+        left_start=Pose2D(x=0.0, y=0.0, yaw=0.0),
+        right_start=Pose2D(x=0.0, y=0.0, yaw=0.0),
+        left_covariance_xy=0.01,
+        right_covariance_xy=0.01,
+        left_stationary=True,
+        right_stationary=True,
+        left_active_goal=False,
+        right_active_goal=False,
+    )
+
+    position_difference = classify_pair(
+        left_goal=canonical,
+        right_goal=canonical,
+        pairing_gate=gate,
+        left_final_map=Pose2D(x=1.0, y=2.0, yaw=0.0),
+        right_final_map=Pose2D(x=1.2, y=2.0, yaw=0.0),
+        left_final_ground_truth=None,
+        right_final_ground_truth=None,
+        left_execution_status="succeeded",
+        right_execution_status="succeeded",
+    )
+    yaw_difference = classify_pair(
+        left_goal=canonical,
+        right_goal=canonical,
+        pairing_gate=gate,
+        left_final_map=Pose2D(x=1.0, y=2.0, yaw=0.0),
+        right_final_map=Pose2D(x=1.0, y=2.0, yaw=0.3),
+        left_final_ground_truth=None,
+        right_final_ground_truth=None,
+        left_execution_status="succeeded",
+        right_execution_status="endpoint_mismatch",
+    )
+
+    assert position_difference == [PairClassification.MAP_POSE_DIFFERENCE]
+    assert yaw_difference == [PairClassification.MAP_POSE_DIFFERENCE]
 
 
 def test_classification_fails_closed_when_pair_is_not_comparable() -> None:

@@ -200,6 +200,8 @@ class GroundTruthCalibration(BaseModel):
     scene_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     map_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source: str = Field(min_length=1)
+    world_frame_id: str | None = None
+    map_frame_id: str | None = None
     translation_x_m: float | None = Field(default=None, allow_inf_nan=False)
     translation_y_m: float | None = Field(default=None, allow_inf_nan=False)
     rotation_yaw_rad: float | None = Field(default=None, allow_inf_nan=False)
@@ -209,6 +211,8 @@ class GroundTruthCalibration(BaseModel):
     @model_validator(mode="after")
     def verified_transform_is_complete(self) -> GroundTruthCalibration:
         transform = (
+            self.world_frame_id,
+            self.map_frame_id,
             self.translation_x_m,
             self.translation_y_m,
             self.rotation_yaw_rad,
@@ -217,6 +221,10 @@ class GroundTruthCalibration(BaseModel):
         )
         if self.status == "VERIFIED" and any(item is None for item in transform):
             raise ValueError("verified ground truth requires a complete calibration record")
+        if self.status == "VERIFIED":
+            frames = (self.world_frame_id, self.map_frame_id)
+            if any(not frame or not frame.lstrip("/") for frame in frames):
+                raise ValueError("verified ground truth requires non-empty frame identifiers")
         return self
 
     def world_to_map(self, pose: Pose2D) -> Pose2D | None:
@@ -295,6 +303,7 @@ def evaluate_pairing_gate(
 
 class PairClassification(StrEnum):
     GOAL_PAYLOAD_DIFFERENCE = "GOAL_PAYLOAD_DIFFERENCE"
+    MAP_POSE_DIFFERENCE = "MAP_POSE_DIFFERENCE"
     ACTUAL_ENDPOINT_DIFFERENCE = "ACTUAL_ENDPOINT_DIFFERENCE"
     LOCALIZATION_GROUND_TRUTH_DIVERGENCE = "LOCALIZATION_GROUND_TRUTH_DIVERGENCE"
     JENAI_VERDICT_ONLY_DIFFERENCE = "JENAI_VERDICT_ONLY_DIFFERENCE"
@@ -305,6 +314,95 @@ class PairClassification(StrEnum):
 
 def _pose_distance(left: Pose2D, right: Pose2D) -> float:
     return math.hypot(left.x - right.x, left.y - right.y)
+
+
+def _pose_yaw_distance(left: Pose2D, right: Pose2D) -> float:
+    return abs(_normalized_angle(left.yaw - right.yaw))
+
+
+def _pose_difference_exceeds(
+    left: Pose2D,
+    right: Pose2D,
+    *,
+    position_threshold_m: float,
+    yaw_threshold_rad: float,
+) -> bool:
+    return (
+        _pose_distance(left, right) > position_threshold_m
+        or _pose_yaw_distance(left, right) > yaw_threshold_rad
+    )
+
+
+def _endpoint_classifications(
+    *,
+    left_final_map: Pose2D | None,
+    right_final_map: Pose2D | None,
+    left_final_ground_truth: Pose2D | None,
+    right_final_ground_truth: Pose2D | None,
+    endpoint_difference_threshold_m: float,
+    endpoint_difference_threshold_rad: float,
+    localization_divergence_threshold_m: float,
+    localization_divergence_threshold_rad: float,
+) -> list[PairClassification]:
+    classifications: list[PairClassification] = []
+    if (
+        left_final_map is not None
+        and right_final_map is not None
+        and _pose_difference_exceeds(
+            left_final_map,
+            right_final_map,
+            position_threshold_m=endpoint_difference_threshold_m,
+            yaw_threshold_rad=endpoint_difference_threshold_rad,
+        )
+    ):
+        classifications.append(PairClassification.MAP_POSE_DIFFERENCE)
+    if left_final_ground_truth is None or right_final_ground_truth is None:
+        return classifications
+    if _pose_difference_exceeds(
+        left_final_ground_truth,
+        right_final_ground_truth,
+        position_threshold_m=endpoint_difference_threshold_m,
+        yaw_threshold_rad=endpoint_difference_threshold_rad,
+    ):
+        classifications.append(PairClassification.ACTUAL_ENDPOINT_DIFFERENCE)
+    localization_diverged = (
+        left_final_map is not None
+        and _pose_difference_exceeds(
+            left_final_map,
+            left_final_ground_truth,
+            position_threshold_m=localization_divergence_threshold_m,
+            yaw_threshold_rad=localization_divergence_threshold_rad,
+        )
+    ) or (
+        right_final_map is not None
+        and _pose_difference_exceeds(
+            right_final_map,
+            right_final_ground_truth,
+            position_threshold_m=localization_divergence_threshold_m,
+            yaw_threshold_rad=localization_divergence_threshold_rad,
+        )
+    )
+    if localization_diverged:
+        classifications.append(PairClassification.LOCALIZATION_GROUND_TRUTH_DIVERGENCE)
+    return classifications
+
+
+def _verdict_only_difference(
+    *,
+    classifications: list[PairClassification],
+    left_final_map: Pose2D | None,
+    right_final_map: Pose2D | None,
+    left_execution_status: str | None,
+    right_execution_status: str | None,
+) -> bool:
+    return (
+        not classifications
+        and left_final_map is not None
+        and right_final_map is not None
+        and left_execution_status is not None
+        and right_execution_status is not None
+        and left_execution_status != right_execution_status
+    )
 
 
 def classify_pair(
@@ -319,10 +417,20 @@ def classify_pair(
     left_execution_status: str | None,
     right_execution_status: str | None,
     endpoint_difference_threshold_m: float = 0.05,
+    endpoint_difference_threshold_rad: float = 0.15,
     localization_divergence_threshold_m: float = 0.05,
+    localization_divergence_threshold_rad: float = 0.15,
 ) -> list[PairClassification]:
     """Classify supported differences without promoting missing evidence to fact."""
 
+    thresholds = (
+        endpoint_difference_threshold_m,
+        endpoint_difference_threshold_rad,
+        localization_divergence_threshold_m,
+        localization_divergence_threshold_rad,
+    )
+    if any(value < 0 or not math.isfinite(value) for value in thresholds):
+        raise ValueError("classification thresholds must be finite and non-negative")
     if pairing_gate.status is PairingGate.FAILED:
         if "runtime_fingerprint" in pairing_gate.failures:
             return [
@@ -330,39 +438,27 @@ def classify_pair(
                 PairClassification.PAIRING_GATE_FAILED,
             ]
         return [PairClassification.PAIRING_GATE_FAILED]
-
-    classifications: list[PairClassification] = []
     if not compare_goals(left_goal, right_goal).equivalent:
-        classifications.append(PairClassification.GOAL_PAYLOAD_DIFFERENCE)
-        return classifications
+        return [PairClassification.GOAL_PAYLOAD_DIFFERENCE]
 
-    if left_final_ground_truth is not None and right_final_ground_truth is not None:
-        if (
-            _pose_distance(left_final_ground_truth, right_final_ground_truth)
-            > endpoint_difference_threshold_m
-        ):
-            classifications.append(PairClassification.ACTUAL_ENDPOINT_DIFFERENCE)
-        if (
-            left_final_map is not None
-            and _pose_distance(left_final_map, left_final_ground_truth)
-            > localization_divergence_threshold_m
-        ) or (
-            right_final_map is not None
-            and _pose_distance(right_final_map, right_final_ground_truth)
-            > localization_divergence_threshold_m
-        ):
-            classifications.append(PairClassification.LOCALIZATION_GROUND_TRUTH_DIVERGENCE)
-
-    if (
-        left_final_map is not None
-        and right_final_map is not None
-        and _pose_distance(left_final_map, right_final_map) <= endpoint_difference_threshold_m
-        and left_execution_status is not None
-        and right_execution_status is not None
-        and left_execution_status != right_execution_status
+    classifications = _endpoint_classifications(
+        left_final_map=left_final_map,
+        right_final_map=right_final_map,
+        left_final_ground_truth=left_final_ground_truth,
+        right_final_ground_truth=right_final_ground_truth,
+        endpoint_difference_threshold_m=endpoint_difference_threshold_m,
+        endpoint_difference_threshold_rad=endpoint_difference_threshold_rad,
+        localization_divergence_threshold_m=localization_divergence_threshold_m,
+        localization_divergence_threshold_rad=localization_divergence_threshold_rad,
+    )
+    if _verdict_only_difference(
+        classifications=classifications,
+        left_final_map=left_final_map,
+        right_final_map=right_final_map,
+        left_execution_status=left_execution_status,
+        right_execution_status=right_execution_status,
     ):
         classifications.append(PairClassification.JENAI_VERDICT_ONLY_DIFFERENCE)
-
     evidence_complete = (
         left_final_map is not None
         and right_final_map is not None

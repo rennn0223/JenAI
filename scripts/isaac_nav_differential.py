@@ -43,14 +43,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     capture.add_argument("--output", type=Path, required=True)
     capture.add_argument("--config", type=Path)
-    capture.add_argument("--scene", type=Path, help="固定 USD；存在時保存 SHA-256")
+    capture.add_argument(
+        "--scene",
+        type=Path,
+        help="live execution 必須提供存在的 absolute USD path",
+    )
+    capture.add_argument(
+        "--live-scene-sha256",
+        help=(
+            "操作員從目前 Isaac Stage root layer 另行擷取的 64 字元小寫 SHA-256；--execute 時必填"
+        ),
+    )
     capture.add_argument("--calibration", type=Path, help="已驗證的 T_map_world JSON")
     capture.add_argument("--ground-truth-topic")
     capture.add_argument(
         "--ground-truth-type",
         default="geometry_msgs/msg/PoseStamped",
     )
-    capture.add_argument("--timeout", type=float, default=300.0)
     capture.add_argument("--execute", action="store_true", help="允許模擬車移動")
     capture.add_argument(
         "--confirm",
@@ -76,13 +85,13 @@ def _capture(args: argparse.Namespace) -> int:
         reset_policy=ResetPolicy(args.reset_policy),
         config_path=args.config,
         scene_path=args.scene,
+        live_scene_sha256=args.live_scene_sha256,
         calibration_path=args.calibration,
         ground_truth_topic=args.ground_truth_topic,
         ground_truth_type=args.ground_truth_type,
         execute=args.execute,
         confirmation=args.confirm,
         overwrite=args.overwrite,
-        timeout_s=args.timeout,
     )
     artifact = asyncio.run(capture_navigation_differential(options))
     print(f"{artifact['overall']}: {options.output}")

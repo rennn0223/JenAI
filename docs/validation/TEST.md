@@ -33,7 +33,7 @@
 |---|---|---|
 | 自動化測試(全) | `env -u PYTHONPATH uv run pytest` | v2.6.0 發布前本機 1,352 項完整測試、Ruff 與 mypy strict 已通過；Python 3.12／3.13／3.14、build、coverage gate 與 audit／SBOM 由 CI 及發布流程驗證；最近發布的 v2.6.0 Release workflow 已通過 |
 | Isaac HIL（人工啟動） | Actions → `Isaac HIL Acceptance`，或依 `docs/validation/ISAAC_HIL_ACCEPTANCE.md` 執行 | 一般 CI 絕不動車；精確確認後在 self-hosted runner 驗 route、Nav2 cancel acknowledgement、software halt、完整 scan metadata gate 與可選 Twin verdict。任一 motion 失敗即停止後續 goal，artifact 必含 `final_halt`／`bridge_shutdown`；畸形 wire 回應不得算成功。clean `d942130…855` 本機 artifact 已通過，Twin 同 domain 明記 skip；這不等於已產生 GitHub workflow artifact |
-| Isaac navigation differential（人工啟動） | 依 `docs/validation/ISAAC_NAV_DIFFERENTIAL.md` 分別 capture R1／R2，再離線 compare | 第一版只收集觀測證據；不得改 Nav2／AMCL／retry／容差，也不得把 `GROUND_TRUTH_UNAVAILABLE` 分類成實際終點差異。 |
+| Isaac navigation differential（人工啟動） | 先完成 observation-only Code Review，再依 `docs/validation/ISAAC_NAV_DIFFERENTIAL.md` 跑一組不納入統計的 R1/R2 pilot | 只有 schema-v1、clean simulation identity、active Stage SHA、measurement contract、T0/T1/final-window/cleanup 全 PASS 的 `captured` artifact 才能比較。沒有可信 `T_map_world` 時只能回報 `MAP_POSE_DIFFERENCE`，不得宣稱實際終點差異；不得改 Nav2／AMCL／retry／容差。 |
 | Lint | `env -u PYTHONPATH uv run ruff check src tests` | 無輸出(exit 0) |
 | CI | push PR | 最小 `contents: read` 權限；同 ref 新 run 取消舊 run；`test` job（30 分鐘上限）以 Python 3.12／3.13／3.14 matrix 跑 ruff format/lint、全 production code mypy strict、pytest branch coverage（整體 76% 與安全鏈 90% 退步閘）；`build` job（20 分鐘上限）以 `uv build` + 全新 tool 環境驗 wheel lifecycle |
 | Release gate | 推 `vX.Y.Z` tag,或手動 dispatch(輸入 tag) | release workflow:版本一致檢查 → lint+測試 → build → wheel 冒煙測試 → tag push 建草稿(人工發佈);dispatch 由 workflow 建 tag 並以 `docs/releases/<tag>.md` 直接發佈 |
