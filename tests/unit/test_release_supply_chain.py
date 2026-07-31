@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -10,9 +11,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
+PUBLISHED_RELEASE = json.loads(
+    (ROOT / "docs" / "releases" / "published.json").read_text(encoding="utf-8")
+)
+PUBLISHED_VERSION = str(PUBLISHED_RELEASE["version"])
 
 PUBLIC_RELEASE_TRUTH = (
-    "目前 repository 是 public；v2.5.1 Release 公開提供 wheel、matching constraints、"
+    f"目前 repository 是 public；v{PUBLISHED_VERSION} Release 公開提供 "
+    "wheel、matching constraints、"
     "CycloneDX SBOM、`SHA256SUMS`，以及 build provenance 與 SBOM 的 Sigstore bundles。"
     "只有資產實際出現在 Release 且 checksum／attestation 驗證通過，才視為已發布與可驗證。"
 )
