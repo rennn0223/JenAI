@@ -64,7 +64,7 @@ approval, policy, and evidence interfaces.
 | `providers/` | OpenAI-compatible model interface | Ollama, NVIDIA NIM, or other configured providers |
 | `config/`, `site_profiles.py`, `site_assets.py` | Validated configuration and site identity | Provider, vehicle, map, location, policy, and deployment configuration |
 | `adapters/nxdog.py` | Read one typed NXDog observation snapshot | Experimental HTTP transport, strict payload validation, partial-failure evidence |
-| `acceptance/` | Reproducible HIL acceptance run | Isaac Sim/Nav2 preflight, route, cancel, halt, and evidence capture |
+| `acceptance/` | Reproducible HIL acceptance run | Isaac Sim/Nav2 preflight, route, cancel, halt, evidence capture, and the ADR 0007 simulation-only differential control arm |
 
 ## Important seams
 
@@ -111,6 +111,20 @@ outcome 與 audit contract；TUI／WebUI 不得直接呼叫 vendor motion endpoi
 
 Split repositories only after this interface is stable and at least two independent runtimes
 need separate release cycles.
+
+### Simulation differential-control exception
+
+Every product motion entry point continues to use Navigation Gateway. ADR 0007 authorizes one
+acceptance-only exception: `R1_bridge_nav2` may send the same typed, Site-bound canonical goal
+through a harness-owned, watchdog-configured `RosBridgeClient` to establish a bridge/Nav2 control
+for comparison with `R2_jenai_no_retry` through Navigation Gateway.
+
+This is not a Capability, Runtime command, product CLI path, Task Outcome, physical-robot path, or
+general bridge API. It is available only through the dedicated simulation differential CLI after
+explicit motion confirmation and clean source, scene, map, Nav2, T0/T1, lifecycle, evidence, and
+cleanup gates. Agent, TUI, WebUI, MCP, daemon, Workflow, Runtime, NXDog, and physical integrations
+may not import or reuse it. Architecture tests keep its direct bridge call sites on an exact
+allowlist.
 
 ### Evidence seam
 
@@ -163,6 +177,8 @@ SLAM exploration, or frontier exploration.
 
 - `workflows/` must not import ROS 2, model providers, TUI, WebUI, or CLI modules.
 - Agent code must not publish `/cmd_vel` or construct low-level motion commands.
+- Product motion enters through Navigation Gateway; only ADR 0007's exact simulation acceptance
+  control arm may bypass it, and that exception cannot be registered or imported by product layers.
 - UI adapters must not reimplement navigation, approval, patrol, or reporting logic.
 - ROS-specific types are converted at the bridge/adapter seam.
 - All external calls have bounded timeouts; retries and mission loops are bounded.

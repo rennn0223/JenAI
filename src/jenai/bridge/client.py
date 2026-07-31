@@ -156,6 +156,10 @@ class PoseInfo:
     yaw: float
     frame_id: str
     source: str
+    base_frame: str | None = None
+    initial_stamp_ns: int | None = None
+    stamp_ns: int | None = None
+    fresh_after_request: bool | None = None
 
     @classmethod
     def from_payload(cls, result: BridgePayload) -> PoseInfo:
@@ -732,13 +736,39 @@ class RosBridgeClient:
         )
         pose = PoseInfo.from_payload(result)
         if fresh:
-            if not _require_bool(result, "fresh_after_request", "pose"):
+            fresh_after_request = _require_bool(result, "fresh_after_request", "pose")
+            if not fresh_after_request:
                 raise BridgeError(
                     "invalid pose response: fresh_after_request must explicitly be true"
                 )
+            returned_base_frame = _require_text(result, "base_frame", "pose")
+            initial_stamp_ns = _require_int(result, "initial_stamp_ns", "pose")
             stamp_ns = _require_int(result, "stamp_ns", "pose")
-            if stamp_ns <= 0:
-                raise BridgeError("invalid pose response: stamp_ns must be positive")
+            if pose.frame_id != frame_id:
+                raise BridgeError(
+                    "invalid pose response: frame_id must exactly match the requested frame"
+                )
+            if returned_base_frame != base_frame:
+                raise BridgeError(
+                    "invalid pose response: base_frame must exactly match the requested frame"
+                )
+            if initial_stamp_ns <= 0:
+                raise BridgeError("invalid pose response: initial_stamp_ns must be positive")
+            if stamp_ns <= initial_stamp_ns:
+                raise BridgeError(
+                    "invalid pose response: stamp_ns must be newer than initial_stamp_ns"
+                )
+            return PoseInfo(
+                x=pose.x,
+                y=pose.y,
+                yaw=pose.yaw,
+                frame_id=pose.frame_id,
+                source=pose.source,
+                base_frame=returned_base_frame,
+                initial_stamp_ns=initial_stamp_ns,
+                stamp_ns=stamp_ns,
+                fresh_after_request=fresh_after_request,
+            )
         return pose
 
     async def map_cell(self, x: float, y: float, *, timeout: float = 3.0) -> MapCellInfo:

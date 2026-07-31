@@ -546,7 +546,7 @@ def _artifact(
     return artifact
 
 
-def test_pairing_rejects_t1_dispatch_pose_difference(
+def test_t1_dispatch_pose_summary_without_raw_observation_is_ineligible(
     differential_artifact_factory: Any,
 ) -> None:
     left = cast(dict[str, Any], differential_artifact_factory(mode="R1_bridge_nav2"))
@@ -561,11 +561,7 @@ def test_pairing_rejects_t1_dispatch_pose_difference(
     report = compare_differential_artifacts(left, right)
 
     assert report["included"] is False
-    assert PairClassification.PAIRING_GATE_FAILED in report["classifications"]
-    assert any(
-        "dispatch" in str(failure).lower() or "t1" in str(failure).lower()
-        for failure in report["pairing_gate"]["failures"]
-    )
+    assert report["classifications"] == [PairClassification.INSUFFICIENT_EVIDENCE]
 
 
 def test_t1_covariance_above_contract_is_insufficient_evidence() -> None:

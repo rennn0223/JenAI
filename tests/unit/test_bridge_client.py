@@ -99,6 +99,10 @@ def test_bridge_pose_roundtrip(fake_bridge) -> None:
         client = RosBridgeClient()
         pose = await client.get_pose()
         assert (pose.x, pose.y, pose.frame_id) == (1.5, -2.0, "map")
+        assert pose.base_frame is None
+        assert pose.initial_stamp_ns is None
+        assert pose.stamp_ns is None
+        assert pose.fresh_after_request is None
         await client.stop()
 
     asyncio.run(run())
@@ -156,7 +160,7 @@ def test_bridge_fresh_pose_requires_after_request_evidence(monkeypatch) -> None:
     asyncio.run(run())
 
 
-def test_bridge_fresh_pose_accepts_positive_after_request_evidence(monkeypatch) -> None:
+def test_bridge_fresh_pose_preserves_ordered_after_request_evidence(monkeypatch) -> None:
     async def run() -> None:
         client = RosBridgeClient()
 
@@ -166,7 +170,9 @@ def test_bridge_fresh_pose_accepts_positive_after_request_evidence(monkeypatch) 
                 "y": -2.0,
                 "yaw": 0.5,
                 "frame_id": "map",
+                "base_frame": "base_link",
                 "source": "/tf(map->base_link)",
+                "initial_stamp_ns": 122_000_000,
                 "stamp_ns": 123_000_000,
                 "fresh_after_request": True,
             }
@@ -174,6 +180,56 @@ def test_bridge_fresh_pose_accepts_positive_after_request_evidence(monkeypatch) 
         monkeypatch.setattr(client, "request", request)
         pose = await client.get_pose(fresh=True)
         assert (pose.x, pose.y, pose.source) == (1.5, -2.0, "/tf(map->base_link)")
+        assert pose.base_frame == "base_link"
+        assert pose.initial_stamp_ns == 122_000_000
+        assert pose.stamp_ns == 123_000_000
+        assert pose.fresh_after_request is True
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ({"frame_id": "odom"}, "frame_id must exactly match"),
+        ({"base_frame": "base_footprint"}, "base_frame must exactly match"),
+        ({"base_frame": None}, "base_frame must be non-empty text"),
+        ({"initial_stamp_ns": None}, "initial_stamp_ns must be an integer"),
+        ({"initial_stamp_ns": True}, "initial_stamp_ns must be an integer"),
+        ({"initial_stamp_ns": 0}, "initial_stamp_ns must be positive"),
+        ({"stamp_ns": None}, "stamp_ns must be an integer"),
+        ({"stamp_ns": True}, "stamp_ns must be an integer"),
+        ({"stamp_ns": 122_000_000}, "stamp_ns must be newer"),
+        ({"stamp_ns": 121_000_000}, "stamp_ns must be newer"),
+        ({"fresh_after_request": False}, "fresh_after_request must explicitly be true"),
+    ],
+)
+def test_bridge_fresh_pose_rejects_unbound_or_unordered_evidence(
+    monkeypatch,
+    mutation,
+    error,
+) -> None:
+    async def run() -> None:
+        client = RosBridgeClient()
+        payload = {
+            "x": 1.5,
+            "y": -2.0,
+            "yaw": 0.5,
+            "frame_id": "map",
+            "base_frame": "base_link",
+            "source": "/tf(map->base_link)",
+            "initial_stamp_ns": 122_000_000,
+            "stamp_ns": 123_000_000,
+            "fresh_after_request": True,
+        }
+        payload.update(mutation)
+
+        async def request(*_args, **_kwargs):
+            return payload
+
+        monkeypatch.setattr(client, "request", request)
+        with pytest.raises(BridgeError, match=error):
+            await client.get_pose(fresh=True)
 
     asyncio.run(run())
 

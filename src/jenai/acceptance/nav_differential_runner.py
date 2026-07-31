@@ -22,6 +22,8 @@ import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -57,6 +59,21 @@ _CLOCK_TYPE = "rosgraph_msgs/msg/Clock"
 _AMCL_TOPIC = "/amcl_pose"
 _AMCL_TYPE = "geometry_msgs/msg/PoseWithCovarianceStamped"
 _ODOM_TYPE = "nav_msgs/msg/Odometry"
+_NAV2_TERMINAL_STATUSES = frozenset({"succeeded", "canceled", "aborted", "failed", "rejected"})
+_JENAI_NAVIGATION_EXECUTION_STATUSES = frozenset(
+    {"succeeded", "failed", "endpoint_mismatch", "blocked", "referred", "unavailable"}
+)
+
+
+def _canonical_json_sha256(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _valid_ros_message_type_name(value: str) -> bool:
@@ -66,6 +83,26 @@ def _valid_ros_message_type_name(value: str) -> bool:
         and parts[1] == "msg"
         and all(part.isidentifier() for part in (parts[0], parts[2]))
     )
+
+
+def _normalized_ground_truth_topic(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = "/" + value.lstrip("/")
+    if (
+        normalized == "/"
+        or "//" in normalized
+        or any(character.isspace() for character in normalized)
+        or any(segment in {".", ".."} for segment in normalized.split("/"))
+    ):
+        raise ValueError("ground-truth topic must be a valid absolute ROS topic")
+    return normalized
+
+
+def _validated_ground_truth_type(value: str | None) -> str | None:
+    if value is not None and not _valid_ros_message_type_name(value):
+        raise ValueError("ground-truth message type must use package/msg/Type")
+    return value
 
 
 class DifferentialMode(StrEnum):
@@ -118,24 +155,12 @@ class DifferentialCaptureOptions(BaseModel):
     @field_validator("ground_truth_topic")
     @classmethod
     def normalize_ground_truth_topic(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = "/" + value.lstrip("/")
-        if (
-            normalized == "/"
-            or "//" in normalized
-            or any(character.isspace() for character in normalized)
-            or any(segment in {".", ".."} for segment in normalized.split("/"))
-        ):
-            raise ValueError("ground-truth topic must be a valid absolute ROS topic")
-        return normalized
+        return _normalized_ground_truth_topic(value)
 
     @field_validator("ground_truth_type")
     @classmethod
     def validate_ground_truth_type(cls, value: str) -> str:
-        if not _valid_ros_message_type_name(value):
-            raise ValueError("ground-truth message type must use package/msg/Type")
-        return value
+        return cast(str, _validated_ground_truth_type(value))
 
     @model_validator(mode="after")
     def execution_requires_confirmation(self) -> DifferentialCaptureOptions:
@@ -206,24 +231,12 @@ class DifferentialMeasurementContract(BaseModel):
     @field_validator("ground_truth_topic")
     @classmethod
     def normalize_ground_truth_topic(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = "/" + value.lstrip("/")
-        if (
-            normalized == "/"
-            or "//" in normalized
-            or any(character.isspace() for character in normalized)
-            or any(segment in {".", ".."} for segment in normalized.split("/"))
-        ):
-            raise ValueError("ground-truth topic must be a valid absolute ROS topic")
-        return normalized
+        return _normalized_ground_truth_topic(value)
 
     @field_validator("ground_truth_type")
     @classmethod
     def validate_ground_truth_type(cls, value: str | None) -> str | None:
-        if value is not None and not _valid_ros_message_type_name(value):
-            raise ValueError("ground-truth message type must use package/msg/Type")
-        return value
+        return _validated_ground_truth_type(value)
 
     @model_validator(mode="after")
     def ground_truth_binding_is_all_or_none(self) -> DifferentialMeasurementContract:
@@ -250,13 +263,67 @@ ArtifactOverall = Literal[
 ]
 
 
+class TargetBinding(BaseModel):
+    """Immutable saved-location identity bound to the dispatched goal."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    requested_query: str = Field(min_length=1)
+    resolved_name: str = Field(min_length=1)
+    resolved_id: str = Field(min_length=1)
+    frame_id: str = Field(min_length=1)
+    pose: Pose2D
+    capability_id: Literal["navigate"]
+    locations_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    canonical_record_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    canonical_goal_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("requested_query", "resolved_name", "resolved_id")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("target binding text must not be blank")
+        return normalized
+
+    @field_validator("frame_id")
+    @classmethod
+    def normalize_frame(cls, value: str) -> str:
+        normalized = value.strip().lstrip("/")
+        if not normalized:
+            raise ValueError("target binding frame must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_digests(self) -> TargetBinding:
+        record = {
+            "capability_id": self.capability_id,
+            "frame_id": self.frame_id,
+            "locations_sha256": self.locations_sha256,
+            "pose": self.pose.model_dump(mode="json"),
+            "resolved_name": self.resolved_name,
+        }
+        if self.canonical_record_sha256 != _canonical_json_sha256(record):
+            raise ValueError("target binding record digest does not match its fields")
+        stable_binding = {
+            "canonical_goal_sha256": self.canonical_goal_sha256,
+            "canonical_record_sha256": self.canonical_record_sha256,
+            "capability_id": self.capability_id,
+            "locations_sha256": self.locations_sha256,
+        }
+        if self.binding_sha256 != _canonical_json_sha256(stable_binding):
+            raise ValueError("target binding digest does not match its stable fields")
+        return self
+
+
 class DifferentialArtifact(BaseModel):
     """Reloadable envelope for every success, block, and failure artifact."""
 
     model_config = ConfigDict(extra="allow")
 
     schema_version: Literal[1] = 1
-    evidence_derivation_version: Literal[1] | None = None
+    evidence_derivation_version: Literal[2] | None = None
     run_id: str = Field(min_length=1)
     pair_id: str = Field(min_length=1)
     mode: DifferentialMode
@@ -267,7 +334,9 @@ class DifferentialArtifact(BaseModel):
     finished_at: str | None = None
     runtime_identity: dict[str, Any] = Field(default_factory=dict)
     canonical_goal: CanonicalGoal | None = None
+    target_binding: TargetBinding | None = None
     ground_truth_calibration: GroundTruthCalibration | None = None
+    pose_observations: list[PoseLookupObservation] = Field(default_factory=list)
     checks: list[dict[str, Any]] = Field(default_factory=list)
     overall: ArtifactOverall = "initializing"
     failure: dict[str, Any] | None = None
@@ -284,6 +353,190 @@ class DifferentialComparisonReport(BaseModel):
     classifications: list[PairClassification]
     pairing_gate: dict[str, Any] | None = None
     detail: str | None = None
+
+
+class PoseLookupPurpose(StrEnum):
+    T0_START = "t0_start"
+    T1_PRE_DISPATCH = "t1_pre_dispatch"
+    FINAL_WINDOW = "final_window"
+
+
+class PoseLookupResult(BaseModel):
+    """Exact typed result returned by one fresh tf2 bridge lookup."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    x: float = Field(allow_inf_nan=False)
+    y: float = Field(allow_inf_nan=False)
+    yaw: float = Field(allow_inf_nan=False)
+    frame_id: str = Field(min_length=1)
+    base_frame: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    initial_stamp_ns: int = Field(gt=0)
+    stamp_ns: int = Field(gt=0)
+    fresh_after_request: Literal[True]
+
+    @model_validator(mode="after")
+    def require_newer_transform(self) -> PoseLookupResult:
+        if self.stamp_ns <= self.initial_stamp_ns:
+            raise ValueError("fresh pose stamp must be newer than the initial transform")
+        return self
+
+
+class PoseLookupObservation(BaseModel):
+    """Append-only evidence for one acceptance-owned fresh pose request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    observation_id: str = Field(min_length=1)
+    sequence: int = Field(ge=0)
+    purpose: PoseLookupPurpose
+    request_host_monotonic_ns: int = Field(ge=0)
+    completed_host_monotonic_ns: int = Field(ge=0)
+    request_clock_ns: int | None = Field(default=None, ge=0)
+    completed_clock_ns: int | None = Field(default=None, ge=0)
+    fresh_requested: Literal[True]
+    frame_id: str = Field(min_length=1)
+    base_frame: str = Field(min_length=1)
+    timeout_s: float = Field(gt=0, allow_inf_nan=False)
+    status: Literal["SUCCESS", "ERROR"]
+    result: PoseLookupResult | None = None
+    raw_result: dict[str, Any] | None = None
+    error_type: str | None = None
+    error_detail: str | None = None
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> PoseLookupObservation:
+        if self.completed_host_monotonic_ns < self.request_host_monotonic_ns:
+            raise ValueError("pose lookup completion must follow its request")
+        if self.status == "SUCCESS":
+            if (
+                self.result is None
+                or self.raw_result is not None
+                or self.error_type is not None
+                or self.error_detail is not None
+            ):
+                raise ValueError("successful pose lookup must contain only a typed result")
+            if self.result.frame_id.lstrip("/") != self.frame_id.lstrip(
+                "/"
+            ) or self.result.base_frame.lstrip("/") != self.base_frame.lstrip("/"):
+                raise ValueError("pose lookup result frames must match the exact request")
+        elif self.result is not None or not self.error_type or not self.error_detail:
+            raise ValueError("failed pose lookup must contain typed error evidence")
+        return self
+
+
+DifferentialArtifact.model_rebuild()
+
+
+class _PoseObservationRecorder:
+    def __init__(self) -> None:
+        self._observations: list[dict[str, Any]] = []
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return copy.deepcopy(self._observations)
+
+    async def capture(
+        self,
+        bridge: RosBridgeClient,
+        clock: _TopicRecorder,
+        *,
+        purpose: PoseLookupPurpose,
+        frame_id: str,
+        base_frame: str,
+        timeout_s: float,
+    ) -> tuple[Pose2D | None, str, dict[str, Any]]:
+        sequence = len(self._observations)
+        observation_id = f"pose-{sequence:04d}-{uuid4().hex}"
+        requested_ns = time.monotonic_ns()
+        request_clock_ns = _clock_at_host(clock, requested_ns)
+        try:
+            pose = await bridge.get_pose(
+                timeout=timeout_s,
+                fresh=True,
+                frame_id=frame_id,
+                base_frame=base_frame,
+            )
+        except BridgeError as exc:
+            completed_ns = time.monotonic_ns()
+            observation = PoseLookupObservation(
+                observation_id=observation_id,
+                sequence=sequence,
+                purpose=purpose,
+                request_host_monotonic_ns=requested_ns,
+                completed_host_monotonic_ns=completed_ns,
+                request_clock_ns=request_clock_ns,
+                completed_clock_ns=_clock_at_host(clock, completed_ns),
+                fresh_requested=True,
+                frame_id=frame_id,
+                base_frame=base_frame,
+                timeout_s=timeout_s,
+                status="ERROR",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            payload = observation.model_dump(mode="json")
+            self._observations.append(payload)
+            return None, observation_id, copy.deepcopy(payload)
+
+        completed_ns = time.monotonic_ns()
+        raw_result = {
+            "x": pose.x,
+            "y": pose.y,
+            "yaw": pose.yaw,
+            "frame_id": pose.frame_id,
+            "base_frame": getattr(pose, "base_frame", None),
+            "source": pose.source,
+            "initial_stamp_ns": getattr(pose, "initial_stamp_ns", None),
+            "stamp_ns": getattr(pose, "stamp_ns", None),
+            "fresh_after_request": getattr(pose, "fresh_after_request", None),
+        }
+        try:
+            result = PoseLookupResult.model_validate(raw_result)
+        except ValueError as exc:
+            observation = PoseLookupObservation(
+                observation_id=observation_id,
+                sequence=sequence,
+                purpose=purpose,
+                request_host_monotonic_ns=requested_ns,
+                completed_host_monotonic_ns=completed_ns,
+                request_clock_ns=request_clock_ns,
+                completed_clock_ns=_clock_at_host(clock, completed_ns),
+                fresh_requested=True,
+                frame_id=frame_id,
+                base_frame=base_frame,
+                timeout_s=timeout_s,
+                status="ERROR",
+                raw_result=raw_result,
+                error_type="InvalidPoseLookupEvidence",
+                error_detail=str(exc),
+            )
+            payload = observation.model_dump(mode="json")
+            self._observations.append(payload)
+            return None, observation_id, copy.deepcopy(payload)
+
+        observation = PoseLookupObservation(
+            observation_id=observation_id,
+            sequence=sequence,
+            purpose=purpose,
+            request_host_monotonic_ns=requested_ns,
+            completed_host_monotonic_ns=completed_ns,
+            request_clock_ns=request_clock_ns,
+            completed_clock_ns=_clock_at_host(clock, completed_ns),
+            fresh_requested=True,
+            frame_id=frame_id,
+            base_frame=base_frame,
+            timeout_s=timeout_s,
+            status="SUCCESS",
+            result=result,
+        )
+        payload = observation.model_dump(mode="json")
+        self._observations.append(payload)
+        return (
+            Pose2D(x=result.x, y=result.y, yaw=result.yaw),
+            observation_id,
+            copy.deepcopy(payload),
+        )
 
 
 class _TopicRecorder:
@@ -577,6 +830,78 @@ def _nav2_process_generation(
     }
 
 
+_DDS_ENVIRONMENT_BINDINGS = (
+    "FASTRTPS_DEFAULT_PROFILES_FILE",
+    "FASTDDS_DEFAULT_PROFILES_FILE",
+    "CYCLONEDDS_URI",
+    "ROS_DISCOVERY_SERVER",
+    "ROS_AUTOMATIC_DISCOVERY_RANGE",
+    "ROS_STATIC_PEERS",
+)
+
+
+def _dds_environment_bindings() -> dict[str, dict[str, str]]:
+    bindings: dict[str, dict[str, str]] = {}
+    for name in _DDS_ENVIRONMENT_BINDINGS:
+        value = os.environ.get(name)
+        if not value:
+            continue
+        path = Path(value).expanduser()
+        file_digest = _sha256(path)
+        bindings[name] = (
+            {"source": "file", "content_sha256": file_digest}
+            if file_digest is not None
+            else {
+                "source": "environment_value",
+                "value_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            }
+        )
+    return bindings
+
+
+def _probe_ros_middleware_identity(*, bridge_domain_id: str) -> dict[str, Any]:
+    requested_rmw = os.environ.get("RMW_IMPLEMENTATION")
+    ros_setup = os.environ.get("ROS_SETUP", "/opt/ros/jazzy/setup.bash")
+    bridge_python = os.environ.get("JENAI_BRIDGE_PYTHON", "/usr/bin/python3")
+    probe_source = (
+        "import json,platform,sys;"
+        "from rclpy.utilities import get_rmw_implementation_identifier;"
+        "print(json.dumps({'python_executable':sys.executable,"
+        "'python_version':platform.python_version(),"
+        "'rmw':get_rmw_implementation_identifier()},sort_keys=True))"
+    )
+    output = _command_output(
+        [
+            "bash",
+            "-c",
+            'set -e; source "$1"; exec "$2" -c "$3"',
+            "jenai-rmw-probe",
+            ros_setup,
+            bridge_python,
+            probe_source,
+        ],
+        env={"ROS_DOMAIN_ID": bridge_domain_id},
+    )
+    probed: dict[str, Any] = {}
+    if output:
+        with contextlib.suppress(json.JSONDecodeError):
+            value = json.loads(output)
+            if isinstance(value, dict):
+                probed = value
+    dds_bindings = _dds_environment_bindings()
+    descriptor: dict[str, Any] = {
+        "rmw_implementation_requested": requested_rmw,
+        "rmw_implementation_effective": probed.get("rmw"),
+        "rmw_discovery_source": "bridge_python_probe",
+        "bridge_python_executable": probed.get("python_executable"),
+        "bridge_python_version": probed.get("python_version"),
+        "dds_config_mode": "environment_binding" if dds_bindings else "middleware_default",
+        "dds_bindings": dds_bindings,
+        "dds_config_sha256": _canonical_json_sha256(dds_bindings),
+    }
+    return {**descriptor, "descriptor_sha256": _canonical_json_sha256(descriptor)}
+
+
 def _runtime_fingerprint(identity: dict[str, Any]) -> str:
     fields = {
         key: identity.get(key)
@@ -589,6 +914,8 @@ def _runtime_fingerprint(identity: dict[str, Any]) -> str:
             "expected_git_sha",
             "expected_git_dirty",
             "jenai_import_path",
+            "python_executable",
+            "python_version",
             "config_sha256",
             "site_id",
             "site_version",
@@ -599,11 +926,13 @@ def _runtime_fingerprint(identity: dict[str, Any]) -> str:
             "bridge_domain_id",
             "rmw_implementation",
             "dds_profile_sha256",
+            "ros_middleware",
             "scene_path",
             "scene_sha256",
             "live_scene_sha256",
             "live_map_sha256",
             "site_map_frame",
+            "robot_base_frame",
             "live_map_frame",
             "controller_lifecycle",
             "planner_lifecycle",
@@ -672,6 +1001,7 @@ def _runtime_identity(
     }
     controller_odom_topic = _controller_odom_topic(ros_env=ros_env)
     nav2_process_generation = _nav2_process_generation(session)
+    ros_middleware = _probe_ros_middleware_identity(bridge_domain_id=bridge_domain_id)
     identity: dict[str, Any] = {
         "git_sha": revision,
         "git_dirty": None if dirty_output is None else bool(dirty_output),
@@ -699,6 +1029,7 @@ def _runtime_identity(
         "ambient_ros_domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
         "bridge_domain_id": bridge_domain_id,
         "rmw_implementation": os.environ.get("RMW_IMPLEMENTATION"),
+        "ros_middleware": ros_middleware,
         "dds_profile": os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE"),
         "dds_profile_sha256": _sha256(
             Path(os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"])
@@ -1152,6 +1483,7 @@ def _fresh_message(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
 def _initial_state(
     *,
     pose: Pose2D | None,
+    map_pose_observation_id: str | None = None,
     clock: _TopicRecorder,
     amcl: _TopicRecorder,
     odom: _TopicRecorder,
@@ -1241,6 +1573,7 @@ def _initial_state(
         "simulation_epoch": options.simulation_epoch,
         "cutoff_host_monotonic_ns": cutoff_host_ns,
         "evaluated_host_monotonic_ns": evaluated_host_ns,
+        "map_pose_observation_id": map_pose_observation_id,
         "map_to_base": pose.model_dump(mode="json") if pose else None,
         "amcl_pose": amcl_pose.model_dump(mode="json") if amcl_pose else None,
         "amcl_covariance_xy": covariance,
@@ -1544,42 +1877,52 @@ def _new_goal_ids(
     return observations
 
 
+def _pose_attempt_from_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    observation_id = observation.get("observation_id")
+    requested_ns = observation.get("request_host_monotonic_ns")
+    completed_ns = observation.get("completed_host_monotonic_ns")
+    completed_clock_ns = observation.get("completed_clock_ns")
+    result = observation.get("result")
+    if observation.get("status") == "SUCCESS" and isinstance(result, dict):
+        return {
+            "pose_observation_id": observation_id,
+            "requested_host_monotonic_ns": requested_ns,
+            "observed_host_monotonic_ns": completed_ns,
+            "capture_clock_ns": completed_clock_ns,
+            "fresh": completed_clock_ns is not None,
+            "pose": {
+                "x": result.get("x"),
+                "y": result.get("y"),
+                "yaw": result.get("yaw"),
+                "frame_id": result.get("frame_id"),
+                "source": result.get("source"),
+            },
+        }
+    return {
+        "pose_observation_id": observation_id,
+        "requested_host_monotonic_ns": requested_ns,
+        "capture_clock_ns": completed_clock_ns,
+        "fresh": False,
+        "error": str(observation.get("error_detail") or "Fresh pose lookup failed."),
+    }
+
+
 async def _capture_map_pose_sample(
     bridge: RosBridgeClient,
     config: AppConfig,
     options: DifferentialCaptureOptions,
-    *,
-    requested_ns: int,
-    observed_clock_ns: int | None,
+    clock: _TopicRecorder,
+    pose_observations: _PoseObservationRecorder,
 ) -> dict[str, Any]:
-    try:
-        pose = await bridge.get_pose(
-            timeout=max(0.5, options.sample_interval_s * 2.0),
-            fresh=True,
-            frame_id=config.site.map_frame,
-            base_frame=config.vehicle.robot_base_frame,
-        )
-    except BridgeError as exc:
-        return {
-            "requested_host_monotonic_ns": requested_ns,
-            "capture_clock_ns": observed_clock_ns,
-            "fresh": False,
-            "error": str(exc),
-        }
-    frame_matches = pose.frame_id.lstrip("/") == config.site.map_frame.lstrip("/")
-    return {
-        "requested_host_monotonic_ns": requested_ns,
-        "observed_host_monotonic_ns": time.monotonic_ns(),
-        "capture_clock_ns": observed_clock_ns,
-        "fresh": observed_clock_ns is not None and frame_matches,
-        "pose": {
-            "x": pose.x,
-            "y": pose.y,
-            "yaw": pose.yaw,
-            "frame_id": pose.frame_id,
-            "source": pose.source,
-        },
-    }
+    _, _, observation = await pose_observations.capture(
+        bridge,
+        clock,
+        purpose=PoseLookupPurpose.FINAL_WINDOW,
+        frame_id=config.site.map_frame,
+        base_frame=config.vehicle.robot_base_frame,
+        timeout_s=max(0.5, options.sample_interval_s * 2.0),
+    )
+    return _pose_attempt_from_observation(observation)
 
 
 async def _collect_final_map_window(
@@ -1587,7 +1930,9 @@ async def _collect_final_map_window(
     config: AppConfig,
     options: DifferentialCaptureOptions,
     clock: _TopicRecorder,
+    pose_observations: _PoseObservationRecorder | None = None,
 ) -> tuple[int, int, int | None, int | None, bool, list[dict[str, Any]], list[str]]:
+    recorder = pose_observations or _PoseObservationRecorder()
     start_host_ns = time.monotonic_ns()
     start_clock_ns = _clock_at_host(clock, start_host_ns)
     required_duration_ns = int(options.final_sample_s * 1_000_000_000)
@@ -1617,8 +1962,8 @@ async def _collect_final_map_window(
                     bridge,
                     config,
                     options,
-                    requested_ns=requested_ns,
-                    observed_clock_ns=observed_clock_ns,
+                    clock,
+                    recorder,
                 )
             )
             if (
@@ -1834,33 +2179,33 @@ def _final_window_failures(
     return list(dict.fromkeys(combined))
 
 
-async def _sample_final_observation_window(
-    bridge: RosBridgeClient,
-    config: AppConfig,
-    options: DifferentialCaptureOptions,
+@dataclass(frozen=True, slots=True)
+class _FinalStreamProjection:
+    clock_samples: list[dict[str, int | None]]
+    clock_values: list[int]
+    amcl_samples: list[dict[str, Any]]
+    valid_amcl: list[dict[str, Any]]
+    odom_samples: list[dict[str, Any]]
+    valid_odom: list[dict[str, Any]]
+    raw_ground_truth: list[dict[str, Any]]
+    verified_ground_truth: list[dict[str, Any]]
+    ground_truth_required: bool
+    stationary: bool
+
+
+def _project_final_streams(
     recorders: dict[str, _TopicRecorder],
     *,
-    terminal_host_ns: int | None,
-    calibration: GroundTruthCalibration | None = None,
-) -> dict[str, Any]:
-    (
-        start_host_ns,
-        end_host_ns,
-        start_clock_ns,
-        end_clock_ns,
-        clock_backwards,
-        map_attempts,
-        failures,
-    ) = await _collect_final_map_window(bridge, config, options, recorders["clock"])
-    required_duration_ns = int(options.final_sample_s * 1_000_000_000)
-    coverage_slack_ns = int(
-        min(options.max_topic_age_s, options.sample_interval_s * 2.0) * 1_000_000_000
-    )
-    map_samples = [
-        sample
-        for sample in map_attempts
-        if sample.get("fresh") is True and isinstance(sample.get("pose"), dict)
-    ]
+    start_host_ns: int,
+    end_host_ns: int,
+    start_clock_ns: int | None,
+    end_clock_ns: int | None,
+    max_topic_age_s: float,
+    max_covariance_xy: float,
+    max_speed_mps: float,
+    max_yaw_rate_rps: float,
+    calibration: GroundTruthCalibration | None,
+) -> _FinalStreamProjection:
     clock_samples, clock_values = _clock_window_evidence(
         recorders["clock"],
         start_host_ns=start_host_ns,
@@ -1871,29 +2216,34 @@ async def _sample_final_observation_window(
         recorders["clock"],
         start_host_ns=start_host_ns,
         end_host_ns=end_host_ns,
-        max_age_s=options.max_topic_age_s,
+        max_age_s=max_topic_age_s,
     )
     odom_samples = _window_topic_evidence(
         recorders["odom"],
         recorders["clock"],
         start_host_ns=start_host_ns,
         end_host_ns=end_host_ns,
-        max_age_s=options.max_topic_age_s,
+        max_age_s=max_topic_age_s,
     )
-    raw_ground_truth_samples = _window_topic_evidence(
-        recorders["ground_truth"],
-        recorders["clock"],
-        start_host_ns=start_host_ns,
-        end_host_ns=end_host_ns,
-        max_age_s=options.max_topic_age_s,
+    ground_truth_recorder = recorders.get("ground_truth")
+    raw_ground_truth = (
+        _window_topic_evidence(
+            ground_truth_recorder,
+            recorders["clock"],
+            start_host_ns=start_host_ns,
+            end_host_ns=end_host_ns,
+            max_age_s=max_topic_age_s,
+        )
+        if ground_truth_recorder is not None
+        else []
     )
     _annotate_final_localization_samples(amcl_samples, odom_samples)
-    fresh_amcl = _bounded_stream_samples(
-        _valid_final_amcl(amcl_samples, max_covariance_xy=options.max_covariance_xy),
+    valid_amcl = _bounded_stream_samples(
+        _valid_final_amcl(amcl_samples, max_covariance_xy=max_covariance_xy),
         start_clock_ns=start_clock_ns,
         end_clock_ns=end_clock_ns,
     )
-    fresh_odom = _bounded_stream_samples(
+    valid_odom = _bounded_stream_samples(
         _valid_final_odom(odom_samples),
         start_clock_ns=start_clock_ns,
         end_clock_ns=end_clock_ns,
@@ -1901,17 +2251,86 @@ async def _sample_final_observation_window(
     ground_truth_required = calibration is not None and calibration.status == "VERIFIED"
     verified_ground_truth = (
         _bounded_stream_samples(
-            _ground_truth_samples(raw_ground_truth_samples, calibration),
+            _ground_truth_samples(raw_ground_truth, calibration),
             start_clock_ns=start_clock_ns,
             end_clock_ns=end_clock_ns,
         )
         if ground_truth_required and calibration is not None
         else []
     )
-    stationary = bool(fresh_odom) and all(
-        float(sample["linear_velocity_mps"]) <= options.max_start_speed_mps
-        and abs(float(sample["angular_velocity_rps"])) <= options.max_start_yaw_rate_rps
-        for sample in fresh_odom
+    stationary = bool(valid_odom) and all(
+        float(sample["linear_velocity_mps"]) <= max_speed_mps
+        and abs(float(sample["angular_velocity_rps"])) <= max_yaw_rate_rps
+        for sample in valid_odom
+    )
+    return _FinalStreamProjection(
+        clock_samples=clock_samples,
+        clock_values=clock_values,
+        amcl_samples=amcl_samples,
+        valid_amcl=valid_amcl,
+        odom_samples=odom_samples,
+        valid_odom=valid_odom,
+        raw_ground_truth=raw_ground_truth,
+        verified_ground_truth=verified_ground_truth,
+        ground_truth_required=ground_truth_required,
+        stationary=stationary,
+    )
+
+
+async def _sample_final_observation_window(
+    bridge: RosBridgeClient,
+    config: AppConfig,
+    options: DifferentialCaptureOptions,
+    recorders: dict[str, _TopicRecorder],
+    *,
+    terminal_host_ns: int | None,
+    calibration: GroundTruthCalibration | None = None,
+    pose_observations: _PoseObservationRecorder | None = None,
+) -> dict[str, Any]:
+    if pose_observations is None:
+        collected = await _collect_final_map_window(
+            bridge,
+            config,
+            options,
+            recorders["clock"],
+        )
+    else:
+        collected = await _collect_final_map_window(
+            bridge,
+            config,
+            options,
+            recorders["clock"],
+            pose_observations,
+        )
+    (
+        start_host_ns,
+        end_host_ns,
+        start_clock_ns,
+        end_clock_ns,
+        clock_backwards,
+        map_attempts,
+        failures,
+    ) = collected
+    required_duration_ns = int(options.final_sample_s * 1_000_000_000)
+    coverage_slack_ns = int(
+        min(options.max_topic_age_s, options.sample_interval_s * 2.0) * 1_000_000_000
+    )
+    map_samples = [
+        sample
+        for sample in map_attempts
+        if sample.get("fresh") is True and isinstance(sample.get("pose"), dict)
+    ]
+    streams = _project_final_streams(
+        recorders,
+        start_host_ns=start_host_ns,
+        end_host_ns=end_host_ns,
+        start_clock_ns=start_clock_ns,
+        end_clock_ns=end_clock_ns,
+        max_topic_age_s=options.max_topic_age_s,
+        max_covariance_xy=options.max_covariance_xy,
+        max_speed_mps=options.max_start_speed_mps,
+        max_yaw_rate_rps=options.max_start_yaw_rate_rps,
+        calibration=calibration,
     )
     failures = _final_window_failures(
         failures=failures,
@@ -1920,16 +2339,16 @@ async def _sample_final_observation_window(
         end_clock_ns=end_clock_ns,
         required_duration_ns=required_duration_ns,
         coverage_slack_ns=coverage_slack_ns,
-        clock_values=clock_values,
+        clock_values=streams.clock_values,
         valid_map_count=len(map_samples),
         min_map_count=options.min_final_pose_samples,
-        fresh_amcl=fresh_amcl,
-        fresh_odom=fresh_odom,
+        fresh_amcl=streams.valid_amcl,
+        fresh_odom=streams.valid_odom,
         min_state_samples=options.min_final_state_samples,
-        verified_ground_truth=verified_ground_truth,
-        ground_truth_required=ground_truth_required,
+        verified_ground_truth=streams.verified_ground_truth,
+        ground_truth_required=streams.ground_truth_required,
         min_ground_truth_samples=options.min_final_ground_truth_samples,
-        stationary=stationary,
+        stationary=streams.stationary,
     )
     return {
         "status": "PASS" if not failures else "FAIL",
@@ -1942,17 +2361,17 @@ async def _sample_final_observation_window(
         "required_duration_ns": required_duration_ns,
         "coverage_slack_ns": coverage_slack_ns,
         "clock_backwards": clock_backwards,
-        "clock_samples": clock_samples,
+        "clock_samples": streams.clock_samples,
         "map_pose_samples": map_samples,
         "map_pose_attempts": map_attempts,
-        "amcl_samples": amcl_samples,
-        "valid_amcl_samples": fresh_amcl,
-        "odom_samples": odom_samples,
-        "valid_odom_samples": fresh_odom,
-        "ground_truth_samples": raw_ground_truth_samples,
-        "verified_ground_truth_samples": verified_ground_truth,
-        "ground_truth_required": ground_truth_required,
-        "stationary": stationary,
+        "amcl_samples": streams.amcl_samples,
+        "valid_amcl_samples": streams.valid_amcl,
+        "odom_samples": streams.odom_samples,
+        "valid_odom_samples": streams.valid_odom,
+        "ground_truth_samples": streams.raw_ground_truth,
+        "verified_ground_truth_samples": streams.verified_ground_truth,
+        "ground_truth_required": streams.ground_truth_required,
+        "stationary": streams.stationary,
     }
 
 
@@ -2230,6 +2649,64 @@ def _normalized_absolute_path(value: object) -> bool:
     return isinstance(value, str) and os.path.isabs(value) and os.path.normpath(value) == value
 
 
+def _valid_python_version(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    parts = value.split(".")
+    return len(parts) >= 3 and all(part.isdigit() for part in parts[:3])
+
+
+def _ros_middleware_failures(identity: dict[str, Any]) -> list[str]:
+    value = identity.get("ros_middleware")
+    if not isinstance(value, dict):
+        return ["ros_middleware_identity_missing"]
+    requested = value.get("rmw_implementation_requested")
+    effective = value.get("rmw_implementation_effective")
+    bridge_python = value.get("bridge_python_executable")
+    bridge_version = value.get("bridge_python_version")
+    bindings = value.get("dds_bindings")
+    descriptor_digest = value.get("descriptor_sha256")
+    descriptor_payload = {key: item for key, item in value.items() if key != "descriptor_sha256"}
+    checks = (
+        (
+            requested is not None and (not isinstance(requested, str) or not requested),
+            "rmw_implementation_requested_invalid",
+        ),
+        (
+            not isinstance(effective, str) or not effective,
+            "rmw_implementation_effective_unavailable",
+        ),
+        (
+            isinstance(requested, str) and isinstance(effective, str) and requested != effective,
+            "rmw_implementation_mismatch",
+        ),
+        (
+            value.get("rmw_discovery_source") != "bridge_python_probe",
+            "rmw_discovery_source_invalid",
+        ),
+        (
+            not _normalized_absolute_path(bridge_python),
+            "bridge_python_executable_unavailable",
+        ),
+        (not _valid_python_version(bridge_version), "bridge_python_version_invalid"),
+        (
+            value.get("dds_config_mode") not in {"middleware_default", "environment_binding"},
+            "dds_config_mode_invalid",
+        ),
+        (not isinstance(bindings, dict), "dds_bindings_invalid"),
+        (
+            not _valid_sha256(value.get("dds_config_sha256")),
+            "dds_config_digest_invalid",
+        ),
+        (
+            not _valid_sha256(descriptor_digest)
+            or descriptor_digest != _canonical_json_sha256(descriptor_payload),
+            "ros_middleware_descriptor_digest_mismatch",
+        ),
+    )
+    return [failure for failed, failure in checks if failed]
+
+
 def _source_identity_failures(identity: dict[str, Any]) -> list[str]:
     required_hashes = (
         "config_sha256",
@@ -2272,6 +2749,11 @@ def _source_identity_failures(identity: dict[str, Any]) -> list[str]:
             ),
             "jenai_import_path_mismatch",
         ),
+        (
+            not _normalized_absolute_path(identity.get("python_executable")),
+            "python_executable_unavailable",
+        ),
+        (not _valid_python_version(identity.get("python_version")), "python_version_invalid"),
         (
             not _valid_git_revision(identity.get("expected_git_sha")),
             "expected_git_revision_unavailable",
@@ -2318,6 +2800,7 @@ def _source_identity_failures(identity: dict[str, Any]) -> list[str]:
         ),
     )
     failures = [failure for failed, failure in checks if failed]
+    failures.extend(_ros_middleware_failures(identity))
     failures.extend(
         f"missing_{field}" for field in required_hashes if not _valid_sha256(identity.get(field))
     )
@@ -2378,7 +2861,7 @@ def _measurement_contract(
 def _base_artifact(options: DifferentialCaptureOptions) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "evidence_derivation_version": 1,
+        "evidence_derivation_version": 2,
         "run_id": f"nav-diff-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:8]}",
         "pair_id": options.pair_id,
         "mode": options.mode,
@@ -2388,15 +2871,68 @@ def _base_artifact(options: DifferentialCaptureOptions) -> dict[str, Any]:
         "started_at": _utc_now(),
         "runtime_identity": {},
         "canonical_goal": None,
+        "target_binding": None,
         "ground_truth_calibration": None,
+        "pose_observations": [],
         "checks": [],
         "overall": "initializing",
     }
 
 
+def _target_binding(
+    *,
+    requested_query: str,
+    bound_action: dict[str, Any],
+    goal: CanonicalGoal,
+    locations_sha256: object,
+) -> TargetBinding:
+    raw_location = bound_action.get("goal")
+    if not isinstance(raw_location, dict) or not _valid_sha256(locations_sha256):
+        raise ValueError("Bound target identity is incomplete.")
+    resolved_name = raw_location.get("name")
+    resolved_id = raw_location.get("id")
+    if not isinstance(resolved_name, str) or not isinstance(resolved_id, str):
+        raise ValueError("Bound target has no stable saved-location identity.")
+    pose = Pose2D(x=goal.x, y=goal.y, yaw=goal.yaw)
+    record = {
+        "capability_id": "navigate",
+        "frame_id": goal.frame_id.lstrip("/"),
+        "locations_sha256": locations_sha256,
+        "pose": pose.model_dump(mode="json"),
+        "resolved_name": resolved_name,
+    }
+    canonical_goal_sha256 = _canonical_json_sha256(goal.model_dump(mode="json"))
+    canonical_record_sha256 = _canonical_json_sha256(record)
+    stable_binding = {
+        "canonical_goal_sha256": canonical_goal_sha256,
+        "canonical_record_sha256": canonical_record_sha256,
+        "capability_id": "navigate",
+        "locations_sha256": locations_sha256,
+    }
+    return TargetBinding(
+        requested_query=requested_query,
+        resolved_name=resolved_name,
+        resolved_id=resolved_id,
+        frame_id=goal.frame_id,
+        pose=pose,
+        capability_id="navigate",
+        locations_sha256=cast(str, locations_sha256),
+        canonical_record_sha256=canonical_record_sha256,
+        canonical_goal_sha256=canonical_goal_sha256,
+        binding_sha256=_canonical_json_sha256(stable_binding),
+    )
+
+
 def _prepare_capture(
     options: DifferentialCaptureOptions,
-) -> tuple[Path, AppConfig, dict[str, Any], CanonicalGoal, dict[str, Any]]:
+) -> tuple[
+    Path,
+    AppConfig,
+    dict[str, Any],
+    CanonicalGoal,
+    dict[str, Any],
+    TargetBinding,
+]:
     config_path = (options.config_path or default_config_path()).expanduser().resolve()
     config = load_config(config_path)
     locations_path = config.resolved_locations_path(config_path)
@@ -2429,8 +2965,15 @@ def _prepare_capture(
         reviewed_git_sha=options.expected_git_sha,
     )
     identity["site_map_frame"] = config.site.map_frame
+    identity["robot_base_frame"] = config.vehicle.robot_base_frame
     _apply_runtime_fingerprint(identity)
-    return config_path, config, bound_action, goal, identity
+    target_binding = _target_binding(
+        requested_query=options.location,
+        bound_action=bound_action,
+        goal=goal,
+        locations_sha256=identity.get("locations_sha256"),
+    )
+    return config_path, config, bound_action, goal, identity, target_binding
 
 
 async def _collect_start_state(
@@ -2439,6 +2982,7 @@ async def _collect_start_state(
     recorders: dict[str, _TopicRecorder],
     options: DifferentialCaptureOptions,
     calibration: GroundTruthCalibration,
+    pose_observations: _PoseObservationRecorder,
 ) -> dict[str, Any]:
     cutoff_host_ns = time.monotonic_ns()
     await asyncio.sleep(options.preflight_sample_s)
@@ -2448,6 +2992,8 @@ async def _collect_start_state(
         recorders,
         options,
         calibration,
+        pose_observations,
+        purpose=PoseLookupPurpose.T0_START,
         cutoff_host_monotonic_ns=cutoff_host_ns,
     )
 
@@ -2458,21 +3004,22 @@ async def _collect_dispatch_state(
     recorders: dict[str, _TopicRecorder],
     options: DifferentialCaptureOptions,
     calibration: GroundTruthCalibration,
+    pose_observations: _PoseObservationRecorder,
     *,
+    purpose: PoseLookupPurpose,
     cutoff_host_monotonic_ns: int,
 ) -> dict[str, Any]:
-    try:
-        pose_info = await bridge.get_pose(
-            timeout=3.0,
-            fresh=True,
-            frame_id=config.site.map_frame,
-            base_frame=config.vehicle.robot_base_frame,
-        )
-        start_pose = Pose2D(x=pose_info.x, y=pose_info.y, yaw=pose_info.yaw)
-    except BridgeError:
-        start_pose = None
+    start_pose, observation_id, _ = await pose_observations.capture(
+        bridge,
+        recorders["clock"],
+        purpose=purpose,
+        frame_id=config.site.map_frame,
+        base_frame=config.vehicle.robot_base_frame,
+        timeout_s=3.0,
+    )
     return _initial_state(
         pose=start_pose,
+        map_pose_observation_id=observation_id,
         clock=recorders["clock"],
         amcl=recorders["amcl"],
         odom=recorders["odom"],
@@ -2581,6 +3128,7 @@ async def _record_live_evidence(
     calibration: GroundTruthCalibration,
     recorders: dict[str, _TopicRecorder],
     t0: dict[str, Any],
+    pose_observations: _PoseObservationRecorder,
 ) -> None:
     status_before = set(cast(list[str], t0.get("known_goal_ids", [])))
 
@@ -2597,6 +3145,8 @@ async def _record_live_evidence(
             recorders,
             options,
             calibration,
+            pose_observations,
+            purpose=PoseLookupPurpose.T1_PRE_DISPATCH,
             cutoff_host_monotonic_ns=invoked_ns,
         )
 
@@ -2651,6 +3201,7 @@ async def _record_live_evidence(
         recorders,
         terminal_host_ns=terminal_ns if type(terminal_ns) is int else None,
         calibration=calibration,
+        pose_observations=pose_observations,
     )
     artifact["final_observation_window"] = final_window
     map_samples = cast(list[dict[str, Any]], final_window["map_pose_samples"])
@@ -2923,6 +3474,53 @@ def _record_end_generation(artifact: dict[str, Any]) -> None:
         artifact["overall"] = "insufficient_evidence"
 
 
+def _cancelled_cleanup_result(
+    *,
+    motion_attempted: bool,
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "status": "FAIL",
+        "failures": [
+            {
+                "step": "cleanup_orchestrator",
+                "type": "CancelledError",
+                "detail": detail,
+            }
+        ],
+        "final_halt": {
+            "status": "FAIL" if motion_attempted else "SKIP",
+            "detail": "Cleanup was cancelled before complete stop evidence.",
+        },
+        "bridge_shutdown": {"status": "UNCONFIRMED"},
+    }
+
+
+async def _await_cleanup_despite_cancellation(
+    cleanup_task: asyncio.Task[dict[str, Any]],
+    *,
+    motion_attempted: bool,
+) -> tuple[dict[str, Any], asyncio.CancelledError | None]:
+    interrupted: asyncio.CancelledError | None = None
+    while True:
+        try:
+            return await asyncio.shield(cleanup_task), interrupted
+        except asyncio.CancelledError as exc:
+            if cleanup_task.done():
+                if cleanup_task.cancelled():
+                    detail = str(exc) or "cleanup task cancelled internally"
+                    return (
+                        _cancelled_cleanup_result(
+                            motion_attempted=motion_attempted,
+                            detail=detail,
+                        ),
+                        interrupted,
+                    )
+                return cleanup_task.result(), interrupted
+            if interrupted is None:
+                interrupted = exc
+
+
 async def _finalize_capture(
     artifact: dict[str, Any],
     options: DifferentialCaptureOptions,
@@ -2933,12 +3531,19 @@ async def _finalize_capture(
     heartbeat: asyncio.Task[None] | None,
     motion_attempted: bool,
 ) -> dict[str, Any]:
+    interrupted: asyncio.CancelledError | None = None
     if bridge is not None and config is not None:
-        cleanup = await _safe_cleanup_live_capture(
-            bridge,
-            config,
-            watch_ids,
-            heartbeat,
+        cleanup_task = asyncio.create_task(
+            _safe_cleanup_live_capture(
+                bridge,
+                config,
+                watch_ids,
+                heartbeat,
+                motion_attempted=motion_attempted,
+            )
+        )
+        cleanup, interrupted = await _await_cleanup_despite_cancellation(
+            cleanup_task,
             motion_attempted=motion_attempted,
         )
         artifact["cleanup"] = cleanup
@@ -2948,10 +3553,110 @@ async def _finalize_capture(
             artifact["overall"] = "cleanup_failed"
         _record_end_generation(artifact)
     artifact["finished_at"] = _utc_now()
-    return _write_capture_artifact(
+    persisted = _write_capture_artifact(
         options.output,
         artifact,
         overwrite=options.overwrite,
+    )
+    if interrupted is not None:
+        raise interrupted
+    return persisted
+
+
+@dataclass(slots=True)
+class _CaptureResources:
+    stage: str = "prepare"
+    config: AppConfig | None = None
+    bridge: RosBridgeClient | None = None
+    watch_ids: list[int] = dataclass_field(default_factory=list)
+    heartbeat: asyncio.Task[None] | None = None
+    motion_attempted: bool = False
+
+
+async def _capture_live_path(
+    artifact: dict[str, Any],
+    options: DifferentialCaptureOptions,
+    *,
+    config_path: Path,
+    config: AppConfig,
+    bound_action: dict[str, Any],
+    goal: CanonicalGoal,
+    identity: dict[str, Any],
+    pose_observations: _PoseObservationRecorder,
+    resources: _CaptureResources,
+) -> None:
+    resources.stage = "bridge_start"
+    bridge = RosBridgeClient(domain_id=config.vehicle.domain_id)
+    resources.bridge = bridge
+    await bridge.configure_safety(
+        watchdog_s=6.0,
+        cmd_vel_topic=config.vehicle.cmd_vel_topic,
+        stamped=config.vehicle.cmd_vel_stamped,
+        pose_jump_threshold_m=config.vehicle.pose_jump_threshold_m,
+        pose_jump_window_s=config.vehicle.pose_jump_window_s,
+    )
+    await bridge.start()
+    resources.stage = "live_identity"
+    await _enrich_live_identity(bridge, identity)
+    calibration = _load_calibration(options, identity)
+    artifact["ground_truth_calibration"] = calibration.model_dump(mode="json")
+    identity_failures = _runtime_identity_failures(identity)
+    if identity_failures:
+        _record_capture_gate_failure(
+            artifact,
+            check_id="runtime_identity_gate",
+            detail="Live runtime identity is incomplete or not release-clean.",
+            failures=identity_failures,
+        )
+        return
+    resources.stage = "topic_watch"
+    odom_topic = str(identity["controller_odom_topic"])
+    artifact["topic_stream_contract"] = {
+        key: {"topic": topic, "message_type": message_type}
+        for key, topic, message_type in _topic_stream_specs(options, odom_topic=odom_topic)
+    }
+    recorders = {
+        key: _TopicRecorder() for key in ("clock", "amcl", "odom", "action_status", "ground_truth")
+    }
+    resources.watch_ids = await _watch_topics(
+        bridge,
+        recorders,
+        options,
+        odom_topic=odom_topic,
+    )
+    resources.heartbeat = asyncio.create_task(_heartbeat(bridge))
+    resources.stage = "start_gate"
+    t0 = await _collect_start_state(
+        bridge,
+        config,
+        recorders,
+        options,
+        calibration,
+        pose_observations,
+    )
+    artifact["t0_scenario_start"] = t0
+    if t0["status"] != "PASS":
+        _record_capture_gate_failure(
+            artifact,
+            check_id="pairing_start_gate",
+            detail="Start state was not eligible for paired execution.",
+            failures=t0["failures"],
+        )
+        return
+    resources.stage = "motion_dispatch"
+    resources.motion_attempted = True
+    await _record_live_evidence(
+        artifact,
+        options,
+        bridge,
+        config,
+        config_path,
+        goal,
+        bound_action,
+        calibration,
+        recorders,
+        t0,
+        pose_observations,
     )
 
 
@@ -2961,116 +3666,58 @@ async def capture_navigation_differential(
     """Capture one R1 or R2 run and persist every valid request outcome."""
     options = DifferentialCaptureOptions.model_validate(options)
     artifact = _base_artifact(options)
-    config: AppConfig | None = None
-    bridge: RosBridgeClient | None = None
-    watch_ids: list[int] = []
-    heartbeat: asyncio.Task[None] | None = None
-    motion_attempted = False
+    resources = _CaptureResources()
+    pose_observations = _PoseObservationRecorder()
     cancelled: asyncio.CancelledError | None = None
-    stage = "prepare"
     try:
-        config_path, config, bound_action, goal, identity = _prepare_capture(options)
+        config_path, config, bound_action, goal, identity, target_binding = _prepare_capture(
+            options
+        )
+        resources.config = config
         artifact["runtime_identity"] = identity
         artifact["canonical_goal"] = goal.model_dump(mode="json")
+        artifact["target_binding"] = (
+            target_binding.model_dump(mode="json")
+            if isinstance(target_binding, TargetBinding)
+            else None
+        )
         if not _complete_without_live_bridge(options, config, identity, artifact):
-            stage = "bridge_start"
-            bridge = RosBridgeClient(domain_id=config.vehicle.domain_id)
-            await bridge.configure_safety(
-                watchdog_s=6.0,
-                cmd_vel_topic=config.vehicle.cmd_vel_topic,
-                stamped=config.vehicle.cmd_vel_stamped,
-                pose_jump_threshold_m=config.vehicle.pose_jump_threshold_m,
-                pose_jump_window_s=config.vehicle.pose_jump_window_s,
+            await _capture_live_path(
+                artifact,
+                options,
+                config_path=config_path,
+                config=config,
+                bound_action=bound_action,
+                goal=goal,
+                identity=identity,
+                pose_observations=pose_observations,
+                resources=resources,
             )
-            await bridge.start()
-            stage = "live_identity"
-            await _enrich_live_identity(bridge, identity)
-            calibration = _load_calibration(options, identity)
-            artifact["ground_truth_calibration"] = calibration.model_dump(mode="json")
-            identity_failures = _runtime_identity_failures(identity)
-            if identity_failures:
-                _record_capture_gate_failure(
-                    artifact,
-                    check_id="runtime_identity_gate",
-                    detail="Live runtime identity is incomplete or not release-clean.",
-                    failures=identity_failures,
-                )
-            else:
-                stage = "topic_watch"
-                odom_topic = str(identity["controller_odom_topic"])
-                artifact["topic_stream_contract"] = {
-                    key: {"topic": topic, "message_type": message_type}
-                    for key, topic, message_type in _topic_stream_specs(
-                        options,
-                        odom_topic=odom_topic,
-                    )
-                }
-                recorders = {
-                    key: _TopicRecorder()
-                    for key in ("clock", "amcl", "odom", "action_status", "ground_truth")
-                }
-                watch_ids = await _watch_topics(
-                    bridge,
-                    recorders,
-                    options,
-                    odom_topic=odom_topic,
-                )
-                heartbeat = asyncio.create_task(_heartbeat(bridge))
-                stage = "start_gate"
-                t0 = await _collect_start_state(
-                    bridge,
-                    config,
-                    recorders,
-                    options,
-                    calibration,
-                )
-                artifact["t0_scenario_start"] = t0
-                if t0["status"] != "PASS":
-                    _record_capture_gate_failure(
-                        artifact,
-                        check_id="pairing_start_gate",
-                        detail="Start state was not eligible for paired execution.",
-                        failures=t0["failures"],
-                    )
-                else:
-                    stage = "motion_dispatch"
-                    motion_attempted = True
-                    await _record_live_evidence(
-                        artifact,
-                        options,
-                        bridge,
-                        config,
-                        config_path,
-                        goal,
-                        bound_action,
-                        calibration,
-                        recorders,
-                        t0,
-                    )
     except asyncio.CancelledError as exc:
         cancelled = exc
         artifact["overall"] = "failed"
         artifact["failure"] = {
             "type": type(exc).__name__,
-            "stage": stage,
+            "stage": resources.stage,
             "detail": "Capture task was cancelled.",
         }
     except Exception as exc:
         artifact["overall"] = "failed"
         artifact["failure"] = {
             "type": type(exc).__name__,
-            "stage": stage,
+            "stage": resources.stage,
             "detail": str(exc),
         }
     finally:
+        artifact["pose_observations"] = pose_observations.snapshot()
         artifact = await _finalize_capture(
             artifact,
             options,
-            bridge=bridge,
-            config=config,
-            watch_ids=watch_ids,
-            heartbeat=heartbeat,
-            motion_attempted=motion_attempted,
+            bridge=resources.bridge,
+            config=resources.config,
+            watch_ids=resources.watch_ids,
+            heartbeat=resources.heartbeat,
+            motion_attempted=resources.motion_attempted,
         )
     if cancelled is not None:
         raise cancelled
@@ -3114,6 +3761,32 @@ def _actual_dispatch_goal(artifact: dict[str, Any]) -> CanonicalGoal | None:
         return CanonicalGoal.model_validate(value)
     except ValueError:
         return None
+
+
+def _target_binding_failures(
+    artifact: dict[str, Any],
+    goal: CanonicalGoal,
+) -> list[str]:
+    try:
+        binding = TargetBinding.model_validate(artifact.get("target_binding"))
+    except ValueError:
+        return ["target_binding_invalid"]
+    identity = artifact.get("runtime_identity")
+    canonical_goal_sha256 = _canonical_json_sha256(goal.model_dump(mode="json"))
+    failures: list[str] = []
+    if binding.canonical_goal_sha256 != canonical_goal_sha256:
+        failures.append("target_binding_goal_digest_mismatch")
+    if binding.locations_sha256 != (
+        identity.get("locations_sha256") if isinstance(identity, dict) else None
+    ):
+        failures.append("target_binding_locations_mismatch")
+    if binding.frame_id != goal.frame_id.lstrip("/") or binding.pose != Pose2D(
+        x=goal.x,
+        y=goal.y,
+        yaw=goal.yaw,
+    ):
+        failures.append("target_binding_goal_mismatch")
+    return failures
 
 
 def _finite_number(value: object) -> bool:
@@ -3902,7 +4575,7 @@ def _terminal_evidence_failure(artifact: dict[str, Any]) -> str | None:
     valid = (
         isinstance(terminal, dict)
         and type(terminal.get("observed_host_monotonic_ns")) is int
-        and terminal.get("status") in {"succeeded", "canceled", "aborted", "failed", "rejected"}
+        and terminal.get("status") in _NAV2_TERMINAL_STATUSES
     )
     return None if valid else "nav2_terminal_missing"
 
@@ -4006,11 +4679,24 @@ def _mode_specific_evidence_failures(artifact: dict[str, Any]) -> list[str]:
         )
         if invalid
     ]
-    if mode != DifferentialMode.R2_JENAI_NO_RETRY.value:
+    execution_status = artifact.get("execution_status")
+    if mode == DifferentialMode.R1_BRIDGE_NAV2.value:
+        checks = (
+            (
+                execution_status not in _NAV2_TERMINAL_STATUSES,
+                "r1_execution_status_vocabulary",
+            ),
+            (
+                not isinstance(terminal, dict) or execution_status != terminal.get("status"),
+                "r1_execution_status_binding",
+            ),
+        )
+        failures.extend(failure for failed, failure in checks if failed)
         return failures
     result = artifact.get("jenai_result")
     if not isinstance(result, dict):
         return [*failures, "r2_jenai_result_missing"]
+    result_status = result.get("execution_status")
     effective = result.get("effective_experimental_config")
     attempts = result.get("navigation_attempts")
     attempt = (
@@ -4028,7 +4714,7 @@ def _mode_specific_evidence_failures(artifact: dict[str, Any]) -> list[str]:
         if isinstance(observed_results, list)
         else []
     )
-    checks = (
+    r2_checks = (
         (
             not isinstance(effective, dict) or effective.get("nav_endpoint_retry_limit") != 0,
             "r2_retry_limit_not_zero",
@@ -4045,8 +4731,16 @@ def _mode_specific_evidence_failures(artifact: dict[str, Any]) -> list[str]:
             len(matching_results) != 1 or matching_results[0] != terminal,
             "r2_observed_result_binding",
         ),
+        (
+            result_status not in _JENAI_NAVIGATION_EXECUTION_STATUSES,
+            "r2_execution_status_vocabulary",
+        ),
+        (
+            execution_status != result_status,
+            "r2_execution_status_binding",
+        ),
     )
-    failures.extend(failure for failed, failure in checks if failed)
+    failures.extend(failure for failed, failure in r2_checks if failed)
     return failures
 
 
@@ -4166,18 +4860,40 @@ def _rederived_state(
     stored: object,
     *,
     recorders: dict[str, _TopicRecorder],
+    pose_observations: dict[str, PoseLookupObservation],
+    expected_purpose: PoseLookupPurpose,
     options: DifferentialCaptureOptions,
     ground_truth_calibration: GroundTruthCalibration | None,
 ) -> dict[str, Any] | None:
     if not isinstance(stored, dict):
         return None
-    pose = _pose_payload(stored.get("map_to_base"))
+    observation_id = stored.get("map_pose_observation_id")
+    observation = pose_observations.get(observation_id) if isinstance(observation_id, str) else None
+    if observation is None or observation.purpose is not expected_purpose:
+        return None
+    pose = (
+        Pose2D(
+            x=observation.result.x,
+            y=observation.result.y,
+            yaw=observation.result.yaw,
+        )
+        if observation.status == "SUCCESS" and observation.result is not None
+        else None
+    )
     cutoff = stored.get("cutoff_host_monotonic_ns")
     evaluated = stored.get("evaluated_host_monotonic_ns")
-    if pose is None or type(cutoff) is not int or type(evaluated) is not int:
+    if type(cutoff) is not int or type(evaluated) is not int:
+        return None
+    if not (
+        cutoff
+        <= observation.request_host_monotonic_ns
+        <= observation.completed_host_monotonic_ns
+        <= evaluated
+    ):
         return None
     return _initial_state(
         pose=pose,
+        map_pose_observation_id=observation.observation_id,
         clock=recorders["clock"],
         amcl=recorders["amcl"],
         odom=recorders["odom"],
@@ -4226,6 +4942,7 @@ def _raw_state_failures(
     contract: DifferentialMeasurementContract,
     goal: CanonicalGoal,
     dispatch: dict[str, _TopicRecorder],
+    pose_observations: dict[str, PoseLookupObservation],
     ground_truth_calibration: GroundTruthCalibration | None,
 ) -> list[str]:
     options = _offline_state_options(artifact, contract, goal)
@@ -4239,21 +4956,164 @@ def _raw_state_failures(
         else None
     )
     states = (
-        ("t0", artifact.get("t0_scenario_start")),
-        ("t1", timeline.get("state_before_forward") if isinstance(timeline, dict) else None),
-        ("t1_dispatch", nested_state),
+        ("t0", artifact.get("t0_scenario_start"), PoseLookupPurpose.T0_START),
+        (
+            "t1",
+            timeline.get("state_before_forward") if isinstance(timeline, dict) else None,
+            PoseLookupPurpose.T1_PRE_DISPATCH,
+        ),
+        ("t1_dispatch", nested_state, PoseLookupPurpose.T1_PRE_DISPATCH),
     )
     failures: list[str] = []
-    for label, stored in states:
+    for label, stored, purpose in states:
         rederived = _rederived_state(
             stored,
             recorders=dispatch,
+            pose_observations=pose_observations,
+            expected_purpose=purpose,
             options=options,
             ground_truth_calibration=ground_truth_calibration,
         )
         if rederived is None or rederived != stored:
             failures.append(f"{label}_not_derived_from_raw")
+    forwarded_ns = (
+        timeline.get("nav_send_forwarded_host_monotonic_ns") if isinstance(timeline, dict) else None
+    )
+    t1_id = (
+        cast(dict[str, Any], timeline.get("state_before_forward")).get("map_pose_observation_id")
+        if isinstance(timeline, dict) and isinstance(timeline.get("state_before_forward"), dict)
+        else None
+    )
+    t1_observation = pose_observations.get(t1_id) if isinstance(t1_id, str) else None
+    if (
+        t1_observation is None
+        or type(forwarded_ns) is not int
+        or t1_observation.completed_host_monotonic_ns > forwarded_ns
+    ):
+        failures.append("t1_pose_observation_after_nav_send")
     return failures
+
+
+def _pose_observation_failures(
+    observation: PoseLookupObservation,
+    *,
+    sequence: int,
+    expected_frame: str,
+    expected_base: str,
+    duplicate: bool,
+) -> list[str]:
+    checks = (
+        (observation.sequence != sequence, "pose_observation_sequence"),
+        (duplicate, "pose_observation_duplicate_id"),
+        (
+            observation.frame_id.lstrip("/") != expected_frame
+            or observation.base_frame.lstrip("/") != expected_base,
+            "pose_observation_frame_mismatch",
+        ),
+        (
+            observation.request_clock_ns is not None
+            and observation.completed_clock_ns is not None
+            and observation.completed_clock_ns < observation.request_clock_ns,
+            "pose_observation_clock_moved_backwards",
+        ),
+        (
+            observation.status == "SUCCESS"
+            and observation.result is not None
+            and observation.completed_clock_ns is not None
+            and observation.result.stamp_ns > observation.completed_clock_ns,
+            "pose_observation_transform_from_future",
+        ),
+    )
+    return [failure for failed, failure in checks if failed]
+
+
+def _validated_pose_observation_index(
+    artifact: dict[str, Any],
+) -> tuple[dict[str, PoseLookupObservation] | None, list[str]]:
+    raw = artifact.get("pose_observations")
+    identity = artifact.get("runtime_identity")
+    if not isinstance(raw, list) or not isinstance(identity, dict):
+        return None, ["pose_observations_missing"]
+    expected_frame = str(identity.get("site_map_frame") or "").lstrip("/")
+    expected_base = str(identity.get("robot_base_frame") or "").lstrip("/")
+    if not expected_frame or not expected_base:
+        return None, ["pose_observation_frame_contract_missing"]
+    index: dict[str, PoseLookupObservation] = {}
+    failures: list[str] = []
+    for sequence, payload in enumerate(raw):
+        try:
+            observation = PoseLookupObservation.model_validate(payload)
+        except ValueError:
+            failures.append("pose_observation_schema")
+            continue
+        failures.extend(
+            _pose_observation_failures(
+                observation,
+                sequence=sequence,
+                expected_frame=expected_frame,
+                expected_base=expected_base,
+                duplicate=observation.observation_id in index,
+            )
+        )
+        index[observation.observation_id] = observation
+    if failures or not index:
+        return None, list(dict.fromkeys(failures or ["pose_observations_missing"]))
+    return index, []
+
+
+def _pose_observation_reference_failures(
+    artifact: dict[str, Any],
+    index: dict[str, PoseLookupObservation],
+) -> list[str]:
+    t0 = artifact.get("t0_scenario_start")
+    timeline = artifact.get("t1_goal_dispatch")
+    dispatches = timeline.get("dispatch_observations") if isinstance(timeline, dict) else None
+    nested_t1 = (
+        dispatches[0].get("state_before_forward")
+        if isinstance(dispatches, list) and len(dispatches) == 1 and isinstance(dispatches[0], dict)
+        else None
+    )
+    public_t1 = timeline.get("state_before_forward") if isinstance(timeline, dict) else None
+    window = artifact.get("final_observation_window")
+    attempts = window.get("map_pose_attempts") if isinstance(window, dict) else None
+    t0_id = t0.get("map_pose_observation_id") if isinstance(t0, dict) else None
+    t1_id = public_t1.get("map_pose_observation_id") if isinstance(public_t1, dict) else None
+    nested_t1_id = nested_t1.get("map_pose_observation_id") if isinstance(nested_t1, dict) else None
+    raw_final_ids = (
+        [item.get("pose_observation_id") for item in attempts if isinstance(item, dict)]
+        if isinstance(attempts, list)
+        else []
+    )
+    final_ids = [item for item in raw_final_ids if isinstance(item, str)]
+    referenced = {item for item in (t0_id, t1_id, *final_ids) if isinstance(item, str)}
+    purpose_counts = {
+        purpose: sum(observation.purpose is purpose for observation in index.values())
+        for purpose in PoseLookupPurpose
+    }
+    checks = (
+        (
+            not isinstance(t0_id, str) or t0_id not in index,
+            "t0_pose_observation_reference",
+        ),
+        (
+            not isinstance(t1_id, str) or t1_id not in index or nested_t1_id != t1_id,
+            "t1_pose_observation_reference",
+        ),
+        (
+            len(final_ids) != len(raw_final_ids)
+            or len(final_ids) != len(set(final_ids))
+            or any(item not in index for item in final_ids),
+            "final_pose_observation_references",
+        ),
+        (referenced != set(index), "pose_observation_unreferenced_or_missing"),
+        (purpose_counts[PoseLookupPurpose.T0_START] != 1, "t0_pose_observation_count"),
+        (
+            purpose_counts[PoseLookupPurpose.T1_PRE_DISPATCH] != 1,
+            "t1_pose_observation_count",
+        ),
+        (purpose_counts[PoseLookupPurpose.FINAL_WINDOW] != len(final_ids), "final_pose_count"),
+    )
+    return [failure for failed, failure in checks if failed]
 
 
 def _raw_goal_uuid_failures(
@@ -4305,6 +5165,7 @@ def _validated_raw_map_attempts(
         return [], False
     valid: list[dict[str, Any]] = []
     success_keys = {
+        "pose_observation_id",
         "requested_host_monotonic_ns",
         "observed_host_monotonic_ns",
         "capture_clock_ns",
@@ -4312,6 +5173,7 @@ def _validated_raw_map_attempts(
         "pose",
     }
     failure_keys = {
+        "pose_observation_id",
         "requested_host_monotonic_ns",
         "capture_clock_ns",
         "fresh",
@@ -4321,12 +5183,15 @@ def _validated_raw_map_attempts(
         if not isinstance(item, dict):
             return [], False
         requested = item.get("requested_host_monotonic_ns")
+        observation_id = item.get("pose_observation_id")
         capture_clock = item.get("capture_clock_ns")
         if item.get("fresh") is True:
             observed = item.get("observed_host_monotonic_ns")
             pose = item.get("pose")
             if (
                 set(item) != success_keys
+                or not isinstance(observation_id, str)
+                or not observation_id
                 or type(requested) is not int
                 or type(observed) is not int
                 or type(capture_clock) is not int
@@ -4342,6 +5207,8 @@ def _validated_raw_map_attempts(
             valid.append(item)
         elif (
             set(item) != failure_keys
+            or not isinstance(observation_id, str)
+            or not observation_id
             or type(requested) is not int
             or not (start_host_ns <= requested <= end_host_ns)
             or (capture_clock is not None and type(capture_clock) is not int)
@@ -4357,6 +5224,7 @@ def _raw_final_window_failures(
     *,
     contract: DifferentialMeasurementContract,
     full: dict[str, _TopicRecorder],
+    pose_observations: dict[str, PoseLookupObservation],
     ground_truth_calibration: GroundTruthCalibration | None,
 ) -> list[str]:
     window = artifact.get("final_observation_window")
@@ -4372,64 +5240,33 @@ def _raw_final_window_failures(
     typed_end_host = cast(int, end_host)
     typed_start_clock = cast(int, start_clock)
     typed_end_clock = cast(int, end_clock)
-    clock_samples, _ = _clock_window_evidence(
-        full["clock"],
+    streams = _project_final_streams(
+        full,
         start_host_ns=typed_start_host,
         end_host_ns=typed_end_host,
-    )
-    amcl_samples = _window_topic_evidence(
-        full["amcl"],
-        full["clock"],
-        start_host_ns=typed_start_host,
-        end_host_ns=typed_end_host,
-        max_age_s=contract.max_topic_age_s,
-    )
-    odom_samples = _window_topic_evidence(
-        full["odom"],
-        full["clock"],
-        start_host_ns=typed_start_host,
-        end_host_ns=typed_end_host,
-        max_age_s=contract.max_topic_age_s,
-    )
-    _annotate_final_localization_samples(amcl_samples, odom_samples)
-    valid_amcl = _bounded_stream_samples(
-        _valid_final_amcl(amcl_samples, max_covariance_xy=contract.max_covariance_xy),
         start_clock_ns=typed_start_clock,
         end_clock_ns=typed_end_clock,
-    )
-    valid_odom = _bounded_stream_samples(
-        _valid_final_odom(odom_samples),
-        start_clock_ns=typed_start_clock,
-        end_clock_ns=typed_end_clock,
-    )
-    raw_ground_truth: list[dict[str, Any]] = []
-    verified_ground_truth: list[dict[str, Any]] = []
-    ground_truth_recorder = full.get("ground_truth")
-    if ground_truth_recorder is not None:
-        raw_ground_truth = _window_topic_evidence(
-            ground_truth_recorder,
-            full["clock"],
-            start_host_ns=typed_start_host,
-            end_host_ns=typed_end_host,
-            max_age_s=contract.max_topic_age_s,
-        )
-        if ground_truth_calibration is not None:
-            verified_ground_truth = _bounded_stream_samples(
-                _ground_truth_samples(raw_ground_truth, ground_truth_calibration),
-                start_clock_ns=typed_start_clock,
-                end_clock_ns=typed_end_clock,
-            )
-    stationary = bool(valid_odom) and all(
-        float(sample["linear_velocity_mps"]) <= contract.max_start_speed_mps
-        and abs(float(sample["angular_velocity_rps"])) <= contract.max_start_yaw_rate_rps
-        for sample in valid_odom
+        max_topic_age_s=contract.max_topic_age_s,
+        max_covariance_xy=contract.max_covariance_xy,
+        max_speed_mps=contract.max_start_speed_mps,
+        max_yaw_rate_rps=contract.max_start_yaw_rate_rps,
+        calibration=ground_truth_calibration,
     )
     map_samples = window.get("map_pose_samples")
     expected_frame = str(
         cast(dict[str, Any], artifact.get("runtime_identity", {})).get("site_map_frame") or ""
     ).lstrip("/")
+    raw_map_attempts = [
+        _pose_attempt_from_observation(observation.model_dump(mode="json"))
+        for observation in pose_observations.values()
+        if observation.purpose is PoseLookupPurpose.FINAL_WINDOW
+        and typed_start_host
+        <= observation.request_host_monotonic_ns
+        <= observation.completed_host_monotonic_ns
+        <= typed_end_host
+    ]
     valid_map_attempts, map_attempts_valid = _validated_raw_map_attempts(
-        window.get("map_pose_attempts"),
+        raw_map_attempts,
         start_host_ns=typed_start_host,
         end_host_ns=typed_end_host,
         start_clock_ns=typed_start_clock,
@@ -4437,20 +5274,42 @@ def _raw_final_window_failures(
         expected_frame=expected_frame,
     )
     checks = (
-        (window.get("clock_samples") != clock_samples, "final_clock_not_derived_from_raw"),
-        (window.get("amcl_samples") != amcl_samples, "final_amcl_window_not_derived_from_raw"),
-        (window.get("valid_amcl_samples") != valid_amcl, "final_amcl_not_derived_from_raw"),
-        (window.get("odom_samples") != odom_samples, "final_odom_window_not_derived_from_raw"),
-        (window.get("valid_odom_samples") != valid_odom, "final_odom_not_derived_from_raw"),
         (
-            window.get("ground_truth_samples") != raw_ground_truth,
+            window.get("clock_samples") != streams.clock_samples,
+            "final_clock_not_derived_from_raw",
+        ),
+        (
+            window.get("amcl_samples") != streams.amcl_samples,
+            "final_amcl_window_not_derived_from_raw",
+        ),
+        (
+            window.get("valid_amcl_samples") != streams.valid_amcl,
+            "final_amcl_not_derived_from_raw",
+        ),
+        (
+            window.get("odom_samples") != streams.odom_samples,
+            "final_odom_window_not_derived_from_raw",
+        ),
+        (
+            window.get("valid_odom_samples") != streams.valid_odom,
+            "final_odom_not_derived_from_raw",
+        ),
+        (
+            window.get("ground_truth_samples") != streams.raw_ground_truth,
             "final_ground_truth_window_not_derived_from_raw",
         ),
         (
-            window.get("verified_ground_truth_samples") != verified_ground_truth,
+            window.get("verified_ground_truth_samples") != streams.verified_ground_truth,
             "final_ground_truth_not_derived_from_raw",
         ),
-        (window.get("stationary") is not stationary, "final_stationary_not_derived_from_raw"),
+        (
+            window.get("stationary") is not streams.stationary,
+            "final_stationary_not_derived_from_raw",
+        ),
+        (
+            window.get("map_pose_attempts") != raw_map_attempts,
+            "final_map_attempts_not_derived_from_pose_observations",
+        ),
         (not map_attempts_valid, "final_map_attempt_schema"),
         (map_samples != valid_map_attempts, "final_map_samples_not_derived_from_attempts"),
         (
@@ -4472,8 +5331,12 @@ def _raw_evidence_failures(
     goal: CanonicalGoal,
     ground_truth_calibration: GroundTruthCalibration | None,
 ) -> list[str]:
-    if artifact.get("evidence_derivation_version") != 1:
+    if artifact.get("evidence_derivation_version") != 2:
         return ["evidence_derivation_version"]
+    pose_observations, pose_failures = _validated_pose_observation_index(artifact)
+    if pose_observations is None:
+        return pose_failures
+    pose_failures.extend(_pose_observation_reference_failures(artifact, pose_observations))
     identity = artifact.get("runtime_identity")
     odom_topic = identity.get("controller_odom_topic") if isinstance(identity, dict) else None
     expected_streams: dict[str, dict[str, str | None]] = {
@@ -4508,6 +5371,7 @@ def _raw_evidence_failures(
         label="raw_topic_samples",
     )
     failures.extend(contract_failures)
+    failures.extend(pose_failures)
     dispatch, dispatch_failures = _raw_topic_recorders(
         artifact.get("topic_samples_at_dispatch_end"),
         required_streams=required,
@@ -4524,6 +5388,7 @@ def _raw_evidence_failures(
             contract=contract,
             goal=goal,
             dispatch=dispatch,
+            pose_observations=pose_observations,
             ground_truth_calibration=ground_truth_calibration,
         )
     )
@@ -4539,6 +5404,7 @@ def _raw_evidence_failures(
             artifact,
             contract=contract,
             full=full,
+            pose_observations=pose_observations,
             ground_truth_calibration=ground_truth_calibration,
         )
     )
@@ -4579,6 +5445,7 @@ def _comparison_eligibility_failure(artifact: dict[str, Any], side: str) -> str 
         else ["runtime_identity_missing"]
     )
     failures.extend(ground_truth_failures)
+    failures.extend(_target_binding_failures(artifact, canonical_goal))
     failures.extend(
         _state_evidence_failures(
             artifact.get("t0_scenario_start"),
@@ -4708,6 +5575,8 @@ def _pairing_gate_from_artifacts(
     right_t1 = cast(dict[str, Any], right["t1_goal_dispatch"])
     left_dispatch = left_t1.get("state_before_forward")
     right_dispatch = right_t1.get("state_before_forward")
+    left_binding = cast(dict[str, Any], left.get("target_binding") or {})
+    right_binding = cast(dict[str, Any], right.get("target_binding") or {})
     if not isinstance(left_dispatch, dict) or not isinstance(right_dispatch, dict):
         return None, "Comparable T1 dispatch states are missing."
     try:
@@ -4749,6 +5618,13 @@ def _pairing_gate_from_artifacts(
         (
             left.get("ground_truth_calibration") != right.get("ground_truth_calibration"),
             "ground_truth_calibration",
+        ),
+        (
+            left_binding.get("resolved_id") != right_binding.get("resolved_id")
+            or left_binding.get("resolved_name") != right_binding.get("resolved_name")
+            or left_binding.get("locations_sha256") != right_binding.get("locations_sha256")
+            or left_binding.get("capability_id") != right_binding.get("capability_id"),
+            "target_binding",
         ),
         (
             {str(left.get("mode")), str(right.get("mode"))}

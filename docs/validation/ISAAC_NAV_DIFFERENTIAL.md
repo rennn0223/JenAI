@@ -19,6 +19,10 @@ baseline；本工具不使用它。
 | `R1_bridge_nav2` | canonical goal → harness-owned `RosBridgeClient.nav_send` → Nav2 | 隔離 bridge／Nav2；仍有 watchdog、final halt 與 cleanup |
 | `R2_jenai_no_retry` | 同一 goal → `NavigationGateway` → `nav_live` → Nav2 | 觀測 JenAI policy 與 completion verification |
 
+R1 是 [ADR 0007](../adr/0007-simulation-differential-control-arm.md) 唯一授權的
+simulation-only acceptance control，不是 Capability、產品 navigation path、Runtime command
+或實體載具介面；Agent、TUI、WebUI、MCP、daemon、NXDog 與一般 script 都不得重用。
+
 R1 的 result timeout 使用目前 `VehicleProfile.nav_timeout_s`，與 R2 的有效 JenAI navigation
 budget 相同，不另設一套 CLI timeout。
 
@@ -96,7 +100,14 @@ Live execution 只允許 `deployment_mode=simulation`，並在送 goal 前 fail 
 
 - CLI 所在 repository root、`jenai.__file__` 對應 source root 與操作員明確提供的
   `--expected-git-sha` 必須指向同一個已 Code Review、clean revision；
+- CLI Python executable／version，以及 ROS bridge process 實際 probe 到的 Python、RMW
+  implementation 與 DDS environment binding 必須完整。DDS 路徑／profile 只保存 canonical
+  digest，不把本機敏感設定內容寫入 artifact；requested RMW 與 effective RMW 不一致時 fail
+  closed；
 - config、Site map、locations、rendered Nav2 params、scene SHA 完整；
+- saved location 必須解析成唯一 target。Artifact 以 `resolved_id`、`resolved_name`、locations
+  digest、canonical pose／goal 與 Capability 建立不可變 `target_binding`；離線比較會重新驗證
+  binding，不能只相信 CLI query 字串或後來被修改的 location 檔；
 - `--scene` 檔案 SHA 等於操作員提供的 active Stage root-layer SHA；
 - Site map digest／frame 等於 bridge 觀察到的 live map；
 - 有效 ROS domain；
@@ -120,6 +131,12 @@ T0 scenario start 與真正 `nav_send` 前的 T1 dispatch state 都要求：
 - fresh、schema-valid action status；
 - 沒有 active goal。
 - 使用 verified ground truth 時，另要求 fresh world-frame sample 與 calibration 後 map pose。
+
+每次 acceptance-owned `map → base_link` 查詢另寫入 append-only `pose_observations` journal，
+保存 purpose、sequence、精確 target／base frame、host monotonic request／completion、ROS clock、
+初始與 fresh TF stamp，以及 typed success／error。T0、T1 與 final-window summary 只是在 journal
+上的 projection；離線驗證會從 observation ID 重新建立結果，拒絕遺漏、重複、未引用或被協調
+竄改的 summary。Bridge fresh lookup 必須證明 `0 < initial_stamp_ns < stamp_ns`。
 
 T1 在 proxy `nav_send` 已被呼叫、但尚未 forward 到真正 bridge 時重新取樣。Runner 先等待
 `preflight_sample_s`（預設 1 秒），且只接受 `nav_send_invoked_host_monotonic_ns` 之後的新
@@ -145,7 +162,8 @@ Cleanup 逐步記錄 final halt、heartbeat、topic unwatch 與 bridge shutdown�
 
 ## Measurement contract 與 artifact lifecycle
 
-每個 schema-v1 artifact 都保存不可變 `measurement_contract`，包括取樣期間、freshness、
+每個 artifact 維持 schema envelope v1，並要求 `evidence_derivation_version=2`。它保存不可變
+`measurement_contract`，包括取樣期間、freshness、
 final ROS-time window、wall timeout、最低樣本數、速度、covariance 與 calibration residual
 門檻。R1／R2 的 measurement contract 不完全相同時，pairing gate 必須失敗。
 
@@ -164,12 +182,16 @@ cleanup_failed
 actual dispatch goal，才能進入 paired comparison。離線入口會重新驗證 source identity 與
 fingerprint、T0/T1 原始 freshness metadata、canonical-vs-actual goal、唯一 UUID、完整 lifecycle
 順序、terminal、final samples、由樣本推導的 median、ground-truth calibration 與 cleanup；不會
-只相信 artifact 內的 `PASS` 字串。比較器要求目前的 `evidence_derivation_version`，並以完整
-raw topic samples 重新建立 T0、T1、UUID、final AMCL／odom／ground-truth window；dispatch-end
-snapshot 必須是完整 samples 的 immutable prefix，summary、alias 或 median 被單獨修改都會被
-拒絕。舊式只有 derived summary、沒有 raw evidence 的 artifact 不具 comparison eligibility。
-Preparation、dispatch 或 cleanup 例外仍會
-原子保存可重新載入的 schema-v1 artifact；成功與失敗場次都不得刪除。Runtime fingerprint
+只相信 artifact 內的 `PASS` 字串。比較器要求目前的 evidence derivation version，並以完整
+raw topic samples 與 append-only pose journal 重新建立 T0、T1、UUID、final TF／AMCL／odom／
+ground-truth window；dispatch-end snapshot 必須是完整 samples 的 immutable prefix，summary、
+alias、median 或 observation reference 被單獨修改都會被拒絕。舊式只有 derived summary、沒有
+raw evidence／pose journal 的 artifact 不具 comparison eligibility。
+
+Preparation、dispatch、cleanup 例外或外部 task cancellation 仍會先完成 shielded cleanup，再
+原子保存可重新載入的 schema-v1 artifact，最後才把 cancellation 傳回 caller；cleanup 自身若
+被取消則記為 `cleanup_failed`，不得遺失 artifact 或保留 success。成功與失敗場次都不得
+刪除。Runtime fingerprint
 只用於確認兩場 runtime identity 是否等價，不是防惡意竄改的簽章或 artifact attestation。
 Process-tree identity 能偵測 tmux launch descendants 的替換，但不能單獨證明 ROS graph node 與
 特定 OS PID 的所有權；node uniqueness、runtime parameter snapshots 與 action-server identity

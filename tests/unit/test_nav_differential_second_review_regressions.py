@@ -427,6 +427,38 @@ def test_r2_rejects_more_than_one_navigation_attempt(
     _assert_insufficient(_comparison(differential_artifact_factory, right=right))
 
 
+@pytest.mark.parametrize(
+    ("mode", "tampered_status"),
+    [
+        ("R1_bridge_nav2", "endpoint_mismatch"),
+        ("R2_jenai_no_retry", "endpoint_mismatch"),
+    ],
+)
+def test_top_level_execution_status_must_match_mode_specific_evidence(
+    mode: str,
+    tampered_status: str,
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    artifact = _artifact(differential_artifact_factory, mode=mode)
+    artifact["execution_status"] = tampered_status
+
+    if mode == "R1_bridge_nav2":
+        _assert_insufficient(_comparison(differential_artifact_factory, left=artifact))
+    else:
+        _assert_insufficient(_comparison(differential_artifact_factory, right=artifact))
+
+
+def test_r2_execution_status_rejects_unknown_vocabulary_even_when_copies_agree(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    right = _artifact(differential_artifact_factory, mode="R2_jenai_no_retry")
+    right["execution_status"] = "completed_by_magic"
+    result = cast(dict[str, Any], right["jenai_result"])
+    result["execution_status"] = "completed_by_magic"
+
+    _assert_insufficient(_comparison(differential_artifact_factory, right=right))
+
+
 def test_verified_ground_truth_sample_must_match_calibration_source_frame(
     differential_artifact_factory: ArtifactFactory,
 ) -> None:

@@ -24,6 +24,7 @@ from jenai.acceptance.nav_differential_runner import (
     DifferentialMode,
     ResetPolicy,
     _apply_runtime_fingerprint,
+    _canonical_json_sha256,
     _cleanup_live_capture,
     _dispatch_timeline,
     _initial_state,
@@ -552,6 +553,17 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
             },
         ],
     }
+    middleware = {
+        "rmw_implementation_requested": "rmw_fastrtps_cpp",
+        "rmw_implementation_effective": "rmw_fastrtps_cpp",
+        "rmw_discovery_source": "bridge_python_probe",
+        "bridge_python_executable": "/usr/bin/python3.12",
+        "bridge_python_version": "3.12.3",
+        "dds_config_mode": "middleware_default",
+        "dds_bindings": {},
+        "dds_config_sha256": "7" * 64,
+    }
+    middleware["descriptor_sha256"] = _canonical_json_sha256(middleware)
     identity: dict[str, Any] = {
         "git_sha": git_sha,
         "git_dirty": False,
@@ -561,6 +573,9 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
         "expected_git_dirty": False,
         "reviewed_git_sha": git_sha,
         "jenai_import_path": f"{source_root}/src/jenai/__init__.py",
+        "python_executable": "/usr/bin/python3.12",
+        "python_version": "3.12.3",
+        "ros_middleware": middleware,
         "deployment_mode": deployment_mode,
         "config_sha256": "a" * 64,
         "site_map_sha256": "b" * 64,

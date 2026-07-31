@@ -41,8 +41,11 @@
 - 正常長任務由確定性 Workflow 負責順序、有限重試、取消、證據、完成判定及返航；
   不得在每個導航點重新詢問 LLM。
 - `workflows/` 不得依賴 ROS 2、Nav2、Isaac Sim、模型 provider、TUI、WebUI 或 CLI。
-- 所有移動入口必須通過共用 Navigation Gateway、批准／政策及結果驗證，不得在
-  TUI、WebUI、MCP 或 daemon 重寫第二套導航流程。
+- 所有產品移動入口必須通過共用 Navigation Gateway、批准／政策及結果驗證，不得在
+  TUI、WebUI、MCP、daemon、Runtime 或一般 script 重寫第二套導航流程。唯一例外是
+  [ADR 0007](docs/adr/0007-simulation-differential-control-arm.md) 明確限定的 Isaac Sim
+  `R1_bridge_nav2` 差分對照組；它只屬於 acceptance instrumentation，不是 Capability、
+  產品入口、實體載具路徑或成功證據。
 - Capability 與 Workflow 使用平台無關語言；載具差異只存在於 vehicle profile 與 adapter。
 - 安全預設、急停、批准、隔離、watchdog 與誠實回報行為只准收緊，不得倒退。
 - LLM 輸出一律視為不可信輸入，必須通過 schema、Capability Registry、參數、狀態、
@@ -107,6 +110,11 @@ uv run JenAI
    驗證 ROS 2、Nav2、Isaac Sim、終點、取消、停止及 evidence artifact。
 4. **完整產品驗收**：真 TUI＋自然語言＋批准＋Nav2＋Isaac Sim；用於 release acceptance，
    不以畫面看似完成代替 task receipt 與機器人狀態。
+
+Isaac navigation differential 是 ADR 0007 下的獨立 simulation-only 診斷實驗，不屬於上述
+一般 Live HIL 產品路徑。R1 可在完整 identity、明確 motion confirmation、watchdog、T0/T1、
+終點 evidence 與 cleanup gate 下直接觀測 bridge→Nav2；R2 仍必須通過 Navigation Gateway。
+這項例外不得被 Agent、TUI、WebUI、MCP、daemon、Runtime、NXDog 或實體載具重用。
 
 Live HIL 使用：
 

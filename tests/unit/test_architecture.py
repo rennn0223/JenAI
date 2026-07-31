@@ -18,6 +18,7 @@ from pathlib import Path
 
 from jenai.adapters.nxdog import NXDOG_READ_ONLY_ENDPOINTS
 from jenai.agent.specialists import build_supervisor_agent
+from jenai.capabilities import build_robot_capability_card
 from jenai.config.store import build_minimal_config
 from jenai.schemas.models import TaskOutcome
 
@@ -107,6 +108,25 @@ _NXDOG_VENDOR_COUPLING_LITERALS = frozenset(
     }
 )
 
+_DIRECT_NAV_SEND_SOURCE_ALLOWLIST = (
+    ("acceptance/nav_differential_runner.py", "_ObservedNavBridge.nav_send"),
+    ("acceptance/nav_differential_runner.py", "_run_r1"),
+    ("bridge/_protocol.py", "<module>"),
+    ("tools/nav_live.py", "_dispatch_navigation"),
+    ("twin/gate.py", "TwinGate._execute_twin_goal"),
+)
+_NAV_DIFFERENTIAL_FORBIDDEN_IMPORT_DIRS = (
+    "agent",
+    "cli",
+    "daemon",
+    "mcp_server",
+    "runtime",
+    "tools",
+    "tui",
+    "webui",
+    "workflows",
+)
+
 # `/stop` is deliberately not a vendor literal here: it is JenAI's approved,
 # provider-free high-level safety command in the TUI, WebUI, and CLI. The known
 # NXDog HTTP adapter remains read-only, excludes `/stop`, and is Doctor-scoped
@@ -149,6 +169,40 @@ def _string_literals_of(path: Path) -> list[tuple[int, str]]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     ]
+
+
+class _ScopedAttributeCallVisitor(ast.NodeVisitor):
+    """Collect one attribute call together with its lexical class/function scope."""
+
+    def __init__(self, attribute: str) -> None:
+        self._attribute = attribute
+        self._scope: list[str] = []
+        self.calls: list[tuple[str, int]] = []
+
+    def _visit_scope(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._scope.append(node.name)
+        self.generic_visit(node)
+        self._scope.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._visit_scope(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_scope(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_scope(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Attribute) and node.func.attr == self._attribute:
+            self.calls.append((".".join(self._scope) or "<module>", node.lineno))
+        self.generic_visit(node)
+
+
+def _scoped_attribute_calls(path: Path, attribute: str) -> list[tuple[str, int]]:
+    visitor = _ScopedAttributeCallVisitor(attribute)
+    visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+    return visitor.calls
 
 
 def _is_nxdog_vendor_coupling_literal(value: str) -> bool:
@@ -363,6 +417,91 @@ def test_navigation_surfaces_cannot_bypass_the_gateway() -> None:
             if isinstance(node, ast.Name) and node.id == "navigate_with_fallback":
                 violations.append(f"{rel}:{node.lineno} bypasses NavigationGateway")
     assert not violations, "Navigation must go through NavigationGateway:\n" + "\n".join(violations)
+
+
+def test_direct_nav_send_is_confined_to_reviewed_low_level_seams() -> None:
+    """ADR 0007 permits one simulation control arm, not a second product path."""
+
+    actual: list[tuple[str, str]] = []
+    for path in SRC.rglob("*.py"):
+        relative = path.relative_to(SRC).as_posix()
+        actual.extend(
+            (relative, scope) for scope, _lineno in _scoped_attribute_calls(path, "nav_send")
+        )
+
+    assert sorted(actual) == sorted(_DIRECT_NAV_SEND_SOURCE_ALLOWLIST), (
+        "Direct bridge nav_send calls changed. Product motion must use NavigationGateway; "
+        "only the low-level Nav2 adapter, isolated Twin, and ADR 0007 differential "
+        "instrumentation are allowed:\n"
+        + "\n".join(f"{path}:{scope}" for path, scope in sorted(actual))
+    )
+
+
+def test_product_layers_cannot_import_the_differential_harness() -> None:
+    """The simulation experiment is never an Agent, UI, Runtime, or Workflow seam."""
+
+    forbidden_prefix = "jenai.acceptance.nav_differential_runner"
+    violations: list[str] = []
+    for directory in _NAV_DIFFERENTIAL_FORBIDDEN_IMPORT_DIRS:
+        root = SRC / directory
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.py"):
+            relative = path.relative_to(SRC).as_posix()
+            violations.extend(
+                f"{relative} imports {name}"
+                for name in _imports_of(path)
+                if name.startswith(forbidden_prefix)
+            )
+    assert not violations, (
+        "ADR 0007 is an acceptance-only simulation exception; product layers cannot import it:\n"
+        + "\n".join(violations)
+    )
+
+
+def test_only_the_differential_cli_script_may_import_the_harness() -> None:
+    script_root = ROOT / "scripts"
+    importers = {
+        path.relative_to(ROOT).as_posix()
+        for path in script_root.glob("*.py")
+        if any(
+            name.startswith("jenai.acceptance.nav_differential_runner")
+            for name in _imports_of(path)
+        )
+    }
+
+    assert importers == {"scripts/isaac_nav_differential.py"}
+
+
+def test_scripts_cannot_expand_direct_nav_send_beyond_frozen_e2_debt() -> None:
+    """ADR 0007 does not legalise direct Nav2 dispatch from general scripts."""
+
+    actual: list[tuple[str, str]] = []
+    for path in (ROOT / "scripts").glob("*.py"):
+        relative = path.relative_to(ROOT).as_posix()
+        actual.extend(
+            (relative, scope) for scope, _lineno in _scoped_attribute_calls(path, "nav_send")
+        )
+
+    # This pre-existing research reset is frozen debt, outside ADR 0007. Any
+    # change or new script call must be reviewed and migrated separately.
+    assert actual == [("scripts/e2_ablation.py", "_go_home_once")]
+
+
+def test_differential_control_is_not_a_registered_robot_capability() -> None:
+    config = build_minimal_config(
+        provider_name="architecture-differential",
+        provider="openai",
+        default_model="model",
+        api_key_env="",
+    )
+    card = build_robot_capability_card(config)
+    capability_ids = {capability.capability_id for capability in card.capabilities}
+    interface_names = {capability.interface_name for capability in card.capabilities}
+
+    assert "R1_bridge_nav2" not in capability_ids
+    assert "isaac_nav_differential" not in capability_ids
+    assert all("differential" not in interface_name for interface_name in interface_names)
 
 
 # Functions over this teaching-code ceiling are prohibited. Keeping this map

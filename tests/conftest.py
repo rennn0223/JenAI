@@ -1,10 +1,37 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
 
 import pytest
 
 from jenai.tools.registry import TOOL_RISK_REGISTRY
+
+
+def _canonical_fixture_sha256(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _differential_middleware_identity() -> dict[str, object]:
+    descriptor: dict[str, object] = {
+        "rmw_implementation_requested": None,
+        "rmw_implementation_effective": "rmw_fastrtps_cpp",
+        "rmw_discovery_source": "bridge_python_probe",
+        "bridge_python_executable": "/usr/bin/python3.12",
+        "bridge_python_version": "3.12.3",
+        "dds_config_mode": "middleware_default",
+        "dds_bindings": {},
+        "dds_config_sha256": _canonical_fixture_sha256({}),
+    }
+    return {**descriptor, "descriptor_sha256": _canonical_fixture_sha256(descriptor)}
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +84,9 @@ def _differential_runtime_identity(runtime: str) -> dict[str, object]:
         "expected_git_dirty": False,
         "reviewed_git_sha": git_sha,
         "jenai_import_path": f"{source_root}/src/jenai/__init__.py",
+        "python_executable": "/usr/bin/python3.12",
+        "python_version": "3.12.3",
+        "ros_middleware": _differential_middleware_identity(),
         "deployment_mode": "simulation",
         "config_sha256": "a" * 64,
         "site_id": runtime,
@@ -68,6 +98,7 @@ def _differential_runtime_identity(runtime: str) -> dict[str, object]:
         "live_scene_sha256": "e" * 64,
         "live_map_sha256": "b" * 64,
         "site_map_frame": "map",
+        "robot_base_frame": "base_link",
         "live_map_frame": "map",
         "bridge_domain_id": "7",
         "controller_lifecycle": "active [3]",
@@ -104,6 +135,7 @@ def _differential_state(
     clock_start_ns: int,
     clock_end_ns: int,
     source_stamp_ns: int,
+    map_pose_observation_id: str,
 ) -> dict[str, object]:
     source_host_ns = evaluated_host_ns - 5
     return {
@@ -112,6 +144,7 @@ def _differential_state(
         "simulation_epoch": epoch,
         "cutoff_host_monotonic_ns": cutoff_host_ns,
         "evaluated_host_monotonic_ns": evaluated_host_ns,
+        "map_pose_observation_id": map_pose_observation_id,
         "map_to_base": {"x": 0.0, "y": 0.0, "yaw": 0.0},
         "amcl_pose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
         "odom_pose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
@@ -280,6 +313,46 @@ def _differential_stream_stamps() -> tuple[int, int, int]:
     return (10_000_000_000, 11_000_000_000, 12_000_000_000)
 
 
+def _pose_lookup_observation(
+    *,
+    observation_id: str,
+    sequence: int,
+    purpose: str,
+    host_ns: int,
+    clock_ns: int,
+    x: float,
+    y: float,
+) -> dict[str, object]:
+    return {
+        "observation_id": observation_id,
+        "sequence": sequence,
+        "purpose": purpose,
+        "request_host_monotonic_ns": host_ns,
+        "completed_host_monotonic_ns": host_ns,
+        "request_clock_ns": clock_ns - 2,
+        "completed_clock_ns": clock_ns,
+        "fresh_requested": True,
+        "frame_id": "map",
+        "base_frame": "base_link",
+        "timeout_s": 3.0 if purpose != "final_window" else 0.5,
+        "status": "SUCCESS",
+        "result": {
+            "x": x,
+            "y": y,
+            "yaw": 0.0,
+            "frame_id": "map",
+            "base_frame": "base_link",
+            "source": "tf2",
+            "initial_stamp_ns": clock_ns - 2,
+            "stamp_ns": clock_ns - 1,
+            "fresh_after_request": True,
+        },
+        "raw_result": None,
+        "error_type": None,
+        "error_detail": None,
+    }
+
+
 def _differential_amcl_samples(final_x: float) -> list[dict[str, object]]:
     return [
         {
@@ -344,6 +417,31 @@ def differential_artifact_factory():
             "simulation_epoch": epoch,
             "stamp_fresh": None,
         }
+        target_record = {
+            "capability_id": "navigate",
+            "frame_id": "map",
+            "locations_sha256": "c" * 64,
+            "pose": {"x": goal_x, "y": 2.0, "yaw": 0.0},
+            "resolved_name": "Dock",
+        }
+        target_stable_binding = {
+            "canonical_goal_sha256": _canonical_fixture_sha256(goal),
+            "canonical_record_sha256": _canonical_fixture_sha256(target_record),
+            "capability_id": "navigate",
+            "locations_sha256": "c" * 64,
+        }
+        target_binding = {
+            "requested_query": "Dock",
+            "resolved_name": "Dock",
+            "resolved_id": "loc-dock",
+            "frame_id": "map",
+            "pose": {"x": goal_x, "y": 2.0, "yaw": 0.0},
+            "capability_id": "navigate",
+            "locations_sha256": "c" * 64,
+            "canonical_record_sha256": target_stable_binding["canonical_record_sha256"],
+            "canonical_goal_sha256": target_stable_binding["canonical_goal_sha256"],
+            "binding_sha256": _canonical_fixture_sha256(target_stable_binding),
+        }
         map_clock_stamps = [10_000_000_000 + (index * 2_000_000_000) // 9 for index in range(10)]
         t0_state = _differential_state(
             epoch,
@@ -353,6 +451,7 @@ def differential_artifact_factory():
             clock_start_ns=1_000_000_000,
             clock_end_ns=2_000_000_000,
             source_stamp_ns=1_000_000_000,
+            map_pose_observation_id="pose-t0",
         )
         t1_state = _differential_state(
             epoch,
@@ -362,12 +461,14 @@ def differential_artifact_factory():
             clock_start_ns=3_000_000_000,
             clock_end_ns=4_000_000_000,
             source_stamp_ns=3_000_000_000,
+            map_pose_observation_id="pose-t1",
         )
         raw_dispatch, raw_complete = _raw_topic_samples(final_x)
         amcl_samples = _differential_amcl_samples(final_x)
         odom_samples = _differential_odom_samples(final_x)
         map_pose_attempts = [
             {
+                "pose_observation_id": f"pose-final-{index}",
                 "requested_host_monotonic_ns": 170 + (index * 60) // 9,
                 "observed_host_monotonic_ns": 170 + (index * 60) // 9,
                 "capture_clock_ns": stamp,
@@ -382,9 +483,41 @@ def differential_artifact_factory():
             }
             for index, stamp in enumerate(map_clock_stamps)
         ]
+        pose_observations = [
+            _pose_lookup_observation(
+                observation_id="pose-t0",
+                sequence=0,
+                purpose="t0_start",
+                host_ns=35,
+                clock_ns=1_800_000_000,
+                x=0.0,
+                y=0.0,
+            ),
+            _pose_lookup_observation(
+                observation_id="pose-t1",
+                sequence=1,
+                purpose="t1_pre_dispatch",
+                host_ns=135,
+                clock_ns=3_800_000_000,
+                x=0.0,
+                y=0.0,
+            ),
+            *[
+                _pose_lookup_observation(
+                    observation_id=f"pose-final-{index}",
+                    sequence=index + 2,
+                    purpose="final_window",
+                    host_ns=170 + (index * 60) // 9,
+                    clock_ns=stamp,
+                    x=final_x,
+                    y=2.0,
+                )
+                for index, stamp in enumerate(map_clock_stamps)
+            ],
+        ]
         artifact: dict[str, object] = {
             "schema_version": 1,
-            "evidence_derivation_version": 1,
+            "evidence_derivation_version": 2,
             "run_id": f"run-{mode}",
             "pair_id": pair_id,
             "mode": mode,
@@ -409,6 +542,7 @@ def differential_artifact_factory():
             "started_at": "2026-07-31T00:00:00+00:00",
             "finished_at": "2026-07-31T00:01:00+00:00",
             "runtime_identity": _differential_runtime_identity(runtime),
+            "pose_observations": pose_observations,
             "topic_stream_contract": {
                 "clock": {"topic": "/clock", "message_type": "rosgraph_msgs/msg/Clock"},
                 "amcl": {
@@ -425,6 +559,7 @@ def differential_artifact_factory():
             "overall": "captured",
             "t0_scenario_start": t0_state,
             "canonical_goal": goal,
+            "target_binding": target_binding,
             "t1_goal_dispatch": {
                 "status": "PASS",
                 "failures": [],

@@ -293,6 +293,7 @@ def test_cleanup_failure_downgrades_blocked_capture_and_persists(
             {"goal": {}},
             goal,
             {"deployment_mode": "simulation"},
+            None,
         ),
     )
     monkeypatch.setattr(runner, "RosBridgeClient", lambda **_: Bridge())

@@ -322,7 +322,9 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
             "y": float(translation.y),
             "yaw": _yaw_from_quaternion(rotation),
             "frame_id": frame_id,
+            "base_frame": base_frame,
             "source": f"/tf({frame_id}->{base_frame})",
+            "initial_stamp_ns": initial_stamp_ns,
             "stamp_ns": stamp_ns,
             "fresh_after_request": True,
         }
