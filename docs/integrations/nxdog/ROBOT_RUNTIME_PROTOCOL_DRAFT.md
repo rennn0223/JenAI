@@ -559,7 +559,9 @@ Authority 只使用一個 Runtime-owned `CapabilityExecutor` role：
 
 ```text
 CapabilityExecutor
-  execute(TypedCapabilityStep, ExecutionContext, EventSink)
+  snapshot(SnapshotRequest, ObservationContext) -> ObservationSnapshot
+  prepare(TypedCapabilityStep, ExecutionContext) -> PreparedCapabilityStep
+  execute(PreparedCapabilityStep, ExecutionContext, EventSink)
   stop(StopContext, EventSink)
 
   dependencies:
@@ -568,14 +570,20 @@ CapabilityExecutor
     ObservationPort     # health／pose／velocity／map／battery Evidence
 ```
 
+`snapshot` 是經 `ObservationPort` 的唯讀 fresh-state projection；`prepare` 只做 adapter
+readiness、schema 與 correlation 準備，不執行 effect，也不處理 policy 或 Approval。它回傳的
+`PreparedCapabilityStep` 必須綁定 request digest 與 `ExecutionContext`，且 `execute` 對任何
+generation、safety epoch、fencing token 或 digest 不一致 fail closed。
+
 `NavigationGateway` 維持既有 navigation-only responsibility，不擴張成 platform God
 object。`PlatformCommandPort` 只接受 allowlisted platform-neutral commands，不接受 raw
 vendor path／sport string。`ObservationPort` 是 read-only、source-attributed interface。
 Concrete Isaac／NXDog implementations在同一 deployment unit內滿足所需 ports；lifecycle
 `close()` 留在 composition root，不成為 Capability Interface。
 
-Capability Executor與ports只回TaskEvent／Evidence；Site／policy admission、Approval、
-Workflow sequencing、Completion Contract與Task Outcome只存在於Authority。
+Capability Executor與ports只回snapshot／prepared step／TaskEvent／Evidence；
+Site／policy admission、Approval、Workflow sequencing、Completion Contract與Task Outcome只存在於
+Authority。
 
 ## Startup reconciliation and authority continuity
 

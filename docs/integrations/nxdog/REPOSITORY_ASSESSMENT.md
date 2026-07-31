@@ -2,7 +2,7 @@
 
 > 狀態：Repository assessment／architecture proposal；不是 motion support 宣告
 > Nexuni source：`nexuni/nxdog-developer-kit@9cc558172993b6ed9ee239f2e4e8f5e971740d24`
-> JenAI baseline：`main@21b1579f7cabf99f6b8c9cf95f16c48e2973ed38`
+> JenAI baseline：`main@af0e7de71bb99ad5908027a07115356fb11e41c8`
 > 評估日期：2026-07-31
 
 ## 結論
@@ -417,7 +417,7 @@ fallback到未強化的Flask routes。
 
 | Gate | Scope | Exit criteria |
 |---|---|---|
-| 0. Planned release baseline | 以獨立 release-only PR 從目前 reviewed main 準備下一個 release candidate；assessment PR 保持 Draft。 | 不夾帶 Runtime 或 NXDog motion；版本號、文件、build、wheel 與 GitHub Release gates 通過後才可宣稱 `v2.6.0` 已驗證／發布。 |
+| 0. Published release baseline（completed） | `v2.6.0` 已由 release-only PR 建立，immutable tag 指向 `a648576efa35b7f0ed8a376d34ef88ab8c1a5b18`；Runtime 與 NXDog motion 均未納入。 | CI、Supply Chain、build、wheel lifecycle、七項 Release assets、checksum 與 attestations 已通過；後續工作以該 stable release 為比較基線。 |
 | 1. Vendor／legal contract | 取得授權、firmware／ROS compatibility、names/QoS、map/frame/time、cancel/stop、watchdog、charging/posture semantics。 | [Vendor Gaps](VENDOR_GAPS.md) 的 motion blockers 有書面答案。 |
 | 2. Runtime parity | 以 in-memory ports 與 co-located Isaac Navigation Gateway 驗證 auth、idempotency、lease、epoch、approval binding、event replay、disconnect、startup reconciliation 與 missing-Evidence outcomes。 | 現有 Isaac approval、cancel、Evidence 與 Task Outcome 無倒退。 |
 | 3. NXDog read-only deployment | 在 robot-side companion co-locate Authority與Adapter，將現行 observation snapshot 投影到 common Runtime並保留 stale／timestamp／map limitations。 | 不新增 motion Capability；WebUI 只顯示可證明狀態。 |
@@ -432,16 +432,16 @@ fallback到未強化的Flask routes。
 
 ## Proposed follow-up PR sequence
 
-1. 獨立的 planned next-release PR（目前提議版本為 `v2.6.0`），先完成所有
-   release-truth gates 才發布。
-2. Robot Runtime v0 schema、in-memory executor ports、durable state/event/reconciliation tests；
+0. `v2.6.0` stable release baseline 與 published truth 已完成；下一個 release 版本在功能
+   scope、相容性與驗證完成前不預先指定。
+1. Robot Runtime v0 schema、in-memory executor ports、durable state/event/reconciliation tests；
    不接NXDog motion。
-3. DGX上的co-located Isaac Navigation Gateway parity slice。
-4. robot-side companion上的co-located NXDog read-only projection。
-5. Indicator write／read-back contract（若無 authoritative read-back，維持 `partial`）。
-6. Software stop contract。
-7. Short physical navigation。
-8. Charging／posture只在 vendor Completion Contract 完整後另開 PR。
+2. DGX上的co-located Isaac Navigation Gateway parity slice。
+3. robot-side companion上的co-located NXDog read-only projection。
+4. Indicator write／read-back contract（若無 authoritative read-back，維持 `partial`）。
+5. Software stop contract。
+6. Short physical navigation。
+7. Charging／posture只在 vendor Completion Contract 完整後另開 PR。
 
 每一個 effectful slice 都需要自己的 ADR amendment、security review、targeted live
 acceptance 與 rollback plan。這份 assessment 不授權其中任何一項實作。

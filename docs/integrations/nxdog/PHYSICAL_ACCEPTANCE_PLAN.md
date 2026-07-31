@@ -116,6 +116,7 @@ operator-observation.json
 |---|---|
 | `succeeded` | 該階段的 Completion Contract 已由指定 evidence 驗證 |
 | `arrived_unverified` | approach pose有證據，但最終物理效果不可驗證 |
+| `endpoint_mismatch` | execution 已終止，但 fresh endpoint Evidence 超出該 Capability 的必要 tolerance |
 | `partial` | 部分必要步驟有證據，其餘未完成 |
 | `blocked` | prerequisite、policy、approval或vendor contract 阻止執行 |
 | `unavailable` | required interface／feedback／identity 不可用 |
@@ -308,7 +309,9 @@ start gate
 
 - canonical request、approval與vendor goal等價；
 - goal acceptance、UUID、feedback與terminal result可關聯；
-- final pose使用vendor確認的frame/body point/tolerance；
+- final pose使用vendor確認的frame/body point/tolerance；terminal result成功但fresh endpoint
+  Evidence超出該tolerance時，Task Outcome必須是`endpoint_mismatch`，不得宣稱
+  `succeeded`；
 - fresh velocity window確認robot stationary；
 - Task Outcome由evidence判定，不由action success單獨決定；
 - cleanup後沒有active goal、lease或舊approval。

@@ -19,6 +19,7 @@ from pathlib import Path
 from jenai.adapters.nxdog import NXDOG_READ_ONLY_ENDPOINTS
 from jenai.agent.specialists import build_supervisor_agent
 from jenai.config.store import build_minimal_config
+from jenai.schemas.models import TaskOutcome
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "jenai"
 ROOT = SRC.parents[1]
@@ -112,14 +113,32 @@ _NXDOG_VENDOR_COUPLING_LITERALS = frozenset(
 # by `test_nxdog_adapter_stays_observation_only_and_doctor_scoped`.
 
 
-def _imports_of(path: Path) -> list[str]:
+def _imports_of(path: Path, *, package_root: Path = SRC) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            found.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            module_parts = node.module.split(".") if node.module else []
+            if node.level:
+                relative = path.resolve().relative_to(package_root.resolve())
+                package_parts = [package_root.name, *relative.parent.parts]
+                parents_to_drop = node.level - 1
+                if parents_to_drop >= len(package_parts):
+                    raise AssertionError(f"invalid relative import in {path}: level={node.level}")
+                if parents_to_drop:
+                    package_parts = package_parts[:-parents_to_drop]
+                import_base = ".".join((*package_parts, *module_parts))
+            else:
+                import_base = node.module or ""
+            if import_base:
+                found.append(import_base)
+            found.extend(
+                f"{import_base}.{alias.name}" if import_base else alias.name
+                for alias in node.names
+                if alias.name != "*"
+            )
     return found
 
 
@@ -157,6 +176,26 @@ def test_reflex_layer_never_imports_the_llm_stack() -> None:
         "Reflex/safety layer must survive a dead LLM — remove these imports:\n"
         + "\n".join(violations)
     )
+
+
+def test_import_scanner_keeps_qualified_from_import_names(tmp_path: Path) -> None:
+    fixture = tmp_path / "qualified_import.py"
+    fixture.write_text("from jenai.adapters import nxdog\n", encoding="utf-8")
+
+    assert "jenai.adapters.nxdog" in _imports_of(fixture)
+
+
+def test_import_scanner_resolves_relative_import_names(tmp_path: Path) -> None:
+    package_root = tmp_path / "src" / "jenai"
+    parent_fixture = package_root / "tui" / "parent_import.py"
+    parent_fixture.parent.mkdir(parents=True)
+    parent_fixture.write_text("from ..adapters import nxdog\n", encoding="utf-8")
+    local_fixture = package_root / "adapters" / "local_import.py"
+    local_fixture.parent.mkdir(parents=True)
+    local_fixture.write_text("from . import nxdog\n", encoding="utf-8")
+
+    assert "jenai.adapters.nxdog" in _imports_of(parent_fixture, package_root=package_root)
+    assert "jenai.adapters.nxdog" in _imports_of(local_fixture, package_root=package_root)
 
 
 def test_nxdog_adapter_stays_observation_only_and_doctor_scoped() -> None:
@@ -221,6 +260,38 @@ def test_command_layers_cannot_embed_nxdog_vendor_interfaces() -> None:
         "and NavigationGateway; expose typed platform-neutral "
         "Capabilities instead:\n" + "\n".join(violations)
     )
+
+
+def test_nxdog_runtime_docs_preserve_the_internal_adapter_seam() -> None:
+    protocol = (
+        ROOT / "docs" / "integrations" / "nxdog" / "ROBOT_RUNTIME_PROTOCOL_DRAFT.md"
+    ).read_text(encoding="utf-8")
+    internal_section = protocol.split("## Capability Executor and internal ports", maxsplit=1)[
+        1
+    ].split("## Startup reconciliation", maxsplit=1)[0]
+
+    for operation in ("snapshot(", "prepare(", "execute(", "stop("):
+        assert operation in internal_section
+
+
+def test_nxdog_physical_plan_uses_every_authoritative_task_outcome() -> None:
+    plan = (ROOT / "docs" / "integrations" / "nxdog" / "PHYSICAL_ACCEPTANCE_PLAN.md").read_text(
+        encoding="utf-8"
+    )
+    missing = sorted(outcome.value for outcome in TaskOutcome if f"`{outcome.value}`" not in plan)
+
+    assert not missing, f"NXDog physical plan omits TaskOutcome values: {missing}"
+
+
+def test_nxdog_assessment_does_not_preassign_the_next_release_version() -> None:
+    assessment = (ROOT / "docs" / "integrations" / "nxdog" / "REPOSITORY_ASSESSMENT.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Published release baseline（completed）" in assessment
+    assert "Planned release baseline" not in assessment
+    assert "目前提議版本" not in assessment
+    assert "下一個 release 版本在功能" in assessment
 
 
 def test_workflow_domain_is_independent_of_llm_ros_and_user_interfaces() -> None:
