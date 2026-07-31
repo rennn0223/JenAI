@@ -211,7 +211,7 @@ identity、halt 與 shutdown 證據會另存並由離線 validator 重驗；任�
 
 ## Measurement contract 與 artifact lifecycle
 
-每個 artifact 維持 schema envelope v1，並要求 `evidence_derivation_version=2`。它保存不可變
+每個 artifact 維持 schema envelope v1，並要求 `evidence_derivation_version=3`。它保存不可變
 `measurement_contract`，包括取樣期間、freshness、共同 terminal-relative final-window delay、
 final ROS-time window、wall timeout、最低樣本數、速度、covariance 與 calibration residual
 門檻。R1／R2 的 measurement contract 不完全相同時，pairing gate 必須失敗。
@@ -236,6 +236,25 @@ raw topic samples 與 append-only pose journal 重新建立 T0、T1、UUID、fin
 ground-truth window；dispatch-end snapshot 必須是完整 samples 的 immutable prefix，summary、
 alias、median 或 observation reference 被單獨修改都會被拒絕。舊式只有 derived summary、沒有
 raw evidence／pose journal 的 artifact 不具 comparison eligibility。
+
+Derivation v3 另外綁定啟動證據的 ROS QoS 與 freshness 契約：`/clock`、odom 與可選
+ground truth 使用 sensor-data QoS；`/amcl_pose` 與 NavigateToPose status 使用 reliable、
+transient-local QoS。T0 與 T1 取樣前會呼叫 `/request_nomotion_update`，並要求服務回覆完成，
+以取得靜止機器人的 fresh AMCL Evidence；這不會送導航 goal、速度命令或修改 Nav2／AMCL
+參數。服務不存在、逾時或回覆失敗時 start gate 會 fail closed。
+
+剛重新啟動且從未接受 goal 的 Nav2 action server 可能尚未發布 status。只有在正確的
+transient-local watch 已建立、完整 `preflight_sample_s` window 已經過，而且從 watch 建立至該次
+evaluation boundary 都沒有收到 status 時，artifact 才能保存 `no_status_observed` 並將它解讀為
+「沒有觀察到既有 goal」；window 前已觀察到的 retained／stale status 也不能被忽略。任何已觀察
+到但 malformed／stale 的 status 仍會拒絕。QoS profile、raw stream、完整 observation duration 與
+該 marker 都會由離線 validator 重新綁定；dispatch 後合法出現的本次 goal status 不會反過來污染
+T0／T1，但不能單獨修改 summary 取得 PASS。
+
+Isaac callback 排程可能使 odom／AMCL header stamp 暫時領先最近一筆 `/clock`。Harness 只接受
+不超過既定 `sample_interval_s` 的 future lead，並同時要求 host-time freshness；更大的超前值
+仍視為 stale。Live gate 與離線 artifact validator 使用相同的正負 freshness 範圍。這項門檻已
+屬於不可變 measurement contract，R1／R2 不一致時不得配對。
 
 Preparation、dispatch、cleanup 例外或外部 task cancellation 仍會先完成 shielded cleanup，再
 原子保存可重新載入的 schema-v1 artifact，最後才把 cancellation 傳回 caller；cleanup 自身若

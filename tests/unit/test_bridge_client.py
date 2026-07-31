@@ -583,6 +583,80 @@ def test_bridge_watch_rejects_invalid_arguments_before_dispatch(
     asyncio.run(run())
 
 
+def test_bridge_watch_rejects_unknown_qos_before_dispatch(monkeypatch) -> None:
+    async def run() -> None:
+        client = RosBridgeClient()
+        requested = False
+
+        async def request(*_args, **_kwargs):
+            nonlocal requested
+            requested = True
+
+        monkeypatch.setattr(client, "request", request)
+        with pytest.raises(BridgeError, match="invalid watch request: qos_profile"):
+            await client.watch(
+                "/amcl_pose",
+                "geometry_msgs/msg/PoseWithCovarianceStamped",
+                lambda _data: None,
+                qos_profile="arbitrary",
+            )
+        assert not requested
+
+    asyncio.run(run())
+
+
+def test_bridge_watch_dispatches_allowlisted_qos(monkeypatch) -> None:
+    async def run() -> None:
+        client = RosBridgeClient()
+        requests: list[tuple[str, dict | None]] = []
+
+        async def request(op, *_args, params=None, **_kwargs):
+            requests.append((op, params))
+            return {"watch_id": 1}
+
+        monkeypatch.setattr(client, "request", request)
+        watch_id = await client.watch(
+            "/amcl_pose",
+            "geometry_msgs/msg/PoseWithCovarianceStamped",
+            lambda _data: None,
+            throttle=0.2,
+            qos_profile="transient_local",
+        )
+
+        assert watch_id == 1
+        assert requests == [
+            (
+                "watch",
+                {
+                    "watch_id": 1,
+                    "topic": "/amcl_pose",
+                    "msg_type": "geometry_msgs/msg/PoseWithCovarianceStamped",
+                    "throttle": 0.2,
+                    "qos_profile": "transient_local",
+                },
+            )
+        ]
+
+    asyncio.run(run())
+
+
+def test_bridge_request_nomotion_update_returns_typed_acknowledgement(monkeypatch) -> None:
+    async def run() -> None:
+        client = RosBridgeClient()
+        requests: list[str] = []
+
+        async def request(op, *_args, **_kwargs):
+            requests.append(op)
+            return {"acknowledged": True}
+
+        monkeypatch.setattr(client, "request", request)
+
+        assert await client.request_nomotion_update() is True
+        assert requests == ["request_nomotion_update"]
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

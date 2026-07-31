@@ -95,6 +95,15 @@ def _text(
     return value
 
 
+def _watch_qos_profile(req: WirePayload) -> str:
+    value = _text(req, "qos_profile", "sensor_data")
+    if value not in {"sensor_data", "transient_local"}:
+        raise ValueError(
+            "invalid bridge request: qos_profile must be sensor_data or transient_local"
+        )
+    return value
+
+
 def _avoidance(req: WirePayload) -> WirePayload | None:
     raw = req.get("avoidance")
     if raw is None:
@@ -172,6 +181,8 @@ class BridgeNodeProtocol(Protocol):
 
     def nav_cancel(self) -> WirePayload: ...
 
+    def request_nomotion_update(self) -> WirePayload: ...
+
     def halt(self, cmd_vel_topic: str, stamped: bool) -> WirePayload: ...
 
     def configure_pose_jump_guard(
@@ -186,7 +197,9 @@ class BridgeNodeProtocol(Protocol):
         self, depth_topic: str, path: str, frames: int, timeout: float
     ) -> WirePayload: ...
 
-    def watch(self, watch_id: int, topic: str, msg_type: str, throttle: float) -> WirePayload: ...
+    def watch(
+        self, watch_id: int, topic: str, msg_type: str, throttle: float, qos_profile: str
+    ) -> WirePayload: ...
 
     def unwatch(self, watch_id: int) -> WirePayload: ...
 
@@ -265,6 +278,7 @@ _OPERATIONS: dict[str, OperationHandler] = {
     ),
     "drive_to_pose": _drive_to_pose,
     "nav_cancel": lambda node, _req, _watchdog: node.nav_cancel(),
+    "request_nomotion_update": lambda node, _req, _watchdog: node.request_nomotion_update(),
     "halt": lambda node, req, _watchdog: node.halt(
         _text(req, "cmd_vel_topic", "/cmd_vel"), _boolean(req, "stamped", False)
     ),
@@ -283,6 +297,7 @@ _OPERATIONS: dict[str, OperationHandler] = {
         _text(req, "topic"),
         _text(req, "msg_type"),
         _number(req, "throttle", 1.0, nonnegative=True),
+        _watch_qos_profile(req),
     ),
     "unwatch": lambda node, req, _watchdog: node.unwatch(_integer(req, "watch_id", minimum=1)),
 }

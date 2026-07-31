@@ -10,8 +10,8 @@ Speaks newline-delimited JSON over stdin/stdout:
 This file must stay importable by a bare system python: standard library +
 ROS packages only — never import jenai (the venv is not visible here).
 
-Ops: ping, pose, map_cell, nav_plan, nav_send, drive_to_pose, nav_cancel, halt,
-capture_frame, watch, unwatch, shutdown.
+Ops: ping, pose, map_cell, nav_plan, nav_send, drive_to_pose, nav_cancel,
+request_nomotion_update, halt, capture_frame, watch, unwatch, shutdown.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ else:
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSPresetProfiles
+from rclpy.qos import DurabilityPolicy, QoSPresetProfiles, QoSProfile, ReliabilityPolicy
 from rclpy.utilities import get_rmw_implementation_identifier
 
 _STDOUT_LOCK = threading.Lock()
@@ -1129,6 +1129,27 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
             "active_goal_canceled": active_goal_acknowledged,
         }
 
+    def request_nomotion_update(self, timeout: float = 2.0) -> WirePayload:
+        """Request one bounded AMCL update while the robot remains stationary."""
+        from std_srvs.srv import Empty
+
+        client = self.create_client(Empty, "/request_nomotion_update")
+        try:
+            if not client.wait_for_service(timeout_sec=timeout):
+                return {"acknowledged": False}
+            future = client.call_async(Empty.Request())
+            completed = threading.Event()
+            future.add_done_callback(lambda _future: completed.set())
+            if not completed.wait(timeout):
+                return {"acknowledged": False}
+            try:
+                future.result()
+            except Exception:
+                return {"acknowledged": False}
+            return {"acknowledged": True}
+        finally:
+            self.destroy_client(client)
+
     @staticmethod
     def _cancel_goal_handle(handle: Any, timeout: float = 2.0) -> bool:
         """Cancel one owned goal and require a positive CancelGoal response."""
@@ -1345,7 +1366,14 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
 
     # -- generic topic watch (daemon rules) -----------------------------------
 
-    def watch(self, watch_id: int, topic: str, msg_type: str, throttle: float = 1.0) -> WirePayload:
+    def watch(
+        self,
+        watch_id: int,
+        topic: str,
+        msg_type: str,
+        throttle: float = 1.0,
+        qos_profile: str = "sensor_data",
+    ) -> WirePayload:
         """Stream messages from a topic as events, at most one per `throttle` seconds."""
         from rosidl_runtime_py.convert import message_to_ordereddict
         from rosidl_runtime_py.utilities import get_message
@@ -1367,7 +1395,17 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
                 }
             )
 
-        sub = self.create_subscription(cls, topic, _cb, QoSPresetProfiles.SENSOR_DATA.value)
+        if qos_profile == "sensor_data":
+            qos = QoSPresetProfiles.SENSOR_DATA.value
+        elif qos_profile == "transient_local":
+            qos = QoSProfile(
+                depth=10,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+        else:
+            raise ValueError(f"unsupported watch qos_profile: {qos_profile}")
+        sub = self.create_subscription(cls, topic, _cb, qos)
         self._watches[watch_id] = sub
         return {"watch_id": watch_id}
 

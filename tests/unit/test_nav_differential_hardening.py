@@ -35,6 +35,7 @@ from jenai.acceptance.nav_differential_runner import (
     _runtime_identity_failures,
     _TopicRecorder,
     _valid_final_amcl,
+    _watch_topics,
     compare_differential_artifacts,
     load_differential_artifact,
 )
@@ -145,6 +146,7 @@ def _initial_state_for(
         odom=odom,
         action_status=action_status,
         options=_options(tmp_path),
+        nomotion_update_acknowledged=True,
     )
 
 
@@ -170,6 +172,84 @@ def test_start_gate_rejects_stale_odom(tmp_path: Path) -> None:
 
     assert state["status"] == "FAIL"
     assert "odom_stale_or_headerless" in state["failures"]
+
+
+def test_start_gate_accepts_source_lead_within_sample_interval(tmp_path: Path) -> None:
+    state = _initial_state_for(
+        tmp_path,
+        amcl_stamp=_stamp(11, 100_000_000),
+        odom_stamp=_stamp(11, 100_000_000),
+    )
+
+    assert state["status"] == "PASS"
+    assert state["amcl_source"]["source_age_ns"] == -100_000_000
+    assert state["odom_source"]["source_age_ns"] == -100_000_000
+
+
+def test_start_gate_rejects_source_lead_beyond_sample_interval(tmp_path: Path) -> None:
+    state = _initial_state_for(
+        tmp_path,
+        amcl_stamp=_stamp(11, 300_000_000),
+        odom_stamp=_stamp(11, 300_000_000),
+    )
+
+    assert state["status"] == "FAIL"
+    assert "amcl_stale_or_headerless" in state["failures"]
+    assert "odom_stale_or_headerless" in state["failures"]
+
+
+def test_start_gate_accepts_observed_empty_action_status_window(tmp_path: Path) -> None:
+    clock, amcl, odom, action_status = _start_recorders()
+    action_status.samples = []
+
+    state = _initial_state(
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
+        clock=clock,
+        amcl=amcl,
+        odom=odom,
+        action_status=action_status,
+        options=_options(tmp_path),
+        action_status_observation_ready=True,
+        nomotion_update_acknowledged=True,
+    )
+
+    assert state["status"] == "PASS"
+    assert state["active_goal_ids"] == []
+    assert state["action_status_source"]["observation"] == "no_status_observed"
+
+
+def test_start_gate_rejects_missing_action_status_without_ready_watch(tmp_path: Path) -> None:
+    clock, amcl, odom, action_status = _start_recorders()
+    action_status.samples = []
+
+    state = _initial_state(
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
+        clock=clock,
+        amcl=amcl,
+        odom=odom,
+        action_status=action_status,
+        options=_options(tmp_path),
+        action_status_observation_ready=False,
+    )
+
+    assert state["status"] == "FAIL"
+    assert "action_status_stale_or_malformed" in state["failures"]
+
+
+def test_start_gate_requires_explicit_nomotion_acknowledgement(tmp_path: Path) -> None:
+    clock, amcl, odom, action_status = _start_recorders()
+
+    state = _initial_state(
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
+        clock=clock,
+        amcl=amcl,
+        odom=odom,
+        action_status=action_status,
+        options=_options(tmp_path),
+    )
+
+    assert state["status"] == "FAIL"
+    assert "amcl_nomotion_update_unacknowledged" in state["failures"]
 
 
 def test_start_gate_rejects_nonfinite_covariance(tmp_path: Path) -> None:
@@ -518,6 +598,44 @@ def test_simulation_capture_uses_ambient_domain_instead_of_physical_vehicle_doma
     )
 
     assert _effective_ros_domain(config) == "0"
+
+
+def test_differential_topic_watch_uses_latched_qos_for_state_topics(tmp_path: Path) -> None:
+    class RecordingBridge:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, float, str]] = []
+
+        async def watch(
+            self,
+            topic: str,
+            message_type: str,
+            _handler: object,
+            *,
+            throttle: float,
+            qos_profile: str,
+        ) -> int:
+            self.calls.append((topic, message_type, throttle, qos_profile))
+            return len(self.calls)
+
+    bridge = RecordingBridge()
+    recorders = {key: _TopicRecorder() for key in ("clock", "amcl", "odom", "action_status")}
+
+    watch_ids = asyncio.run(
+        _watch_topics(
+            cast(Any, bridge),
+            recorders,
+            _options(tmp_path),
+            odom_topic="/chassis/odom",
+        )
+    )
+
+    assert watch_ids == [1, 2, 3, 4]
+    assert [call[3] for call in bridge.calls] == [
+        "sensor_data",
+        "transient_local",
+        "sensor_data",
+        "transient_local",
+    ]
 
 
 def test_r2_override_is_temporary_and_uses_effective_simulation_domain(

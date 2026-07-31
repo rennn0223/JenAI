@@ -1232,6 +1232,11 @@ class RosBridgeClient:
         result = await self.request("nav_cancel", timeout=5.0)
         return _require_bool(result, "canceled", "nav_cancel")
 
+    async def request_nomotion_update(self) -> bool:
+        """Ask AMCL for a fresh estimate without moving the robot."""
+        result = await self.request("request_nomotion_update", timeout=5.0)
+        return _require_bool(result, "acknowledged", "request_nomotion_update")
+
     async def halt_with_evidence(
         self, cmd_vel_topic: str = "/cmd_vel", stamped: bool = False
     ) -> HaltEvidence:
@@ -1340,6 +1345,8 @@ class RosBridgeClient:
         msg_type: str,
         handler: EventHandler,
         throttle: float = 1.0,
+        *,
+        qos_profile: str = "sensor_data",
     ) -> int:
         """Stream a topic's messages (as dicts) into `handler`, at most one per
         `throttle` seconds. `handler` runs on the reader task — keep it cheap
@@ -1350,6 +1357,10 @@ class RosBridgeClient:
         parsed_throttle = _require_finite_input("watch", "throttle", throttle)
         if parsed_throttle < 0.0:
             raise BridgeError("invalid watch request: throttle cannot be negative")
+        if qos_profile not in {"sensor_data", "transient_local"}:
+            raise BridgeError(
+                "invalid watch request: qos_profile must be sensor_data or transient_local"
+            )
         if not callable(handler):
             raise BridgeError("invalid watch request: handler must be callable")
         self._next_id += 1
@@ -1363,6 +1374,7 @@ class RosBridgeClient:
                     "topic": topic,
                     "msg_type": msg_type,
                     "throttle": throttle,
+                    "qos_profile": qos_profile,
                 },
             )
         except BaseException:

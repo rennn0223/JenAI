@@ -94,6 +94,9 @@ class _ResultBridge:
         assert event == "nav_result"
         self._handlers.remove(callback)
 
+    async def request_nomotion_update(self) -> bool:
+        return True
+
     async def nav_send(
         self,
         x: float,

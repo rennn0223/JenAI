@@ -96,6 +96,7 @@ def _add_verified_ground_truth(
     stream_contract["ground_truth"] = {
         "topic": "/isaac/ground_truth",
         "message_type": "geometry_msgs/msg/PoseStamped",
+        "qos_profile": "sensor_data",
     }
     identity = cast(dict[str, Any], artifact["runtime_identity"])
     identity["ground_truth_calibration_effective_sha256"] = _calibration_payload_sha256(calibration)

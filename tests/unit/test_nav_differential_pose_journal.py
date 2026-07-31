@@ -22,7 +22,7 @@ def _assert_insufficient(left: dict[str, Any], right: dict[str, Any]) -> None:
     assert report["classifications"] == [PairClassification.INSUFFICIENT_EVIDENCE]
 
 
-def test_v2_pose_journal_fixture_is_eligible(differential_artifact_factory: Any) -> None:
+def test_v3_pose_journal_fixture_is_eligible(differential_artifact_factory: Any) -> None:
     left, right = _pair(differential_artifact_factory)
 
     report = compare_differential_artifacts(left, right)

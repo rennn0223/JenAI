@@ -87,6 +87,9 @@ def _load_ros_bridge_with_stubbed_rclpy(monkeypatch: pytest.MonkeyPatch) -> Any:
     qos.QoSPresetProfiles = SimpleNamespace(  # type: ignore[attr-defined]
         SENSOR_DATA=SimpleNamespace(value=object())
     )
+    qos.DurabilityPolicy = SimpleNamespace(TRANSIENT_LOCAL=object())  # type: ignore[attr-defined]
+    qos.ReliabilityPolicy = SimpleNamespace(RELIABLE=object())  # type: ignore[attr-defined]
+    qos.QoSProfile = lambda **kwargs: SimpleNamespace(**kwargs)  # type: ignore[attr-defined]
     utilities.get_rmw_implementation_identifier = lambda: "rmw_fastrtps_cpp"  # type: ignore[attr-defined]
     for name, module in {
         "rclpy": rclpy,
@@ -168,3 +171,135 @@ def test_ros_bridge_main_tears_down_every_resource_when_request_loop_fails(
         "destroy_node",
         "rclpy_shutdown",
     ]
+
+
+def _install_empty_service_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    std_srvs = ModuleType("std_srvs")
+    srv = ModuleType("std_srvs.srv")
+
+    class Empty:
+        class Request:
+            pass
+
+    srv.Empty = Empty  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "std_srvs", std_srvs)
+    monkeypatch.setitem(sys.modules, "std_srvs.srv", srv)
+
+
+def test_nomotion_update_fails_closed_and_destroys_unavailable_client(
+    stubbed_ros_bridge: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_empty_service_stub(monkeypatch)
+    calls: list[str] = []
+
+    class Client:
+        @staticmethod
+        def wait_for_service(*, timeout_sec: float) -> bool:
+            assert timeout_sec == 0.25
+            return False
+
+    class Node:
+        @staticmethod
+        def create_client(_service_type: object, service: str) -> Client:
+            assert service == "/request_nomotion_update"
+            calls.append("create")
+            return Client()
+
+        @staticmethod
+        def destroy_client(_client: Client) -> None:
+            calls.append("destroy")
+
+    result = stubbed_ros_bridge.BridgeNode.request_nomotion_update(Node(), timeout=0.25)
+
+    assert result == {"acknowledged": False}
+    assert calls == ["create", "destroy"]
+
+
+def test_nomotion_update_acknowledges_completed_service_and_destroys_client(
+    stubbed_ros_bridge: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_empty_service_stub(monkeypatch)
+    calls: list[str] = []
+
+    class Future:
+        @staticmethod
+        def add_done_callback(callback: Any) -> None:
+            callback(Future())
+
+        @staticmethod
+        def result() -> object:
+            return object()
+
+    class Client:
+        @staticmethod
+        def wait_for_service(*, timeout_sec: float) -> bool:
+            assert timeout_sec == 0.25
+            return True
+
+        @staticmethod
+        def call_async(_request: object) -> Future:
+            calls.append("call")
+            return Future()
+
+    class Node:
+        @staticmethod
+        def create_client(_service_type: object, service: str) -> Client:
+            assert service == "/request_nomotion_update"
+            calls.append("create")
+            return Client()
+
+        @staticmethod
+        def destroy_client(_client: Client) -> None:
+            calls.append("destroy")
+
+    result = stubbed_ros_bridge.BridgeNode.request_nomotion_update(Node(), timeout=0.25)
+
+    assert result == {"acknowledged": True}
+    assert calls == ["create", "call", "destroy"]
+
+
+def test_generic_watch_builds_reliable_transient_local_subscription(
+    stubbed_ros_bridge: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rosidl = ModuleType("rosidl_runtime_py")
+    convert = ModuleType("rosidl_runtime_py.convert")
+    utilities = ModuleType("rosidl_runtime_py.utilities")
+    convert.message_to_ordereddict = lambda message: message  # type: ignore[attr-defined]
+    utilities.get_message = lambda _name: object  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rosidl_runtime_py", rosidl)
+    monkeypatch.setitem(sys.modules, "rosidl_runtime_py.convert", convert)
+    monkeypatch.setitem(sys.modules, "rosidl_runtime_py.utilities", utilities)
+    subscriptions: list[object] = []
+
+    class Node:
+        def __init__(self) -> None:
+            self._watches: dict[int, object] = {}
+
+        @staticmethod
+        def create_subscription(
+            _message_type: object,
+            _topic: str,
+            _callback: Any,
+            qos: object,
+        ) -> object:
+            subscriptions.append(qos)
+            return object()
+
+    node = Node()
+    result = stubbed_ros_bridge.BridgeNode.watch(
+        node,
+        7,
+        "/amcl_pose",
+        "geometry_msgs/msg/PoseWithCovarianceStamped",
+        0.2,
+        "transient_local",
+    )
+
+    assert result == {"watch_id": 7}
+    assert len(subscriptions) == 1
+    qos = subscriptions[0]
+    assert qos.reliability is stubbed_ros_bridge.ReliabilityPolicy.RELIABLE
+    assert qos.durability is stubbed_ros_bridge.DurabilityPolicy.TRANSIENT_LOCAL
