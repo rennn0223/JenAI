@@ -30,10 +30,20 @@ contract, evidence sources, and known limitations.
 
 ### Workflow Capability
 
-A long-running, goal-level robot capability that owns a complete deterministic
+A long-running, goal-level robot capability that defines a complete deterministic
 process rather than one primitive action. A Workflow Capability defines typed
 inputs, normal sequencing, bounded retries, cancellation, evidence, completion,
 and reporting. The LLM selects it but does not execute its normal steps.
+
+### Workflow Instance
+
+One Runtime-owned execution of a Workflow Capability for one accepted Task. It
+holds mutable progress, approvals, retries, evidence, and terminal state; the
+pure Workflow definition may be shared, but only the Robot Runtime Authority
+may change an active instance.
+
+_Avoid:_ “application workflow” or “UI workflow”, which can imply a second
+execution owner outside the Runtime.
 
 ### Semantic Area Patrol
 
@@ -61,6 +71,73 @@ ordinary progress updates are handled deterministically.
 The small typed interface through which a Workflow navigates, inspects, and
 returns home. ROS 2, Nav2, Isaac Sim, and future robot-specific SDKs implement
 this seam; the Workflow domain does not import them.
+
+### Robot Runtime Authority
+
+The single owner of effectful Task admission, Approval resources, active
+Workflow Instances, execution, stopping, Completion Contract evaluation, Task
+Outcomes, receipts, and Evidence truth for one robot. Intent layers submit
+typed high-level Tasks to this authority and must not retain a second mutable
+execution lifecycle.
+
+_Avoid:_ “shared backend” or “vendor API proxy”, which omit the ownership and
+safety responsibility.
+
+### Capability Executor
+
+The Runtime-owned role that dispatches an admitted platform-neutral Workflow
+step to navigation, platform-command, or observation Interfaces and returns
+typed Events and Evidence. It does not interpret intent, grant Approval, or
+decide a Task Outcome.
+
+_Avoid:_ “universal gateway”, which obscures the distinct navigation,
+platform-command, and observation responsibilities.
+
+### Command Lease
+
+The exclusive, time-bounded right of one accepted effectful task to command a
+robot. Revocation prevents the former holder from starting or continuing work,
+including delayed requests.
+
+_Avoid:_ “lock”, which can imply only process-local mutual exclusion.
+
+### Safety Epoch
+
+A monotonically advancing generation that invalidates commands, approvals, and
+leases created before a safety event. A client with an older epoch must refresh
+authoritative state rather than retry its stale action.
+
+_Avoid:_ “session ID”, which does not express invalidation or ordering.
+
+### Runtime Event
+
+An ordered, immutable fact about a task, approval, stop, availability, or
+evidence lifecycle. TUI and WebUI may render different projections, but both
+derive them from the same event and state truth.
+
+_Avoid:_ “log message”, which does not imply a stable schema or lifecycle
+meaning.
+
+### Evidence Envelope
+
+A source-attributed observation carrying robot and task identity, source and
+receive time, freshness, content integrity, transport security, source
+assurance, schema version, and known limitations. These dimensions remain
+independent; a digest does not prove origin, and an authenticated transport does
+not prove that a sensor observation is correct. When the source does not provide
+a timestamp, that absence remains explicit.
+
+_Avoid:_ “telemetry blob”, which hides provenance and verification limits.
+
+### Evidence Source Assurance
+
+The stated basis for believing Evidence came from its claimed origin, such as
+vendor telemetry, Runtime observation, operator observation, or a derived
+result. It is independent of freshness, content integrity, and transport
+authentication.
+
+_Avoid:_ “trusted Evidence”, which collapses several different guarantees into
+one unsupported claim.
 
 ### Robot Capability Card
 
