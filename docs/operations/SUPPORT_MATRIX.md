@@ -22,7 +22,7 @@
 | Release wheel | CI 建出的 wheel → 隔離環境 → `JenAI`/`jenai`、doctor、uninstall | Validated | 驗的是 wheel，不等同 source install；每版 hash 以 release SHA256SUMS 為準 |
 | Source install | pinned tag/commit + `uv tool install .` | Supported | 需建置工具且依賴解析可能隨時間改變；正式交付優先 wheel + constraints |
 | Development | `uv sync --frozen` + `uv run JenAI` | Supported | `uv.lock` 鎖開發／CI解析；不是一般使用者交付路徑 |
-| DGX Spark host | Ubuntu 24.04.4 LTS、aarch64 | Supported | 主要開發機；候選版 fresh-machine 非作者驗收仍為外部 gate |
+| DGX Spark host | Ubuntu 24.04.4 LTS、aarch64 | Supported | 主要開發機；v2.6.0 的 fresh-machine 非作者驗收仍為外部 gate |
 | Linux without ROS2 | Python 功能、聊天、規劃、eval、scaffold | Supported | ROS/導航指令誠實 unavailable |
 | macOS | Python 套件／TUI | Experimental | ROS2、Isaac、Nav2 路徑未在 CI 或現場驗證 |
 
@@ -46,7 +46,7 @@
 | Cloud model | NVIDIA OpenAI-compatible endpoint | Supported | provider abstraction/config 測試；資料會離開本機，見 SECURITY |
 | Other provider | Custom OpenAI-compatible base URL/model | Experimental | API 相容不代表工具呼叫品質相同；需跑 E1/E3 |
 | TUI | Local terminal | Supported | 主要操作面；2026-07-26 已從未 source ROS 的環境驗證自動載入、Doctor、自然語言唯讀、可讀批准卡、移動中 stop 與 Dock。該次為 dirty 工程驗收且無不可變 transcript；非維護者 fresh-machine 可用性研究仍待完成 |
-| WebUI | localhost／isolated LAN | Supported | token auth；不得直接公開到 internet |
+| WebUI | localhost／isolated LAN | Supported | token auth；refresh-resilient run／approval／evidence monitoring 與 server-bound redacted approval preview 已有回歸。clean `c66d163…4af` 另驗 WebUI STOP 將同一模擬 Nav2 goal 由 executing 轉為 canceled，未觀察到 late success；這不是實體停止或正式 HIL 證據。不得直接公開到 internet |
 | MCP | stdio、read-only by default | Supported | action tools 必須明確 `--allow-actions` |
 
 ## 升級規則
