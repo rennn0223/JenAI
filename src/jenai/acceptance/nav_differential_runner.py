@@ -3473,8 +3473,6 @@ async def _collect_start_state(
     pose_observations: _PoseObservationRecorder,
 ) -> dict[str, Any]:
     cutoff_host_ns = time.monotonic_ns()
-    nomotion_acknowledged = await bridge.request_nomotion_update()
-    await asyncio.sleep(options.preflight_sample_s)
     return await _collect_dispatch_state(
         bridge,
         config,
@@ -3484,7 +3482,6 @@ async def _collect_start_state(
         pose_observations,
         purpose=PoseLookupPurpose.T0_START,
         cutoff_host_monotonic_ns=cutoff_host_ns,
-        nomotion_update_acknowledged=nomotion_acknowledged,
     )
 
 
@@ -3498,16 +3495,21 @@ async def _collect_dispatch_state(
     *,
     purpose: PoseLookupPurpose,
     cutoff_host_monotonic_ns: int,
-    nomotion_update_acknowledged: bool,
 ) -> dict[str, Any]:
-    start_pose, observation_id, _ = await pose_observations.capture(
-        bridge,
-        recorders["clock"],
-        purpose=purpose,
-        frame_id=config.site.map_frame,
-        base_frame=config.vehicle.robot_base_frame,
-        timeout_s=3.0,
-    )
+    async with asyncio.TaskGroup() as tasks:
+        nomotion_task = tasks.create_task(bridge.request_nomotion_update())
+        pose_task = tasks.create_task(
+            pose_observations.capture(
+                bridge,
+                recorders["clock"],
+                purpose=purpose,
+                frame_id=config.site.map_frame,
+                base_frame=config.vehicle.robot_base_frame,
+                timeout_s=3.0,
+            )
+        )
+        tasks.create_task(asyncio.sleep(options.preflight_sample_s))
+    start_pose, observation_id, _ = pose_task.result()
     return _initial_state(
         pose=start_pose,
         map_pose_observation_id=observation_id,
@@ -3520,7 +3522,7 @@ async def _collect_dispatch_state(
         calibration=calibration,
         cutoff_host_monotonic_ns=cutoff_host_monotonic_ns,
         action_status_observation_ready=True,
-        nomotion_update_acknowledged=nomotion_update_acknowledged,
+        nomotion_update_acknowledged=nomotion_task.result(),
     )
 
 
@@ -3727,8 +3729,6 @@ def _pre_dispatch_observer(
         invoked_ns: int,
     ) -> dict[str, Any]:
         del actual_goal, tag
-        nomotion_acknowledged = await bridge.request_nomotion_update()
-        await asyncio.sleep(options.preflight_sample_s)
         state = await _collect_dispatch_state(
             bridge,
             config,
@@ -3738,7 +3738,6 @@ def _pre_dispatch_observer(
             pose_observations,
             purpose=PoseLookupPurpose.T1_PRE_DISPATCH,
             cutoff_host_monotonic_ns=invoked_ns,
-            nomotion_update_acknowledged=nomotion_acknowledged,
         )
         input_continuity = _capture_input_continuity(identity)
         map_checkpoint = await _capture_map_identity_checkpoint(

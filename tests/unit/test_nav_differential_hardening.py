@@ -186,6 +186,60 @@ def test_start_gate_accepts_source_lead_within_sample_interval(tmp_path: Path) -
     assert state["odom_source"]["source_age_ns"] == -100_000_000
 
 
+def test_start_gate_accepts_artifact_timing_after_three_way_overlap(tmp_path: Path) -> None:
+    cutoff_ns = 1_583_645_343_239_825
+    evaluated_ns = cutoff_ns + 1_233_086_277
+    amcl_received_ns = cutoff_ns + 305_668_805
+
+    clock = _TopicRecorder()
+    clock.samples = [
+        {"host_monotonic_ns": cutoff_ns + 100_000_000, "message": {"clock": _stamp(10)}},
+        {
+            "host_monotonic_ns": cutoff_ns + 600_000_000,
+            "message": {"clock": _stamp(10, 500_000_000)},
+        },
+        {"host_monotonic_ns": evaluated_ns, "message": {"clock": _stamp(10, 900_000_000)}},
+    ]
+    amcl = _TopicRecorder()
+    amcl.samples = [
+        {
+            "host_monotonic_ns": amcl_received_ns,
+            "message": _pose_message(stamp=_stamp(10, 200_000_000)),
+        }
+    ]
+    odom = _TopicRecorder()
+    odom.samples = [
+        {
+            "host_monotonic_ns": evaluated_ns - 10_000_000,
+            "message": _odom_message(stamp=_stamp(10, 900_000_000)),
+        }
+    ]
+    action_status = _TopicRecorder()
+    action_status.samples = [
+        {
+            "host_monotonic_ns": evaluated_ns - 5_000_000,
+            "message": {"status_list": []},
+        }
+    ]
+
+    state = _initial_state(
+        pose=Pose2D(x=-6.0, y=-1.0, yaw=3.142),
+        clock=clock,
+        amcl=amcl,
+        odom=odom,
+        action_status=action_status,
+        options=_options(tmp_path),
+        cutoff_host_monotonic_ns=cutoff_ns,
+        current_host_monotonic_ns=evaluated_ns,
+        nomotion_update_acknowledged=True,
+    )
+
+    assert state["status"] == "PASS"
+    assert state["failures"] == []
+    assert state["amcl_source"]["host_age_ns"] == evaluated_ns - amcl_received_ns
+    assert state["amcl_source"]["host_age_ns"] < 1_000_000_000
+
+
 def test_start_gate_rejects_source_lead_beyond_sample_interval(tmp_path: Path) -> None:
     state = _initial_state_for(
         tmp_path,

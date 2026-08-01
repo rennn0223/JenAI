@@ -303,6 +303,15 @@ runtime gate，也不代表 pilot ready 或 navigation PASS。
 `--scene` 檔案 SHA 比對，但不會自行查詢 Isaac GUI。無法可靠取得 root-layer identifier 時，
 不得執行 live capture。
 
+執行 live capture 的 shell 必須先載入與 Nav2 runtime 相同的 ROS Jazzy 與 Isaac workspace；
+否則 runner 端的 `ros2 node/action/lifecycle/param` identity probe 會 fail closed，即使獨立
+bridge 仍能讀到 `/map`：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/nvidia/IsaacSim-ros_workspaces/jazzy_ws/install/setup.bash
+```
+
 R1：
 
 ```bash

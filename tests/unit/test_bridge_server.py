@@ -144,6 +144,54 @@ def test_server_bounds_concurrent_slow_operations(monkeypatch: pytest.MonkeyPatc
     assert emitted[0] == {
         "id": 3,
         "ok": False,
-        "error": "bridge is busy with slow read-only operations",
+        "error": "bridge is busy with bounded observation operations",
     }
     assert emitted[1] == {"id": 4, "ok": True, "result": {}}
+
+
+def test_nomotion_update_does_not_serialize_pose_dispatch() -> None:
+    emitted: list[dict[str, Any]] = []
+    nomotion_started = threading.Event()
+    pose_started = threading.Event()
+    release_nomotion = threading.Event()
+    responses_finished = threading.Event()
+    emitted_lock = threading.Lock()
+
+    def emit(response: dict[str, Any]) -> None:
+        with emitted_lock:
+            emitted.append(response)
+            if len(emitted) == 2:
+                responses_finished.set()
+
+    def dispatch(op: str, _params: dict[str, Any]) -> dict[str, Any]:
+        if op == "request_nomotion_update":
+            nomotion_started.set()
+            assert release_nomotion.wait(timeout=2.0)
+        elif op == "pose":
+            pose_started.set()
+        return {"op": op}
+
+    server_thread = threading.Thread(
+        target=_server.serve_requests,
+        kwargs={
+            "lines": [
+                '{"id":1,"op":"request_nomotion_update"}\n',
+                '{"id":2,"op":"pose"}\n',
+            ],
+            "emit": emit,
+            "dispatch": dispatch,
+            "touch_watchdog": lambda: None,
+        },
+    )
+    server_thread.start()
+
+    try:
+        assert nomotion_started.wait(timeout=1.0)
+        assert pose_started.wait(timeout=1.0)
+    finally:
+        release_nomotion.set()
+        server_thread.join(timeout=2.0)
+
+    assert responses_finished.wait(timeout=2.0)
+    assert not server_thread.is_alive()
+    assert {response["id"] for response in emitted} == {1, 2}

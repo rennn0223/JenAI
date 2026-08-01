@@ -13,7 +13,16 @@ else:  # pragma: no cover - exercised by the system-Python sidecar
 
 Emitter = Callable[[BridgePayload], None]
 Dispatcher = Callable[[str, BridgePayload], BridgePayload]
-_SLOW_OPERATIONS = frozenset({"capture_frame", "map_cell", "map_identity", "nav_plan", "pose"})
+_SLOW_OPERATIONS = frozenset(
+    {
+        "capture_frame",
+        "map_cell",
+        "map_identity",
+        "nav_plan",
+        "pose",
+        "request_nomotion_update",
+    }
+)
 _MAX_SLOW_OPERATIONS = 2
 
 
@@ -26,7 +35,7 @@ def serve_requests(
 ) -> None:
     """Serve newline-delimited requests until EOF or an explicit shutdown.
 
-    Long, read-only operations run on worker threads so an emergency halt can
+    Bounded observation operations run on worker threads so an emergency halt can
     never sit behind a camera or pose timeout.  Every request gets one response;
     an operation error is isolated and the stream remains usable.
     """
@@ -65,7 +74,7 @@ def serve_requests(
                     {
                         "id": request.request_id,
                         "ok": False,
-                        "error": "bridge is busy with slow read-only operations",
+                        "error": "bridge is busy with bounded observation operations",
                     }
                 )
                 continue
