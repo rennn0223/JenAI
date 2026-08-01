@@ -146,6 +146,7 @@ class DifferentialCaptureOptions(BaseModel):
     ground_truth_topic: str | None = None
     ground_truth_type: str = "geometry_msgs/msg/PoseStamped"
     execute: bool = False
+    live_preflight: bool = False
     confirmation: str = ""
     preflight_sample_s: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     final_sample_s: float = Field(default=2.0, gt=0, allow_inf_nan=False)
@@ -175,33 +176,20 @@ class DifferentialCaptureOptions(BaseModel):
 
     @model_validator(mode="after")
     def execution_requires_confirmation(self) -> DifferentialCaptureOptions:
+        live_requested = self.execute or self.live_preflight
+        if self.execute and self.live_preflight:
+            raise ValueError("--execute and --live-preflight are mutually exclusive.")
         if self.execute and self.confirmation != DIFFERENTIAL_EXECUTION_CONFIRMATION:
             raise ValueError(
                 "Live differential capture requires the exact confirmation text: "
                 f"{DIFFERENTIAL_EXECUTION_CONFIRMATION}"
             )
-        if self.execute and (
-            self.scene_path is None
-            or not self.scene_path.is_absolute()
-            or not self.scene_path.is_file()
-        ):
-            raise ValueError(
-                "Live differential capture requires an existing absolute USD scene path."
-            )
-        if self.execute and (
-            self.expected_source_root is None
-            or not self.expected_source_root.is_absolute()
-            or not self.expected_source_root.is_dir()
-        ):
-            raise ValueError(
-                "Live differential capture requires the absolute reviewed source root."
-            )
-        if self.execute and self.expected_git_sha is None:
-            raise ValueError("Live differential capture requires the reviewed commit SHA.")
-        if self.execute and self.live_scene_sha256 is None:
-            raise ValueError(
-                "Live differential capture requires the active Isaac Stage root-layer SHA-256."
-            )
+        if self.live_preflight and self.confirmation:
+            raise ValueError("Live preflight must not include motion confirmation text.")
+        if self.live_preflight and self.mode is not DifferentialMode.R1_BRIDGE_NAV2:
+            raise ValueError("live preflight v1 only supports R1_bridge_nav2.")
+        if live_requested:
+            _validate_live_capture_identity(self)
         if self.output.exists():
             raise ValueError(f"Output already exists: {self.output}")
         if self.live_scene_sha256 is not None and self.scene_path is None:
@@ -211,6 +199,27 @@ class DifferentialCaptureOptions(BaseModel):
         if bool(self.ground_truth_topic) != bool(self.calibration_path):
             raise ValueError("ground_truth_topic and calibration_path must be configured together")
         return self
+
+
+def _validate_live_capture_identity(options: DifferentialCaptureOptions) -> None:
+    if (
+        options.scene_path is None
+        or not options.scene_path.is_absolute()
+        or not options.scene_path.is_file()
+    ):
+        raise ValueError("Live differential capture requires an existing absolute USD scene path.")
+    if (
+        options.expected_source_root is None
+        or not options.expected_source_root.is_absolute()
+        or not options.expected_source_root.is_dir()
+    ):
+        raise ValueError("Live differential capture requires the absolute reviewed source root.")
+    if options.expected_git_sha is None:
+        raise ValueError("Live differential capture requires the reviewed commit SHA.")
+    if options.live_scene_sha256 is None:
+        raise ValueError(
+            "Live differential capture requires the active Isaac Stage root-layer SHA-256."
+        )
 
 
 class DifferentialMeasurementContract(BaseModel):
@@ -342,6 +351,8 @@ class DifferentialArtifact(BaseModel):
     mode: DifferentialMode
     reset_policy: ResetPolicy
     execution_requested: bool
+    live_preflight_requested: bool = False
+    motion_attempted: bool = False
     measurement_contract: DifferentialMeasurementContract
     started_at: str = Field(min_length=1)
     finished_at: str | None = None
@@ -353,6 +364,25 @@ class DifferentialArtifact(BaseModel):
     checks: list[dict[str, Any]] = Field(default_factory=list)
     overall: ArtifactOverall = "initializing"
     failure: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_live_preflight_claim(self) -> DifferentialArtifact:
+        if not self.live_preflight_requested:
+            return self
+        if self.mode is not DifferentialMode.R1_BRIDGE_NAV2:
+            raise ValueError("live preflight artifact must use R1_bridge_nav2.")
+        if self.execution_requested:
+            raise ValueError("live preflight artifact cannot claim execution.")
+        if self.motion_attempted:
+            raise ValueError("live preflight artifact cannot claim a motion attempt.")
+        extras = self.__pydantic_extra__ or {}
+        observations = extras.get("dispatch_observations", [])
+        if isinstance(observations, list) and any(
+            isinstance(item, dict) and item.get("nav_send_forwarded_host_monotonic_ns") is not None
+            for item in observations
+        ):
+            raise ValueError("live preflight artifact cannot claim a forwarded goal.")
+        return self
 
 
 class DifferentialComparisonReport(BaseModel):
@@ -2067,8 +2097,10 @@ class _ObservedNavBridge:
         on_nav_send: Callable[[CanonicalGoal, str, int], Awaitable[dict[str, Any]]],
         pose_observations: _PoseObservationRecorder | None = None,
         clock: _TopicRecorder | None = None,
+        allow_forward: bool = True,
     ) -> None:
         self._delegate = delegate
+        self._allow_forward = allow_forward
         self._simulation_epoch = simulation_epoch
         self._expected_goal = expected_goal
         self._on_nav_send = on_nav_send
@@ -2123,6 +2155,9 @@ class _ObservedNavBridge:
                 "Differential dispatch state gate failed before nav_send: "
                 + ", ".join(str(item) for item in t1_state.get("failures", []))
             )
+        if not self._allow_forward:
+            observation["forward_suppressed"] = "live_preflight"
+            return
         observation["nav_send_forwarded_host_monotonic_ns"] = time.monotonic_ns()
         self._active_attempt_tag = tag
         try:
@@ -3347,6 +3382,8 @@ def _base_artifact(options: DifferentialCaptureOptions) -> dict[str, Any]:
         "mode": options.mode,
         "reset_policy": options.reset_policy,
         "execution_requested": options.execute,
+        "live_preflight_requested": options.live_preflight,
+        "motion_attempted": False,
         "measurement_contract": _measurement_contract(options).model_dump(mode="json"),
         "started_at": _utc_now(),
         "runtime_identity": {},
@@ -3814,6 +3851,76 @@ def _observed_dispatch_timeline(
     )
 
 
+async def _record_live_preflight(
+    artifact: dict[str, Any],
+    options: DifferentialCaptureOptions,
+    bridge: RosBridgeClient,
+    config: AppConfig,
+    goal: CanonicalGoal,
+    calibration: GroundTruthCalibration,
+    recorders: dict[str, _TopicRecorder],
+    pose_observations: _PoseObservationRecorder,
+) -> None:
+    identity = cast(dict[str, Any], artifact["runtime_identity"])
+    observe_nav_send = _pre_dispatch_observer(
+        options,
+        bridge,
+        config,
+        calibration,
+        recorders,
+        pose_observations,
+        identity,
+        identity.get("live_map_identity_initial"),
+    )
+    observed_bridge = _ObservedNavBridge(
+        bridge,
+        simulation_epoch=options.simulation_epoch,
+        expected_goal=goal,
+        on_nav_send=observe_nav_send,
+        allow_forward=False,
+    )
+    try:
+        await observed_bridge.nav_send(
+            goal.x,
+            goal.y,
+            goal.yaw,
+            frame_id=goal.frame_id,
+            tag=f"nav_diff_{options.mode.value}_live_preflight",
+        )
+    except BridgeError:
+        artifact["dispatch_observations"] = observed_bridge.observations
+        artifact["topic_samples_at_dispatch_end"] = _snapshot_topic_samples(recorders)
+        dispatch = observed_bridge.observations[0] if observed_bridge.observations else {}
+        state = dispatch.get("state_before_forward")
+        failures = (
+            cast(list[str], state.get("failures", []))
+            if isinstance(state, dict)
+            else [str(dispatch.get("blocked_reason") or "live_preflight_dispatch_gate_failed")]
+        )
+        if isinstance(state, dict):
+            artifact["t1_pre_dispatch"] = state
+        _record_capture_gate_failure(
+            artifact,
+            check_id="live_preflight",
+            detail="Live pre-dispatch gates did not all pass.",
+            failures=failures,
+        )
+        return
+    artifact["dispatch_observations"] = observed_bridge.observations
+    artifact["topic_samples_at_dispatch_end"] = _snapshot_topic_samples(recorders)
+    dispatch = observed_bridge.observations[0]
+    artifact["t1_pre_dispatch"] = dispatch["state_before_forward"]
+    artifact["topic_samples"] = _snapshot_topic_samples(recorders)
+    artifact["checks"].append(
+        {
+            "id": "live_preflight",
+            "status": "PASS",
+            "detail": "All live pre-dispatch gates passed without forwarding a goal.",
+        }
+    )
+    artifact["overall"] = "preflight_only"
+
+
 async def _record_live_evidence(
     artifact: dict[str, Any],
     options: DifferentialCaptureOptions,
@@ -4253,7 +4360,7 @@ def _complete_without_live_bridge(
     identity: dict[str, Any],
     artifact: dict[str, Any],
 ) -> bool:
-    if not options.execute:
+    if not options.execute and not options.live_preflight:
         calibration = _load_calibration(options, identity)
         _record_ground_truth_calibration(artifact, identity, calibration)
         artifact["overall"] = "preflight_only"
@@ -4345,6 +4452,13 @@ async def _safe_cleanup_live_capture(
         }
 
 
+def _has_eligible_capture_result(artifact: dict[str, Any]) -> bool:
+    return artifact.get("overall") == "captured" or (
+        artifact.get("live_preflight_requested") is True
+        and artifact.get("overall") == "preflight_only"
+    )
+
+
 def _record_end_generation(artifact: dict[str, Any]) -> None:
     runtime_identity = artifact.get("runtime_identity")
     if not isinstance(runtime_identity, dict):
@@ -4361,7 +4475,7 @@ def _record_end_generation(artifact: dict[str, Any]) -> None:
             "detail": "Nav2 generation changed during the capture.",
         }
     )
-    if artifact.get("overall") == "captured":
+    if _has_eligible_capture_result(artifact):
         artifact["overall"] = "insufficient_evidence"
 
 
@@ -4453,7 +4567,7 @@ async def _finalize_capture(
     if isinstance(identity, dict) and identity.get("source_root"):
         post_cleanup_continuity = _capture_input_continuity(identity)
         artifact["post_cleanup_input_continuity"] = post_cleanup_continuity
-        if post_cleanup_continuity["status"] != "PASS" and artifact.get("overall") == "captured":
+        if post_cleanup_continuity["status"] != "PASS" and _has_eligible_capture_result(artifact):
             artifact["overall"] = "insufficient_evidence"
     artifact["finished_at"] = _utc_now()
     try:
@@ -4557,6 +4671,19 @@ async def _capture_live_path(
             failures=t0["failures"],
         )
         return
+    if options.live_preflight:
+        resources.stage = "live_preflight"
+        await _record_live_preflight(
+            artifact,
+            options,
+            bridge,
+            config,
+            goal,
+            calibration,
+            recorders,
+            pose_observations,
+        )
+        return
     resources.stage = "motion_dispatch"
     resources.motion_attempted = True
     await _record_live_evidence(
@@ -4623,6 +4750,7 @@ async def capture_navigation_differential(
             "detail": str(exc),
         }
     finally:
+        artifact["motion_attempted"] = resources.motion_attempted
         artifact["pose_observations"] = pose_observations.snapshot()
         artifact = await _finalize_capture(
             artifact,

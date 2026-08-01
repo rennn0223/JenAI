@@ -288,6 +288,34 @@ uv run python scripts/isaac_nav_differential.py capture \
 `preflight_only` 只證明靜態 artifact 建立成功：不啟動 bridge、不取得 live map、不執行完整
 runtime gate，也不代表 pilot ready 或 navigation PASS。
 
+## Live preflight：完整 pre-dispatch、不移動
+
+PR 合併並完成 full-clean runtime 後，先以 `--live-preflight` 在同一次 Play epoch 執行完整
+runtime identity、topic watch、T0 與 T1 gate。v1 只允許 `R1_bridge_nav2`，避免將未經
+NavigationGateway 的 dry-run 誤標為 R2：
+
+```bash
+uv run python scripts/isaac_nav_differential.py capture \
+  --mode R1_bridge_nav2 \
+  --location map_left_down \
+  --pair-id pilot-00-live-preflight \
+  --simulation-epoch warehouse-play-20260801-01 \
+  --reset-policy full_clean \
+  --scene /absolute/path/to/warehouse.usd \
+  --live-scene-sha256 "<active-stage-root-layer-sha256>" \
+  --expected-git-sha "<reviewed-clean-commit-sha>" \
+  --output artifacts/nav-diff/pilot-00-live-preflight.json \
+  --live-preflight
+```
+
+此模式會啟動 acceptance bridge、取得 live runtime identity、訂閱並取樣 T0／T1 Evidence，
+但在 `_ObservedNavBridge.nav_send` 的唯一 forwarding seam 強制截斷，不會轉送 navigation
+goal。不得同時提供 `--execute` 或 `--confirm`。Artifact 只有在所有 pre-dispatch gate 與
+cleanup 都通過時才維持 `preflight_only`，並明確記錄 `live_preflight_requested=true`、
+`motion_attempted=false` 與 `nav_send_forwarded_host_monotonic_ns=null`。Gate 失敗仍保存
+blocked artifact。只有這份 live preflight PASS 後，才向操作員要求 exact-commit motion
+authorization；它本身不證明 navigation PASS。
+
 ## Code Review 後的一組 Pilot Pair
 
 第一個 live pair 是 `pilot-00`，不納入精度統計。開始前：
