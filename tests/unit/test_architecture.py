@@ -110,6 +110,7 @@ _NXDOG_VENDOR_COUPLING_LITERALS = frozenset(
 
 _DIRECT_NAV_SEND_SOURCE_ALLOWLIST = (
     ("acceptance/nav_differential_runner.py", "_ObservedNavBridge.nav_send"),
+    ("acceptance/nav_differential_runner.py", "_record_live_preflight"),
     ("acceptance/nav_differential_runner.py", "_run_r1"),
     ("bridge/_protocol.py", "<module>"),
     ("tools/nav_live.py", "_dispatch_navigation"),

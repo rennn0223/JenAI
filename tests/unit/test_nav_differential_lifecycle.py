@@ -243,6 +243,154 @@ def test_prepare_failure_persists_reloadable_schema_v1_artifact(
     assert not list(tmp_path.glob(f".{options.output.name}.*.tmp"))
 
 
+def test_live_preflight_runs_t0_and_t1_without_forwarding_goal(  # noqa: C901
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    scene = tmp_path / "warehouse.usd"
+    scene.write_text("#usda 1.0", encoding="utf-8")
+    options = _options(
+        tmp_path,
+        live_preflight=True,
+        scene_path=scene,
+        live_scene_sha256="a" * 64,
+    )
+    config = AppConfig(deployment_mode="simulation")
+    goal = CanonicalGoal.from_yaw(
+        frame_id="map",
+        x=1.0,
+        y=2.0,
+        yaw=0.0,
+        simulation_epoch=options.simulation_epoch,
+    )
+    forwarded_goals: list[tuple[object, ...]] = []
+
+    class Bridge:
+        running = True
+
+        async def configure_safety(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def start(self) -> None:
+            return None
+
+        async def runtime_identity(self, *, pin: bool = False) -> object:
+            assert pin is True
+
+            class Identity:
+                @staticmethod
+                def to_payload() -> dict[str, object]:
+                    return {}
+
+            return Identity()
+
+        async def nav_send(self, *args: object, **kwargs: object) -> None:
+            forwarded_goals.append((*args, kwargs))
+            raise AssertionError("live preflight must not forward a navigation goal")
+
+    async def no_op_enrich(_bridge: object, identity: dict[str, Any]) -> None:
+        identity["live_map_identity_initial"] = {"digest": "b" * 64, "frame_id": "map"}
+        identity["controller_odom_topic"] = "/odom"
+
+    async def watch_topics(*args: object, **kwargs: object) -> list[int]:
+        del args, kwargs
+        return []
+
+    async def heartbeat(_bridge: object) -> None:
+        return None
+
+    async def start_state(*args: object, **kwargs: object) -> dict[str, Any]:
+        del args, kwargs
+        return {"status": "PASS", "failures": [], "known_goal_ids": []}
+
+    async def dispatch_state(*args: object, **kwargs: object) -> dict[str, Any]:
+        del args, kwargs
+        return {"status": "PASS", "failures": [], "known_goal_ids": []}
+
+    async def map_checkpoint(
+        _bridge: object,
+        *,
+        label: str,
+        expected: object,
+    ) -> dict[str, Any]:
+        return {
+            "label": label,
+            "status": "PASS",
+            "observed_host_monotonic_ns": 1,
+            "identity": expected,
+            "failures": [],
+        }
+
+    async def cleanup(*args: object, **kwargs: object) -> dict[str, Any]:
+        del args, kwargs
+        return {
+            "status": "PASS",
+            "failures": [],
+            "final_halt": {
+                "status": "SKIP",
+                "detail": "No motion was attempted.",
+            },
+            "bridge_shutdown": {"status": "PASS"},
+        }
+
+    monkeypatch.setattr(
+        runner,
+        "_prepare_capture",
+        lambda _: (
+            tmp_path / "config.toml",
+            config,
+            {"capability_id": "navigate", "goal": {}},
+            goal,
+            {
+                "deployment_mode": "simulation",
+                "source_root": str(tmp_path),
+                "live_map_identity_initial": {"digest": "b" * 64, "frame_id": "map"},
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(runner, "RosBridgeClient", lambda **_: Bridge())
+    monkeypatch.setattr(runner, "_enrich_live_identity", no_op_enrich)
+    monkeypatch.setattr(runner, "_source_identity_failures", lambda _identity, **_kwargs: [])
+    monkeypatch.setattr(runner, "_runtime_identity_failures", lambda _identity: [])
+    monkeypatch.setattr(runner, "_watch_topics", watch_topics)
+    monkeypatch.setattr(runner, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner, "_collect_start_state", start_state)
+    monkeypatch.setattr(runner, "_collect_dispatch_state", dispatch_state)
+    monkeypatch.setattr(
+        runner,
+        "_capture_input_continuity",
+        lambda _identity: {"status": "PASS", "failures": []},
+    )
+    monkeypatch.setattr(runner, "_capture_map_identity_checkpoint", map_checkpoint)
+    monkeypatch.setattr(
+        runner,
+        "_capture_runtime_stack_checkpoint",
+        lambda _identity, *, label: {"label": label, "status": "PASS", "failures": []},
+    )
+    monkeypatch.setattr(runner, "_safe_cleanup_live_capture", cleanup)
+    monkeypatch.setattr(runner, "_record_end_generation", lambda _artifact: None)
+
+    result = asyncio.run(runner.capture_navigation_differential(options))
+    reloaded = runner.load_differential_artifact(options.output)
+
+    assert result["overall"] == "preflight_only"
+    assert result["live_preflight_requested"] is True
+    assert result["execution_requested"] is False
+    assert result["motion_attempted"] is False
+    assert result["t0_scenario_start"]["status"] == "PASS"
+    assert result["t1_pre_dispatch"]["status"] == "PASS"
+    assert result["dispatch_observations"][0]["nav_send_forwarded_host_monotonic_ns"] is None
+    assert result["checks"][-1] == {
+        "id": "live_preflight",
+        "status": "PASS",
+        "detail": "All live pre-dispatch gates passed without forwarding a goal.",
+    }
+    assert result["cleanup"]["status"] == "PASS"
+    assert forwarded_goals == []
+    assert reloaded == result
+
+
 def test_cleanup_failure_downgrades_blocked_capture_and_persists(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

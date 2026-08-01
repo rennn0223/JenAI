@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -10,9 +12,11 @@ from jenai.acceptance.nav_differential_runner import (
     DifferentialCaptureOptions,
     DifferentialMode,
     ResetPolicy,
+    _base_artifact,
     _goal_ids,
     _median_pose,
     compare_differential_artifacts,
+    load_differential_artifact,
 )
 
 
@@ -68,6 +72,116 @@ def test_live_capture_requires_exact_motion_confirmation(tmp_path: Path) -> None
         live_scene_sha256="a" * 64,
     )
     assert options.execute is True
+
+
+def test_live_preflight_requires_live_identity_without_motion_confirmation(
+    tmp_path: Path,
+) -> None:
+    scene = tmp_path / "warehouse.usd"
+    scene.write_text("#usda 1.0", encoding="utf-8")
+    options = DifferentialCaptureOptions(
+        output=tmp_path / "preflight.json",
+        location="Dock",
+        pair_id="pair-01",
+        mode=DifferentialMode.R1_BRIDGE_NAV2,
+        simulation_epoch="epoch-01",
+        reset_policy=ResetPolicy.NAV2_RESTART,
+        live_preflight=True,
+        expected_source_root=tmp_path,
+        expected_git_sha="1" * 40,
+        scene_path=scene,
+        live_scene_sha256="a" * 64,
+    )
+
+    assert options.live_preflight is True
+    assert options.execute is False
+    assert options.confirmation == ""
+
+
+def test_live_preflight_rejects_motion_mode_or_confirmation(tmp_path: Path) -> None:
+    scene = tmp_path / "warehouse.usd"
+    scene.write_text("#usda 1.0", encoding="utf-8")
+    values = {
+        "output": tmp_path / "preflight.json",
+        "location": "Dock",
+        "pair_id": "pair-01",
+        "mode": DifferentialMode.R1_BRIDGE_NAV2,
+        "simulation_epoch": "epoch-01",
+        "reset_policy": ResetPolicy.NAV2_RESTART,
+        "live_preflight": True,
+        "expected_source_root": tmp_path,
+        "expected_git_sha": "1" * 40,
+        "scene_path": scene,
+        "live_scene_sha256": "a" * 64,
+    }
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        DifferentialCaptureOptions(
+            **values,
+            execute=True,
+            confirmation=DIFFERENTIAL_EXECUTION_CONFIRMATION,
+        )
+    with pytest.raises(ValueError, match="must not include motion confirmation"):
+        DifferentialCaptureOptions(**values, confirmation="not-needed")
+    with pytest.raises(ValueError, match="R1_bridge_nav2"):
+        DifferentialCaptureOptions(**{**values, "mode": DifferentialMode.R2_JENAI_NO_RETRY})
+
+
+def test_live_preflight_requires_reviewed_runtime_identity(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="absolute USD scene path"):
+        DifferentialCaptureOptions(
+            output=tmp_path / "preflight.json",
+            location="Dock",
+            pair_id="pair-01",
+            mode=DifferentialMode.R1_BRIDGE_NAV2,
+            simulation_epoch="epoch-01",
+            reset_policy=ResetPolicy.NAV2_RESTART,
+            live_preflight=True,
+        )
+
+
+def test_loader_rejects_contradictory_live_preflight_claims(tmp_path: Path) -> None:
+    options = DifferentialCaptureOptions(
+        output=tmp_path / "base.json",
+        location="Dock",
+        pair_id="pair-01",
+        mode=DifferentialMode.R1_BRIDGE_NAV2,
+        simulation_epoch="epoch-01",
+        reset_policy=ResetPolicy.NAV2_RESTART,
+    )
+    base = _base_artifact(options)
+    base.update(
+        {
+            "live_preflight_requested": True,
+            "overall": "preflight_only",
+            "finished_at": "2026-08-01T00:00:00+00:00",
+            "dispatch_observations": [
+                {
+                    "nav_send_forwarded_host_monotonic_ns": None,
+                    "state_before_forward": {"status": "PASS", "failures": []},
+                }
+            ],
+        }
+    )
+    invalid_payloads = [
+        {**copy.deepcopy(base), "execution_requested": True},
+        {**copy.deepcopy(base), "motion_attempted": True},
+        {
+            **copy.deepcopy(base),
+            "dispatch_observations": [
+                {
+                    "nav_send_forwarded_host_monotonic_ns": 123,
+                    "state_before_forward": {"status": "PASS", "failures": []},
+                }
+            ],
+        },
+    ]
+
+    for index, payload in enumerate(invalid_payloads):
+        path = tmp_path / f"invalid-{index}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="live preflight"):
+            load_differential_artifact(path)
 
 
 def test_median_pose_uses_circular_yaw_mean() -> None:

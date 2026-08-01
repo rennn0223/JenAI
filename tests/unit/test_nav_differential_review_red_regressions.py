@@ -227,3 +227,105 @@ def test_unreadable_source_continuity_fails_closed_and_persists_artifact(
     continuity = cast(dict[str, Any], persisted["post_cleanup_input_continuity"])
     assert continuity["status"] == "FAIL"
     assert continuity["failures"]
+
+
+def test_live_preflight_post_cleanup_drift_is_not_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    scene = source_root / "warehouse.usd"
+    config_path = source_root / "config.toml"
+    locations_path = source_root / "locations.json"
+    bridge_path = source_root / "ros_bridge.py"
+    for path in (scene, config_path, locations_path, bridge_path):
+        path.write_text("reviewed\n", encoding="utf-8")
+
+    real_sha256 = runner._sha256
+
+    def sha256_with_changed_config(path: Path | None) -> str | None:
+        if path == config_path:
+            return "f" * 64
+        return real_sha256(path)
+
+    monkeypatch.setattr(runner, "_sha256", sha256_with_changed_config)
+    monkeypatch.setattr(
+        runner,
+        "_command_output",
+        lambda command, **_: "a" * 40 if command[-2:] == ["rev-parse", "HEAD"] else "",
+    )
+
+    options = DifferentialCaptureOptions(
+        output=tmp_path / "live-preflight.json",
+        location="Dock",
+        pair_id="pair-live-preflight-drift",
+        mode=DifferentialMode.R1_BRIDGE_NAV2,
+        simulation_epoch="epoch-live-preflight-drift",
+        reset_policy=ResetPolicy.FULL_CLEAN,
+        live_preflight=True,
+        expected_source_root=source_root,
+        expected_git_sha="a" * 40,
+        scene_path=scene,
+        live_scene_sha256="b" * 64,
+    )
+    artifact = runner._base_artifact(options)
+    artifact["runtime_identity"] = {
+        "source_root": str(source_root),
+        "config_path": str(config_path),
+        "config_sha256": real_sha256(config_path),
+        "locations_path": str(locations_path),
+        "locations_sha256": real_sha256(locations_path),
+        "bridge_script_path": str(bridge_path),
+        "bridge_script_sha256": real_sha256(bridge_path),
+        "git_sha": "a" * 40,
+        "git_dirty": False,
+    }
+    artifact["overall"] = "preflight_only"
+    artifact["checks"].append(
+        {
+            "id": "live_preflight",
+            "status": "PASS",
+            "detail": "All live pre-dispatch gates passed without forwarding a goal.",
+        }
+    )
+
+    persisted = asyncio.run(
+        runner._finalize_capture(
+            artifact,
+            options,
+            bridge=None,
+            config=None,
+            watch_ids=[],
+            heartbeat=None,
+            motion_attempted=False,
+        )
+    )
+
+    assert persisted["post_cleanup_input_continuity"]["status"] == "FAIL"
+    assert persisted["overall"] == "insufficient_evidence"
+
+
+def test_live_preflight_nav2_generation_drift_is_not_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact: dict[str, Any] = {
+        "live_preflight_requested": True,
+        "overall": "preflight_only",
+        "checks": [],
+        "runtime_identity": {
+            "nav2_tmux_session": "jenai-nav2",
+            "nav2_process_generation": {"generation": "before"},
+        },
+    }
+    monkeypatch.setattr(
+        runner,
+        "_nav2_process_generation",
+        lambda _session: {"generation": "after"},
+    )
+
+    runner._record_end_generation(artifact)
+
+    assert artifact["checks"][-1]["id"] == "nav2_process_generation_end"
+    assert artifact["checks"][-1]["status"] == "FAIL"
+    assert artifact["overall"] == "insufficient_evidence"

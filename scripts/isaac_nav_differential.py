@@ -68,6 +68,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     capture.add_argument("--execute", action="store_true", help="允許模擬車移動")
     capture.add_argument(
+        "--live-preflight",
+        action="store_true",
+        help="執行完整 live T0/T1 gate，但禁止轉送 navigation goal",
+    )
+    capture.add_argument(
         "--confirm",
         default="",
         help=f"--execute 必須精確提供：{DIFFERENTIAL_EXECUTION_CONFIRMATION}",
@@ -97,6 +102,7 @@ def _capture(args: argparse.Namespace) -> int:
         ground_truth_topic=args.ground_truth_topic,
         ground_truth_type=args.ground_truth_type,
         execute=args.execute,
+        live_preflight=args.live_preflight,
         confirmation=args.confirm,
     )
     artifact = asyncio.run(capture_navigation_differential(options))
