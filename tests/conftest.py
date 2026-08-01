@@ -167,6 +167,7 @@ def _differential_state(
     clock_start_ns: int,
     clock_end_ns: int,
     source_stamp_ns: int,
+    baseline_source_stamp_ns: int,
     map_pose_observation_id: str,
 ) -> dict[str, object]:
     source_host_ns = evaluated_host_ns - 5
@@ -223,6 +224,8 @@ def _differential_state(
             "schema_valid": True,
         },
         "amcl_nomotion_update_acknowledged": True,
+        "amcl_nomotion_request_host_monotonic_ns": source_host_ns,
+        "amcl_nomotion_baseline_source_stamp_ns": baseline_source_stamp_ns,
     }
 
 
@@ -310,6 +313,7 @@ def _raw_topic_samples(final_x: float) -> tuple[dict[str, object], dict[str, obj
             _clock_sample(150, 4_500_000_000),
         ],
         "amcl": [
+            _localization_sample(25, 500_000_000, x=0.0, y=0.0, odometry=False),
             _localization_sample(35, 1_000_000_000, x=0.0, y=0.0, odometry=False),
             _localization_sample(135, 3_000_000_000, x=0.0, y=0.0, odometry=False),
         ],
@@ -487,6 +491,7 @@ def differential_artifact_factory():
             clock_start_ns=1_000_000_000,
             clock_end_ns=2_000_000_000,
             source_stamp_ns=1_000_000_000,
+            baseline_source_stamp_ns=500_000_000,
             map_pose_observation_id="pose-t0",
         )
         t1_state = _differential_state(
@@ -497,6 +502,7 @@ def differential_artifact_factory():
             clock_start_ns=3_000_000_000,
             clock_end_ns=4_000_000_000,
             source_stamp_ns=3_000_000_000,
+            baseline_source_stamp_ns=1_000_000_000,
             map_pose_observation_id="pose-t1",
         )
         runtime_identity = _differential_runtime_identity(runtime)
@@ -616,7 +622,7 @@ def differential_artifact_factory():
         ]
         artifact: dict[str, object] = {
             "schema_version": 1,
-            "evidence_derivation_version": 3,
+            "evidence_derivation_version": 4,
             "run_id": f"run-{mode}",
             "pair_id": pair_id,
             "mode": mode,

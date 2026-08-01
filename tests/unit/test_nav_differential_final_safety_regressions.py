@@ -321,13 +321,13 @@ def test_prepare_capture_marks_regular_saved_location_as_navigate(
 @pytest.mark.parametrize(
     ("nomotion_acknowledged", "expected_status"), [(True, "PASS"), (False, "FAIL")]
 )
-def test_start_evidence_overlaps_nomotion_pose_and_preflight_window(
+def test_start_evidence_requests_nomotion_after_shared_observation_window(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     nomotion_acknowledged: bool,
     expected_status: str,
 ) -> None:
-    """A slow fresh-TF lookup must not age the one-shot AMCL update serially."""
+    """The one-shot AMCL update must be requested after the shared observation window."""
 
     pose_started = asyncio.Event()
     window_started = asyncio.Event()
@@ -335,22 +335,22 @@ def test_start_evidence_overlaps_nomotion_pose_and_preflight_window(
 
     class _Bridge:
         async def request_nomotion_update(self) -> bool:
+            assert pose_started.is_set()
+            assert window_started.is_set()
             service_started.set()
-            await pose_started.wait()
-            await window_started.wait()
+            if nomotion_acknowledged:
+                recorders["amcl"].record({"header": {"stamp": {"sec": 1, "nanosec": 0}}})
             return nomotion_acknowledged
 
     class _PoseObservations:
         async def capture(self, *args: Any, **kwargs: Any) -> tuple[Pose2D, str, None]:
             del args, kwargs
             pose_started.set()
-            await service_started.wait()
             await window_started.wait()
             return Pose2D(x=-6.0, y=-1.0, yaw=3.142), "pose-t0", None
 
     async def observe_window(_delay_s: float) -> None:
         window_started.set()
-        await service_started.wait()
         await pose_started.wait()
 
     monkeypatch.setattr(runner.asyncio, "sleep", observe_window)
@@ -360,6 +360,9 @@ def test_start_evidence_overlaps_nomotion_pose_and_preflight_window(
         lambda **kwargs: {
             "status": "PASS" if kwargs["nomotion_update_acknowledged"] else "FAIL",
             "amcl_nomotion_update_acknowledged": kwargs["nomotion_update_acknowledged"],
+            "amcl_nomotion_request_host_monotonic_ns": kwargs[
+                "amcl_nomotion_request_host_monotonic_ns"
+            ],
             "map_pose_observation_id": kwargs["map_pose_observation_id"],
         },
     )
@@ -393,4 +396,5 @@ def test_start_evidence_overlaps_nomotion_pose_and_preflight_window(
 
     assert state["status"] == expected_status
     assert state["amcl_nomotion_update_acknowledged"] is nomotion_acknowledged
+    assert state["amcl_nomotion_request_host_monotonic_ns"] > 0
     assert state["map_pose_observation_id"] == "pose-t0"
