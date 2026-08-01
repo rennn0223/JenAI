@@ -418,17 +418,19 @@ def test_nomotion_wait_observes_sample_arriving_at_deadline_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    clock_ns = 0
+    monkeypatch.setattr(runner.time, "monotonic_ns", lambda: clock_ns)
     recorder = runner._TopicRecorder()
     recorder.record({"header": {"stamp": {"sec": 1, "nanosec": 0}}})
+    clock_ns = 1
 
     class _Bridge:
         async def request_nomotion_update(self) -> bool:
             return True
 
-    monotonic_values = iter((0.0, 0.0, 0.1))
-    original_monotonic = runner.time.monotonic
-
     async def publish_during_final_sleep(_delay_s: float) -> None:
+        nonlocal clock_ns
+        clock_ns = 100_000_001
         recorder.record({"header": {"stamp": {"sec": 2, "nanosec": 0}}})
 
     monkeypatch.setattr(runner.asyncio, "sleep", publish_during_final_sleep)
@@ -444,17 +446,17 @@ def test_nomotion_wait_observes_sample_arriving_at_deadline_boundary(
     )
 
     async def exercise() -> tuple[bool, int, int | None, list[dict[str, Any]]]:
-        monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values))
-        try:
-            return await runner._request_nomotion_update_and_wait_for_amcl(
-                _Bridge(), recorder, options, max_attempts=1
-            )
-        finally:
-            monkeypatch.setattr(runner.time, "monotonic", original_monotonic)
+        return await runner._request_nomotion_update_and_wait_for_amcl(
+            _Bridge(), recorder, options, max_attempts=1
+        )
 
     result = asyncio.run(exercise())
 
-    assert result[3][0]["newer_amcl_observed"] is True
+    attempt = result[3][0]
+    assert attempt["acknowledged_host_monotonic_ns"] == 1
+    assert attempt["wait_deadline_host_monotonic_ns"] == 100_000_001
+    assert attempt["completed_host_monotonic_ns"] == 100_000_001
+    assert attempt["newer_amcl_observed"] is True
 
 
 def test_start_evidence_retries_nomotion_until_resample_publishes_amcl(
