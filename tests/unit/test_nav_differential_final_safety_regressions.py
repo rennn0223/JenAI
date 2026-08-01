@@ -367,6 +367,7 @@ def test_start_evidence_requests_nomotion_after_shared_observation_window(
                 "amcl_nomotion_request_host_monotonic_ns"
             ],
             "map_pose_observation_id": kwargs["map_pose_observation_id"],
+            "amcl_nomotion_attempts": kwargs["amcl_nomotion_attempts"],
         },
     )
     recorders = {
@@ -401,6 +402,16 @@ def test_start_evidence_requests_nomotion_after_shared_observation_window(
     assert state["amcl_nomotion_update_acknowledged"] is nomotion_acknowledged
     assert state["amcl_nomotion_request_host_monotonic_ns"] > 0
     assert state["map_pose_observation_id"] == "pose-t0"
+    attempt = state["amcl_nomotion_attempts"][0]
+    assert attempt["request_host_monotonic_ns"] <= attempt["acknowledged_host_monotonic_ns"]
+    assert attempt["acknowledged_host_monotonic_ns"] <= attempt["completed_host_monotonic_ns"]
+    if nomotion_acknowledged:
+        assert attempt["wait_deadline_host_monotonic_ns"] == (
+            attempt["acknowledged_host_monotonic_ns"] + 1_000_000_000
+        )
+    else:
+        assert attempt["wait_deadline_host_monotonic_ns"] is None
+        assert attempt["newer_amcl_observed"] is False
 
 
 def test_nomotion_wait_observes_sample_arriving_at_deadline_boundary(

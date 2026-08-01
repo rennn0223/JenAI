@@ -958,6 +958,22 @@ def test_pairing_rejects_measurement_contract_mismatch(
     right = differential_artifact_factory(mode="R2_jenai_no_retry")
     contract = cast(dict[str, Any], right["measurement_contract"])
     right["measurement_contract"] = {**contract, "max_topic_age_s": 2.0}
+    timeline = cast(dict[str, Any], right["t1_goal_dispatch"])
+    states = [
+        cast(dict[str, Any], right["t0_scenario_start"]),
+        cast(dict[str, Any], timeline["state_before_forward"]),
+        cast(
+            dict[str, Any],
+            cast(list[dict[str, Any]], timeline["dispatch_observations"])[0][
+                "state_before_forward"
+            ],
+        ),
+    ]
+    for state in states:
+        attempts = cast(list[dict[str, Any]], state["amcl_nomotion_attempts"])
+        attempts[0]["wait_deadline_host_monotonic_ns"] = (
+            cast(int, attempts[0]["acknowledged_host_monotonic_ns"]) + 2_000_000_000
+        )
 
     report = compare_differential_artifacts(left, right)
 

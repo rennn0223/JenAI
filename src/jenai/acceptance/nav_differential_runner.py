@@ -1876,6 +1876,27 @@ def _nomotion_evidence_failures(
     return failures
 
 
+def _final_start_state_failures(
+    failures: list[str],
+    *,
+    ground_truth_required: bool,
+    ground_truth_valid: bool,
+    nomotion_update_acknowledged: bool,
+    amcl_nomotion_request_host_monotonic_ns: int | None,
+    amcl_nomotion_baseline_source_stamp_ns: int | None,
+) -> list[str]:
+    if ground_truth_required and not ground_truth_valid:
+        failures.append("ground_truth_start_evidence")
+    failures.extend(
+        _nomotion_evidence_failures(
+            acknowledged=nomotion_update_acknowledged,
+            request_host_ns=amcl_nomotion_request_host_monotonic_ns,
+            baseline_source_stamp_ns=amcl_nomotion_baseline_source_stamp_ns,
+        )
+    )
+    return list(dict.fromkeys(failures))
+
+
 def _initial_state(
     *,
     pose: Pose2D | None,
@@ -1958,16 +1979,14 @@ def _initial_state(
         active_goals=active_goals,
         max_covariance_xy=options.max_covariance_xy,
     )
-    if ground_truth_fields["ground_truth_required"] is True and not ground_truth_valid:
-        failures.append("ground_truth_start_evidence")
-    failures.extend(
-        _nomotion_evidence_failures(
-            acknowledged=nomotion_update_acknowledged,
-            request_host_ns=amcl_nomotion_request_host_monotonic_ns,
-            baseline_source_stamp_ns=amcl_nomotion_baseline_source_stamp_ns,
-        )
+    failures = _final_start_state_failures(
+        failures,
+        ground_truth_required=ground_truth_fields["ground_truth_required"] is True,
+        ground_truth_valid=ground_truth_valid,
+        nomotion_update_acknowledged=nomotion_update_acknowledged,
+        amcl_nomotion_request_host_monotonic_ns=amcl_nomotion_request_host_monotonic_ns,
+        amcl_nomotion_baseline_source_stamp_ns=amcl_nomotion_baseline_source_stamp_ns,
     )
-    failures = list(dict.fromkeys(failures))
     return {
         "status": "PASS" if not failures else "FAIL",
         "failures": failures,
@@ -3657,16 +3676,23 @@ async def _request_nomotion_update_and_wait_for_amcl(
             before_host_monotonic_ns=request_host_ns,
         )
         acknowledged = await bridge.request_nomotion_update()
+        acknowledged_host_ns = time.monotonic_ns()
+        wait_deadline_host_ns = (
+            acknowledged_host_ns + int(options.max_topic_age_s * 1_000_000_000)
+            if acknowledged
+            else None
+        )
         newer_observed = False
         if acknowledged and baseline_source_stamp_ns is not None:
-            deadline = time.monotonic() + options.max_topic_age_s
+            if wait_deadline_host_ns is None:
+                raise RuntimeError("acknowledged no-motion update is missing its wait deadline")
             poll_s = min(0.02, options.sample_interval_s)
             newer_observed = _has_newer_topic_sample(
                 amcl,
                 after_host_monotonic_ns=request_host_ns,
                 baseline_source_stamp_ns=baseline_source_stamp_ns,
             )
-            while not newer_observed and time.monotonic() < deadline:
+            while not newer_observed and time.monotonic_ns() < wait_deadline_host_ns:
                 await asyncio.sleep(poll_s)
                 newer_observed = _has_newer_topic_sample(
                     amcl,
@@ -3678,6 +3704,8 @@ async def _request_nomotion_update_and_wait_for_amcl(
             {
                 "sequence": sequence,
                 "request_host_monotonic_ns": request_host_ns,
+                "acknowledged_host_monotonic_ns": acknowledged_host_ns,
+                "wait_deadline_host_monotonic_ns": wait_deadline_host_ns,
                 "completed_host_monotonic_ns": completed_host_ns,
                 "baseline_source_stamp_ns": baseline_source_stamp_ns,
                 "acknowledged": acknowledged,
@@ -6369,11 +6397,34 @@ def _offline_state_options(
     )
 
 
+def _valid_nomotion_attempt_timing(
+    *,
+    request_ns: int,
+    acknowledged_ns: int,
+    wait_deadline_ns: object,
+    completed_ns: int,
+    acknowledged: bool,
+    wait_budget_ns: int,
+    completion_tolerance_ns: int,
+) -> bool:
+    if not request_ns <= acknowledged_ns <= completed_ns:
+        return False
+    if acknowledged:
+        return (
+            type(wait_deadline_ns) is int
+            and wait_deadline_ns == acknowledged_ns + wait_budget_ns
+            and completed_ns <= wait_deadline_ns + completion_tolerance_ns
+        )
+    return wait_deadline_ns is None and completed_ns <= acknowledged_ns + completion_tolerance_ns
+
+
 def _validated_nomotion_attempts(
     value: object,
     *,
     amcl: _TopicRecorder,
     max_attempts: int,
+    max_topic_age_s: float,
+    sample_interval_s: float,
 ) -> list[dict[str, Any]] | None:
     if (
         not isinstance(value, list)
@@ -6385,14 +6436,20 @@ def _validated_nomotion_attempts(
     expected_keys = {
         "sequence",
         "request_host_monotonic_ns",
+        "acknowledged_host_monotonic_ns",
+        "wait_deadline_host_monotonic_ns",
         "completed_host_monotonic_ns",
         "baseline_source_stamp_ns",
         "acknowledged",
         "newer_amcl_observed",
     }
+    wait_budget_ns = int(max_topic_age_s * 1_000_000_000)
+    completion_tolerance_ns = int(sample_interval_s * 1_000_000_000)
     previous_completed: int | None = None
     for sequence, attempt in enumerate(attempts, start=1):
         request_ns = attempt.get("request_host_monotonic_ns")
+        acknowledged_ns = attempt.get("acknowledged_host_monotonic_ns")
+        wait_deadline_ns = attempt.get("wait_deadline_host_monotonic_ns")
         completed_ns = attempt.get("completed_host_monotonic_ns")
         baseline = attempt.get("baseline_source_stamp_ns")
         acknowledged = attempt.get("acknowledged")
@@ -6401,13 +6458,23 @@ def _validated_nomotion_attempts(
             set(attempt) != expected_keys
             or attempt.get("sequence") != sequence
             or type(request_ns) is not int
+            or type(acknowledged_ns) is not int
             or type(completed_ns) is not int
-            or request_ns > completed_ns
             or (previous_completed is not None and request_ns < previous_completed)
             or (baseline is not None and type(baseline) is not int)
             or type(acknowledged) is not bool
             or type(observed) is not bool
         ):
+            return None
+        if not _valid_nomotion_attempt_timing(
+            request_ns=request_ns,
+            acknowledged_ns=acknowledged_ns,
+            wait_deadline_ns=wait_deadline_ns,
+            completed_ns=completed_ns,
+            acknowledged=acknowledged,
+            wait_budget_ns=wait_budget_ns,
+            completion_tolerance_ns=completion_tolerance_ns,
+        ) or (not acknowledged and observed):
             return None
         if _latest_header_stamp(amcl, before_host_monotonic_ns=request_ns) != baseline:
             return None
@@ -6461,6 +6528,8 @@ def _rederived_state(
         stored.get("amcl_nomotion_attempts"),
         amcl=recorders["amcl"],
         max_attempts=nomotion_max_attempts,
+        max_topic_age_s=options.max_topic_age_s,
+        sample_interval_s=options.sample_interval_s,
     )
     if (
         type(cutoff) is not int

@@ -231,6 +231,8 @@ def _differential_state(
             {
                 "sequence": 1,
                 "request_host_monotonic_ns": source_host_ns,
+                "acknowledged_host_monotonic_ns": source_host_ns + 1,
+                "wait_deadline_host_monotonic_ns": source_host_ns + 1_000_000_001,
                 "completed_host_monotonic_ns": evaluated_host_ns,
                 "baseline_source_stamp_ns": baseline_source_stamp_ns,
                 "acknowledged": True,

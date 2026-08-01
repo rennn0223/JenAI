@@ -248,12 +248,15 @@ Harness 的 32 次安全上限時，runtime identity gate 直接 fail closed。
 
 Nav2 的 `/request_nomotion_update` acknowledgement 只表示 AMCL 已接受強制更新要求，不保證該次
 scan callback 一定發布 `/amcl_pose`；pose publication 仍受 `resample_interval` 控制。因此 Harness
-最多依實際 interval 送出同數量的 bounded no-motion requests，每次各自保存 sequence、request／
-completion host time、request 前 retained header baseline、acknowledgement，以及該 attempt window
-內是否觀察到 header stamp 嚴格前進的新 sample；一旦新 sample 出現即停止後續 attempts。每次等待
+最多依實際 interval 送出同數量的 bounded no-motion requests，每次各自保存 sequence、request／acknowledgement／completion host time、由 acknowledgement 加上
+`max_topic_age_s` 得出的 immutable wait deadline、request 前 retained header baseline，以及該 attempt
+window 內是否觀察到 header stamp 嚴格前進的新 sample；一旦新 sample 出現即停止後續 attempts。每次等待
 仍受既有 `max_topic_age_s` 限制，service 未 acknowledgement、baseline 不存在，或所有 attempts
-結束後仍無新 sample，都會 fail closed。離線 validator 會從 raw AMCL samples 重建整份 append-only
-attempt journal，並拒絕次序、時間窗、baseline、觀測結果或 runtime interval 被修改的 artifact。這不會
+結束後仍無新 sample，都會 fail closed。離線 validator 會從 measurement contract 重建每次 deadline，並從 raw AMCL samples 重建整份
+append-only attempt journal；request、acknowledgement 與 completion 必須依序，completion 只能在 deadline
+加上一個 `sample_interval_s` scheduler tolerance 內完成。deadline、完成窗口、baseline、觀測結果、
+次序或 runtime interval 被修改的 artifact 都會被拒絕。service 未 acknowledgement 時不得保存 deadline
+或宣稱觀察到新 sample。這不會
 送導航 goal、速度命令或修改 Nav2／AMCL 參數。
 
 剛重新啟動且從未接受 goal 的 Nav2 action server 可能尚未發布 status。只有在正確的

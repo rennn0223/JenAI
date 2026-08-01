@@ -7,6 +7,7 @@ from jenai.acceptance.nav_differential import PairClassification
 from jenai.acceptance.nav_differential_runner import (
     _snapshot_topic_samples,
     _TopicRecorder,
+    _validated_nomotion_attempts,
     compare_differential_artifacts,
 )
 
@@ -218,6 +219,68 @@ def test_comparison_rejects_tampered_nomotion_attempt_journal(
     state = cast(dict[str, Any], left["t0_scenario_start"])
     attempts = cast(list[dict[str, Any]], state["amcl_nomotion_attempts"])
     attempts[0]["newer_amcl_observed"] = False
+
+    _assert_ineligible(left, right)
+
+
+def test_validator_rejects_amcl_sample_after_bounded_attempt_window() -> None:
+    recorder = _TopicRecorder()
+    recorder.samples = [
+        {
+            "host_monotonic_ns": 10,
+            "message": {"header": {"stamp": {"sec": 1, "nanosec": 0}}},
+        },
+        {
+            "host_monotonic_ns": 1_200_000_013,
+            "message": {"header": {"stamp": {"sec": 2, "nanosec": 0}}},
+        },
+    ]
+    attempts = [
+        {
+            "sequence": 1,
+            "request_host_monotonic_ns": 11,
+            "acknowledged_host_monotonic_ns": 12,
+            "wait_deadline_host_monotonic_ns": 1_000_000_012,
+            "completed_host_monotonic_ns": 1_200_000_013,
+            "baseline_source_stamp_ns": 1_000_000_000,
+            "acknowledged": True,
+            "newer_amcl_observed": True,
+        }
+    ]
+
+    assert (
+        _validated_nomotion_attempts(
+            attempts,
+            amcl=recorder,
+            max_attempts=1,
+            max_topic_age_s=1.0,
+            sample_interval_s=0.2,
+        )
+        is None
+    )
+
+
+def test_comparison_rejects_extended_nomotion_completion_window(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    state = cast(dict[str, Any], left["t0_scenario_start"])
+    attempt = cast(list[dict[str, Any]], state["amcl_nomotion_attempts"])[0]
+    deadline_ns = cast(int, attempt["wait_deadline_host_monotonic_ns"])
+    attempt["completed_host_monotonic_ns"] = deadline_ns + 200_000_001
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_rejects_tampered_nomotion_wait_deadline(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    state = cast(dict[str, Any], left["t0_scenario_start"])
+    attempt = cast(list[dict[str, Any]], state["amcl_nomotion_attempts"])[0]
+    attempt["wait_deadline_host_monotonic_ns"] = (
+        cast(int, attempt["wait_deadline_host_monotonic_ns"]) + 1
+    )
 
     _assert_ineligible(left, right)
 
