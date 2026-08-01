@@ -345,7 +345,7 @@ class DifferentialArtifact(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     schema_version: Literal[1] = 1
-    evidence_derivation_version: Literal[3] | None = None
+    evidence_derivation_version: Literal[3, 4] | None = None
     run_id: str = Field(min_length=1)
     pair_id: str = Field(min_length=1)
     mode: DifferentialMode
@@ -1422,6 +1422,7 @@ def _latest_topic_evidence(
     max_future_s: float = 0.0,
     cutoff_host_monotonic_ns: int,
     current_host_monotonic_ns: int,
+    minimum_source_stamp_exclusive: int | None = None,
 ) -> dict[str, Any] | None:
     candidates = [
         sample
@@ -1430,6 +1431,14 @@ def _latest_topic_evidence(
         and cutoff_host_monotonic_ns
         <= int(sample["host_monotonic_ns"])
         <= current_host_monotonic_ns
+        and (
+            minimum_source_stamp_exclusive is None
+            or (
+                isinstance(sample.get("message"), dict)
+                and (stamp := _header_stamp_ns(cast(dict[str, Any], sample["message"]))) is not None
+                and stamp > minimum_source_stamp_exclusive
+            )
+        )
     ]
     if not candidates:
         return None
@@ -1790,6 +1799,61 @@ def _action_status_window_evidence(
     return evidence, source, no_status_observed
 
 
+def _start_localization_evidence(
+    amcl: _TopicRecorder,
+    odom: _TopicRecorder,
+    clock: _TopicRecorder,
+    options: DifferentialCaptureOptions,
+    *,
+    cutoff_host_ns: int,
+    evaluated_host_ns: int,
+    amcl_request_host_ns: int | None,
+    amcl_baseline_source_stamp_ns: int | None,
+) -> tuple[int, dict[str, Any] | None, dict[str, Any] | None]:
+    amcl_cutoff_host_ns = amcl_request_host_ns or cutoff_host_ns
+    amcl_evidence = _latest_topic_evidence(
+        amcl,
+        clock,
+        max_age_s=options.max_topic_age_s,
+        max_future_s=options.sample_interval_s,
+        cutoff_host_monotonic_ns=amcl_cutoff_host_ns,
+        current_host_monotonic_ns=evaluated_host_ns,
+        minimum_source_stamp_exclusive=amcl_baseline_source_stamp_ns,
+    )
+    odom_evidence = _latest_topic_evidence(
+        odom,
+        clock,
+        max_age_s=options.max_topic_age_s,
+        max_future_s=options.sample_interval_s,
+        cutoff_host_monotonic_ns=cutoff_host_ns,
+        current_host_monotonic_ns=evaluated_host_ns,
+    )
+    return amcl_cutoff_host_ns, amcl_evidence, odom_evidence
+
+
+def _is_start_state_stationary(
+    velocity: tuple[float, float] | None,
+    options: DifferentialCaptureOptions,
+) -> bool:
+    return (
+        velocity is not None
+        and velocity[0] <= options.max_start_speed_mps
+        and abs(velocity[1]) <= options.max_start_yaw_rate_rps
+    )
+
+
+def _nomotion_evidence_failures(
+    *,
+    acknowledged: bool,
+    request_host_ns: int | None,
+    baseline_source_stamp_ns: int | None,
+) -> list[str]:
+    failures = [] if acknowledged else ["amcl_nomotion_update_unacknowledged"]
+    if request_host_ns is not None and baseline_source_stamp_ns is None:
+        failures.append("amcl_nomotion_baseline_unavailable")
+    return failures
+
+
 def _initial_state(
     *,
     pose: Pose2D | None,
@@ -1805,6 +1869,8 @@ def _initial_state(
     current_host_monotonic_ns: int | None = None,
     action_status_observation_ready: bool = False,
     nomotion_update_acknowledged: bool = False,
+    amcl_nomotion_request_host_monotonic_ns: int | None = None,
+    amcl_nomotion_baseline_source_stamp_ns: int | None = None,
 ) -> dict[str, Any]:
     evaluated_host_ns = current_host_monotonic_ns or time.monotonic_ns()
     max_age_ns = int(options.max_topic_age_s * 1_000_000_000)
@@ -1815,21 +1881,15 @@ def _initial_state(
         window_start_host_ns=recent_window_start_ns,
         evaluated_host_ns=evaluated_host_ns,
     )
-    amcl_evidence = _latest_topic_evidence(
+    amcl_cutoff_host_ns, amcl_evidence, odom_evidence = _start_localization_evidence(
         amcl,
-        clock,
-        max_age_s=options.max_topic_age_s,
-        max_future_s=options.sample_interval_s,
-        cutoff_host_monotonic_ns=cutoff_host_ns,
-        current_host_monotonic_ns=evaluated_host_ns,
-    )
-    odom_evidence = _latest_topic_evidence(
         odom,
         clock,
-        max_age_s=options.max_topic_age_s,
-        max_future_s=options.sample_interval_s,
-        cutoff_host_monotonic_ns=cutoff_host_ns,
-        current_host_monotonic_ns=evaluated_host_ns,
+        options,
+        cutoff_host_ns=cutoff_host_ns,
+        evaluated_host_ns=evaluated_host_ns,
+        amcl_request_host_ns=amcl_nomotion_request_host_monotonic_ns,
+        amcl_baseline_source_stamp_ns=amcl_nomotion_baseline_source_stamp_ns,
     )
     action_evidence, action_source, no_status_observed = _action_status_window_evidence(
         action_status,
@@ -1850,11 +1910,7 @@ def _initial_state(
     clock_advancing = len(clock_values) >= 2 and clock_values[-1] > clock_values[0]
     clock_pairs = zip(clock_values, clock_values[1:], strict=False)
     clock_backwards = any(right < left for left, right in clock_pairs)
-    stationary = (
-        velocity is not None
-        and velocity[0] <= options.max_start_speed_mps
-        and abs(velocity[1]) <= options.max_start_yaw_rate_rps
-    )
+    stationary = _is_start_state_stationary(velocity, options)
     ground_truth_fields, ground_truth_valid = _ground_truth_state_evidence(
         ground_truth,
         clock,
@@ -1881,8 +1937,13 @@ def _initial_state(
     )
     if ground_truth_fields["ground_truth_required"] is True and not ground_truth_valid:
         failures.append("ground_truth_start_evidence")
-    if not nomotion_update_acknowledged:
-        failures.append("amcl_nomotion_update_unacknowledged")
+    failures.extend(
+        _nomotion_evidence_failures(
+            acknowledged=nomotion_update_acknowledged,
+            request_host_ns=amcl_nomotion_request_host_monotonic_ns,
+            baseline_source_stamp_ns=amcl_nomotion_baseline_source_stamp_ns,
+        )
+    )
     failures = list(dict.fromkeys(failures))
     return {
         "status": "PASS" if not failures else "FAIL",
@@ -1899,6 +1960,8 @@ def _initial_state(
         "odom_source": _source_metadata(odom_evidence),
         "action_status_source": action_source,
         "amcl_nomotion_update_acknowledged": nomotion_update_acknowledged,
+        "amcl_nomotion_request_host_monotonic_ns": amcl_cutoff_host_ns,
+        "amcl_nomotion_baseline_source_stamp_ns": amcl_nomotion_baseline_source_stamp_ns,
         "linear_velocity_mps": velocity[0] if velocity else None,
         "angular_velocity_rps": velocity[1] if velocity else None,
         "stationary": stationary,
@@ -3376,7 +3439,7 @@ def _measurement_contract(
 def _base_artifact(options: DifferentialCaptureOptions) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "evidence_derivation_version": 3,
+        "evidence_derivation_version": 4,
         "run_id": f"nav-diff-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:8]}",
         "pair_id": options.pair_id,
         "mode": options.mode,
@@ -3511,6 +3574,64 @@ def _prepare_capture(
     return config_path, config, bound_action, goal, identity, target_binding
 
 
+def _latest_header_stamp(
+    recorder: _TopicRecorder,
+    *,
+    before_host_monotonic_ns: int,
+) -> int | None:
+    stamps = [
+        stamp
+        for sample in recorder.samples
+        if type(sample.get("host_monotonic_ns")) is int
+        and int(sample["host_monotonic_ns"]) < before_host_monotonic_ns
+        and isinstance(sample.get("message"), dict)
+        and (stamp := _header_stamp_ns(cast(dict[str, Any], sample["message"]))) is not None
+    ]
+    return max(stamps) if stamps else None
+
+
+def _has_newer_topic_sample(
+    recorder: _TopicRecorder,
+    *,
+    after_host_monotonic_ns: int,
+    baseline_source_stamp_ns: int | None,
+) -> bool:
+    return any(
+        type(sample.get("host_monotonic_ns")) is int
+        and int(sample["host_monotonic_ns"]) >= after_host_monotonic_ns
+        and isinstance(sample.get("message"), dict)
+        and (stamp := _header_stamp_ns(cast(dict[str, Any], sample["message"]))) is not None
+        and (baseline_source_stamp_ns is None or stamp > baseline_source_stamp_ns)
+        for sample in recorder.samples
+    )
+
+
+async def _request_nomotion_update_and_wait_for_amcl(
+    bridge: RosBridgeClient,
+    amcl: _TopicRecorder,
+    options: DifferentialCaptureOptions,
+) -> tuple[bool, int, int | None]:
+    request_host_ns = time.monotonic_ns()
+    baseline_source_stamp_ns = _latest_header_stamp(
+        amcl,
+        before_host_monotonic_ns=request_host_ns,
+    )
+    acknowledged = await bridge.request_nomotion_update()
+    if acknowledged and baseline_source_stamp_ns is not None:
+        deadline = time.monotonic() + options.max_topic_age_s
+        poll_s = min(0.02, options.sample_interval_s)
+        while (
+            not _has_newer_topic_sample(
+                amcl,
+                after_host_monotonic_ns=request_host_ns,
+                baseline_source_stamp_ns=baseline_source_stamp_ns,
+            )
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(poll_s)
+    return acknowledged, request_host_ns, baseline_source_stamp_ns
+
+
 async def _collect_start_state(
     bridge: RosBridgeClient,
     config: AppConfig,
@@ -3544,7 +3665,6 @@ async def _collect_dispatch_state(
     cutoff_host_monotonic_ns: int,
 ) -> dict[str, Any]:
     async with asyncio.TaskGroup() as tasks:
-        nomotion_task = tasks.create_task(bridge.request_nomotion_update())
         pose_task = tasks.create_task(
             pose_observations.capture(
                 bridge,
@@ -3557,6 +3677,15 @@ async def _collect_dispatch_state(
         )
         tasks.create_task(asyncio.sleep(options.preflight_sample_s))
     start_pose, observation_id, _ = pose_task.result()
+    (
+        nomotion_acknowledged,
+        nomotion_request_host_ns,
+        nomotion_baseline_source_stamp_ns,
+    ) = await _request_nomotion_update_and_wait_for_amcl(
+        bridge,
+        recorders["amcl"],
+        options,
+    )
     return _initial_state(
         pose=start_pose,
         map_pose_observation_id=observation_id,
@@ -3569,7 +3698,9 @@ async def _collect_dispatch_state(
         calibration=calibration,
         cutoff_host_monotonic_ns=cutoff_host_monotonic_ns,
         action_status_observation_ready=True,
-        nomotion_update_acknowledged=nomotion_task.result(),
+        nomotion_update_acknowledged=nomotion_acknowledged,
+        amcl_nomotion_request_host_monotonic_ns=nomotion_request_host_ns,
+        amcl_nomotion_baseline_source_stamp_ns=nomotion_baseline_source_stamp_ns,
     )
 
 
@@ -3890,6 +4021,7 @@ async def _record_live_preflight(
     except BridgeError:
         artifact["dispatch_observations"] = observed_bridge.observations
         artifact["topic_samples_at_dispatch_end"] = _snapshot_topic_samples(recorders)
+        artifact["topic_samples"] = _snapshot_topic_samples(recorders)
         dispatch = observed_bridge.observations[0] if observed_bridge.observations else {}
         state = dispatch.get("state_before_forward")
         failures = (
@@ -3994,6 +4126,7 @@ async def _record_live_evidence(
         observed_bridge.off_event("nav_result", schedule_terminal_map_checkpoint)
         artifact["dispatch_observations"] = observed_bridge.observations
         artifact["topic_samples_at_dispatch_end"] = _snapshot_topic_samples(recorders)
+        artifact["topic_samples"] = _snapshot_topic_samples(recorders)
     returned_ns = time.monotonic_ns()
     timeline = _observed_dispatch_timeline(
         observed_bridge,
@@ -4663,6 +4796,7 @@ async def _capture_live_path(
         pose_observations,
     )
     artifact["t0_scenario_start"] = t0
+    artifact["topic_samples"] = _snapshot_topic_samples(recorders)
     if t0["status"] != "PASS":
         _record_capture_gate_failure(
             artifact,
@@ -6189,12 +6323,28 @@ def _rederived_state(
     )
     cutoff = stored.get("cutoff_host_monotonic_ns")
     evaluated = stored.get("evaluated_host_monotonic_ns")
-    if type(cutoff) is not int or type(evaluated) is not int:
+    amcl_request = stored.get("amcl_nomotion_request_host_monotonic_ns")
+    amcl_baseline = stored.get("amcl_nomotion_baseline_source_stamp_ns")
+    if (
+        type(cutoff) is not int
+        or type(evaluated) is not int
+        or type(amcl_request) is not int
+        or type(amcl_baseline) is not int
+    ):
+        return None
+    if (
+        _latest_header_stamp(
+            recorders["amcl"],
+            before_host_monotonic_ns=amcl_request,
+        )
+        != amcl_baseline
+    ):
         return None
     if not (
         cutoff
         <= observation.request_host_monotonic_ns
         <= observation.completed_host_monotonic_ns
+        <= amcl_request
         <= evaluated
     ):
         return None
@@ -6215,6 +6365,8 @@ def _rederived_state(
             and stored["action_status_source"].get("observation") == "no_status_observed"
         ),
         nomotion_update_acknowledged=(stored.get("amcl_nomotion_update_acknowledged") is True),
+        amcl_nomotion_request_host_monotonic_ns=amcl_request,
+        amcl_nomotion_baseline_source_stamp_ns=amcl_baseline,
     )
 
 
@@ -6721,7 +6873,7 @@ def _raw_evidence_failures(
     goal: CanonicalGoal,
     ground_truth_calibration: GroundTruthCalibration | None,
 ) -> list[str]:
-    if artifact.get("evidence_derivation_version") != 3:
+    if artifact.get("evidence_derivation_version") != 4:
         return ["evidence_derivation_version"]
     pose_observations, pose_failures = _validated_pose_observation_index(artifact)
     if pose_observations is None:

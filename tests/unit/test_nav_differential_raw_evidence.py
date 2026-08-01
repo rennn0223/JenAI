@@ -82,8 +82,10 @@ def _set_source_lead(artifact: dict[str, Any], lead_ns: int) -> None:
     for snapshot_name in ("topic_samples", "topic_samples_at_dispatch_end"):
         streams = cast(dict[str, list[dict[str, Any]]], artifact[snapshot_name])
         for stream_name in ("amcl", "odom"):
-            for sample in streams[stream_name][:2]:
+            for sample in streams[stream_name]:
                 host_ns = int(sample["host_monotonic_ns"])
+                if host_ns not in source_by_host:
+                    continue
                 stamp_ns = source_by_host[host_ns]
                 message = cast(dict[str, Any], sample["message"])
                 header = cast(dict[str, Any], message["header"])
@@ -102,6 +104,8 @@ def _set_source_lead(artifact: dict[str, Any], lead_ns: int) -> None:
             ],
         ),
     ]
+    for state in states[1:]:
+        state["amcl_nomotion_baseline_source_stamp_ns"] = source_by_host[35]
     for state in states:
         capture_clock_ns = int(cast(dict[str, Any], state["amcl_source"])["capture_clock_ns"])
         for source_name in ("amcl_source", "odom_source"):
@@ -191,6 +195,26 @@ def test_comparison_rejects_missing_nomotion_acknowledgement(
     left, right = _artifact_pair(differential_artifact_factory)
     state = cast(dict[str, Any], left["t0_scenario_start"])
     state.pop("amcl_nomotion_update_acknowledged")
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_rejects_missing_nomotion_request_cutoff(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    state = cast(dict[str, Any], left["t0_scenario_start"])
+    state.pop("amcl_nomotion_request_host_monotonic_ns")
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_rejects_tampered_nomotion_baseline_stamp(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    state = cast(dict[str, Any], left["t0_scenario_start"])
+    state["amcl_nomotion_baseline_source_stamp_ns"] = 9_000_000_000
 
     _assert_ineligible(left, right)
 

@@ -167,6 +167,72 @@ def test_start_gate_rejects_headerless_amcl(tmp_path: Path) -> None:
     assert "amcl_stale_or_headerless" in state["failures"]
 
 
+def test_start_gate_uses_only_amcl_published_after_nomotion_request(tmp_path: Path) -> None:
+    now = 10_000_000_000
+    clock, amcl, odom, action_status = _start_recorders()
+    clock.samples = [
+        {"host_monotonic_ns": now - 200_000_000, "message": {"clock": _stamp(10)}},
+        {"host_monotonic_ns": now, "message": {"clock": _stamp(10, 100_000_000)}},
+    ]
+    amcl.samples = [
+        {
+            "host_monotonic_ns": now - 50_000_000,
+            "message": _pose_message(stamp=_stamp(8)),
+        },
+        {
+            "host_monotonic_ns": now - 20_000_000,
+            "message": _pose_message(stamp=_stamp(10, 100_000_000)),
+        },
+    ]
+    odom.samples = [
+        {
+            "host_monotonic_ns": now - 10_000_000,
+            "message": _odom_message(stamp=_stamp(10, 100_000_000)),
+        }
+    ]
+    action_status.samples = []
+
+    state = _initial_state(
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
+        clock=clock,
+        amcl=amcl,
+        odom=odom,
+        action_status=action_status,
+        options=_options(tmp_path),
+        cutoff_host_monotonic_ns=now - 300_000_000,
+        amcl_nomotion_request_host_monotonic_ns=now - 100_000_000,
+        amcl_nomotion_baseline_source_stamp_ns=8_000_000_000,
+        current_host_monotonic_ns=now,
+        action_status_observation_ready=True,
+        nomotion_update_acknowledged=True,
+    )
+
+    assert state["status"] == "PASS"
+    assert state["amcl_source"]["source_stamp_ns"] == 10_100_000_000
+    assert state["amcl_nomotion_request_host_monotonic_ns"] == now - 100_000_000
+    assert state["amcl_nomotion_baseline_source_stamp_ns"] == 8_000_000_000
+
+
+def test_start_gate_rejects_nomotion_without_retained_baseline(tmp_path: Path) -> None:
+    clock, amcl, odom, action_status = _start_recorders()
+    request_host_ns = int(amcl.samples[0]["host_monotonic_ns"])
+
+    state = _initial_state(
+        pose=Pose2D(x=1.0, y=2.0, yaw=0.0),
+        clock=clock,
+        amcl=amcl,
+        odom=odom,
+        action_status=action_status,
+        options=_options(tmp_path),
+        amcl_nomotion_request_host_monotonic_ns=request_host_ns,
+        amcl_nomotion_baseline_source_stamp_ns=None,
+        nomotion_update_acknowledged=True,
+    )
+
+    assert state["status"] == "FAIL"
+    assert "amcl_nomotion_baseline_unavailable" in state["failures"]
+
+
 def test_start_gate_rejects_stale_odom(tmp_path: Path) -> None:
     state = _initial_state_for(tmp_path, odom_stamp=_stamp(8))
 

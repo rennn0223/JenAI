@@ -293,7 +293,9 @@ def test_live_preflight_runs_t0_and_t1_without_forwarding_goal(  # noqa: C901
         identity["controller_odom_topic"] = "/odom"
 
     async def watch_topics(*args: object, **kwargs: object) -> list[int]:
-        del args, kwargs
+        del kwargs
+        recorders = cast(dict[str, runner._TopicRecorder], args[1])
+        recorders["clock"].record({"clock": _stamp(1_000_000_000)})
         return []
 
     async def heartbeat(_bridge: object) -> None:
@@ -389,6 +391,18 @@ def test_live_preflight_runs_t0_and_t1_without_forwarding_goal(  # noqa: C901
     assert result["cleanup"]["status"] == "PASS"
     assert forwarded_goals == []
     assert reloaded == result
+
+    async def blocked_start(*args: object, **kwargs: object) -> dict[str, Any]:
+        del args, kwargs
+        return {"status": "FAIL", "failures": ["forced_start_gate_failure"]}
+
+    monkeypatch.setattr(runner, "_collect_start_state", blocked_start)
+    blocked_options = options.model_copy(update={"output": tmp_path / "blocked.json"})
+    blocked = asyncio.run(runner.capture_navigation_differential(blocked_options))
+
+    assert blocked["overall"] == "blocked"
+    assert blocked["motion_attempted"] is False
+    assert blocked["topic_samples"]["clock"][0]["message"] == {"clock": _stamp(1_000_000_000)}
 
 
 def test_cleanup_failure_downgrades_blocked_capture_and_persists(
