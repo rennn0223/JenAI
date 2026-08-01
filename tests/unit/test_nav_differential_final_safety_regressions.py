@@ -178,6 +178,44 @@ def test_runtime_identity_uses_script_recorded_nav2_override(
     assert identity["nav_params_sha256"] == hashlib.sha256(rendered_params.read_bytes()).hexdigest()
 
 
+def test_nav2_runtime_identity_bypasses_empty_ros_daemon_node_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    required_nodes = "/amcl\n/controller_server\n/planner_server\n/bt_navigator\n"
+
+    def command_output(
+        command: list[str],
+        **_kwargs: object,
+    ) -> str:
+        commands.append(command)
+        if command[:3] == ["ros2", "node", "list"]:
+            return required_nodes if "--no-daemon" in command else ""
+        return ""
+
+    monkeypatch.setattr(runner, "_command_output", command_output)
+    monkeypatch.setattr(runner, "_controller_odom_topic", lambda **_kwargs: "/chassis/odom")
+    monkeypatch.setattr(runner, "_nav2_process_generation", lambda _session: None)
+    monkeypatch.setattr(runner, "_safe_matching_process_inventory", list)
+
+    identity = runner._nav2_runtime_identity("nav2", ros_env={"ROS_DOMAIN_ID": "0"})
+
+    assert identity["node_name_counts"] == {
+        "/amcl": 1,
+        "/controller_server": 1,
+        "/planner_server": 1,
+        "/bt_navigator": 1,
+    }
+    assert commands[0] == [
+        "ros2",
+        "node",
+        "list",
+        "--no-daemon",
+        "--spin-time",
+        "3.0",
+    ]
+
+
 def test_nav2_state_dir_matches_launcher_default_without_xdg_runtime_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

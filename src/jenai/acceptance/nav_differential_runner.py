@@ -1119,7 +1119,17 @@ def _source_revision_identity(
 
 
 def _nav2_runtime_identity(session: str, *, ros_env: dict[str, str]) -> dict[str, Any]:
-    ros_nodes = _command_output(["ros2", "node", "list"], env=ros_env)
+    ros_nodes = _command_output(
+        [
+            "ros2",
+            "node",
+            "list",
+            "--no-daemon",
+            "--spin-time",
+            "3.0",
+        ],
+        env=ros_env,
+    )
     node_lines = [line.strip() for line in (ros_nodes or "").splitlines() if line.strip()]
     required_nodes = ("/amcl", "/controller_server", "/planner_server", "/bt_navigator")
     node_counts = {name: node_lines.count(name) for name in required_nodes}
