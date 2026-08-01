@@ -191,6 +191,8 @@ def test_nav2_runtime_identity_bypasses_empty_ros_daemon_node_cache(
         commands.append(command)
         if command[:3] == ["ros2", "node", "list"]:
             return required_nodes if "--no-daemon" in command else ""
+        if command == ["ros2", "param", "get", "/amcl", "resample_interval"]:
+            return "Integer value is: 3"
         return ""
 
     monkeypatch.setattr(runner, "_command_output", command_output)
@@ -206,6 +208,7 @@ def test_nav2_runtime_identity_bypasses_empty_ros_daemon_node_cache(
         "/planner_server": 1,
         "/bt_navigator": 1,
     }
+    assert identity["amcl_resample_interval"] == 3
     assert commands[0] == [
         "ros2",
         "node",
@@ -364,6 +367,7 @@ def test_start_evidence_requests_nomotion_after_shared_observation_window(
                 "amcl_nomotion_request_host_monotonic_ns"
             ],
             "map_pose_observation_id": kwargs["map_pose_observation_id"],
+            "amcl_nomotion_attempts": kwargs["amcl_nomotion_attempts"],
         },
     )
     recorders = {
@@ -398,3 +402,141 @@ def test_start_evidence_requests_nomotion_after_shared_observation_window(
     assert state["amcl_nomotion_update_acknowledged"] is nomotion_acknowledged
     assert state["amcl_nomotion_request_host_monotonic_ns"] > 0
     assert state["map_pose_observation_id"] == "pose-t0"
+    attempt = state["amcl_nomotion_attempts"][0]
+    assert attempt["request_host_monotonic_ns"] <= attempt["acknowledged_host_monotonic_ns"]
+    assert attempt["acknowledged_host_monotonic_ns"] <= attempt["completed_host_monotonic_ns"]
+    if nomotion_acknowledged:
+        assert attempt["wait_deadline_host_monotonic_ns"] == (
+            attempt["acknowledged_host_monotonic_ns"] + 1_000_000_000
+        )
+    else:
+        assert attempt["wait_deadline_host_monotonic_ns"] is None
+        assert attempt["newer_amcl_observed"] is False
+
+
+def test_nomotion_wait_observes_sample_arriving_at_deadline_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    clock_ns = 0
+    monkeypatch.setattr(runner.time, "monotonic_ns", lambda: clock_ns)
+    recorder = runner._TopicRecorder()
+    recorder.record({"header": {"stamp": {"sec": 1, "nanosec": 0}}})
+    clock_ns = 1
+
+    class _Bridge:
+        async def request_nomotion_update(self) -> bool:
+            return True
+
+    async def publish_during_final_sleep(_delay_s: float) -> None:
+        nonlocal clock_ns
+        clock_ns = 100_000_001
+        recorder.record({"header": {"stamp": {"sec": 2, "nanosec": 0}}})
+
+    monkeypatch.setattr(runner.asyncio, "sleep", publish_during_final_sleep)
+    options = DifferentialCaptureOptions(
+        output=tmp_path / "capture.json",
+        location="Dock",
+        pair_id="pair-boundary",
+        mode=DifferentialMode.R1_BRIDGE_NAV2,
+        simulation_epoch="epoch-boundary",
+        reset_policy=ResetPolicy.NAV2_RESTART,
+        max_topic_age_s=0.1,
+        sample_interval_s=0.1,
+    )
+
+    async def exercise() -> tuple[bool, int, int | None, list[dict[str, Any]]]:
+        return await runner._request_nomotion_update_and_wait_for_amcl(
+            _Bridge(), recorder, options, max_attempts=1
+        )
+
+    result = asyncio.run(exercise())
+
+    attempt = result[3][0]
+    assert attempt["acknowledged_host_monotonic_ns"] == 1
+    assert attempt["wait_deadline_host_monotonic_ns"] == 100_000_001
+    assert attempt["completed_host_monotonic_ns"] == 100_000_001
+    assert attempt["newer_amcl_observed"] is True
+
+
+def test_start_evidence_retries_nomotion_until_resample_publishes_amcl(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A non-boundary AMCL update must not make an eligible start look stale."""
+
+    request_count = 0
+
+    class _Bridge:
+        async def request_nomotion_update(self) -> bool:
+            nonlocal request_count
+            request_count += 1
+            if request_count == 3:
+                recorders["amcl"].record({"header": {"stamp": {"sec": 2, "nanosec": 0}}})
+            return True
+
+    class _PoseObservations:
+        async def capture(self, *args: Any, **kwargs: Any) -> tuple[Pose2D, str, None]:
+            del args, kwargs
+            return Pose2D(x=-6.0, y=-1.0, yaw=3.142), "pose-t0", None
+
+    captured: dict[str, Any] = {}
+
+    def initial_state(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {
+            "status": "PASS",
+            "amcl_nomotion_attempts": kwargs["amcl_nomotion_attempts"],
+        }
+
+    monkeypatch.setattr(runner, "_initial_state", initial_state)
+    recorders = {
+        name: runner._TopicRecorder()
+        for name in ("clock", "amcl", "odom", "action_status", "ground_truth")
+    }
+    recorders["amcl"].record({"header": {"stamp": {"sec": 1, "nanosec": 0}}})
+    calibration = GroundTruthCalibration(
+        status="GROUND_TRUTH_UNAVAILABLE",
+        scene_sha256="a" * 64,
+        map_sha256="b" * 64,
+        source="regression test",
+    )
+
+    async def exercise() -> dict[str, Any]:
+        return await runner._collect_dispatch_state(
+            _Bridge(),
+            AppConfig(deployment_mode="simulation"),
+            recorders,
+            DifferentialCaptureOptions(
+                output=tmp_path / "capture.json",
+                location="Dock",
+                pair_id="pair-resample",
+                mode=DifferentialMode.R1_BRIDGE_NAV2,
+                simulation_epoch="epoch-resample",
+                reset_policy=ResetPolicy.NAV2_RESTART,
+                preflight_sample_s=0.001,
+                max_topic_age_s=0.002,
+                sample_interval_s=0.001,
+            ),
+            calibration,
+            _PoseObservations(),
+            purpose=runner.PoseLookupPurpose.T0_START,
+            cutoff_host_monotonic_ns=1,
+            nomotion_max_attempts=3,
+        )
+
+    state = asyncio.run(exercise())
+
+    assert state["status"] == "PASS"
+    assert request_count == 3
+    attempts = state["amcl_nomotion_attempts"]
+    assert [attempt["acknowledged"] for attempt in attempts] == [True, True, True]
+    assert all(
+        attempt["completed_host_monotonic_ns"] >= attempt["request_host_monotonic_ns"]
+        for attempt in attempts
+    )
+    assert [attempt["newer_amcl_observed"] for attempt in attempts] == [False, False, True]
+    assert (
+        captured["amcl_nomotion_request_host_monotonic_ns"]
+        == attempts[-1]["request_host_monotonic_ns"]
+    )

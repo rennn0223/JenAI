@@ -147,6 +147,7 @@ def _differential_runtime_identity(runtime: str) -> dict[str, object]:
         "nav2_tmux_session": "nav2",
         "nav2_process_generation": generation,
         "nav2_process_generation_end": deepcopy(generation),
+        "amcl_resample_interval": 3,
         "runtime_parameter_sha256": {
             "/amcl": "1" * 64,
             "/controller_server": "2" * 64,
@@ -226,6 +227,18 @@ def _differential_state(
         "amcl_nomotion_update_acknowledged": True,
         "amcl_nomotion_request_host_monotonic_ns": source_host_ns,
         "amcl_nomotion_baseline_source_stamp_ns": baseline_source_stamp_ns,
+        "amcl_nomotion_attempts": [
+            {
+                "sequence": 1,
+                "request_host_monotonic_ns": source_host_ns,
+                "acknowledged_host_monotonic_ns": source_host_ns + 1,
+                "wait_deadline_host_monotonic_ns": source_host_ns + 1_000_000_001,
+                "completed_host_monotonic_ns": evaluated_host_ns,
+                "baseline_source_stamp_ns": baseline_source_stamp_ns,
+                "acknowledged": True,
+                "newer_amcl_observed": True,
+            }
+        ],
     }
 
 
@@ -526,6 +539,7 @@ def differential_artifact_factory():
                 "navigate_to_pose_action_count",
                 "navigate_to_pose_server_providers",
                 "controller_odom_topic",
+                "amcl_resample_interval",
                 "nav2_tmux_session",
                 "nav2_process_generation",
                 "controller_lifecycle",
@@ -622,7 +636,7 @@ def differential_artifact_factory():
         ]
         artifact: dict[str, object] = {
             "schema_version": 1,
-            "evidence_derivation_version": 4,
+            "evidence_derivation_version": 5,
             "run_id": f"run-{mode}",
             "pair_id": pair_id,
             "mode": mode,
