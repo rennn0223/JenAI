@@ -67,6 +67,7 @@ _AMCL_TOPIC = "/amcl_pose"
 _AMCL_TYPE = "geometry_msgs/msg/PoseWithCovarianceStamped"
 _ODOM_TYPE = "nav_msgs/msg/Odometry"
 _NAV2_TERMINAL_STATUSES = frozenset({"succeeded", "canceled", "aborted", "failed", "rejected"})
+_MAX_AMCL_NOMOTION_ATTEMPTS = 32
 _JENAI_NAVIGATION_EXECUTION_STATUSES = frozenset(
     {"succeeded", "failed", "endpoint_mismatch", "blocked", "referred", "unavailable"}
 )
@@ -345,7 +346,7 @@ class DifferentialArtifact(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     schema_version: Literal[1] = 1
-    evidence_derivation_version: Literal[3, 4] | None = None
+    evidence_derivation_version: Literal[3, 4, 5] | None = None
     run_id: str = Field(min_length=1)
     pair_id: str = Field(min_length=1)
     mode: DifferentialMode
@@ -1095,6 +1096,7 @@ def _runtime_fingerprint(identity: dict[str, Any]) -> str:
             "navigate_to_pose_action_count",
             "navigate_to_pose_server_providers",
             "controller_odom_topic",
+            "amcl_resample_interval",
             "nav2_process_generation",
             "ground_truth_calibration_effective_sha256",
         )
@@ -1148,6 +1150,17 @@ def _source_revision_identity(
     }
 
 
+def _positive_integer_parameter(value: str | None, *, prefix: str) -> int | None:
+    if value is None or not value.startswith(prefix):
+        return None
+    raw = value.removeprefix(prefix).strip()
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _nav2_runtime_identity(session: str, *, ros_env: dict[str, str]) -> dict[str, Any]:
     ros_nodes = _command_output(
         [
@@ -1172,6 +1185,13 @@ def _nav2_runtime_identity(session: str, *, ros_env: dict[str, str]) -> dict[str
         node: _command_output(["ros2", "param", "dump", node], env=ros_env)
         for node in required_nodes
     }
+    amcl_resample_interval = _positive_integer_parameter(
+        _command_output(
+            ["ros2", "param", "get", "/amcl", "resample_interval"],
+            env=ros_env,
+        ),
+        prefix="Integer value is:",
+    )
     return {
         "ros_nodes": ros_nodes,
         "node_name_counts": node_counts,
@@ -1181,6 +1201,7 @@ def _nav2_runtime_identity(session: str, *, ros_env: dict[str, str]) -> dict[str
         ),
         "navigate_to_pose_server_providers": _navigate_to_pose_server_providers(action_info),
         "controller_odom_topic": _controller_odom_topic(ros_env=ros_env),
+        "amcl_resample_interval": amcl_resample_interval,
         "nav2_tmux_session": session,
         "nav2_process_generation": _nav2_process_generation(session),
         "controller_lifecycle": _command_output(
@@ -1222,6 +1243,7 @@ _RUNTIME_STACK_CONTINUITY_FIELDS = (
     "navigate_to_pose_action_count",
     "navigate_to_pose_server_providers",
     "controller_odom_topic",
+    "amcl_resample_interval",
     "nav2_tmux_session",
     "nav2_process_generation",
     "controller_lifecycle",
@@ -1871,6 +1893,7 @@ def _initial_state(
     nomotion_update_acknowledged: bool = False,
     amcl_nomotion_request_host_monotonic_ns: int | None = None,
     amcl_nomotion_baseline_source_stamp_ns: int | None = None,
+    amcl_nomotion_attempts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     evaluated_host_ns = current_host_monotonic_ns or time.monotonic_ns()
     max_age_ns = int(options.max_topic_age_s * 1_000_000_000)
@@ -1962,6 +1985,7 @@ def _initial_state(
         "amcl_nomotion_update_acknowledged": nomotion_update_acknowledged,
         "amcl_nomotion_request_host_monotonic_ns": amcl_cutoff_host_ns,
         "amcl_nomotion_baseline_source_stamp_ns": amcl_nomotion_baseline_source_stamp_ns,
+        "amcl_nomotion_attempts": copy.deepcopy(amcl_nomotion_attempts or []),
         "linear_velocity_mps": velocity[0] if velocity else None,
         "angular_velocity_rps": velocity[1] if velocity else None,
         "stationary": stationary,
@@ -3204,6 +3228,11 @@ def _runtime_stack_failures(identity: dict[str, Any]) -> list[str]:
         ),
         (not complete_parameters, "runtime_parameter_snapshot"),
         (
+            type(identity.get("amcl_resample_interval")) is not int
+            or not 1 <= int(identity["amcl_resample_interval"]) <= _MAX_AMCL_NOMOTION_ATTEMPTS,
+            "amcl_resample_interval",
+        ),
+        (
             not isinstance(identity.get("controller_odom_topic"), str)
             or _normalized_ros_topic(cast(str, identity["controller_odom_topic"]))
             != identity.get("controller_odom_topic"),
@@ -3439,7 +3468,7 @@ def _measurement_contract(
 def _base_artifact(options: DifferentialCaptureOptions) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "evidence_derivation_version": 4,
+        "evidence_derivation_version": 5,
         "run_id": f"nav-diff-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:8]}",
         "pair_id": options.pair_id,
         "mode": options.mode,
@@ -3595,10 +3624,15 @@ def _has_newer_topic_sample(
     *,
     after_host_monotonic_ns: int,
     baseline_source_stamp_ns: int | None,
+    before_host_monotonic_ns: int | None = None,
 ) -> bool:
     return any(
         type(sample.get("host_monotonic_ns")) is int
         and int(sample["host_monotonic_ns"]) >= after_host_monotonic_ns
+        and (
+            before_host_monotonic_ns is None
+            or int(sample["host_monotonic_ns"]) <= before_host_monotonic_ns
+        )
         and isinstance(sample.get("message"), dict)
         and (stamp := _header_stamp_ns(cast(dict[str, Any], sample["message"]))) is not None
         and (baseline_source_stamp_ns is None or stamp > baseline_source_stamp_ns)
@@ -3610,26 +3644,55 @@ async def _request_nomotion_update_and_wait_for_amcl(
     bridge: RosBridgeClient,
     amcl: _TopicRecorder,
     options: DifferentialCaptureOptions,
-) -> tuple[bool, int, int | None]:
-    request_host_ns = time.monotonic_ns()
-    baseline_source_stamp_ns = _latest_header_stamp(
-        amcl,
-        before_host_monotonic_ns=request_host_ns,
-    )
-    acknowledged = await bridge.request_nomotion_update()
-    if acknowledged and baseline_source_stamp_ns is not None:
-        deadline = time.monotonic() + options.max_topic_age_s
-        poll_s = min(0.02, options.sample_interval_s)
-        while (
-            not _has_newer_topic_sample(
+    *,
+    max_attempts: int,
+) -> tuple[bool, int, int | None, list[dict[str, Any]]]:
+    if not 1 <= max_attempts <= _MAX_AMCL_NOMOTION_ATTEMPTS:
+        raise ValueError("no-motion attempt limit is outside the accepted range")
+    attempts: list[dict[str, Any]] = []
+    for sequence in range(1, max_attempts + 1):
+        request_host_ns = time.monotonic_ns()
+        baseline_source_stamp_ns = _latest_header_stamp(
+            amcl,
+            before_host_monotonic_ns=request_host_ns,
+        )
+        acknowledged = await bridge.request_nomotion_update()
+        newer_observed = False
+        if acknowledged and baseline_source_stamp_ns is not None:
+            deadline = time.monotonic() + options.max_topic_age_s
+            poll_s = min(0.02, options.sample_interval_s)
+            newer_observed = _has_newer_topic_sample(
                 amcl,
                 after_host_monotonic_ns=request_host_ns,
                 baseline_source_stamp_ns=baseline_source_stamp_ns,
             )
-            and time.monotonic() < deadline
-        ):
-            await asyncio.sleep(poll_s)
-    return acknowledged, request_host_ns, baseline_source_stamp_ns
+            while not newer_observed and time.monotonic() < deadline:
+                await asyncio.sleep(poll_s)
+                newer_observed = _has_newer_topic_sample(
+                    amcl,
+                    after_host_monotonic_ns=request_host_ns,
+                    baseline_source_stamp_ns=baseline_source_stamp_ns,
+                )
+        completed_host_ns = time.monotonic_ns()
+        attempts.append(
+            {
+                "sequence": sequence,
+                "request_host_monotonic_ns": request_host_ns,
+                "completed_host_monotonic_ns": completed_host_ns,
+                "baseline_source_stamp_ns": baseline_source_stamp_ns,
+                "acknowledged": acknowledged,
+                "newer_amcl_observed": newer_observed,
+            }
+        )
+        if not acknowledged or baseline_source_stamp_ns is None or newer_observed:
+            break
+    selected = attempts[-1]
+    return (
+        all(attempt["acknowledged"] is True for attempt in attempts),
+        int(selected["request_host_monotonic_ns"]),
+        cast(int | None, selected["baseline_source_stamp_ns"]),
+        attempts,
+    )
 
 
 async def _collect_start_state(
@@ -3639,6 +3702,8 @@ async def _collect_start_state(
     options: DifferentialCaptureOptions,
     calibration: GroundTruthCalibration,
     pose_observations: _PoseObservationRecorder,
+    *,
+    nomotion_max_attempts: int,
 ) -> dict[str, Any]:
     cutoff_host_ns = time.monotonic_ns()
     return await _collect_dispatch_state(
@@ -3650,6 +3715,7 @@ async def _collect_start_state(
         pose_observations,
         purpose=PoseLookupPurpose.T0_START,
         cutoff_host_monotonic_ns=cutoff_host_ns,
+        nomotion_max_attempts=nomotion_max_attempts,
     )
 
 
@@ -3663,6 +3729,7 @@ async def _collect_dispatch_state(
     *,
     purpose: PoseLookupPurpose,
     cutoff_host_monotonic_ns: int,
+    nomotion_max_attempts: int = 1,
 ) -> dict[str, Any]:
     async with asyncio.TaskGroup() as tasks:
         pose_task = tasks.create_task(
@@ -3681,10 +3748,12 @@ async def _collect_dispatch_state(
         nomotion_acknowledged,
         nomotion_request_host_ns,
         nomotion_baseline_source_stamp_ns,
+        nomotion_attempts,
     ) = await _request_nomotion_update_and_wait_for_amcl(
         bridge,
         recorders["amcl"],
         options,
+        max_attempts=nomotion_max_attempts,
     )
     return _initial_state(
         pose=start_pose,
@@ -3701,6 +3770,7 @@ async def _collect_dispatch_state(
         nomotion_update_acknowledged=nomotion_acknowledged,
         amcl_nomotion_request_host_monotonic_ns=nomotion_request_host_ns,
         amcl_nomotion_baseline_source_stamp_ns=nomotion_baseline_source_stamp_ns,
+        amcl_nomotion_attempts=nomotion_attempts,
     )
 
 
@@ -3916,6 +3986,7 @@ def _pre_dispatch_observer(
             pose_observations,
             purpose=PoseLookupPurpose.T1_PRE_DISPATCH,
             cutoff_host_monotonic_ns=invoked_ns,
+            nomotion_max_attempts=int(identity["amcl_resample_interval"]),
         )
         input_continuity = _capture_input_continuity(identity)
         map_checkpoint = await _capture_map_identity_checkpoint(
@@ -4794,6 +4865,7 @@ async def _capture_live_path(
         options,
         calibration,
         pose_observations,
+        nomotion_max_attempts=int(identity["amcl_resample_interval"]),
     )
     artifact["t0_scenario_start"] = t0
     artifact["topic_samples"] = _snapshot_topic_samples(recorders)
@@ -6297,6 +6369,65 @@ def _offline_state_options(
     )
 
 
+def _validated_nomotion_attempts(
+    value: object,
+    *,
+    amcl: _TopicRecorder,
+    max_attempts: int,
+) -> list[dict[str, Any]] | None:
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= max_attempts
+        or any(not isinstance(item, dict) for item in value)
+    ):
+        return None
+    attempts = cast(list[dict[str, Any]], value)
+    expected_keys = {
+        "sequence",
+        "request_host_monotonic_ns",
+        "completed_host_monotonic_ns",
+        "baseline_source_stamp_ns",
+        "acknowledged",
+        "newer_amcl_observed",
+    }
+    previous_completed: int | None = None
+    for sequence, attempt in enumerate(attempts, start=1):
+        request_ns = attempt.get("request_host_monotonic_ns")
+        completed_ns = attempt.get("completed_host_monotonic_ns")
+        baseline = attempt.get("baseline_source_stamp_ns")
+        acknowledged = attempt.get("acknowledged")
+        observed = attempt.get("newer_amcl_observed")
+        if (
+            set(attempt) != expected_keys
+            or attempt.get("sequence") != sequence
+            or type(request_ns) is not int
+            or type(completed_ns) is not int
+            or request_ns > completed_ns
+            or (previous_completed is not None and request_ns < previous_completed)
+            or (baseline is not None and type(baseline) is not int)
+            or type(acknowledged) is not bool
+            or type(observed) is not bool
+        ):
+            return None
+        if _latest_header_stamp(amcl, before_host_monotonic_ns=request_ns) != baseline:
+            return None
+        actual_observed = _has_newer_topic_sample(
+            amcl,
+            after_host_monotonic_ns=request_ns,
+            before_host_monotonic_ns=completed_ns,
+            baseline_source_stamp_ns=baseline,
+        )
+        if observed is not actual_observed:
+            return None
+        terminal_attempt = not acknowledged or baseline is None or observed
+        if terminal_attempt and sequence != len(attempts):
+            return None
+        if not terminal_attempt and sequence == len(attempts) and len(attempts) < max_attempts:
+            return None
+        previous_completed = completed_ns
+    return copy.deepcopy(attempts)
+
+
 def _rederived_state(
     stored: object,
     *,
@@ -6305,6 +6436,7 @@ def _rederived_state(
     expected_purpose: PoseLookupPurpose,
     options: DifferentialCaptureOptions,
     ground_truth_calibration: GroundTruthCalibration | None,
+    nomotion_max_attempts: int,
 ) -> dict[str, Any] | None:
     if not isinstance(stored, dict):
         return None
@@ -6325,11 +6457,21 @@ def _rederived_state(
     evaluated = stored.get("evaluated_host_monotonic_ns")
     amcl_request = stored.get("amcl_nomotion_request_host_monotonic_ns")
     amcl_baseline = stored.get("amcl_nomotion_baseline_source_stamp_ns")
+    attempts = _validated_nomotion_attempts(
+        stored.get("amcl_nomotion_attempts"),
+        amcl=recorders["amcl"],
+        max_attempts=nomotion_max_attempts,
+    )
     if (
         type(cutoff) is not int
         or type(evaluated) is not int
         or type(amcl_request) is not int
         or type(amcl_baseline) is not int
+        or attempts is None
+        or amcl_request != attempts[-1]["request_host_monotonic_ns"]
+        or amcl_baseline != attempts[-1]["baseline_source_stamp_ns"]
+        or stored.get("amcl_nomotion_update_acknowledged")
+        is not all(attempt["acknowledged"] is True for attempt in attempts)
     ):
         return None
     if (
@@ -6367,6 +6509,7 @@ def _rederived_state(
         nomotion_update_acknowledged=(stored.get("amcl_nomotion_update_acknowledged") is True),
         amcl_nomotion_request_host_monotonic_ns=amcl_request,
         amcl_nomotion_baseline_source_stamp_ns=amcl_baseline,
+        amcl_nomotion_attempts=attempts,
     )
 
 
@@ -6428,6 +6571,15 @@ def _raw_state_failures(
         ),
         ("t1_dispatch", nested_state, PoseLookupPurpose.T1_PRE_DISPATCH),
     )
+    identity = artifact.get("runtime_identity")
+    nomotion_max_attempts = (
+        identity.get("amcl_resample_interval") if isinstance(identity, dict) else None
+    )
+    if (
+        type(nomotion_max_attempts) is not int
+        or not 1 <= nomotion_max_attempts <= _MAX_AMCL_NOMOTION_ATTEMPTS
+    ):
+        return ["amcl_resample_interval"]
     failures: list[str] = []
     for label, stored, purpose in states:
         sensor_state = copy.deepcopy(stored) if isinstance(stored, dict) else stored
@@ -6442,6 +6594,7 @@ def _raw_state_failures(
             expected_purpose=purpose,
             options=options,
             ground_truth_calibration=ground_truth_calibration,
+            nomotion_max_attempts=nomotion_max_attempts,
         )
         if rederived is None or rederived != sensor_state:
             failures.append(f"{label}_not_derived_from_raw")
@@ -6873,7 +7026,7 @@ def _raw_evidence_failures(
     goal: CanonicalGoal,
     ground_truth_calibration: GroundTruthCalibration | None,
 ) -> list[str]:
-    if artifact.get("evidence_derivation_version") != 4:
+    if artifact.get("evidence_derivation_version") != 5:
         return ["evidence_derivation_version"]
     pose_observations, pose_failures = _validated_pose_observation_index(artifact)
     if pose_observations is None:

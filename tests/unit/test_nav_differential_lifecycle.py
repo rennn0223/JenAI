@@ -291,6 +291,7 @@ def test_live_preflight_runs_t0_and_t1_without_forwarding_goal(  # noqa: C901
     async def no_op_enrich(_bridge: object, identity: dict[str, Any]) -> None:
         identity["live_map_identity_initial"] = {"digest": "b" * 64, "frame_id": "map"}
         identity["controller_odom_topic"] = "/odom"
+        identity["amcl_resample_interval"] = 3
 
     async def watch_topics(*args: object, **kwargs: object) -> list[int]:
         del kwargs
@@ -302,11 +303,13 @@ def test_live_preflight_runs_t0_and_t1_without_forwarding_goal(  # noqa: C901
         return None
 
     async def start_state(*args: object, **kwargs: object) -> dict[str, Any]:
-        del args, kwargs
+        del args
+        assert kwargs["nomotion_max_attempts"] == 3
         return {"status": "PASS", "failures": [], "known_goal_ids": []}
 
     async def dispatch_state(*args: object, **kwargs: object) -> dict[str, Any]:
-        del args, kwargs
+        del args
+        assert kwargs["nomotion_max_attempts"] == 3
         return {"status": "PASS", "failures": [], "known_goal_ids": []}
 
     async def map_checkpoint(

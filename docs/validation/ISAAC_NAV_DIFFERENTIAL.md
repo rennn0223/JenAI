@@ -214,7 +214,7 @@ identity、halt 與 shutdown 證據會另存並由離線 validator 重驗；任�
 
 ## Measurement contract 與 artifact lifecycle
 
-每個 artifact 維持 schema envelope v1，並要求 `evidence_derivation_version=4`。它保存不可變
+每個 artifact 維持 schema envelope v1，並要求 `evidence_derivation_version=5`。它保存不可變
 `measurement_contract`，包括取樣期間、freshness、共同 terminal-relative final-window delay、
 final ROS-time window、wall timeout、最低樣本數、速度、covariance 與 calibration residual
 門檻。R1／R2 的 measurement contract 不完全相同時，pairing gate 必須失敗。
@@ -240,13 +240,21 @@ ground-truth window；dispatch-end snapshot 必須是完整 samples 的 immutabl
 alias、median 或 observation reference 被單獨修改都會被拒絕。舊式只有 derived summary、沒有
 raw evidence／pose journal 的 artifact 不具 comparison eligibility。
 
-Derivation v4 另外綁定啟動證據的 ROS QoS、no-motion request 與 freshness 契約：`/clock`、
+Derivation v5 另外綁定啟動證據的 ROS QoS、no-motion request、AMCL resampling 與 freshness 契約：`/clock`、
 odom 與可選 ground truth 使用 sensor-data QoS；`/amcl_pose` 與 NavigateToPose status 使用
 reliable、transient-local QoS。T0 與 T1 會先完成共同 preflight observation window 與 fresh TF
-lookup，再記錄 retained AMCL header baseline、呼叫 `/request_nomotion_update`，並只接受 request
-後抵達且 header stamp 嚴格前進的 AMCL sample。服務 acknowledgement 本身不是 publication
-Evidence；新 sample 未在 bounded wait 內出現或最後已超過既定 freshness，start gate 都會 fail
-closed。這不會送導航 goal、速度命令或修改 Nav2／AMCL 參數。
+lookup，再從 live `/amcl` parameter service 讀取並綁定 `resample_interval`；缺失、非正整數或高於
+Harness 的 32 次安全上限時，runtime identity gate 直接 fail closed。
+
+Nav2 的 `/request_nomotion_update` acknowledgement 只表示 AMCL 已接受強制更新要求，不保證該次
+scan callback 一定發布 `/amcl_pose`；pose publication 仍受 `resample_interval` 控制。因此 Harness
+最多依實際 interval 送出同數量的 bounded no-motion requests，每次各自保存 sequence、request／
+completion host time、request 前 retained header baseline、acknowledgement，以及該 attempt window
+內是否觀察到 header stamp 嚴格前進的新 sample；一旦新 sample 出現即停止後續 attempts。每次等待
+仍受既有 `max_topic_age_s` 限制，service 未 acknowledgement、baseline 不存在，或所有 attempts
+結束後仍無新 sample，都會 fail closed。離線 validator 會從 raw AMCL samples 重建整份 append-only
+attempt journal，並拒絕次序、時間窗、baseline、觀測結果或 runtime interval 被修改的 artifact。這不會
+送導航 goal、速度命令或修改 Nav2／AMCL 參數。
 
 剛重新啟動且從未接受 goal 的 Nav2 action server 可能尚未發布 status。只有在正確的
 transient-local watch 已建立、完整 `preflight_sample_s` window 已經過，而且從 watch 建立至該次

@@ -106,6 +106,8 @@ def _set_source_lead(artifact: dict[str, Any], lead_ns: int) -> None:
     ]
     for state in states[1:]:
         state["amcl_nomotion_baseline_source_stamp_ns"] = source_by_host[35]
+        attempts = cast(list[dict[str, Any]], state["amcl_nomotion_attempts"])
+        attempts[-1]["baseline_source_stamp_ns"] = source_by_host[35]
     for state in states:
         capture_clock_ns = int(cast(dict[str, Any], state["amcl_source"])["capture_clock_ns"])
         for source_name in ("amcl_source", "odom_source"):
@@ -205,6 +207,17 @@ def test_comparison_rejects_missing_nomotion_request_cutoff(
     left, right = _artifact_pair(differential_artifact_factory)
     state = cast(dict[str, Any], left["t0_scenario_start"])
     state.pop("amcl_nomotion_request_host_monotonic_ns")
+
+    _assert_ineligible(left, right)
+
+
+def test_comparison_rejects_tampered_nomotion_attempt_journal(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    state = cast(dict[str, Any], left["t0_scenario_start"])
+    attempts = cast(list[dict[str, Any]], state["amcl_nomotion_attempts"])
+    attempts[0]["newer_amcl_observed"] = False
 
     _assert_ineligible(left, right)
 

@@ -870,6 +870,7 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
             }
         ],
         "controller_odom_topic": "/chassis/odom",
+        "amcl_resample_interval": 3,
         "nav2_process_generation": generation,
         "nav2_process_generation_end": deepcopy(generation),
         "runtime_parameter_sha256": {
@@ -881,6 +882,14 @@ def _valid_runtime_identity(*, deployment_mode: str) -> dict[str, Any]:
     }
     _apply_runtime_fingerprint(identity)
     return identity
+
+
+def test_runtime_identity_rejects_unbounded_amcl_resample_interval() -> None:
+    identity = _valid_runtime_identity(deployment_mode="simulation")
+    identity["amcl_resample_interval"] = 33
+    _apply_runtime_fingerprint(identity)
+
+    assert "amcl_resample_interval" in _runtime_identity_failures(identity)
 
 
 def test_runtime_identity_blocks_non_simulation_capture() -> None:
