@@ -126,6 +126,9 @@ Live execution 只允許 `deployment_mode=simulation`，並在送 goal 前 fail 
 - `/amcl`、`/controller_server`、`/planner_server`、`/bt_navigator` 各一個；
 - `NavigateToPose` action 唯一；
 - controller／planner／BT navigator lifecycle 為 active；
+- 必要 ROS node 的唯一性使用 `ros2 node list --no-daemon --spin-time 3.0` 取得 fresh DDS
+  discovery snapshot；不得因長駐 ROS daemon cache 暫時為空，就把正在運作且可由 lifecycle／
+  action 查詢的 Nav2 stack 誤記為零個 node；
 - `/controller_server` 實際 `odom_topic` 可讀、能正規化為 absolute ROS topic，且 artifact
   recorder／measurement contract 使用同一 topic；
 - 必要 runtime parameter snapshots 完整；artifact 只保存每個 node 的 SHA-256，不保存
