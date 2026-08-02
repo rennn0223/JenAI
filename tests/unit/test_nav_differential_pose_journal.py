@@ -89,7 +89,7 @@ def test_all_final_pose_projections_cannot_replace_raw_pose_observations(
         lambda journal: journal[0].__setitem__("purpose", "final_window"),
         lambda journal: journal[0].__setitem__("frame_id", "odom"),
         lambda journal: cast(dict[str, Any], journal[0]["result"]).__setitem__(
-            "stamp_ns", 1_900_000_000
+            "stamp_ns", 2_100_000_000
         ),
     ],
 )

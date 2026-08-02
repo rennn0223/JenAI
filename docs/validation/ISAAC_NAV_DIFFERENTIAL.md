@@ -214,7 +214,7 @@ identity、halt 與 shutdown 證據會另存並由離線 validator 重驗；任�
 
 ## Measurement contract 與 artifact lifecycle
 
-每個 artifact 維持 schema envelope v1，並要求 `evidence_derivation_version=5`。它保存不可變
+每個 artifact 維持 schema envelope v1，並要求 `evidence_derivation_version=6`。它保存不可變
 `measurement_contract`，包括取樣期間、freshness、共同 terminal-relative final-window delay、
 final ROS-time window、wall timeout、最低樣本數、速度、covariance 與 calibration residual
 門檻。R1／R2 的 measurement contract 不完全相同時，pairing gate 必須失敗。
@@ -239,6 +239,13 @@ raw topic samples 與 append-only pose journal 重新建立 T0、T1、UUID、fin
 ground-truth window；dispatch-end snapshot 必須是完整 samples 的 immutable prefix，summary、
 alias、median 或 observation reference 被單獨修改都會被拒絕。舊式只有 derived summary、沒有
 raw evidence／pose journal 的 artifact 不具 comparison eligibility。
+
+Derivation v6 延續 v5 的 bounded no-motion journal，並修正 live preflight 的離線證據邊界：
+所有已建立的 topic recorder 都必須保存，即使 `action_status` 合法地是空陣列；缺少 stream
+與已觀察但無訊息不再混為一談。T0／T1 fresh TF 與 AMCL／odom 使用相同的 bounded Isaac
+callback scheduling contract，只允許最多一個 `sample_interval_s` 的 source-time lead，超界仍
+fail closed；R2 completion verdict 與 final pose 不使用此容忍。v5 artifact 可保留為歷史證據，
+但不能升格為 v6 或與 v6 正式比較。
 
 Derivation v5 另外綁定啟動證據的 ROS QoS、no-motion request、AMCL resampling 與 freshness 契約：`/clock`、
 odom 與可選 ground truth 使用 sensor-data QoS；`/amcl_pose` 與 NavigateToPose status 使用
@@ -326,8 +333,16 @@ uv run python scripts/isaac_nav_differential.py capture \
 goal。不得同時提供 `--execute` 或 `--confirm`。Artifact 只有在所有 pre-dispatch gate 與
 cleanup 都通過時才維持 `preflight_only`，並明確記錄 `live_preflight_requested=true`、
 `motion_attempted=false` 與 `nav_send_forwarded_host_monotonic_ns=null`。Gate 失敗仍保存
-blocked artifact。只有這份 live preflight PASS 後，才向操作員要求 exact-commit motion
-authorization；它本身不證明 navigation PASS。
+blocked artifact。只有這份 live preflight PASS 後，還必須離線重建同一 artifact：
+
+```bash
+uv run python scripts/isaac_nav_differential.py validate-preflight \
+  --artifact artifacts/nav-diff/pilot-00-live-preflight.json
+```
+
+只有命令輸出 `valid=true`，且 failures 為空，才向操作員要求 exact-commit motion
+authorization；它本身不證明 navigation PASS。舊 artifact 若未保存空的 `action_status` stream，
+必須誠實拒絕，不能事後猜測或手動升版。
 
 ## Code Review 後的一組 Pilot Pair
 

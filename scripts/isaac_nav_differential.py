@@ -15,6 +15,7 @@ from jenai.acceptance.nav_differential_runner import (
     ResetPolicy,
     capture_navigation_differential,
     load_and_compare,
+    load_and_validate_live_preflight,
 )
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +79,12 @@ def _parser() -> argparse.ArgumentParser:
         help=f"--execute 必須精確提供：{DIFFERENTIAL_EXECUTION_CONFIRMATION}",
     )
 
+    validate_preflight = subcommands.add_parser(
+        "validate-preflight",
+        help="離線重建一份無移動 live-preflight artifact",
+    )
+    validate_preflight.add_argument("--artifact", type=Path, required=True)
+
     compare = subcommands.add_parser("compare", help="離線比較一組 R1/R2 artifact")
     compare.add_argument("--r1", type=Path, required=True)
     compare.add_argument("--r2", type=Path, required=True)
@@ -110,6 +117,12 @@ def _capture(args: argparse.Namespace) -> int:
     return 0 if artifact["overall"] in {"preflight_only", "captured"} else 1
 
 
+def _validate_preflight(args: argparse.Namespace) -> int:
+    report = load_and_validate_live_preflight(args.artifact)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("valid") else 1
+
+
 def _compare(args: argparse.Namespace) -> int:
     report = load_and_compare(args.r1, args.r2, args.output)
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -121,6 +134,8 @@ def main() -> int:
     try:
         if args.command == "capture":
             return _capture(args)
+        if args.command == "validate-preflight":
+            return _validate_preflight(args)
         return _compare(args)
     except (ValueError, FileExistsError, OSError) as exc:
         print(f"錯誤：{exc}")

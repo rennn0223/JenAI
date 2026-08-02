@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, cast
 
-from jenai.acceptance.nav_differential import PairClassification
+from jenai.acceptance.nav_differential import GroundTruthCalibration, PairClassification
 from jenai.acceptance.nav_differential_runner import (
+    _apply_runtime_fingerprint,
+    _calibration_payload_sha256,
     _snapshot_topic_samples,
     _TopicRecorder,
     _validated_nomotion_attempts,
@@ -30,6 +32,12 @@ def test_dispatch_topic_snapshot_is_immutable_after_later_samples() -> None:
     assert snapshot == {
         "clock": [{"host_monotonic_ns": 10, "message": {"clock": {"sec": 1, "nanosec": 0}}}]
     }
+
+
+def test_snapshot_preserves_observed_empty_stream() -> None:
+    snapshot = _snapshot_topic_samples({"action_status": _TopicRecorder()})
+
+    assert snapshot == {"action_status": []}
 
 
 def test_topic_recorder_owns_message_snapshot_at_callback_time() -> None:
@@ -482,5 +490,55 @@ def test_comparison_rejects_r2_result_not_bound_to_single_attempt(
     result = cast(dict[str, Any], right["jenai_result"])
     events = cast(list[dict[str, Any]], result["observed_nav_results"])
     events[0]["tag"] = "different-command"
+
+    _assert_ineligible(left, right)
+
+
+def _configure_empty_ground_truth_streams(artifact: dict[str, Any]) -> None:
+    identity = cast(dict[str, Any], artifact["runtime_identity"])
+    calibration = GroundTruthCalibration(
+        status="GROUND_TRUTH_UNAVAILABLE",
+        scene_sha256=str(identity["scene_sha256"]),
+        map_sha256=str(identity["site_map_sha256"]),
+        source="configured topic without verified world-to-map calibration",
+    )
+    calibration_digest = _calibration_payload_sha256(calibration)
+    artifact["ground_truth_calibration"] = calibration.model_dump(mode="json")
+    identity["ground_truth_calibration_effective_sha256"] = calibration_digest
+    _apply_runtime_fingerprint(identity)
+    contract = cast(dict[str, Any], artifact["measurement_contract"])
+    contract["ground_truth_topic"] = "/isaac/ground_truth"
+    contract["ground_truth_type"] = "geometry_msgs/msg/PoseStamped"
+    contract["ground_truth_calibration_sha256"] = calibration_digest
+    stream_contract = cast(dict[str, Any], artifact["topic_stream_contract"])
+    stream_contract["ground_truth"] = {
+        "topic": "/isaac/ground_truth",
+        "message_type": "geometry_msgs/msg/PoseStamped",
+        "qos_profile": "sensor_data",
+    }
+    for snapshot_name in ("topic_samples", "topic_samples_at_dispatch_end"):
+        streams = cast(dict[str, list[dict[str, Any]]], artifact[snapshot_name])
+        streams["ground_truth"] = []
+
+
+def test_motion_artifacts_preserve_configured_empty_ground_truth_stream(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    _configure_empty_ground_truth_streams(left)
+    _configure_empty_ground_truth_streams(right)
+
+    report = compare_differential_artifacts(left, right)
+
+    assert report["included"] is True
+
+
+def test_motion_artifact_rejects_missing_configured_ground_truth_stream(
+    differential_artifact_factory: ArtifactFactory,
+) -> None:
+    left, right = _artifact_pair(differential_artifact_factory)
+    _configure_empty_ground_truth_streams(left)
+    _configure_empty_ground_truth_streams(right)
+    cast(dict[str, Any], left["topic_samples_at_dispatch_end"]).pop("ground_truth")
 
     _assert_ineligible(left, right)
