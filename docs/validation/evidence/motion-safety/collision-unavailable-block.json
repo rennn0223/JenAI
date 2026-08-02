@@ -1,0 +1,728 @@
+{
+  "schema_version": 4,
+  "evidence_derivation_version": 4,
+  "runtime": {
+    "git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "scene_path": "/sim/JenAI.usd",
+    "scene_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "nav2_params_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "simulation_epoch": "epoch-1",
+    "runtime_boot_id": "boot-1",
+    "product_config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "planner_config_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "site_id": "warehouse",
+    "collision_filter_sha256": "88313393809c486b607dec898a3646eb740883ece40a126dbe52075ac8b1723b",
+    "capture_ros_ns": 10000,
+    "capture_host_monotonic_ns": 20000,
+    "max_evidence_age_ns": 5000
+  },
+  "motion_request": {
+    "authorization_nonce": "authorization-nonce-0001",
+    "site_id": "warehouse",
+    "start": {
+      "x": 0.0,
+      "y": 0.0,
+      "yaw": 0.0
+    },
+    "goal": {
+      "x": 1.0,
+      "y": 0.0,
+      "yaw": 0.0
+    },
+    "planner_id": "nav2-global-planner",
+    "planner_config_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "nav2_params_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "product_config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "scene_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "collision_filter_sha256": "88313393809c486b607dec898a3646eb740883ece40a126dbe52075ac8b1723b",
+    "simulation_epoch": "epoch-1",
+    "runtime_boot_id": "boot-1",
+    "valid_from_ros_ns": 9000,
+    "valid_until_ros_ns": 11000,
+    "valid_from_host_monotonic_ns": 19000,
+    "valid_until_host_monotonic_ns": 21000,
+    "content_sha256": "4ac9d5df30808a027b0c591b0cc97d76f09002c8ad43ef201206903dee808f33"
+  },
+  "authorization": {
+    "authorization_nonce": "authorization-nonce-0001",
+    "motion_request_sha256": "4ac9d5df30808a027b0c591b0cc97d76f09002c8ad43ef201206903dee808f33",
+    "path_evidence_sha256": "44ebd5e56f5e97021b3b9a72df7f67aadc76100d650476b8665b9d63de20a3bb",
+    "artifact_input_sha256": "d93b370c0bbbbe522e15cf731eab68ac9d47970ec99884c18e24bceb0fa1b0c2",
+    "content_sha256": "ff9eea067533368880e8434de006bf8f279d23c8334c247dd02e8d4d39baff89"
+  },
+  "path": {
+    "evidence_id": "planned-path",
+    "frame_id": "map",
+    "source_timestamp_ns": 10000,
+    "received_host_monotonic_ns": 20000,
+    "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "simulation_epoch": "epoch-1",
+    "runtime_boot_id": "boot-1",
+    "motion_request_sha256": "4ac9d5df30808a027b0c591b0cc97d76f09002c8ad43ef201206903dee808f33",
+    "nav2_params_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "poses": [
+      {
+        "x": 0.0,
+        "y": 0.0,
+        "yaw": 0.0
+      },
+      {
+        "x": 1.0,
+        "y": 0.0,
+        "yaw": 0.0
+      }
+    ],
+    "content_sha256": "44ebd5e56f5e97021b3b9a72df7f67aadc76100d650476b8665b9d63de20a3bb"
+  },
+  "nav_footprint": {
+    "evidence_id": "nav-footprint",
+    "frame_id": "base_link",
+    "source": "live:/local_costmap/local_costmap:get_parameters",
+    "source_timestamp_ns": 10000,
+    "received_host_monotonic_ns": 20000,
+    "nav2_params_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "simulation_epoch": "epoch-1",
+    "runtime_boot_id": "boot-1",
+    "axis_convention": "x_forward_y_left_yaw_ccw",
+    "footprint_padding_m": 0.03,
+    "padding_applied": true,
+    "configured_polygon": {
+      "vertices": [
+        {
+          "x": -0.57,
+          "y": -0.22
+        },
+        {
+          "x": 0.11,
+          "y": -0.22
+        },
+        {
+          "x": 0.11,
+          "y": 0.22
+        },
+        {
+          "x": -0.57,
+          "y": 0.22
+        }
+      ]
+    },
+    "polygon": {
+      "vertices": [
+        {
+          "x": -0.6,
+          "y": -0.25
+        },
+        {
+          "x": 0.14,
+          "y": -0.25
+        },
+        {
+          "x": 0.14,
+          "y": 0.25
+        },
+        {
+          "x": -0.6,
+          "y": 0.25
+        }
+      ]
+    },
+    "content_sha256": "432b41f400b9ebc514bfcc74d201dc5bd4558c490ea7879b7a97adffb6a86e2a"
+  },
+  "usd_geometry": {
+    "evidence_id": "usd-geometry",
+    "scene_path": "/sim/JenAI.usd",
+    "scene_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "robot_root_prim": "/World/Robot",
+    "base_frame": "base_link",
+    "simulation_epoch": "epoch-1",
+    "runtime_boot_id": "boot-1",
+    "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "nav2_params_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "axis_convention": "x_forward_y_left_yaw_ccw",
+    "meters_per_unit": 1.0,
+    "source_timestamp_ns": 10000,
+    "collision_prim_inventory_complete": true,
+    "scene_collision_enumeration": {
+      "source": "isaac_usd_stage_query",
+      "query_name": "collision_enabled_scene_prims_v1",
+      "query_identity_sha256": "c36bdbe782fd322de5dd8c5f193d4f911b5c25f6f7318387f5f5d9615ab0a147",
+      "scene_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "source_timestamp_ns": 10000,
+      "reported_count": 1,
+      "complete_attestation": true,
+      "entries": [
+        {
+          "prim_path": "/World/Warehouse",
+          "category": "environment",
+          "collision_enabled": true
+        }
+      ],
+      "content_sha256": "ef3e807209315ce621eecc8b7a9c68bb955f682877678a562976f2dbf40b2108"
+    },
+    "collision_enabled_counterpart_prim_paths": [
+      "/World/Warehouse"
+    ],
+    "collision_enabled_counterpart_categories": [
+      "environment"
+    ],
+    "collision_prims": [
+      {
+        "prim_path": "/World/Robot/chassis/collision",
+        "shape_type": "box",
+        "mesh_identity": "chassis-box",
+        "local_geometry_vertices": [
+          {
+            "x": -0.55,
+            "y": -0.2,
+            "z": 0.0
+          },
+          {
+            "x": 0.1,
+            "y": -0.2,
+            "z": 0.0
+          },
+          {
+            "x": 0.1,
+            "y": 0.2,
+            "z": 0.0
+          },
+          {
+            "x": -0.55,
+            "y": 0.2,
+            "z": 0.0
+          }
+        ],
+        "base_from_prim_transform": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "transform_convention": "row_major_affine_column_vector",
+        "transform_translation_unit": "m",
+        "transform_includes_scale": false,
+        "projected_base_hull": {
+          "vertices": [
+            {
+              "x": -0.55,
+              "y": -0.2
+            },
+            {
+              "x": 0.1,
+              "y": -0.2
+            },
+            {
+              "x": 0.1,
+              "y": 0.2
+            },
+            {
+              "x": -0.55,
+              "y": 0.2
+            }
+          ]
+        }
+      }
+    ],
+    "projected_base_hull": {
+      "vertices": [
+        {
+          "x": -0.55,
+          "y": -0.2
+        },
+        {
+          "x": 0.1,
+          "y": -0.2
+        },
+        {
+          "x": 0.1,
+          "y": 0.2
+        },
+        {
+          "x": -0.55,
+          "y": 0.2
+        }
+      ]
+    },
+    "source_assurance": "simulator_stage_query",
+    "transport_security": "local_process",
+    "content_sha256": "d5fc9f09e0a64f778f86469a6501b5aa14e13b1b7f38aa0fffbc4b3e22e8e39f"
+  },
+  "costmap_layers": [
+    {
+      "evidence_id": "layer-static_lethal",
+      "layer": "static_lethal",
+      "frame_id": "map",
+      "resolution_m": 0.05,
+      "origin": {
+        "x": -10.0,
+        "y": -10.0
+      },
+      "width": 400,
+      "height": 400,
+      "source_stamp_ns": 10000,
+      "received_host_monotonic_ns": 20000,
+      "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "status": "observed",
+      "cells": [],
+      "raw_costs_rle": [
+        {
+          "cost": 0,
+          "count": 160000
+        }
+      ],
+      "raw_grid_sha256": "db5a1b33e905d6e5de226488ec4dfc56f03d75639bc3fdace733d2aa3b2bd7e2",
+      "content_sha256": "2c1002237bafff7dde14f1e71899f17debc5b9741945b26012d12bd4d61f5bb8"
+    },
+    {
+      "evidence_id": "layer-static_inscribed_or_inflation",
+      "layer": "static_inscribed_or_inflation",
+      "frame_id": "map",
+      "resolution_m": 0.05,
+      "origin": {
+        "x": -10.0,
+        "y": -10.0
+      },
+      "width": 400,
+      "height": 400,
+      "source_stamp_ns": 10000,
+      "received_host_monotonic_ns": 20000,
+      "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "status": "observed",
+      "cells": [],
+      "raw_costs_rle": [
+        {
+          "cost": 0,
+          "count": 160000
+        }
+      ],
+      "raw_grid_sha256": "db5a1b33e905d6e5de226488ec4dfc56f03d75639bc3fdace733d2aa3b2bd7e2",
+      "content_sha256": "22b4651bbcdaf7559a07912ba0f9c994c2a85248f5d21fb8ffbd28fcdd3277a6"
+    },
+    {
+      "evidence_id": "layer-live_obstacle",
+      "layer": "live_obstacle",
+      "frame_id": "map",
+      "resolution_m": 0.05,
+      "origin": {
+        "x": -10.0,
+        "y": -10.0
+      },
+      "width": 400,
+      "height": 400,
+      "source_stamp_ns": 10000,
+      "received_host_monotonic_ns": 20000,
+      "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "status": "observed",
+      "cells": [],
+      "raw_costs_rle": [
+        {
+          "cost": 0,
+          "count": 160000
+        }
+      ],
+      "raw_grid_sha256": "db5a1b33e905d6e5de226488ec4dfc56f03d75639bc3fdace733d2aa3b2bd7e2",
+      "content_sha256": "06a95e4ab7e4f731b92a70009007a4d5244c902abee4507c42f749da4f1dac80"
+    },
+    {
+      "evidence_id": "layer-unknown",
+      "layer": "unknown",
+      "frame_id": "map",
+      "resolution_m": 0.05,
+      "origin": {
+        "x": -10.0,
+        "y": -10.0
+      },
+      "width": 400,
+      "height": 400,
+      "source_stamp_ns": 10000,
+      "received_host_monotonic_ns": 20000,
+      "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "status": "observed",
+      "cells": [],
+      "raw_costs_rle": [
+        {
+          "cost": 0,
+          "count": 160000
+        }
+      ],
+      "raw_grid_sha256": "db5a1b33e905d6e5de226488ec4dfc56f03d75639bc3fdace733d2aa3b2bd7e2",
+      "content_sha256": "3bc6747300835cf9b40c999b02e6c6a30fa17bf53eeb3f98092e7bd7f99e9869"
+    }
+  ],
+  "collision_stream": {
+    "evidence_id": "collision-stream",
+    "topic": "/twin/collision",
+    "message_type": "jenai_msgs/msg/CollisionEvent",
+    "qos": "reliable",
+    "status": "unavailable",
+    "source_timestamp_capable": true,
+    "clock_aligned": true,
+    "stream_presence_attested": false,
+    "phase": "no_motion",
+    "simulation_epoch": "epoch-1",
+    "runtime_boot_id": "boot-1",
+    "source_assurance": "simulator_attested",
+    "transport_security": "local_process",
+    "scene_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "nav2_params_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "robot_root_prim": "/World/Robot",
+    "monitored_prim_paths": [
+      "/World/Robot/chassis/collision"
+    ],
+    "monitored_prim_inventory_sha256": "2d1442987ee46f061db8e123f6173732e552b30b3ddfbe7fdeb23956002514e3",
+    "collision_filter": {
+      "collision_enabled_counterpart_prim_paths": [
+        "/World/Warehouse"
+      ],
+      "collision_enabled_counterpart_categories": [
+        "environment"
+      ],
+      "prim_rules": [
+        {
+          "monitored_prim_path": "/World/Robot/chassis/collision",
+          "counterpart_prim_paths": [
+            "/World/Warehouse"
+          ],
+          "counterpart_categories": [
+            "environment"
+          ],
+          "contact_reporting_enabled": true
+        }
+      ],
+      "content_sha256": "88313393809c486b607dec898a3646eb740883ece40a126dbe52075ac8b1723b"
+    },
+    "windows": [
+      {
+        "kind": "pre_dispatch",
+        "observed_from_ros_ns": 9000,
+        "observed_until_ros_ns": 11000,
+        "observed_from_host_monotonic_ns": 19000,
+        "observed_until_host_monotonic_ns": 21000,
+        "raw_messages": [
+          {
+            "ros_stamp_ns": 10000,
+            "host_monotonic_ns": 20000,
+            "simulation_epoch": "epoch-1",
+            "runtime_boot_id": "boot-1",
+            "goal_uuid": null,
+            "command_tag": null,
+            "prim_a": null,
+            "prim_b": null,
+            "contact_point": null,
+            "contact_normal": null,
+            "penetration_m": null,
+            "impulse_ns": null,
+            "raw_message": {
+              "collision_detected": false
+            }
+          }
+        ]
+      }
+    ],
+    "content_sha256": "cc30806d225d5d8096aca4b4eef0dc8eddd1393c4938e94226c905a62ea123b6"
+  },
+  "clearance_sources": [
+    {
+      "evidence_id": "source-geometry_attestation_uncertainty",
+      "kind": "geometry_attestation_uncertainty",
+      "status": "observed",
+      "source_assurance": "runtime_observed",
+      "transport_security": "local_process",
+      "source_timestamp_ns": 10000,
+      "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "measurements": {
+        "bound_m": [
+          0.01
+        ]
+      },
+      "content_sha256": "3205bb3498763a4c88851d0352ea88c6c207bbba645c0517bf1408b08e83aab3"
+    },
+    {
+      "evidence_id": "source-localization_uncertainty",
+      "kind": "localization_uncertainty",
+      "status": "observed",
+      "source_assurance": "runtime_observed",
+      "transport_security": "local_process",
+      "source_timestamp_ns": 10000,
+      "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "measurements": {
+        "bound_m": [
+          0.02
+        ]
+      },
+      "content_sha256": "a052063f07554853d14be8305c7ba5e236292a11864f2445ea3f79c99db76416"
+    },
+    {
+      "evidence_id": "source-controller_tracking_bound",
+      "kind": "controller_tracking_bound",
+      "status": "observed",
+      "source_assurance": "runtime_observed",
+      "transport_security": "local_process",
+      "source_timestamp_ns": 10000,
+      "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "measurements": {
+        "bound_m": [
+          0.03
+        ]
+      },
+      "content_sha256": "1fcc48a1cda910d400c5fa69595920cf038be884d332c83e38c217261185ef5e"
+    },
+    {
+      "evidence_id": "source-map_discretization_bound",
+      "kind": "map_discretization_bound",
+      "status": "observed",
+      "source_assurance": "runtime_observed",
+      "transport_security": "local_process",
+      "source_timestamp_ns": 10000,
+      "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "measurements": {
+        "bound_m": [
+          0.04
+        ]
+      },
+      "content_sha256": "19cb3dd9bb0b4c98aa31a4a551e024f0ce19304a638dcbfeddd2e42e8cd5b016"
+    },
+    {
+      "evidence_id": "source-latency_distance",
+      "kind": "latency_distance",
+      "status": "observed",
+      "source_assurance": "runtime_observed",
+      "transport_security": "local_process",
+      "source_timestamp_ns": 10000,
+      "config_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "measurements": {
+        "maximum_speed_magnitude_mps": [
+          0.1
+        ],
+        "latency_s": [
+          0.1
+        ]
+      },
+      "content_sha256": "8185beba6735a05f2efe46539e8f6c917868783354136104773c03e61541cb4e"
+    },
+    {
+      "evidence_id": "source-stopping_distance",
+      "kind": "stopping_distance",
+      "status": "observed",
+      "source_assurance": "runtime_observed",
+      "transport_security": "local_process",
+      "source_timestamp_ns": 10000,
+      "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "measurements": {
+        "maximum_speed_magnitude_mps": [
+          0.31622776601683794
+        ],
+        "minimum_deceleration_mps2": [
+          1.0
+        ]
+      },
+      "content_sha256": "fc5cd538e49664bdf8bd34b0b0a36062b48465cd400c6c4ee7615fbcf7a0773d"
+    },
+    {
+      "evidence_id": "source-fixed_product_margin",
+      "kind": "fixed_product_margin",
+      "status": "observed",
+      "source_assurance": "runtime_observed",
+      "transport_security": "local_process",
+      "source_timestamp_ns": 10000,
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "simulation_epoch": "epoch-1",
+      "runtime_boot_id": "boot-1",
+      "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "measurements": {
+        "bound_m": [
+          0.04
+        ]
+      },
+      "content_sha256": "e8c58eecf76ae2caf27312c51b88981df05b97e782d1a0cde1fe7f0caaa2c859"
+    }
+  ],
+  "clearance_budget": {
+    "terms": [
+      {
+        "kind": "geometry_attestation_uncertainty",
+        "value_m": 0.01,
+        "source_evidence_id": "source-geometry_attestation_uncertainty",
+        "source_timestamp_ns": 10000,
+        "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "method": "maximum_bound",
+        "unit": "m"
+      },
+      {
+        "kind": "localization_uncertainty",
+        "value_m": 0.02,
+        "source_evidence_id": "source-localization_uncertainty",
+        "source_timestamp_ns": 10000,
+        "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "method": "maximum_bound",
+        "unit": "m"
+      },
+      {
+        "kind": "controller_tracking_bound",
+        "value_m": 0.03,
+        "source_evidence_id": "source-controller_tracking_bound",
+        "source_timestamp_ns": 10000,
+        "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "method": "maximum_bound",
+        "unit": "m"
+      },
+      {
+        "kind": "map_discretization_bound",
+        "value_m": 0.04,
+        "source_evidence_id": "source-map_discretization_bound",
+        "source_timestamp_ns": 10000,
+        "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "method": "map_resolution_diagonal_bound",
+        "unit": "m"
+      },
+      {
+        "kind": "latency_distance",
+        "value_m": 0.01,
+        "source_evidence_id": "source-latency_distance",
+        "source_timestamp_ns": 10000,
+        "config_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "method": "speed_times_latency",
+        "unit": "m"
+      },
+      {
+        "kind": "stopping_distance",
+        "value_m": 0.05,
+        "source_evidence_id": "source-stopping_distance",
+        "source_timestamp_ns": 10000,
+        "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "method": "kinematic_stopping_distance",
+        "unit": "m"
+      },
+      {
+        "kind": "fixed_product_margin",
+        "value_m": 0.04,
+        "source_evidence_id": "source-fixed_product_margin",
+        "source_timestamp_ns": 10000,
+        "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "method": "product_policy_margin",
+        "unit": "m"
+      }
+    ],
+    "content_sha256": "5655f049f9083f267678ffbacc8cdf708054288568cd840b8516866e80516d3c"
+  },
+  "result": {
+    "decision": "BLOCK",
+    "blocking_gates": [
+      "collision_timeline"
+    ],
+    "measured_minimum_clearance_m": 8.86,
+    "required_clearance_m": 0.2,
+    "margin_m": 8.66,
+    "swept_clearance": {
+      "status": "PASS",
+      "minimum_clearance_m": 8.86,
+      "worst": {
+        "layer": "static_lethal",
+        "path_pose_index": 1,
+        "interpolated_pose_index": 40,
+        "path_distance_m": 1.0,
+        "pose": {
+          "x": 1.0,
+          "y": 0.0,
+          "yaw": 0.0
+        },
+        "nearest_cell": null,
+        "nearest_boundary": "maximum_x",
+        "clearance_m": 8.86,
+        "source_stamp_ns": 10000
+      },
+      "per_layer_minimum_m": {
+        "static_lethal": 8.86,
+        "static_inscribed_or_inflation": 8.86,
+        "live_obstacle": 8.86,
+        "unknown": 8.86
+      },
+      "interpolation_step_m": 0.025,
+      "evaluated_pose_count": 41,
+      "failures": []
+    },
+    "geometry_attestation": {
+      "status": "PASS",
+      "maximum_inward_error_m": 0.0,
+      "maximum_outward_error_m": 0.0707106781186547,
+      "centroid_offset_m": 0.004999999999999949,
+      "usd_width_m": 0.65,
+      "usd_length_m": 0.4,
+      "nav_width_m": 0.74,
+      "nav_length_m": 0.5,
+      "failures": []
+    },
+    "collision_timeline": {
+      "status": "BLOCK",
+      "collision_observed": false,
+      "event_count": 1,
+      "failures": [
+        "collision stream was not observed and fresh",
+        "collision stream presence is not attested"
+      ]
+    },
+    "clearance_policy": {
+      "status": "PASS",
+      "required_clearance_m": 0.2,
+      "dominant_term": "stopping_distance",
+      "failures": []
+    },
+    "evidence_contract_failures": []
+  },
+  "input_sha256": "d93b370c0bbbbe522e15cf731eab68ac9d47970ec99884c18e24bceb0fa1b0c2"
+}

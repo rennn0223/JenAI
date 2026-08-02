@@ -122,6 +122,20 @@ _NAV_DIFFERENTIAL_RUNNER_IMPORTER_ALLOWLIST = frozenset(
         "scripts/isaac_nav_differential.py",
     }
 )
+_MOTION_SAFETY_MODULE_FAMILY = "jenai.acceptance.motion_safety"
+_MOTION_SAFETY_IMPORTER_ALLOWLIST = frozenset(
+    {
+        "scripts/isaac_motion_readiness.py",
+        "src/jenai/acceptance/motion_safety_cli.py",
+        "src/jenai/acceptance/motion_safety_capture.py",
+    }
+)
+_MOTION_SAFETY_FORBIDDEN_SEAMS = (
+    "nav_send",
+    "cmd_vel",
+    "NavigationGateway",
+    "RosBridgeClient",
+)
 
 # `/stop` is deliberately not a vendor literal here: it is JenAI's approved,
 # provider-free high-level safety command in the TUI, WebUI, and CLI. The known
@@ -177,6 +191,45 @@ def _direct_importers_of_differential_runner(
         ):
             importers.add(path.relative_to(repository_root).as_posix())
     return importers
+
+
+def _direct_importers_of_motion_safety_family(
+    *, source_root: Path = SRC, repository_root: Path = ROOT
+) -> set[str]:
+    """Return production files that directly import any ADR 0008 module."""
+
+    candidates = [
+        *source_root.rglob("*.py"),
+        *(repository_root / "scripts").glob("*.py"),
+    ]
+    importers: set[str] = set()
+    for path in candidates:
+        imported_names = _imports_of(path, package_root=source_root)
+        if any(
+            name == _MOTION_SAFETY_MODULE_FAMILY
+            or name.startswith(
+                (
+                    f"{_MOTION_SAFETY_MODULE_FAMILY}_",
+                    f"{_MOTION_SAFETY_MODULE_FAMILY}.",
+                )
+            )
+            for name in imported_names
+        ):
+            importers.add(path.relative_to(repository_root).as_posix())
+    return importers
+
+
+def _motion_safety_observation_violations(
+    paths: tuple[Path, ...],
+) -> set[tuple[str, str]]:
+    """Return forbidden motion seams present in observation-only entrypoints."""
+
+    return {
+        (path.as_posix(), forbidden)
+        for path in paths
+        for forbidden in _MOTION_SAFETY_FORBIDDEN_SEAMS
+        if forbidden in path.read_text(encoding="utf-8")
+    }
 
 
 def _string_literals_of(path: Path) -> list[tuple[int, str]]:
@@ -530,6 +583,60 @@ def test_differential_control_is_not_a_registered_robot_capability() -> None:
     assert "R1_bridge_nav2" not in capability_ids
     assert "isaac_nav_differential" not in capability_ids
     assert all("differential" not in interface_name for interface_name in interface_names)
+
+
+def test_motion_safety_gate_is_observation_only_and_not_imported_by_product_layers() -> None:
+    importers = _direct_importers_of_motion_safety_family()
+
+    assert importers == _MOTION_SAFETY_IMPORTER_ALLOWLIST
+    observation_entrypoints = (
+        SRC / "acceptance" / "motion_safety.py",
+        SRC / "acceptance" / "motion_safety_capture.py",
+        SRC / "acceptance" / "motion_safety_cli.py",
+        ROOT / "scripts" / "isaac_motion_readiness.py",
+    )
+    assert not _motion_safety_observation_violations(observation_entrypoints)
+    evaluator_source = observation_entrypoints[0].read_text(encoding="utf-8")
+    assert "def motion_authorization_matches(" not in evaluator_source
+    assert "def _motion_authorization_matches(" in evaluator_source
+
+
+def test_motion_safety_import_guard_rejects_capture_facade_bypass(tmp_path: Path) -> None:
+    fixture_sources = {
+        "src/jenai/tools/backdoor.py": (
+            "from jenai.acceptance.motion_safety_capture import capture_motion_readiness_evidence\n"
+        ),
+        "src/jenai/acceptance/motion_safety_capture.py": (
+            "from jenai.acceptance.motion_safety import RuntimeBinding\n"
+        ),
+        "scripts/isaac_motion_readiness.py": (
+            "from jenai.acceptance.motion_safety_cli import main\n"
+        ),
+    }
+    for relative, source in fixture_sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+    importers = _direct_importers_of_motion_safety_family(
+        source_root=tmp_path / "src" / "jenai",
+        repository_root=tmp_path,
+    )
+
+    assert "src/jenai/tools/backdoor.py" in importers
+    assert importers != _MOTION_SAFETY_IMPORTER_ALLOWLIST
+
+
+def test_motion_safety_observation_guard_rejects_cli_gateway_bypass(
+    tmp_path: Path,
+) -> None:
+    cli = tmp_path / "motion_safety_cli.py"
+    cli.write_text(
+        "from jenai.tools.navigation_gateway import NavigationGateway\n",
+        encoding="utf-8",
+    )
+
+    assert _motion_safety_observation_violations((cli,)) == {(cli.as_posix(), "NavigationGateway")}
 
 
 # Functions over this teaching-code ceiling are prohibited. Keeping this map

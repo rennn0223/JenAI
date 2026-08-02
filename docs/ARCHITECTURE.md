@@ -66,6 +66,16 @@ approval, policy, and evidence interfaces.
 | `adapters/nxdog.py` | Read one typed NXDog observation snapshot | Experimental HTTP transport, strict payload validation, partial-failure evidence |
 | `acceptance/` | Reproducible HIL acceptance run | Isaac Sim/Nav2 preflight, route, cancel, halt, evidence capture, and the ADR 0007 simulation-only differential control arm |
 
+`acceptance/motion_safety.py` is a pure observation-only admission evaluator
+under ADR 0008. It transforms no robot state and exposes no motion seam. Capture
+adapters supply one immutable, capture-overlapping and time-bounded Motion Request Binding plus
+typed raw Evidence. The admission token binds the exact path and artifact input; a later
+authorization must match the current runtime generation and atomically consume its
+single-use nonce. Collision coverage is re-derived from a complete raw USD Stage enumeration and
+typed effective filter rules rather than caller summaries or attestation. Its offline validator alone derives swept
+clearance, geometry attestation, collision-timeline integrity, clearance budget,
+and the final PASS/BLOCK decision.
+
 ## Important seams
 
 ### Capability seam
