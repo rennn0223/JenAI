@@ -346,7 +346,7 @@ class DifferentialArtifact(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     schema_version: Literal[1] = 1
-    evidence_derivation_version: Literal[3, 4, 5] | None = None
+    evidence_derivation_version: Literal[3, 4, 5, 6] | None = None
     run_id: str = Field(min_length=1)
     pair_id: str = Field(min_length=1)
     mode: DifferentialMode
@@ -687,11 +687,7 @@ class _TopicRecorder:
 def _snapshot_topic_samples(
     recorders: dict[str, _TopicRecorder],
 ) -> dict[str, list[dict[str, Any]]]:
-    return {
-        key: copy.deepcopy(recorder.samples)
-        for key, recorder in recorders.items()
-        if recorder.samples
-    }
+    return {key: copy.deepcopy(recorder.samples) for key, recorder in recorders.items()}
 
 
 def _utc_now() -> str:
@@ -3487,7 +3483,7 @@ def _measurement_contract(
 def _base_artifact(options: DifferentialCaptureOptions) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "evidence_derivation_version": 5,
+        "evidence_derivation_version": 6,
         "run_id": f"nav-diff-{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:8]}",
         "pair_id": options.pair_id,
         "mode": options.mode,
@@ -6691,6 +6687,7 @@ def _pose_observation_failures(
     sequence: int,
     expected_frame: str,
     expected_base: str,
+    max_future_source_lead_ns: int,
     duplicate: bool,
 ) -> list[str]:
     checks = (
@@ -6716,7 +6713,14 @@ def _pose_observation_failures(
             observation.status == "SUCCESS"
             and observation.result is not None
             and observation.completed_clock_ns is not None
-            and observation.result.stamp_ns > observation.completed_clock_ns,
+            and observation.result.stamp_ns
+            > observation.completed_clock_ns
+            + (
+                max_future_source_lead_ns
+                if observation.purpose
+                in {PoseLookupPurpose.T0_START, PoseLookupPurpose.T1_PRE_DISPATCH}
+                else 0
+            ),
             "pose_observation_transform_from_future",
         ),
     )
@@ -6725,6 +6729,8 @@ def _pose_observation_failures(
 
 def _validated_pose_observation_index(
     artifact: dict[str, Any],
+    *,
+    max_future_source_lead_s: float,
 ) -> tuple[dict[str, PoseLookupObservation] | None, list[str]]:
     raw = artifact.get("pose_observations")
     identity = artifact.get("runtime_identity")
@@ -6748,6 +6754,7 @@ def _validated_pose_observation_index(
                 sequence=sequence,
                 expected_frame=expected_frame,
                 expected_base=expected_base,
+                max_future_source_lead_ns=int(max_future_source_lead_s * 1_000_000_000),
                 duplicate=observation.observation_id in index,
             )
         )
@@ -7088,6 +7095,39 @@ def _raw_final_window_failures(
     return [failure for failed, failure in checks if failed]
 
 
+def _raw_topic_stream_requirements(
+    artifact: dict[str, Any],
+    contract: DifferentialMeasurementContract,
+) -> tuple[dict[str, dict[str, str | None]], set[str], set[str]]:
+    identity = artifact.get("runtime_identity")
+    odom_topic = identity.get("controller_odom_topic") if isinstance(identity, dict) else None
+    expected: dict[str, dict[str, str | None]] = {
+        "clock": {"topic": _CLOCK_TOPIC, "message_type": _CLOCK_TYPE, "qos_profile": "sensor_data"},
+        "amcl": {
+            "topic": _AMCL_TOPIC,
+            "message_type": _AMCL_TYPE,
+            "qos_profile": "transient_local",
+        },
+        "odom": {"topic": odom_topic, "message_type": _ODOM_TYPE, "qos_profile": "sensor_data"},
+        "action_status": {
+            "topic": _ACTION_STATUS_TOPIC,
+            "message_type": _ACTION_STATUS_TYPE,
+            "qos_profile": "transient_local",
+        },
+    }
+    required = {"clock", "amcl", "odom", "action_status"}
+    allow_empty = {"action_status"}
+    if contract.ground_truth_topic is not None:
+        expected["ground_truth"] = {
+            "topic": contract.ground_truth_topic,
+            "message_type": contract.ground_truth_type,
+            "qos_profile": "sensor_data",
+        }
+        required.add("ground_truth")
+        allow_empty.add("ground_truth")
+    return expected, required, allow_empty
+
+
 def _raw_evidence_failures(
     artifact: dict[str, Any],
     *,
@@ -7095,59 +7135,28 @@ def _raw_evidence_failures(
     goal: CanonicalGoal,
     ground_truth_calibration: GroundTruthCalibration | None,
 ) -> list[str]:
-    if artifact.get("evidence_derivation_version") != 5:
+    if artifact.get("evidence_derivation_version") != 6:
         return ["evidence_derivation_version"]
-    pose_observations, pose_failures = _validated_pose_observation_index(artifact)
+    pose_observations, pose_failures = _validated_pose_observation_index(
+        artifact,
+        max_future_source_lead_s=contract.sample_interval_s,
+    )
     if pose_observations is None:
         return pose_failures
     pose_failures.extend(_pose_observation_reference_failures(artifact, pose_observations))
     pose_failures.extend(_r2_verdict_pose_failures(artifact, pose_observations))
-    identity = artifact.get("runtime_identity")
-    odom_topic = identity.get("controller_odom_topic") if isinstance(identity, dict) else None
-    expected_streams: dict[str, dict[str, str | None]] = {
-        "clock": {
-            "topic": _CLOCK_TOPIC,
-            "message_type": _CLOCK_TYPE,
-            "qos_profile": "sensor_data",
-        },
-        "amcl": {
-            "topic": _AMCL_TOPIC,
-            "message_type": _AMCL_TYPE,
-            "qos_profile": "transient_local",
-        },
-        "odom": {
-            "topic": odom_topic,
-            "message_type": _ODOM_TYPE,
-            "qos_profile": "sensor_data",
-        },
-        "action_status": {
-            "topic": _ACTION_STATUS_TOPIC,
-            "message_type": _ACTION_STATUS_TYPE,
-            "qos_profile": "transient_local",
-        },
-    }
-    if contract.ground_truth_topic is not None:
-        expected_streams["ground_truth"] = {
-            "topic": contract.ground_truth_topic,
-            "message_type": contract.ground_truth_type,
-            "qos_profile": "sensor_data",
-        }
+    expected_streams, required, allow_empty = _raw_topic_stream_requirements(artifact, contract)
     contract_failures = (
         []
         if artifact.get("topic_stream_contract") == expected_streams
         else ["topic_stream_contract"]
     )
-    required = {"clock", "amcl", "odom", "action_status"}
     optional: set[str] = set()
-    if ground_truth_calibration is not None:
-        required.add("ground_truth")
-    elif contract.ground_truth_topic is not None:
-        optional.add("ground_truth")
     full, failures = _raw_topic_recorders(
         artifact.get("topic_samples"),
         required_streams=required,
         optional_streams=optional,
-        allow_empty_streams={"action_status"},
+        allow_empty_streams=allow_empty,
         label="raw_topic_samples",
     )
     failures.extend(contract_failures)
@@ -7156,7 +7165,7 @@ def _raw_evidence_failures(
         artifact.get("topic_samples_at_dispatch_end"),
         required_streams=required,
         optional_streams=optional,
-        allow_empty_streams={"action_status"},
+        allow_empty_streams=allow_empty,
         label="dispatch_topic_samples",
     )
     failures.extend(dispatch_failures)
@@ -7173,13 +7182,7 @@ def _raw_evidence_failures(
             ground_truth_calibration=ground_truth_calibration,
         )
     )
-    failures.extend(
-        _raw_goal_uuid_failures(
-            artifact,
-            dispatch=dispatch,
-            contract=contract,
-        )
-    )
+    failures.extend(_raw_goal_uuid_failures(artifact, dispatch=dispatch, contract=contract))
     failures.extend(
         _raw_final_window_failures(
             artifact,
@@ -7190,6 +7193,375 @@ def _raw_evidence_failures(
         )
     )
     return list(dict.fromkeys(failures))
+
+
+def _live_preflight_pose_reference_failures(
+    artifact: dict[str, Any],
+    index: dict[str, PoseLookupObservation],
+) -> list[str]:
+    t0 = artifact.get("t0_scenario_start")
+    t1 = artifact.get("t1_pre_dispatch")
+    dispatches = artifact.get("dispatch_observations")
+    nested_t1 = (
+        dispatches[0].get("state_before_forward")
+        if isinstance(dispatches, list) and len(dispatches) == 1 and isinstance(dispatches[0], dict)
+        else None
+    )
+    t0_id = t0.get("map_pose_observation_id") if isinstance(t0, dict) else None
+    t1_id = t1.get("map_pose_observation_id") if isinstance(t1, dict) else None
+    nested_t1_id = nested_t1.get("map_pose_observation_id") if isinstance(nested_t1, dict) else None
+    expected_ids = {item for item in (t0_id, t1_id) if isinstance(item, str)}
+    checks = (
+        (not isinstance(t0_id, str) or t0_id not in index, "t0_pose_observation_reference"),
+        (
+            not isinstance(t1_id, str) or t1_id not in index or nested_t1_id != t1_id,
+            "t1_pose_observation_reference",
+        ),
+        (expected_ids != set(index), "pose_observation_unreferenced_or_missing"),
+        (
+            sum(item.purpose is PoseLookupPurpose.T0_START for item in index.values()) != 1,
+            "t0_pose_observation_count",
+        ),
+        (
+            sum(item.purpose is PoseLookupPurpose.T1_PRE_DISPATCH for item in index.values()) != 1,
+            "t1_pose_observation_count",
+        ),
+    )
+    return [failure for failed, failure in checks if failed]
+
+
+def _live_preflight_topic_recorders(
+    artifact: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+) -> tuple[dict[str, _TopicRecorder] | None, list[str]]:
+    expected_streams, required, allow_empty = _raw_topic_stream_requirements(artifact, contract)
+    failures = (
+        []
+        if artifact.get("topic_stream_contract") == expected_streams
+        else ["topic_stream_contract"]
+    )
+    optional: set[str] = set()
+    full, full_failures = _raw_topic_recorders(
+        artifact.get("topic_samples"),
+        required_streams=required,
+        optional_streams=optional,
+        allow_empty_streams=allow_empty,
+        label="raw_topic_samples",
+    )
+    dispatch, dispatch_failures = _raw_topic_recorders(
+        artifact.get("topic_samples_at_dispatch_end"),
+        required_streams=required,
+        optional_streams=optional,
+        allow_empty_streams=allow_empty,
+        label="dispatch_topic_samples",
+    )
+    failures.extend(full_failures)
+    failures.extend(dispatch_failures)
+    if full is None or dispatch is None:
+        return None, list(dict.fromkeys(failures))
+    if {key: value.samples for key, value in full.items()} != {
+        key: value.samples for key, value in dispatch.items()
+    }:
+        failures.append("live_preflight_topic_snapshots_differ")
+    return dispatch, list(dict.fromkeys(failures))
+
+
+def _live_preflight_state_derivation_failures(
+    artifact: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    goal: CanonicalGoal,
+    dispatch: dict[str, _TopicRecorder],
+    pose_observations: dict[str, PoseLookupObservation],
+    ground_truth_calibration: GroundTruthCalibration | None,
+) -> list[str]:
+    identity = artifact.get("runtime_identity")
+    max_attempts = identity.get("amcl_resample_interval") if isinstance(identity, dict) else None
+    if type(max_attempts) is not int or not 1 <= max_attempts <= _MAX_AMCL_NOMOTION_ATTEMPTS:
+        return ["amcl_resample_interval"]
+    dispatches = artifact.get("dispatch_observations")
+    nested_t1 = (
+        dispatches[0].get("state_before_forward")
+        if isinstance(dispatches, list) and len(dispatches) == 1 and isinstance(dispatches[0], dict)
+        else None
+    )
+    states = (
+        ("t0", artifact.get("t0_scenario_start"), PoseLookupPurpose.T0_START),
+        ("t1", artifact.get("t1_pre_dispatch"), PoseLookupPurpose.T1_PRE_DISPATCH),
+        ("t1_dispatch", nested_t1, PoseLookupPurpose.T1_PRE_DISPATCH),
+    )
+    options = _offline_state_options(artifact, contract, goal)
+    failures: list[str] = []
+    for label, stored, purpose in states:
+        sensor_state = copy.deepcopy(stored) if isinstance(stored, dict) else stored
+        if isinstance(sensor_state, dict):
+            sensor_state.pop("input_continuity", None)
+            sensor_state.pop("map_identity_checkpoint", None)
+            sensor_state.pop("runtime_stack_checkpoint", None)
+        rederived = _rederived_state(
+            sensor_state,
+            recorders=dispatch,
+            pose_observations=pose_observations,
+            expected_purpose=purpose,
+            options=options,
+            ground_truth_calibration=ground_truth_calibration,
+            nomotion_max_attempts=max_attempts,
+        )
+        if rederived is None or rederived != sensor_state:
+            failures.append(f"{label}_not_derived_from_raw")
+    return failures
+
+
+def _live_preflight_raw_evidence_failures(
+    artifact: dict[str, Any],
+    *,
+    contract: DifferentialMeasurementContract,
+    goal: CanonicalGoal,
+    ground_truth_calibration: GroundTruthCalibration | None,
+) -> list[str]:
+    if artifact.get("evidence_derivation_version") != 6:
+        return ["evidence_derivation_version"]
+    pose_observations, failures = _validated_pose_observation_index(
+        artifact,
+        max_future_source_lead_s=contract.sample_interval_s,
+    )
+    if pose_observations is None:
+        return failures
+    failures.extend(_live_preflight_pose_reference_failures(artifact, pose_observations))
+    dispatch, topic_failures = _live_preflight_topic_recorders(
+        artifact,
+        contract=contract,
+    )
+    failures.extend(topic_failures)
+    if dispatch is None:
+        return list(dict.fromkeys(failures))
+    failures.extend(
+        _live_preflight_state_derivation_failures(
+            artifact,
+            contract=contract,
+            goal=goal,
+            dispatch=dispatch,
+            pose_observations=pose_observations,
+            ground_truth_calibration=ground_truth_calibration,
+        )
+    )
+    return list(dict.fromkeys(failures))
+
+
+def _live_preflight_cleanup_failures(cleanup: object) -> list[str]:
+    if not isinstance(cleanup, dict):
+        return ["cleanup"]
+    final_halt = cleanup.get("final_halt")
+    primary_halt = cleanup.get("primary_halt")
+    unwatch = cleanup.get("unwatch")
+    shutdown = cleanup.get("bridge_shutdown")
+    checks = (
+        (cleanup.get("status") != "PASS" or cleanup.get("failures") not in ([], ())),
+        (not isinstance(final_halt, dict) or final_halt.get("status") != "SKIP"),
+        (not isinstance(primary_halt, dict) or primary_halt.get("status") != "SKIP"),
+        (cleanup.get("rescue_bridge") is not None),
+        (
+            not isinstance(unwatch, dict)
+            or unwatch.get("status") != "PASS"
+            or unwatch.get("failures") not in ([], ())
+        ),
+        (not isinstance(shutdown, dict) or shutdown.get("status") != "PASS"),
+    )
+    return ["cleanup"] if any(checks) else []
+
+
+def _live_preflight_continuity_failures(artifact: dict[str, Any]) -> list[str]:
+    identity = artifact.get("runtime_identity")
+    t1 = artifact.get("t1_pre_dispatch")
+    if not isinstance(identity, dict) or not isinstance(t1, dict):
+        return ["preflight_continuity"]
+    expected_hashes = {
+        field: identity.get(field)
+        for field in ("config_sha256", "locations_sha256", "bridge_script_sha256")
+    }
+    failures: list[str] = []
+    for label, evidence in (
+        ("pre_dispatch", t1.get("input_continuity")),
+        ("post_cleanup", artifact.get("post_cleanup_input_continuity")),
+    ):
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("status") != "PASS"
+            or evidence.get("failures") not in ([], ())
+            or evidence.get("observed_hashes") != expected_hashes
+            or evidence.get("observed_git_sha") != identity.get("git_sha")
+            or evidence.get("observed_git_dirty") is not identity.get("git_dirty")
+            or type(evidence.get("observed_host_monotonic_ns")) is not int
+        ):
+            failures.append(f"{label}_input_continuity")
+    map_checkpoint = t1.get("map_identity_checkpoint")
+    if (
+        not isinstance(map_checkpoint, dict)
+        or map_checkpoint.get("label") != "pre_dispatch"
+        or map_checkpoint.get("status") != "PASS"
+        or map_checkpoint.get("failures") not in ([], ())
+        or map_checkpoint.get("identity") != identity.get("live_map_identity_initial")
+        or type(map_checkpoint.get("observed_host_monotonic_ns")) is not int
+    ):
+        failures.append("pre_dispatch_map_identity")
+    stack_checkpoint = t1.get("runtime_stack_checkpoint")
+    expected_stack = _runtime_stack_projection(identity)
+    if (
+        not isinstance(stack_checkpoint, dict)
+        or stack_checkpoint.get("label") != "pre_dispatch"
+        or stack_checkpoint.get("status") != "PASS"
+        or stack_checkpoint.get("failures") not in ([], ())
+        or stack_checkpoint.get("expected") != expected_stack
+        or stack_checkpoint.get("observed") != expected_stack
+        or type(stack_checkpoint.get("observed_host_monotonic_ns")) is not int
+    ):
+        failures.append("pre_dispatch_runtime_stack")
+    return failures
+
+
+def _live_preflight_dispatch_binding_failures(
+    artifact: dict[str, Any],
+    goal: CanonicalGoal,
+) -> list[str]:
+    dispatches = artifact.get("dispatch_observations")
+    dispatch = (
+        dispatches[0]
+        if isinstance(dispatches, list) and len(dispatches) == 1 and isinstance(dispatches[0], dict)
+        else None
+    )
+    actual_goal: CanonicalGoal | None = None
+    if isinstance(dispatch, dict):
+        try:
+            actual_goal = CanonicalGoal.model_validate(dispatch.get("actual_goal"))
+        except ValueError:
+            pass
+    goal_comparison = compare_goals(goal, actual_goal) if actual_goal is not None else None
+    public_t1 = artifact.get("t1_pre_dispatch")
+    nested_t1 = dispatch.get("state_before_forward") if isinstance(dispatch, dict) else None
+    invocation_ns = (
+        dispatch.get("nav_send_invoked_host_monotonic_ns") if isinstance(dispatch, dict) else None
+    )
+    expected_tag = f"nav_diff_{DifferentialMode.R1_BRIDGE_NAV2.value}_live_preflight"
+    t1_cutoff_ns = (
+        public_t1.get("cutoff_host_monotonic_ns") if isinstance(public_t1, dict) else None
+    )
+    cleanup = artifact.get("cleanup")
+    checks = artifact.get("checks")
+    live_check = (
+        [item for item in checks if isinstance(item, dict) and item.get("id") == "live_preflight"]
+        if isinstance(checks, list)
+        else []
+    )
+    failures = [
+        failure
+        for failed, failure in (
+            (artifact.get("live_preflight_requested") is not True, "live_preflight_not_requested"),
+            (artifact.get("execution_requested") is not False, "execution_requested"),
+            (artifact.get("motion_attempted") is not False, "motion_attempted"),
+            (artifact.get("overall") != "preflight_only", "overall_not_preflight_only"),
+            (artifact.get("mode") != DifferentialMode.R1_BRIDGE_NAV2.value, "mode"),
+            (not isinstance(artifact.get("finished_at"), str), "finished_at_missing"),
+            (
+                dispatch is None
+                or dispatch.get("forward_suppressed") != "live_preflight"
+                or dispatch.get("nav_send_forwarded_host_monotonic_ns") is not None
+                or dispatch.get("forward_completed_host_monotonic_ns") is not None,
+                "goal_forwarding_not_suppressed",
+            ),
+            (
+                len(live_check) != 1 or live_check[0].get("status") != "PASS",
+                "live_preflight_check",
+            ),
+            (
+                not isinstance(dispatch, dict)
+                or actual_goal is None
+                or goal_comparison is None
+                or not goal_comparison.equivalent
+                or dispatch.get("goal_comparison") != goal_comparison.model_dump(mode="json"),
+                "canonical_goal_binding",
+            ),
+            (public_t1 != nested_t1, "t1_state_copy_mismatch"),
+            (
+                type(invocation_ns) is not int
+                or type(t1_cutoff_ns) is not int
+                or invocation_ns != t1_cutoff_ns,
+                "nav_send_invocation_binding",
+            ),
+            (
+                dispatch is None or dispatch.get("tag") != expected_tag,
+                "command_tag_binding",
+            ),
+            (
+                not isinstance(cleanup, dict)
+                or artifact.get("final_halt") != cleanup.get("final_halt"),
+                "final_halt_alias",
+            ),
+        )
+        if failed
+    ]
+    return failures
+
+
+def validate_live_preflight_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    """Validate one no-motion live preflight from its persisted raw evidence."""
+
+    validated = _validated_artifact(artifact)
+    if validated is None:
+        return {"schema_version": 1, "valid": False, "failures": ["artifact_schema"]}
+    parsed = _artifact_contract_and_goal(validated)
+    if parsed is None:
+        return {
+            "schema_version": 1,
+            "valid": False,
+            "failures": ["artifact_contract_or_goal"],
+        }
+    contract, goal = parsed
+    identity = validated.get("runtime_identity")
+    identity_dict = identity if isinstance(identity, dict) else {}
+    calibration, calibration_failures = _ground_truth_requirement(
+        validated,
+        contract=contract,
+        identity=identity_dict,
+    )
+    failures = _live_preflight_dispatch_binding_failures(validated, goal)
+    failures.extend(_live_preflight_cleanup_failures(validated.get("cleanup")))
+    failures.extend(_live_preflight_continuity_failures(validated))
+    failures.extend(
+        _runtime_identity_failures(identity_dict, require_end_generation=True)
+        if identity_dict
+        else ["runtime_identity_missing"]
+    )
+    failures.extend(calibration_failures)
+    failures.extend(_target_binding_failures(validated, goal))
+    failures.extend(
+        _state_evidence_failures(
+            validated.get("t0_scenario_start"),
+            contract=contract,
+            ground_truth_calibration=calibration,
+            expected_epoch=goal.simulation_epoch,
+            label="t0",
+        )
+    )
+    failures.extend(
+        _state_evidence_failures(
+            validated.get("t1_pre_dispatch"),
+            contract=contract,
+            ground_truth_calibration=calibration,
+            expected_epoch=goal.simulation_epoch,
+            label="t1",
+        )
+    )
+    failures.extend(
+        _live_preflight_raw_evidence_failures(
+            validated,
+            contract=contract,
+            goal=goal,
+            ground_truth_calibration=calibration,
+        )
+    )
+    unique_failures = list(dict.fromkeys(failures))
+    return {"schema_version": 1, "valid": not unique_failures, "failures": unique_failures}
 
 
 def _comparison_eligibility_failure(artifact: dict[str, Any], side: str) -> str | None:
@@ -7538,6 +7910,16 @@ def load_differential_artifact(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Differential artifact must contain a JSON object.")
     return DifferentialArtifact.model_validate(payload).model_dump(mode="json")
+
+
+def load_and_validate_live_preflight(path: Path) -> dict[str, Any]:
+    """Load and validate one no-motion live-preflight artifact offline."""
+
+    try:
+        artifact = load_differential_artifact(path)
+    except (ValueError, OSError, json.JSONDecodeError):
+        return {"schema_version": 1, "valid": False, "failures": ["artifact_load"]}
+    return validate_live_preflight_artifact(artifact)
 
 
 def load_and_compare(left_path: Path, right_path: Path, output: Path) -> dict[str, Any]:

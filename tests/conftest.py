@@ -636,7 +636,7 @@ def differential_artifact_factory():
         ]
         artifact: dict[str, object] = {
             "schema_version": 1,
-            "evidence_derivation_version": 5,
+            "evidence_derivation_version": 6,
             "run_id": f"run-{mode}",
             "pair_id": pair_id,
             "mode": mode,
