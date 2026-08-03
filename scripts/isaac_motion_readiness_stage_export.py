@@ -4,13 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import stat
 import subprocess
 import sys
 import zipfile
+import zipimport
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Keep this safety dependency visible to the architecture import guard.
+    import jenai.acceptance.motion_safety_stage_export  # noqa: F401
 
 _MAX_BUNDLE_BYTES = 64 * 1024 * 1024
 _TRUSTED_GIT = Path("/usr/bin/git")
@@ -75,19 +82,116 @@ def _open_reviewed_bundle(path: Path, repository: Path) -> int:
         raise
 
 
+def _sealed_fd_bundle_path(value: object) -> str | None:
+    prefix = "/proc/self/fd/"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return None
+    descriptor_text = value.removeprefix(prefix).partition("/")[0]
+    if not descriptor_text.isdecimal():
+        return None
+    return prefix + descriptor_text
+
+
+def _module_origins(module: object) -> tuple[str, ...]:
+    spec = getattr(module, "__spec__", None)
+    values = (getattr(module, "__file__", None), getattr(spec, "origin", None))
+    return tuple(dict.fromkeys(value for value in values if isinstance(value, str)))
+
+
+def _loaded_jenai_bundle_state() -> tuple[tuple[str, ...], frozenset[str]]:
+    names: list[str] = []
+    roots: set[str] = set()
+    for name, module in tuple(sys.modules.items()):
+        if name != "jenai" and not name.startswith("jenai."):
+            continue
+        origins = _module_origins(module)
+        module_roots = {_sealed_fd_bundle_path(origin) for origin in origins}
+        if not origins or None in module_roots or len(module_roots) != 1:
+            raise RuntimeError(f"non-sealed JenAI module is already loaded: {name}")
+        names.append(name)
+        roots.update(root for root in module_roots if root is not None)
+    return tuple(names), frozenset(roots)
+
+
+def _remove_path_occurrences(bundle_roots: frozenset[str]) -> None:
+    sys.path[:] = [entry for entry in sys.path if entry not in bundle_roots]
+
+
+def _clear_bundle_importers(bundle_roots: frozenset[str]) -> None:
+    for cached_path in tuple(sys.path_importer_cache):
+        if _sealed_fd_bundle_path(cached_path) not in bundle_roots:
+            continue
+        sys.path_importer_cache.pop(cached_path, None)
+    directory_cache = getattr(zipimport, "_zip_directory_cache", None)
+    if isinstance(directory_cache, dict):
+        for cached_path in tuple(directory_cache):
+            if _sealed_fd_bundle_path(cached_path) in bundle_roots:
+                directory_cache.pop(cached_path, None)
+    importlib.invalidate_caches()
+
+
+def _deactivate_reviewed_bundle(bundle_path: str) -> None:
+    """Remove every import reference to one soon-to-be-closed bundle descriptor."""
+
+    for name, module in tuple(sys.modules.items()):
+        if name != "jenai" and not name.startswith("jenai."):
+            continue
+        roots = {
+            root
+            for origin in _module_origins(module)
+            if (root := _sealed_fd_bundle_path(origin)) is not None
+        }
+        if bundle_path in roots:
+            sys.modules.pop(name, None)
+    bundle_roots = frozenset({bundle_path})
+    _remove_path_occurrences(bundle_roots)
+    _clear_bundle_importers(bundle_roots)
+
+
+def _require_current_bundle_origin(module: object, name: str, bundle_path: str) -> None:
+    origins = _module_origins(module)
+    if not origins or any(_sealed_fd_bundle_path(origin) != bundle_path for origin in origins):
+        raise RuntimeError(f"{name} was not loaded from the current reviewed source bundle")
+
+
+def _activate_reviewed_bundle(descriptor: int) -> str:
+    """Mount one verified bundle as the only JenAI source in long-lived Kit."""
+
+    bundle_path = f"/proc/self/fd/{descriptor}"
+    stale_names, stale_roots = _loaded_jenai_bundle_state()
+    for name in stale_names:
+        sys.modules.pop(name, None)
+    bundle_roots = frozenset({*stale_roots, bundle_path})
+    _remove_path_occurrences(bundle_roots)
+    _clear_bundle_importers(bundle_roots)
+    sys.path.insert(0, bundle_path)
+    return bundle_path
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     repository = Path(__file__).resolve().parents[1]
     descriptor = _open_reviewed_bundle(args.source_bundle, repository)
+    bundle_path: str | None = None
     try:
-        sys.path.insert(0, f"/proc/self/fd/{descriptor}")
-        from jenai.acceptance.motion_safety_stage_export import export_stage
+        bundle_path = _activate_reviewed_bundle(descriptor)
+        jenai_module = importlib.import_module("jenai")
+        acceptance_module = importlib.import_module("jenai.acceptance")
+        exporter_module = importlib.import_module("jenai.acceptance.motion_safety_stage_export")
+        _require_current_bundle_origin(jenai_module, "jenai", bundle_path)
+        _require_current_bundle_origin(acceptance_module, "jenai.acceptance", bundle_path)
+        _require_current_bundle_origin(exporter_module, "Stage exporter", bundle_path)
+        export_stage = exporter_module.export_stage
 
         digest = export_stage(args.config, args.output)
         print(digest)
         return 0
     finally:
-        os.close(descriptor)
+        try:
+            if bundle_path is not None:
+                _deactivate_reviewed_bundle(bundle_path)
+        finally:
+            os.close(descriptor)
 
 
 if __name__ == "__main__":
