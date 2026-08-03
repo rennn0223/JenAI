@@ -23,6 +23,11 @@ execution server 或 Headless ROS/Nav2 parity。正常任務前也不重新掃�
 要求。實作前必須修訂 ADR 0008，明確區分 Development、Acceptance 與 Certification
 Research；本 Brief 本身不改變現行 safety policy。
 
+`RobotGeometryAttestation` 是帶 `geometry_source.kind` discriminator 的 attestation
+family。v1 唯一合法 variant 是 `isaac_usd`，且只適用 simulation vehicle profile；
+physical robot 不得沿用 USD Evidence。Product Runtime 可共用 `GeometryReadiness` 結果，
+但不同 geometry source 的 provenance 與驗證規則不可互換。
+
 ## Problem statement
 
 原始產品問題是：JenAI 能否透過載具既有導航堆疊可靠完成高階任務、停止並誠實回報結果。
@@ -49,7 +54,7 @@ Operator
 這條路徑保留現有 motion authority、approval、STOP、completion 與 Evidence 規則。
 `NavigationGateway` 不讀 USD、不載入 calibration tool，也不因 Headless parity 未完成而改變。
 
-### 2. Offline Robot Calibration
+### 2. Offline Simulation Robot Calibration
 
 ```text
 Exact USD + dependency manifest + robot profile footprint
@@ -57,7 +62,7 @@ Exact USD + dependency manifest + robot profile footprint
   → composed collision geometry extraction
   → projected base-frame collision hull
   → containment comparison
-  → RobotGeometryAttestation
+  → RobotGeometryAttestation(kind=isaac_usd)
   → review / version control
 ```
 
@@ -69,14 +74,15 @@ initial pose。
 
 ```text
 ROS 2 plan / costmap / live footprint / pose / result / STOP Evidence
-  + matching RobotGeometryAttestation
+  + matching, deployment-applicable GeometryAttestation
   → route readiness
   → separately approved motion
   → verified task outcome
 ```
 
-Acceptance 不解析 USD。它只驗證 attestation 與目前 robot profile、scene launch manifest 及
-live effective Nav2 footprint 相符。
+Acceptance 不解析 USD。它只驗證 attestation 與目前 robot profile、對應 deployment manifest 及
+完整 motion-relevant footprint set 相符；simulation profile 才可接受 `isaac_usd`
+variant。
 
 ## Module and seam design
 
@@ -85,15 +91,25 @@ live effective Nav2 footprint 相符。
 外部 interface 應維持單一操作：
 
 ```text
-calibrate(CalibrationRequest) → RobotGeometryAttestation
+calibrate(IsaacUsdCalibrationRequest)
+  → RobotGeometryAttestation(kind=isaac_usd)
 ```
 
-`CalibrationRequest` 包含 exact USD、完整 dependency manifest、robot root prim、base frame、
-canonical Nav2 footprint 與 tool identity。模組內部隱藏 Stage loading、instance traversal、
+`IsaacUsdCalibrationRequest` 包含 exact USD、完整 dependency manifest、Isaac Sim
+version、simulation robot profile、robot root prim、base frame、canonical motion-relevant
+Nav2 footprint set 與 tool identity。模組內部隱藏 Stage loading、instance traversal、
 transform／scale handling、2D hull projection、containment 與 digest 計算。
 
 第一版只有 Headless Isaac implementation，不先建立通用 extractor seam；只有第二個真正
-不同的 implementation 出現時，才抽出 Adapter interface。
+不同的 implementation 出現時，才抽出 Adapter interface。概念上的 attestation family 是：
+
+```text
+GeometryAttestation
+  ├─ IsaacUsdGeometryAttestation（v1）
+  └─ PhysicalGeometryAttestation（future; separate provenance）
+```
+
+這只是 schema discriminator 與適用範圍，不要求 v1 預先實作 physical Adapter。
 
 ### Runtime attestation validator
 
@@ -102,15 +118,60 @@ Product startup 與 Acceptance 共用一個小 interface：
 ```text
 verify_geometry_attestation(
   robot_profile,
-  scene_launch_manifest,
-  live_nav2_footprint,
+  deployment_manifest,
+  motion_relevant_footprints,
   attestation,
 ) → GeometryReadiness
 ```
 
-它只做 identity、digest、expiry/policy 與 containment-result 驗證，不啟動 Isaac 或修改
-robot state。`GeometryReadiness` 至少區分 `pass`、`blocked` 與 `unavailable`，並列出精確
-mismatch。
+它只做 deployment applicability、identity、digest、expiry/policy 與 containment-result
+驗證，不啟動 Isaac 或修改 robot state。`GeometryReadiness` 至少區分 `pass`、`blocked`
+與 `unavailable`，並列出精確 mismatch。Runtime 只依賴 immutable attestation data 與此
+validator interface，不依賴 Headless calibration implementation。
+
+## Canonical motion-relevant Nav2 footprint contract
+
+v1 採策略 A：global costmap、local costmap 與 attested footprint 必須 canonical-equivalent。
+不允許只驗證其中一個 costmap，也不允許用一個較大的 footprint 推論另一個較小的 footprint
+安全。Motion-relevant footprint set 固定包含：
+
+1. profile 綁定的 global costmap node 之 live effective footprint；
+2. profile 綁定的 local costmap node 之 live effective footprint；
+3. dynamic footprint input／post-validation parameter override 的啟用狀態。
+
+Global 與 local source identity、mode、raw geometry、padding、padding algorithm 及 derived
+effective geometry 都要保存。v1 只有兩種 canonical mode：
+
+- `polygon`：至少三個 finite `base_link` 2D vertices；
+- `robot_radius`：以 `base_link` origin 為圓心的一個 positive finite radius。
+
+Global 與 local 必須使用相同 mode；polygon／radius 混用即 `blocked`。Canonicalization
+contract 為：
+
+- frame 必須是 robot profile 指定的 `base_link` equivalent；其他 frame 不可自動轉換；
+- 所有 metre values 先除以 `quantization_m = 0.000001`，使用 round-half-even 轉為整數；
+- polygon 移除重複 closing vertex，拒絕相鄰重複點、self-intersection、non-finite value 及
+  zero area，統一為 counter-clockwise，再從 lexicographically smallest quantized vertex
+  開始；
+- radius 保存為 positive quantized integer micrometres；
+- `footprint_padding` 不得先被吞入 raw geometry；digest 同時保存 quantized raw geometry、
+  quantized padding、versioned padding algorithm ID 與 derived effective geometry；
+- canonical digest 使用固定欄位、sorted keys、UTF-8、無多餘 whitespace 的 JSON。
+
+Attestation 對 collision hull 做 containment 時使用 derived effective geometry，但 raw
+geometry、padding 與 algorithm 任一項改變都會改變 digest。Global、local 與 attested
+canonical digest 必須完全相等。
+
+v1 不接受會改變 motion footprint 的 dynamic input。Profile 宣告 dynamic footprint
+topic／source、post-validation parameter override 或其他 mutable provider 時，結果為
+`unavailable`，motion admission fail closed。若 Nav2 提供 read-only published effective
+footprint，startup 應將它作為額外一致性 Evidence；它不能取代 global/local parameter
+identity。已通過 startup 後，任何驗證後的相關 parameter event 或 source generation 變更立即使
+`GeometryReadiness` stale，必須重新驗證才可再次 admission。
+
+Global 或 local parameter interface 不可用、mode 無法判定或 canonicalization 失敗時回報
+`GeometryReadiness.unavailable`；任何值／digest 不一致回報
+`GeometryReadiness.blocked`。兩者都不得允許 effectful motion。
 
 ## Minimal Headless calibration flow
 
@@ -122,8 +183,8 @@ mismatch。
 6. 對不支援的 animated transform、runtime-generated collider、unresolved asset、non-finite
    geometry 或無法保守投影的 shape 回報 `BLOCK`，不得猜測。
 7. 建立 canonical 2D collision hull。
-8. 讀取 `CalibrationRequest` 中 robot profile 的 canonical Nav2 footprint；校準工具不需連接
-   live Nav2。
+8. 讀取 request 中 simulation robot profile 的 canonical motion-relevant footprint set；
+   校準工具不需連接 live Nav2。
 9. 計算 containment、minimum containment margin、inward/outward deviation 與 digests。
 10. create-once 寫出 attestation，關閉 Kit，確認沒有 orphan process。
 
@@ -139,11 +200,18 @@ Conceptual v1 schema：
   "attestation_id": "sha256:<canonical-content>",
   "created_at": "RFC3339 timestamp",
   "robot_profile": {
-    "profile_id": "nova_carter",
+    "profile_id": "nova_carter_sim",
     "profile_version": "versioned value"
+  },
+  "geometry_source": {
+    "kind": "isaac_usd",
+    "platform_profile": "nova_carter_sim",
+    "deployment_modes": ["simulation"],
+    "isaac_sim_version": "5.1.0"
   },
   "calibration_tool": {
     "git_sha": "exact reviewed commit",
+    "source_sha256": "...",
     "contract_version": 1
   },
   "provenance": {
@@ -151,7 +219,8 @@ Conceptual v1 schema：
     "signature_bundle": null
   },
   "source_geometry": {
-    "root_usd_path": "repository/profile-relative identity",
+    "root_usd_asset_id": "repository/profile-relative identity",
+    "root_usd_absolute_path": "/absolute/path/at-calibration.usd",
     "root_usd_sha256": "...",
     "dependency_manifest_sha256": "...",
     "dependencies": [
@@ -171,16 +240,32 @@ Conceptual v1 schema：
     ],
     "projected_hull_sha256": "..."
   },
-  "nav2_footprint": {
+  "motion_relevant_footprint": {
+    "contract_version": 1,
     "frame": "base_link",
-    "configured_vertices_m": [
+    "mode": "polygon",
+    "quantization_m": 0.000001,
+    "raw_vertices_m": [
       [-0.50, -0.35],
       [0.50, -0.35],
       [0.50, 0.35],
       [-0.50, 0.35]
     ],
     "footprint_padding_m": 0.0,
-    "effective_footprint_sha256": "..."
+    "padding_algorithm": "nav2_costmap_2d:<versioned-contract>",
+    "effective_footprint_sha256": "...",
+    "sources": {
+      "global_costmap": {
+        "node_identity": "/global_costmap/global_costmap",
+        "canonical_digest": "..."
+      },
+      "local_costmap": {
+        "node_identity": "/local_costmap/local_costmap",
+        "canonical_digest": "..."
+      }
+    },
+    "dynamic_source_policy": "forbidden_v1",
+    "motion_relevant_set_sha256": "..."
   },
   "comparison": {
     "result": "PASS",
@@ -201,26 +286,50 @@ dependency 時，attestation 為 `BLOCK`。
 若未來發布 detached signature／Sigstore bundle，必須放在獨立 provenance 欄位，不得改變
 幾何判定語意。
 
-`PASS` 只表示該 footprint 在此校準 contract 下包覆該 collision hull；它不證明導航安全、
-active GUI Stage identity、控制器 tracking、零碰撞或實體載具安全。
+`geometry_source.kind = isaac_usd` 的 v1 artifact 只適用
+`deployment_modes = [simulation]` 且 profile identity 完全匹配的 vehicle。它只能證明該
+simulation footprint set 在此 calibration contract 下包覆該 USD collision hull；不證明
+導航安全、active GUI Stage identity、控制器 tracking、零碰撞或實體載具安全。
+
+Physical vehicle profile 不得引用或接受 `isaac_usd` attestation。未來 physical variant 可使用：
+
+- `manufacturer_dimensions`；
+- `reviewed_cad`；
+- `measured_physical_envelope`；
+- configuration-specific geometry certificate。
+
+這些 source 可共用 `GeometryReadiness` 結果 interface，但必須使用獨立 provenance、
+applicability 與 validator implementation。感測器、支架、電池或四足姿態改變時，physical
+configuration identity 也必須改變；simulation USD attestation 不得作為替代證據。
 
 ## Binding and startup verification
 
 Robot profile 保存 approved `attestation_id`，並固定：
 
 - robot profile identity/version；
-- root USD 與 dependency manifest digest；
-- effective Nav2 footprint digest；
+- deployment mode 與 `geometry_source.kind`；
+- Isaac Sim version（`isaac_usd` variant）；
+- source-specific geometry identity；`isaac_usd` variant 另綁 root USD 與 dependency manifest digest；
+- global/local motion-relevant footprint set digest；
 - calibration contract/tool version。
 
 Product startup 的 `doctor` 流程：
 
 1. 載入 robot profile 指定的 attestation；
 2. 驗證 attestation canonical digest 與 review/publish provenance；
-3. 驗證 configured scene launch manifest 與 USD/dependency identities；
-4. 從 live Nav2 parameter interface 取得 effective footprint 並重算 digest；
-5. 要求 comparison result 為 `PASS`；
-6. 任一 mismatch 回報 `GeometryReadiness.blocked`，列出重新校準指引。
+3. 驗證 active deployment mode、vehicle profile 與 `geometry_source` applicability；
+4. simulation profile 驗證 configured scene launch manifest、Isaac Sim version 與
+   USD/dependency identities；
+5. 從 global 及 local costmap parameter interface 取得完整 motion-relevant footprint set，
+   canonicalize 並重算 digests；
+6. 拒絕 dynamic source、global/local mismatch、post-validation override 或 stale generation；
+7. 要求 comparison result 為 `PASS`；
+8. 任一 mismatch 回報 `GeometryReadiness.blocked`，必要 source 不可用則回報
+   `GeometryReadiness.unavailable`，並列出重新校準／修復指引。
+
+Physical profile 不執行 Isaac USD identity check，也不得以 `isaac_usd` artifact 取得 PASS。
+在 future physical attestation 尚未定義前，其 geometry readiness 依該 physical product
+policy 誠實回報 `unavailable`／`blocked`，不能借用 simulation Evidence 建立 confidence。
 
 純 ROS 2 無法獨立證明 GUI 實際載入的 active Stage。Development 可明確回報
 `configured_scene_attested`；正式 Acceptance 則必須由受控 launcher 在啟動前固定 exact
@@ -231,8 +340,8 @@ scene launch manifest，並保存 launch evidence。沒有這項 evidence 時不
 
 | Level | Purpose | Required | Optional / limitation-preserving |
 |---|---|---|---|
-| Development | 日常功能與短路徑開發 | ROS readiness、matching geometry attestation、plan/clearance、localization/TF/costmap health、STOP/cancel | collision topic、tracking history、ground truth |
-| Acceptance | 合併／發版與固定任務 | Development requirements、controlled scene launch manifest、repeated task results、artifacts、cleanup | collision timeline 若 available；缺少時不得宣稱 collision-free |
+| Development | 日常功能與短路徑開發 | ROS readiness、deployment-applicable geometry attestation、complete motion-relevant footprint set、plan/clearance、localization/TF/costmap health、STOP/cancel | collision topic、tracking history、ground truth |
+| Acceptance | 合併／發版與固定任務 | Development requirements、controlled scene launch manifest（simulation）、repeated task results、artifacts、cleanup | collision timeline 若 available；缺少時不得宣稱 `collision_free=true` 或任何同義結論 |
 | Certification Research | 論文或高保證研究 | ADR 0008 類型的 raw geometry、full collision timeline、source/clock attestation、完整 uncertainty budget、防篡改與 ground truth contracts | 無；缺 Evidence 即 BLOCK |
 
 Simulation Evidence 在所有 level 都不得外推為實體安全。
@@ -241,10 +350,14 @@ Simulation Evidence 在所有 level 都不得外推為實體安全。
 
 每次 Development／Acceptance motion admission 保留四項必要條件：
 
-1. matching `RobotGeometryAttestation` 有效；
+1. deployment-applicable `GeometryAttestation` 有效，且 global/local 完整
+   motion-relevant footprint set 均被 attest；
 2. exact plan 的 oriented-footprint conservative clearance 高於該測試 level 的明確 policy；
 3. localization、TF、costmap 與 runtime health 有效；
 4. STOP／cancel path 可用且符合既有 acceptance contract。
+
+Clearance threshold 由 route／vehicle policy 擁有；calibration tool 只產生 geometry
+containment Evidence，不得設定、放寬或覆寫 motion admission 門檻。
 
 以下降為 optional confidence Evidence，缺少時保留 limitation，不自動宣稱成功：
 
@@ -279,9 +392,11 @@ superseded_by_offline_calibration_workflow
 
 ## Migration sequence
 
-1. 接受本 Brief，修訂 ADR 0008 的 level 與 attestation reuse policy。
+1. 接受本 Brief，修訂 ADR 0008；修訂必須同時取代「每場 active Stage extraction」、固定
+   global/local/dynamic canonical footprint contract，並限制 `isaac_usd` attestation 只適用
+   simulation deployment。
 2. 實作最小 Headless geometry calibration module 與 create-once CLI。
-3. 以 exact Nova Carter USD/profile 產生、review 並版本化第一份 attestation。
+3. 以 exact Nova Carter simulation USD/profile 產生、review 並版本化第一份 attestation。
 4. 將 attestation ID 綁入 Nova Carter robot profile。
 5. 在 `doctor`／startup readiness 加入 digest 與 live footprint 驗證；不改
    `NavigationGateway`。
@@ -299,6 +414,7 @@ superseded_by_offline_calibration_workflow
 - 不建立任意 Python execution server；
 - 不修改 NavigationGateway 或 product motion path；
 - 不在每個 task 前掃描 USD；
+- 不將 Isaac USD attestation 套用至 physical vehicle；
 - 不要求 operator 使用 Script Editor；
 - 不以 Headless ROS/Nav2 parity 作為恢復 GUI product development 的前置條件；
 - 不在本 Brief 執行 motion 或宣稱 Nova Carter attestation 已存在。
@@ -307,10 +423,14 @@ superseded_by_offline_calibration_workflow
 
 - Headless calibration 在 fresh process 中只讀 exact USD，無 ROS/Nav2/timeline/motion dependency；
 - 相同 inputs 產生 canonical-equivalent attestation；
-- USD dependency、collision geometry、scale、robot profile 或 footprint任一改變會使舊
+- USD dependency、collision geometry、scale、robot profile、global/local footprint、
+  padding、mode、dynamic-source policy 或 deployment mode 任一 canonical change 都會使舊
   attestation mismatch；
 - unsupported geometry 或 incomplete dependency closure 產生可信 `BLOCK`；
-- startup validator 能從 live Nav2 footprint 偵測 undersizing／drift；
+- startup validator 必須取得並驗證所有 global/local motion-relevant footprints；任一
+  unavailable、undersized、different、dynamic 或 drift 都不能 PASS；
+- attestation `geometry_source.kind`／`deployment_modes` 必須與 active vehicle profile 完全
+  相容；physical profile 不得接受 `isaac_usd` variant；
 - Product Runtime 與 NavigationGateway 的 dependency graph 不新增 Isaac calibration import；
 - Acceptance 在沒有 Script Editor 或 extension 的情況下可使用既有 attestation；
-- 文件不把 attestation PASS宣稱為 route safety、collision-free 或 physical safety。
+- 文件不把 attestation PASS 宣稱為 route safety、collision-free 或 physical safety。
