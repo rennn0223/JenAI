@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PROTOTYPE: one-shot, observation-only Isaac Lab Headless acceptance runner.
 
-set -euo pipefail
+set -eo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISAACLAB_ROOT="${ISAACLAB_ROOT:-/home/nvidia/IsaacLab}"
@@ -21,5 +21,8 @@ ROS_WORKSPACE_SETUP="${ROS_WORKSPACE_SETUP:-/home/nvidia/IsaacSim-ros_workspaces
 source "${ROS_SETUP}"
 # shellcheck disable=SC1090
 source "${ROS_WORKSPACE_SETUP}"
+set -u
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-73}"
+exec "${ISAACLAB_ROOT}/isaaclab-spark.sh" \
+    "${ROOT}/scripts/prototype_isaaclab_headless_no_motion.py" "$@"
