@@ -204,7 +204,7 @@ def main() -> int:  # noqa: C901 - throwaway spike deliberately surfaces one lif
             "JENAI_NAV2_STATE_DIR": str(state_dir),
         }
     )
-    nav2_started = False
+    nav2_cleanup_required = False
     try:
         from isaaclab.app import AppLauncher
 
@@ -248,6 +248,7 @@ def main() -> int:  # noqa: C901 - throwaway spike deliberately surfaces one lif
             "observed_time_s": second_time,
         }
 
+        nav2_cleanup_required = True
         start_code, start_stdout, start_stderr = _run_while_updating(
             [str(repository / "scripts" / "isaac_nav2.sh"), "start"],
             simulation_app=simulation_app,
@@ -261,7 +262,6 @@ def main() -> int:  # noqa: C901 - throwaway spike deliberately surfaces one lif
         }
         if start_code != 0:
             raise RuntimeError("isolated Nav2 failed to start")
-        nav2_started = True
         override_record = state_dir / f"{session}-override-path"
         nav2_params_path = Path(override_record.read_text().strip())
         if not nav2_params_path.is_absolute() or not nav2_params_path.is_file():
@@ -358,7 +358,7 @@ def main() -> int:  # noqa: C901 - throwaway spike deliberately surfaces one lif
         result["failure"] = str(exc)
         return 1
     finally:
-        if simulation_app is not None and nav2_started:
+        if simulation_app is not None and nav2_cleanup_required:
             stop_code, stop_stdout, stop_stderr = _run_while_updating(
                 [str(repository / "scripts" / "isaac_nav2.sh"), "stop"],
                 simulation_app=simulation_app,
@@ -371,9 +371,10 @@ def main() -> int:  # noqa: C901 - throwaway spike deliberately surfaces one lif
                 "stderr": stop_stderr[-4000:],
             }
         if simulation_app is not None:
-            simulation_app.close()
-            result["simulation_app_closed"] = True
+            result["simulation_app_close_requested"] = True
         _write_once(args.output_dir / "headless-spike-report.json", result)
+        if simulation_app is not None:
+            simulation_app.close()
 
 
 if __name__ == "__main__":
