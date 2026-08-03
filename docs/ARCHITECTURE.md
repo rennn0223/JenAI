@@ -66,8 +66,7 @@ approval, policy, and evidence interfaces.
 | `adapters/nxdog.py` | Read one typed NXDog observation snapshot | Experimental HTTP transport, strict payload validation, partial-failure evidence |
 | `acceptance/` | Reproducible HIL acceptance run | Isaac Sim/Nav2 preflight, route, cancel, halt, evidence capture, and the ADR 0007 simulation-only differential control arm |
 
-`acceptance/motion_safety.py` is a pure observation-only admission evaluator
-under ADR 0008. It transforms no robot state and exposes no motion seam. Capture
+`acceptance/motion_safety.py` is a pure observation-only admission evaluator. The concrete probe interpreter and operation vocabulary are repository-owned; configuration cannot select an executable or motion seam. `IsaacMotionReadinessCollector` is the bounded collection coordinator; `IsaacRosReadOnlyEvidenceSource` is the production decoder over the fixed repository-owned read-only Isaac probe, a create-once collision-geometry export produced inside the active Isaac process, and a closed observation operation enum. The collector captures all inputs concurrently, preserves typed timeout/source failures, and stores before/after RuntimeBinding snapshots so offline validation can reject identity drift, host-clock regression, ROS-clock regression, and overlong capture. Continuous swept clearance is represented by sampled signed clearance minus an explicit translation-and-rotation motion bound; increasing sample density alone is never treated as proof under ADR 0008. It transforms no robot state and exposes no motion seam. Capture
 adapters supply one immutable, capture-overlapping and time-bounded Motion Request Binding plus
 typed raw Evidence. The admission token binds the exact path and artifact input; a later
 authorization must match the current runtime generation and atomically consume its

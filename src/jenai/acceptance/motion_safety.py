@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import threading
 from collections.abc import Mapping, Set
 from enum import StrEnum
@@ -23,7 +24,9 @@ from pydantic_core import to_jsonable_python
 
 _DIGEST_LENGTH = 64
 _EPSILON = 1e-9
+_MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
 _NO_OBSTACLE_CLEARANCE_M = 1_000_000.0
+_GEOMETRY_NUMERIC_UNCERTAINTY_M = 1e-9
 
 
 def _canonical_digest(value: object) -> str:
@@ -133,6 +136,13 @@ class RuntimeBinding(FrozenModel):
     capture_ros_ns: int
     capture_host_monotonic_ns: int
     max_evidence_age_ns: int = Field(gt=0)
+    observation_limitations: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_observation_limitations(self) -> Self:
+        if self.observation_limitations != tuple(sorted(set(self.observation_limitations))):
+            raise ValueError("runtime observation limitations must be unique and sorted")
+        return self
 
 
 class MotionRequestBinding(FrozenModel):
@@ -225,6 +235,14 @@ class PathEvidence(FrozenModel):
         return self
 
 
+class NavFootprintComponent(FrozenModel):
+    source: str
+    frame_id: str
+    configured_polygon: Polygon2
+    footprint_padding_m: float = Field(ge=0.0)
+    effective_polygon: Polygon2
+
+
 class NavFootprintEvidence(FrozenModel):
     evidence_id: str
     frame_id: str
@@ -240,6 +258,7 @@ class NavFootprintEvidence(FrozenModel):
     padding_applied: bool
     configured_polygon: Polygon2
     polygon: Polygon2
+    components: tuple[NavFootprintComponent, ...] = ()
     content_sha256: str = Field(min_length=_DIGEST_LENGTH, max_length=_DIGEST_LENGTH)
 
     @classmethod
@@ -269,6 +288,9 @@ class CostmapLayerEvidence(FrozenModel):
     evidence_id: str
     layer: ClearanceLayer
     frame_id: str
+    source_topic: str
+    source_message_type: str
+    semantic_attestation: Literal["repository_layer_export", "synthetic_fixture", "unavailable"]
     resolution_m: float = Field(gt=0.0)
     origin: Point2
     width: int = Field(gt=0)
@@ -728,8 +750,13 @@ class ClearanceWitness(FrozenModel):
     interpolated_pose_index: int
     path_distance_m: float
     pose: Pose2
+    segment_index: int
+    segment_start_pose: Pose2
+    segment_end_pose: Pose2
     nearest_cell: CostmapCell | None
     nearest_boundary: str | None = None
+    sampled_clearance_m: float
+    interpolation_error_bound_m: float
     clearance_m: float
     source_stamp_ns: int | None
 
@@ -737,10 +764,14 @@ class ClearanceWitness(FrozenModel):
 class SweptClearanceResult(FrozenModel):
     status: str
     minimum_clearance_m: float | None
+    sampled_minimum_clearance_m: float | None
+    interpolation_error_bound_m: float
+    conservative_minimum_clearance_m: float | None
     worst: ClearanceWitness | None
     per_layer_minimum_m: Mapping[ClearanceLayer, float | None]
     interpolation_step_m: float
     evaluated_pose_count: int
+    evaluated_segment_count: int
     failures: tuple[str, ...]
 
 
@@ -783,10 +814,34 @@ class MotionReadinessResult(FrozenModel):
     evidence_contract_failures: tuple[str, ...]
 
 
+class ProbeIdentityEvidence(FrozenModel):
+    source_git_sha: str
+    entrypoint_path: str
+    entrypoint_sha256: str = Field(min_length=_DIGEST_LENGTH, max_length=_DIGEST_LENGTH)
+    source_bundle_sha256: str = Field(min_length=_DIGEST_LENGTH, max_length=_DIGEST_LENGTH)
+    config_path: str
+    config_sha256: str = Field(min_length=_DIGEST_LENGTH, max_length=_DIGEST_LENGTH)
+    python_executable: str
+    python_executable_sha256: str = Field(min_length=_DIGEST_LENGTH, max_length=_DIGEST_LENGTH)
+    environment_sha256: str = Field(min_length=_DIGEST_LENGTH, max_length=_DIGEST_LENGTH)
+    content_sha256: str = Field(min_length=_DIGEST_LENGTH, max_length=_DIGEST_LENGTH)
+
+    @classmethod
+    def create(cls, **values: Any) -> Self:
+        return cls(**values, content_sha256=_canonical_digest(values))
+
+    def digest_is_valid(self) -> bool:
+        return self.content_sha256 == _canonical_digest(
+            self.model_dump(mode="json", exclude={"content_sha256"})
+        )
+
+
 class MotionReadinessArtifact(FrozenModel):
     schema_version: int
     evidence_derivation_version: int
     runtime: RuntimeBinding
+    runtime_after: RuntimeBinding
+    probe_identity: ProbeIdentityEvidence
     motion_request: MotionRequestBinding
     authorization: MotionAuthorizationBinding | None
     path: PathEvidence
@@ -796,6 +851,7 @@ class MotionReadinessArtifact(FrozenModel):
     collision_stream: CollisionStreamEvidence
     clearance_sources: tuple[ClearanceSourceEvidence, ...]
     clearance_budget: ClearanceBudget
+    collection_failures: tuple[str, ...] = ()
     result: MotionReadinessResult | None
     input_sha256: str = ""
 
@@ -1106,10 +1162,15 @@ def _validate_clearance_layers(artifact: MotionReadinessArtifact) -> list[str]:
         ClearanceLayer
     ):
         failures.append("all four costmap layers must be present exactly once")
+    source_topics = [layer.source_topic for layer in artifact.costmap_layers]
+    if len(set(source_topics)) != len(source_topics):
+        failures.append("costmap layer sources must be distinct")
     for kind in ClearanceLayer:
         layer = layers_by_kind.get(kind)
         if layer is None or layer.status != EvidenceStatus.OBSERVED:
             failures.append(f"{kind.value} layer evidence is not observed")
+        elif layer.semantic_attestation == "unavailable":
+            failures.append(f"{kind.value} layer semantics are not attested")
         elif layer.frame_id != artifact.path.frame_id:
             failures.append(f"{kind.value} layer frame does not match planned path")
     return failures
@@ -1121,10 +1182,14 @@ def _blocked_clearance_result(
     return SweptClearanceResult(
         status="BLOCK",
         minimum_clearance_m=None,
+        sampled_minimum_clearance_m=None,
+        interpolation_error_bound_m=0.0,
+        conservative_minimum_clearance_m=None,
         worst=None,
         per_layer_minimum_m={kind: None for kind in ClearanceLayer},
         interpolation_step_m=step,
         evaluated_pose_count=evaluated,
+        evaluated_segment_count=max(0, evaluated - 1),
         failures=tuple(dict.fromkeys(failures)),
     )
 
@@ -1162,59 +1227,119 @@ def _boundary_clearance(footprint: Polygon2, layer: CostmapLayerEvidence) -> tup
     return min(candidates, key=lambda item: item[0])
 
 
+def _segment_motion_bound(
+    footprint: Polygon2,
+    start: Pose2,
+    end: Pose2,
+) -> float:
+    radius = max(math.hypot(point.x, point.y) for point in footprint.vertices)
+    translation = math.hypot(end.x - start.x, end.y - start.y)
+    rotation = radius * abs(_normalize_angle(end.yaw - start.yaw))
+    return translation + rotation + _GEOMETRY_NUMERIC_UNCERTAINTY_M
+
+
 def _evaluate_clearance_witnesses(
     artifact: MotionReadinessArtifact, interpolated: tuple[Pose2, ...]
-) -> tuple[dict[ClearanceLayer, float], ClearanceWitness | None, float]:
+) -> tuple[
+    dict[ClearanceLayer, float],
+    ClearanceWitness | None,
+    float,
+    float,
+    float,
+]:
     original_distances = _path_distances(artifact.path.poses)
     per_layer = {kind: _NO_OBSTACLE_CLEARANCE_M for kind in ClearanceLayer}
     worst: ClearanceWitness | None = None
-    minimum = _NO_OBSTACLE_CLEARANCE_M
+    sampled_minimum = _NO_OBSTACLE_CLEARANCE_M
+    conservative_minimum = _NO_OBSTACLE_CLEARANCE_M
+    maximum_error_bound = 0.0
     cumulative = 0.0
-    previous = interpolated[0]
-    for interpolated_index, pose in enumerate(interpolated):
-        if interpolated_index:
-            cumulative += math.hypot(pose.x - previous.x, pose.y - previous.y)
-        previous = pose
-        footprint = transform_polygon(artifact.nav_footprint.polygon, pose)
+    segments = (
+        tuple(zip(interpolated, interpolated[1:], strict=False))
+        if len(interpolated) > 1
+        else ((interpolated[0], interpolated[0]),)
+    )
+    for segment_index, (start_pose, end_pose) in enumerate(segments):
+        start_footprint = transform_polygon(artifact.nav_footprint.polygon, start_pose)
+        end_footprint = transform_polygon(artifact.nav_footprint.polygon, end_pose)
+        error_bound = _segment_motion_bound(
+            artifact.nav_footprint.polygon,
+            start_pose,
+            end_pose,
+        )
+        maximum_error_bound = max(maximum_error_bound, error_bound)
         path_index = min(
             range(len(original_distances)),
             key=lambda index: abs(original_distances[index] - cumulative),
         )
         for layer in artifact.costmap_layers:
-            boundary_clearance, boundary = _boundary_clearance(footprint, layer)
-            per_layer[layer.layer] = min(per_layer[layer.layer], boundary_clearance)
-            if boundary_clearance < minimum:
-                minimum = boundary_clearance
+            start_boundary = _boundary_clearance(start_footprint, layer)
+            end_boundary = _boundary_clearance(end_footprint, layer)
+            sampled_boundary, boundary, witness_pose = (
+                (start_boundary[0], start_boundary[1], start_pose)
+                if start_boundary[0] <= end_boundary[0]
+                else (end_boundary[0], end_boundary[1], end_pose)
+            )
+            conservative_boundary = sampled_boundary - error_bound
+            per_layer[layer.layer] = min(per_layer[layer.layer], conservative_boundary)
+            sampled_minimum = min(sampled_minimum, sampled_boundary)
+            if conservative_boundary < conservative_minimum:
+                conservative_minimum = conservative_boundary
                 worst = ClearanceWitness(
                     layer=layer.layer,
                     path_pose_index=path_index,
-                    interpolated_pose_index=interpolated_index,
+                    interpolated_pose_index=segment_index,
                     path_distance_m=cumulative,
-                    pose=pose,
+                    pose=witness_pose,
+                    segment_index=segment_index,
+                    segment_start_pose=start_pose,
+                    segment_end_pose=end_pose,
                     nearest_cell=None,
                     nearest_boundary=boundary,
-                    clearance_m=boundary_clearance,
+                    sampled_clearance_m=sampled_boundary,
+                    interpolation_error_bound_m=error_bound,
+                    clearance_m=conservative_boundary,
                     source_stamp_ns=layer.source_stamp_ns,
                 )
             for cell in layer.cells:
-                clearance = signed_polygon_clearance(
-                    footprint, _cell_polygon(cell, layer.resolution_m)
+                obstacle = _cell_polygon(cell, layer.resolution_m)
+                start_clearance = signed_polygon_clearance(start_footprint, obstacle)
+                end_clearance = signed_polygon_clearance(end_footprint, obstacle)
+                sampled_clearance, witness_pose = (
+                    (start_clearance, start_pose)
+                    if start_clearance <= end_clearance
+                    else (end_clearance, end_pose)
                 )
-                per_layer[layer.layer] = min(per_layer[layer.layer], clearance)
-                if layer.layer != ClearanceLayer.STATIC_INFLATION and clearance < minimum:
-                    minimum = clearance
-                    worst = ClearanceWitness(
-                        layer=layer.layer,
-                        path_pose_index=path_index,
-                        interpolated_pose_index=interpolated_index,
-                        path_distance_m=cumulative,
-                        pose=pose,
-                        nearest_cell=cell,
-                        nearest_boundary=None,
-                        clearance_m=clearance,
-                        source_stamp_ns=layer.source_stamp_ns,
-                    )
-    return per_layer, worst, minimum
+                conservative_clearance = sampled_clearance - error_bound
+                per_layer[layer.layer] = min(per_layer[layer.layer], conservative_clearance)
+                if layer.layer != ClearanceLayer.STATIC_INFLATION:
+                    sampled_minimum = min(sampled_minimum, sampled_clearance)
+                    if conservative_clearance < conservative_minimum:
+                        conservative_minimum = conservative_clearance
+                        worst = ClearanceWitness(
+                            layer=layer.layer,
+                            path_pose_index=path_index,
+                            interpolated_pose_index=segment_index,
+                            path_distance_m=cumulative,
+                            pose=witness_pose,
+                            segment_index=segment_index,
+                            segment_start_pose=start_pose,
+                            segment_end_pose=end_pose,
+                            nearest_cell=cell,
+                            nearest_boundary=None,
+                            sampled_clearance_m=sampled_clearance,
+                            interpolation_error_bound_m=error_bound,
+                            clearance_m=conservative_clearance,
+                            source_stamp_ns=layer.source_stamp_ns,
+                        )
+        cumulative += math.hypot(end_pose.x - start_pose.x, end_pose.y - start_pose.y)
+    return (
+        per_layer,
+        worst,
+        sampled_minimum,
+        conservative_minimum,
+        maximum_error_bound,
+    )
 
 
 def _swept_clearance(artifact: MotionReadinessArtifact) -> SweptClearanceResult:
@@ -1231,16 +1356,30 @@ def _swept_clearance(artifact: MotionReadinessArtifact) -> SweptClearanceResult:
     coverage_failures = _grid_coverage_failures(artifact, interpolated)
     if coverage_failures:
         return _blocked_clearance_result(coverage_failures, step=step, evaluated=len(interpolated))
-    per_layer, worst, minimum = _evaluate_clearance_witnesses(artifact, interpolated)
-    intersected = minimum < 0.0
+    (
+        per_layer,
+        worst,
+        sampled_minimum,
+        conservative_minimum,
+        maximum_error_bound,
+    ) = _evaluate_clearance_witnesses(artifact, interpolated)
+    unproven_clearance = conservative_minimum <= 0.0
     return SweptClearanceResult(
-        status="BLOCK" if intersected else "PASS",
-        minimum_clearance_m=minimum,
+        status="BLOCK" if unproven_clearance else "PASS",
+        minimum_clearance_m=conservative_minimum,
+        sampled_minimum_clearance_m=sampled_minimum,
+        interpolation_error_bound_m=maximum_error_bound,
+        conservative_minimum_clearance_m=conservative_minimum,
         worst=worst,
         per_layer_minimum_m=per_layer,
         interpolation_step_m=step,
         evaluated_pose_count=len(interpolated),
-        failures=("swept footprint intersects physical hazard",) if intersected else (),
+        evaluated_segment_count=max(1, len(interpolated) - 1),
+        failures=(
+            ("continuous swept-footprint clearance is not proven positive",)
+            if unproven_clearance
+            else ()
+        ),
     )
 
 
@@ -1363,12 +1502,26 @@ def _geometry_rebuild_failures(artifact: MotionReadinessArtifact) -> list[str]:
     )
     if not _polygons_close(usd.projected_base_hull, derived_combined):
         failures.append("combined USD collision hull cannot be rebuilt from raw prim geometry")
-    expected_effective = offset_convex_polygon(
-        artifact.nav_footprint.configured_polygon,
-        artifact.nav_footprint.footprint_padding_m,
-    )
-    if not _polygons_close(artifact.nav_footprint.polygon, expected_effective):
-        failures.append("effective Nav2 footprint cannot be rebuilt from polygon plus padding")
+    components = artifact.nav_footprint.components
+    if not components:
+        failures.append("effective Nav2 footprint component inventory is missing")
+    else:
+        rebuilt_components = tuple(
+            offset_convex_polygon(component.configured_polygon, component.footprint_padding_m)
+            for component in components
+        )
+        for component, rebuilt in zip(components, rebuilt_components, strict=True):
+            if component.frame_id != artifact.nav_footprint.frame_id:
+                failures.append(f"Nav2 footprint frame differs for {component.source}")
+            if not _polygons_close(component.effective_polygon, rebuilt):
+                failures.append(
+                    f"effective Nav2 footprint cannot be rebuilt for {component.source}"
+                )
+        combined = _convex_hull(
+            tuple(point for polygon in rebuilt_components for point in polygon.vertices)
+        )
+        if not _polygons_close(artifact.nav_footprint.polygon, combined):
+            failures.append("combined Nav2 footprint cannot be rebuilt from all costmaps")
     return failures
 
 
@@ -1381,6 +1534,14 @@ def _geometry_attestation(artifact: MotionReadinessArtifact) -> GeometryAttestat
         for point in usd.projected_base_hull.vertices
         if not _point_in_polygon(point, nav)
     ]
+    for component in artifact.nav_footprint.components:
+        if any(
+            not _point_in_polygon(point, component.effective_polygon)
+            for point in usd.projected_base_hull.vertices
+        ):
+            failures.append(
+                f"Nav2 footprint component is smaller than USD hull: {component.source}"
+            )
     maximum_inward = max(outside_distances, default=0.0)
     if maximum_inward > _EPSILON:
         failures.append("live Nav2 footprint is smaller than the USD collision hull")
@@ -1784,7 +1945,15 @@ def evaluate_motion_readiness(artifact: MotionReadinessArtifact) -> MotionReadin
     collision = _collision_timeline(artifact)
     policy = _clearance_policy(artifact)
     evidence_failures = tuple(
-        _evidence_digest_failures(artifact) + _evidence_binding_failures(artifact)
+        [
+            *artifact.collection_failures,
+            *(
+                f"runtime observation limitation: {limitation}"
+                for limitation in artifact.runtime.observation_limitations
+            ),
+            *_evidence_digest_failures(artifact),
+            *_evidence_binding_failures(artifact),
+        ]
     )
     blocking: list[str] = []
     if swept.status != "PASS":
@@ -1819,6 +1988,7 @@ def evaluate_motion_readiness(artifact: MotionReadinessArtifact) -> MotionReadin
 def _evidence_digest_failures(artifact: MotionReadinessArtifact) -> list[str]:
     failures: list[str] = []
     evidence: tuple[tuple[str, object], ...] = (
+        ("observation probe identity", artifact.probe_identity),
         ("motion request", artifact.motion_request),
         ("planned path", artifact.path),
         ("Nav2 footprint", artifact.nav_footprint),
@@ -1932,6 +2102,8 @@ def _authorization_binding_failures(artifact: MotionReadinessArtifact) -> list[s
 def _identity_binding_failures(artifact: MotionReadinessArtifact) -> list[str]:
     runtime = artifact.runtime
     failures: list[str] = []
+    if artifact.probe_identity.source_git_sha != runtime.git_sha:
+        failures.append("observation probe source Git identity differs from runtime")
     direct: tuple[tuple[RuntimeGenerationEvidence, str], ...] = (
         (artifact.path, "planned path"),
         (artifact.nav_footprint, "Nav2 footprint"),
@@ -2062,8 +2234,45 @@ def _freshness_binding_failures(artifact: MotionReadinessArtifact) -> list[str]:
     return failures
 
 
+def _runtime_continuity_failures(artifact: MotionReadinessArtifact) -> list[str]:
+    before = artifact.runtime
+    after = artifact.runtime_after
+    failures = [
+        f"runtime generation changed during collection: {field}"
+        for field in (
+            "git_sha",
+            "scene_path",
+            "scene_sha256",
+            "map_sha256",
+            "nav2_params_sha256",
+            "runtime_fingerprint",
+            "simulation_epoch",
+            "runtime_boot_id",
+            "product_config_sha256",
+            "planner_config_sha256",
+            "site_id",
+            "collision_filter_sha256",
+            "max_evidence_age_ns",
+            "observation_limitations",
+        )
+        if getattr(before, field) != getattr(after, field)
+    ]
+    if after.capture_host_monotonic_ns < before.capture_host_monotonic_ns:
+        failures.append("runtime host monotonic clock regressed during collection")
+    if after.capture_ros_ns < before.capture_ros_ns:
+        failures.append("runtime ROS clock regressed without an epoch transition")
+    elapsed_host_ns = after.capture_host_monotonic_ns - before.capture_host_monotonic_ns
+    if elapsed_host_ns > before.max_evidence_age_ns:
+        failures.append("runtime collection duration exceeds the evidence age contract")
+    return failures
+
+
 def _evidence_binding_failures(artifact: MotionReadinessArtifact) -> list[str]:
-    return _identity_binding_failures(artifact) + _freshness_binding_failures(artifact)
+    return (
+        _runtime_continuity_failures(artifact)
+        + _identity_binding_failures(artifact)
+        + _freshness_binding_failures(artifact)
+    )
 
 
 def validate_motion_readiness_artifact(
@@ -2072,7 +2281,7 @@ def validate_motion_readiness_artifact(
     failures = _evidence_digest_failures(artifact) + _evidence_binding_failures(artifact)
     if artifact.input_sha256 != artifact.expected_input_sha256():
         failures.append("artifact input digest mismatch")
-    if artifact.schema_version != 4 or artifact.evidence_derivation_version != 4:
+    if artifact.schema_version != 5 or artifact.evidence_derivation_version != 5:
         failures.append("unsupported motion-readiness evidence version")
     if artifact.path.frame_id != "map":
         failures.append("planned path must use map frame")
@@ -2115,6 +2324,8 @@ def _same_authorization_runtime(left: RuntimeBinding, right: RuntimeBinding) -> 
         "planner_config_sha256",
         "site_id",
         "collision_filter_sha256",
+        "max_evidence_age_ns",
+        "observation_limitations",
     )
     return all(getattr(left, field) == getattr(right, field) for field in fields)
 
@@ -2145,10 +2356,14 @@ def _motion_authorization_matches(
         and authorization.path_evidence_sha256 == artifact.path.content_sha256
         and authorization.artifact_input_sha256 == artifact.input_sha256
         and artifact.path.motion_request_sha256 == request.content_sha256
-        and _same_authorization_runtime(artifact.runtime, current_runtime)
-        and abs(current_ros_ns - artifact.runtime.capture_ros_ns)
+        and _same_authorization_runtime(artifact.runtime_after, current_runtime)
+        and current_runtime.capture_ros_ns == current_ros_ns
+        and current_runtime.capture_host_monotonic_ns == current_host_monotonic_ns
+        and current_ros_ns >= artifact.runtime_after.capture_ros_ns
+        and current_host_monotonic_ns >= artifact.runtime_after.capture_host_monotonic_ns
+        and current_ros_ns - artifact.runtime_after.capture_ros_ns
         <= artifact.runtime.max_evidence_age_ns
-        and abs(current_host_monotonic_ns - artifact.runtime.capture_host_monotonic_ns)
+        and current_host_monotonic_ns - artifact.runtime_after.capture_host_monotonic_ns
         <= artifact.runtime.max_evidence_age_ns
         and request.valid_from_ros_ns <= current_ros_ns <= request.valid_until_ros_ns
         and request.valid_from_host_monotonic_ns
@@ -2196,9 +2411,34 @@ class MotionAuthorizationNonceStore:
             return frozenset(self._consumed)
 
 
+def _bounded_json_object(path: Path) -> dict[str, object]:
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_ARTIFACT_BYTES:
+            raise ValueError("Motion Safety artifact exceeds its size limit")
+        chunks: list[bytes] = []
+        remaining = _MAX_ARTIFACT_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        if len(content) > _MAX_ARTIFACT_BYTES:
+            raise ValueError("Motion Safety artifact exceeds its size limit")
+        payload = json.loads(content)
+        if not isinstance(payload, dict):
+            raise ValueError("Motion Safety artifact must be a JSON object")
+        return payload
+    finally:
+        os.close(descriptor)
+
+
 def load_and_validate_motion_readiness(path: Path) -> OfflineValidationReport:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = _bounded_json_object(path)
         if not isinstance(payload, dict) or not payload.get("input_sha256"):
             return OfflineValidationReport(
                 valid=False,
@@ -2214,10 +2454,27 @@ def load_and_validate_motion_readiness(path: Path) -> OfflineValidationReport:
 def assemble_motion_readiness_artifact(source: Path) -> MotionReadinessArtifact:
     """Load captured typed Evidence and derive the immutable readiness result."""
 
-    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload = _bounded_json_object(source)
     captured = MotionReadinessArtifact.model_validate(payload)
     raw = captured.model_copy(update={"result": None})
     return raw.model_copy(update={"result": evaluate_motion_readiness(raw)})
+
+
+def write_bytes_create_once(output: Path, content: bytes) -> None:
+    """Durably persist exact bytes without overwriting prior Evidence."""
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("artifact write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def write_motion_readiness_artifact(
@@ -2226,11 +2483,4 @@ def write_motion_readiness_artifact(
 ) -> None:
     """Persist once; a readiness artifact must never overwrite prior Evidence."""
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        content = artifact.model_dump_json(indent=2).encode()
-        os.write(descriptor, content)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    write_bytes_create_once(output, artifact.model_dump_json(indent=2).encode())

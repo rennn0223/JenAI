@@ -1,6 +1,6 @@
 {
-  "schema_version": 4,
-  "evidence_derivation_version": 4,
+  "schema_version": 5,
+  "evidence_derivation_version": 5,
   "runtime": {
     "git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "scene_path": "/sim/JenAI.usd",
@@ -16,7 +16,38 @@
     "collision_filter_sha256": "88313393809c486b607dec898a3646eb740883ece40a126dbe52075ac8b1723b",
     "capture_ros_ns": 10000,
     "capture_host_monotonic_ns": 20000,
-    "max_evidence_age_ns": 5000
+    "max_evidence_age_ns": 5000,
+    "observation_limitations": []
+  },
+  "runtime_after": {
+    "git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "scene_path": "/sim/JenAI.usd",
+    "scene_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "nav2_params_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "runtime_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "simulation_epoch": "epoch-1",
+    "runtime_boot_id": "boot-1",
+    "product_config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "planner_config_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "site_id": "warehouse",
+    "collision_filter_sha256": "88313393809c486b607dec898a3646eb740883ece40a126dbe52075ac8b1723b",
+    "capture_ros_ns": 10000,
+    "capture_host_monotonic_ns": 20000,
+    "max_evidence_age_ns": 5000,
+    "observation_limitations": []
+  },
+  "probe_identity": {
+    "source_git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "entrypoint_path": "scripts/isaac_motion_readiness_probe.py",
+    "entrypoint_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "source_bundle_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "config_path": "/sim/motion-readiness.json",
+    "config_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "python_executable": "/usr/bin/python3",
+    "python_executable_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "environment_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "content_sha256": "826751ccbdc92d3db718e0e4c0935d9b6ecded7d00f2eb7d7b4fe8d89fd4727e"
   },
   "motion_request": {
     "authorization_nonce": "authorization-nonce-0001",
@@ -51,8 +82,8 @@
     "authorization_nonce": "authorization-nonce-0001",
     "motion_request_sha256": "4ac9d5df30808a027b0c591b0cc97d76f09002c8ad43ef201206903dee808f33",
     "path_evidence_sha256": "44ebd5e56f5e97021b3b9a72df7f67aadc76100d650476b8665b9d63de20a3bb",
-    "artifact_input_sha256": "e66e2da0be28886db9f10929333a0d2566d469d34ef7fcc99379cb1ccc1e285e",
-    "content_sha256": "fc82726e97608cd57ec35c402f1cfca9c15eea9eb465625f6f0fef8e400dfaa0"
+    "artifact_input_sha256": "211f8ce1c189b989e7e5c4937fc53f683247eaa62c4f03793cfb98feeeb04f54",
+    "content_sha256": "f418cb09c4b2be6a89ab3266a0ba4d7549a174a0624a788215686057c4f079d4"
   },
   "path": {
     "evidence_id": "planned-path",
@@ -132,7 +163,99 @@
         }
       ]
     },
-    "content_sha256": "432b41f400b9ebc514bfcc74d201dc5bd4558c490ea7879b7a97adffb6a86e2a"
+    "components": [
+      {
+        "source": "synthetic:local-costmap",
+        "frame_id": "base_link",
+        "configured_polygon": {
+          "vertices": [
+            {
+              "x": -0.57,
+              "y": -0.22
+            },
+            {
+              "x": 0.11,
+              "y": -0.22
+            },
+            {
+              "x": 0.11,
+              "y": 0.22
+            },
+            {
+              "x": -0.57,
+              "y": 0.22
+            }
+          ]
+        },
+        "footprint_padding_m": 0.03,
+        "effective_polygon": {
+          "vertices": [
+            {
+              "x": -0.6,
+              "y": -0.25
+            },
+            {
+              "x": 0.14,
+              "y": -0.25
+            },
+            {
+              "x": 0.14,
+              "y": 0.25
+            },
+            {
+              "x": -0.6,
+              "y": 0.25
+            }
+          ]
+        }
+      },
+      {
+        "source": "synthetic:global-costmap",
+        "frame_id": "base_link",
+        "configured_polygon": {
+          "vertices": [
+            {
+              "x": -0.57,
+              "y": -0.22
+            },
+            {
+              "x": 0.11,
+              "y": -0.22
+            },
+            {
+              "x": 0.11,
+              "y": 0.22
+            },
+            {
+              "x": -0.57,
+              "y": 0.22
+            }
+          ]
+        },
+        "footprint_padding_m": 0.03,
+        "effective_polygon": {
+          "vertices": [
+            {
+              "x": -0.6,
+              "y": -0.25
+            },
+            {
+              "x": 0.14,
+              "y": -0.25
+            },
+            {
+              "x": 0.14,
+              "y": 0.25
+            },
+            {
+              "x": -0.6,
+              "y": 0.25
+            }
+          ]
+        }
+      }
+    ],
+    "content_sha256": "574d309d1e105e523091dea8e4bc2eda4b6ab219953d36bd508898b808ad728c"
   },
   "usd_geometry": {
     "evidence_id": "usd-geometry",
@@ -275,6 +398,9 @@
       "evidence_id": "layer-static_lethal",
       "layer": "static_lethal",
       "frame_id": "map",
+      "source_topic": "/synthetic/static_lethal",
+      "source_message_type": "nav2_msgs/msg/Costmap",
+      "semantic_attestation": "synthetic_fixture",
       "resolution_m": 0.05,
       "origin": {
         "x": -10.0,
@@ -297,12 +423,15 @@
         }
       ],
       "raw_grid_sha256": "db5a1b33e905d6e5de226488ec4dfc56f03d75639bc3fdace733d2aa3b2bd7e2",
-      "content_sha256": "2c1002237bafff7dde14f1e71899f17debc5b9741945b26012d12bd4d61f5bb8"
+      "content_sha256": "8897db3afcfa8148ef873c5cb7aa62317c98a5b78db37e5dbd1947ecf8be0cff"
     },
     {
       "evidence_id": "layer-static_inscribed_or_inflation",
       "layer": "static_inscribed_or_inflation",
       "frame_id": "map",
+      "source_topic": "/synthetic/static_inscribed_or_inflation",
+      "source_message_type": "nav2_msgs/msg/Costmap",
+      "semantic_attestation": "synthetic_fixture",
       "resolution_m": 0.05,
       "origin": {
         "x": -10.0,
@@ -325,12 +454,15 @@
         }
       ],
       "raw_grid_sha256": "db5a1b33e905d6e5de226488ec4dfc56f03d75639bc3fdace733d2aa3b2bd7e2",
-      "content_sha256": "22b4651bbcdaf7559a07912ba0f9c994c2a85248f5d21fb8ffbd28fcdd3277a6"
+      "content_sha256": "6295370d01fc52f41302068c3d963b652c3dc2694aa6b7d93fddbf09d75fff95"
     },
     {
       "evidence_id": "layer-live_obstacle",
       "layer": "live_obstacle",
       "frame_id": "map",
+      "source_topic": "/synthetic/live_obstacle",
+      "source_message_type": "nav2_msgs/msg/Costmap",
+      "semantic_attestation": "synthetic_fixture",
       "resolution_m": 0.05,
       "origin": {
         "x": -10.0,
@@ -353,12 +485,15 @@
         }
       ],
       "raw_grid_sha256": "db5a1b33e905d6e5de226488ec4dfc56f03d75639bc3fdace733d2aa3b2bd7e2",
-      "content_sha256": "06a95e4ab7e4f731b92a70009007a4d5244c902abee4507c42f749da4f1dac80"
+      "content_sha256": "986bd03b58c8697901d9af7197affd1650b5cbdf35d9469736de30d222b25dab"
     },
     {
       "evidence_id": "layer-unknown",
       "layer": "unknown",
       "frame_id": "map",
+      "source_topic": "/synthetic/unknown",
+      "source_message_type": "nav2_msgs/msg/Costmap",
+      "semantic_attestation": "synthetic_fixture",
       "resolution_m": 0.05,
       "origin": {
         "x": -10.0,
@@ -381,7 +516,7 @@
         }
       ],
       "raw_grid_sha256": "db5a1b33e905d6e5de226488ec4dfc56f03d75639bc3fdace733d2aa3b2bd7e2",
-      "content_sha256": "3bc6747300835cf9b40c999b02e6c6a30fa17bf53eeb3f98092e7bd7f99e9869"
+      "content_sha256": "d7279f4f5de90a8328180cbf823aca085a9bb002057a2aeee4e4d05a14d1f9fc"
     }
   ],
   "collision_stream": {
@@ -660,40 +795,58 @@
     ],
     "content_sha256": "5655f049f9083f267678ffbacc8cdf708054288568cd840b8516866e80516d3c"
   },
+  "collection_failures": [],
   "result": {
     "decision": "BLOCK",
     "blocking_gates": [
       "geometry_attestation"
     ],
-    "measured_minimum_clearance_m": 8.86,
+    "measured_minimum_clearance_m": 8.834999998999999,
     "required_clearance_m": 0.2,
-    "margin_m": 8.66,
+    "margin_m": 8.634999999,
     "swept_clearance": {
       "status": "PASS",
-      "minimum_clearance_m": 8.86,
+      "minimum_clearance_m": 8.834999998999999,
+      "sampled_minimum_clearance_m": 8.86,
+      "interpolation_error_bound_m": 0.02500000100000002,
+      "conservative_minimum_clearance_m": 8.834999998999999,
       "worst": {
         "layer": "static_lethal",
         "path_pose_index": 1,
-        "interpolated_pose_index": 40,
-        "path_distance_m": 1.0,
+        "interpolated_pose_index": 39,
+        "path_distance_m": 0.975,
         "pose": {
+          "x": 1.0,
+          "y": 0.0,
+          "yaw": 0.0
+        },
+        "segment_index": 39,
+        "segment_start_pose": {
+          "x": 0.975,
+          "y": 0.0,
+          "yaw": 0.0
+        },
+        "segment_end_pose": {
           "x": 1.0,
           "y": 0.0,
           "yaw": 0.0
         },
         "nearest_cell": null,
         "nearest_boundary": "maximum_x",
-        "clearance_m": 8.86,
+        "sampled_clearance_m": 8.86,
+        "interpolation_error_bound_m": 0.02500000100000002,
+        "clearance_m": 8.834999998999999,
         "source_stamp_ns": 10000
       },
       "per_layer_minimum_m": {
-        "static_lethal": 8.86,
-        "static_inscribed_or_inflation": 8.86,
-        "live_obstacle": 8.86,
-        "unknown": 8.86
+        "static_lethal": 8.834999998999999,
+        "static_inscribed_or_inflation": 8.834999998999999,
+        "live_obstacle": 8.834999998999999,
+        "unknown": 8.834999998999999
       },
       "interpolation_step_m": 0.025,
       "evaluated_pose_count": 41,
+      "evaluated_segment_count": 40,
       "failures": []
     },
     "geometry_attestation": {
@@ -706,6 +859,8 @@
       "nav_width_m": 0.74,
       "nav_length_m": 0.5,
       "failures": [
+        "Nav2 footprint component is smaller than USD hull: synthetic:local-costmap",
+        "Nav2 footprint component is smaller than USD hull: synthetic:global-costmap",
         "live Nav2 footprint is smaller than the USD collision hull"
       ]
     },
@@ -723,5 +878,5 @@
     },
     "evidence_contract_failures": []
   },
-  "input_sha256": "e66e2da0be28886db9f10929333a0d2566d469d34ef7fcc99379cb1ccc1e285e"
+  "input_sha256": "211f8ce1c189b989e7e5c4937fc53f683247eaa62c4f03793cfb98feeeb04f54"
 }

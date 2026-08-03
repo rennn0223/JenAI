@@ -126,8 +126,13 @@ _MOTION_SAFETY_MODULE_FAMILY = "jenai.acceptance.motion_safety"
 _MOTION_SAFETY_IMPORTER_ALLOWLIST = frozenset(
     {
         "scripts/isaac_motion_readiness.py",
+        "scripts/isaac_motion_readiness_probe.py",
+        "scripts/isaac_motion_readiness_stage_export.py",
         "src/jenai/acceptance/motion_safety_cli.py",
         "src/jenai/acceptance/motion_safety_capture.py",
+        "src/jenai/acceptance/motion_safety_isaac.py",
+        "src/jenai/acceptance/motion_safety_probe.py",
+        "src/jenai/acceptance/motion_safety_stage_export.py",
     }
 )
 _MOTION_SAFETY_FORBIDDEN_SEAMS = (
@@ -135,6 +140,7 @@ _MOTION_SAFETY_FORBIDDEN_SEAMS = (
     "cmd_vel",
     "NavigationGateway",
     "RosBridgeClient",
+    "create_publisher",
 )
 
 # `/stop` is deliberately not a vendor literal here: it is JenAI's approved,
@@ -592,8 +598,13 @@ def test_motion_safety_gate_is_observation_only_and_not_imported_by_product_laye
     observation_entrypoints = (
         SRC / "acceptance" / "motion_safety.py",
         SRC / "acceptance" / "motion_safety_capture.py",
+        SRC / "acceptance" / "motion_safety_isaac.py",
+        SRC / "acceptance" / "motion_safety_probe.py",
+        SRC / "acceptance" / "motion_safety_stage_export.py",
         SRC / "acceptance" / "motion_safety_cli.py",
         ROOT / "scripts" / "isaac_motion_readiness.py",
+        ROOT / "scripts" / "isaac_motion_readiness_probe.py",
+        ROOT / "scripts" / "isaac_motion_readiness_stage_export.py",
     )
     assert not _motion_safety_observation_violations(observation_entrypoints)
     evaluator_source = observation_entrypoints[0].read_text(encoding="utf-8")

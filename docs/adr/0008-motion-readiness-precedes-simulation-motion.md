@@ -30,7 +30,7 @@ conjunctive contracts:
 4. a required-clearance budget whose seven positive terms each carry source,
    method, timestamp, configuration, and unit evidence.
 
-All raw Evidence is typed and content-digested. A schema-v4 MotionRequestBinding
+All raw Evidence is typed and content-digested. Evidence schema v5 supersedes v4 and is intentionally not wire-compatible: it adds per-segment sampled clearance, an explicit translation-plus-rotation interpolation error bound, the conservative clearance used for admission, witness segment endpoints, and typed before/after RuntimeBinding snapshots. The offline validator rejects v4 artifacts for new admission decisions; historical v4 files remain diagnostics only. A schema-v5 MotionRequestBinding
 binds a single-use nonce, capture-overlapping ROS/host validity whose endpoints
 and use-time remain inside the Evidence age bound, Site, start, goal, planner,
 product/Nav2 configuration, scene, map, runtime, collision-filter, boot, and epoch
@@ -47,9 +47,8 @@ enumeration, so coordinated omission cannot pass. Offline validation derives ful
 coverage and contact-reporting enablement; it does not trust a caller coverage
 Boolean or an opaque filter digest. Clearance inputs use method-specific typed
 non-negative measurements. Evidence is bound to the scene, map, Nav2 parameters,
-runtime fingerprint, boot identity, simulation epoch, and bounded capture window.
-The public offline validator recomputes geometry, attestation,
-timeline, budget, margin, and decision; it does not trust the stored summary.
+runtime fingerprint, boot identity, simulation epoch, and bounded capture window. The live collector is a checked-in, repository-owned read-only probe with a closed observation vocabulary; callers cannot supply an executable. Because a fresh probe process cannot inspect the active GUI Stage, a separate checked-in exporter runs inside Isaac and writes create-once collision-geometry Evidence, which the probe verifies against its digest, runtime, epoch, scene, Nav2 identity, and freshness. Probe source/config/environment identity and before/after RuntimeBinding snapshots are part of the immutable artifact, and a clean reviewed Git revision is required. Configuration-only identity, costmap semantics, or safety bounds remain explicit unavailable Evidence and BLOCK.
+The public offline validator recomputes continuous-segment conservative clearance, geometry, attestation, timeline, budget, runtime-generation continuity, clock non-regression, margin, and decision; it does not trust the stored summary.
 Artifact paths are create-once.
 
 `PASS` only means that the captured simulation evidence supports requesting a
