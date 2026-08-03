@@ -206,6 +206,42 @@ Experiment-only evaluation that compares the operational estimate against
 simulation ground truth. Ground truth measures JenAI; it is never fed back into
 the operational controller or used to make a failed task appear successful.
 
+### Motion Readiness Gate
+
+An observation-only admission decision evaluated before simulation motion is
+authorized. Its immutable Motion Request Binding ties one single-use nonce,
+bounded capture-overlapping ROS/host validity window, Site, start, goal,
+planner/configuration, scene/map/runtime/filter, boot and simulation epoch to the exact captured path
+and artifact input. Authorization is an atomic compare-and-consume operation;
+Stop→Play, runtime drift, expiry, or reuse invalidates it. It requires an orientation-specific Swept Footprint Clearance,
+attested USD collision geometry and live Nav2 footprint, a reconstructible
+Collision Evidence Timeline, and a source-bound Clearance Budget. Missing or
+stale Evidence produces `BLOCK`; the Gate never dispatches a goal or velocity.
+
+### Swept Footprint Clearance
+
+The signed separation between the complete, oriented robot footprint swept
+along an interpolated planned path and preserved obstacle/unknown costmap
+cells. It is not robot-centre clearance and does not treat inflation cost as
+physical geometry.
+
+### Clearance Budget
+
+The required minimum separation derived from individually sourced geometry,
+localization, controller tracking, map discretization, timing, stopping, and
+fixed product-margin terms. Unknown terms remain unavailable and block motion;
+they are never silently replaced by zero or a convenient constant.
+
+### Collision Evidence Timeline
+
+Source-attributed collision observations divided into pre-dispatch, motion,
+terminal-relative, and post-stop windows. Coverage is derived offline from an independent, complete, content-digested raw
+USD Stage enumeration and typed effective rules for every monitored USD prim,
+every collision-enabled counterpart/category, and contact-reporting state; neither
+caller summaries nor coordinated omissions are trusted. An observed empty window differs from
+a missing or stale stream. A vendor Boolean without source time or contact
+identity cannot by itself attest that no collision occurred.
+
 ### Dock Approach
 
 Navigation to a registered pose near a docking station. In the current Isaac Sim
