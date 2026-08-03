@@ -99,7 +99,7 @@ The whole probe process and collector budgets are strictly larger than the sum o
 
 The current repository collector is intentionally unable to produce a motion PASS from configuration claims alone. Runtime boot/epoch/fingerprint, map/Nav2/filter identities, all seven clearance sources, and four distinct costmap-layer semantics remain explicit observation limitations or `UNAVAILABLE` unless a live attested observer supplies them. A complete capture with any of those limitations is a valid, reconstructible `BLOCK`, never a false `PASS`. The combined Nav2 costmap cannot be relabelled four times as static/live/inflation/unknown evidence: each layer records a distinct source topic and a semantic attestation, and `unavailable` semantics block admission.
 
-Capture adapters provide a schema-v5 Evidence JSON with `result: null`. Prepare the repository-owned ROS-compatible probe environment once from the clean source checkout; it is not selected by config:
+Capture adapters provide a schema-v6 Evidence JSON with `result: null`. The plan-only probe forwards the MotionRequest planner_id into ComputePathToPose and records typed PlanActionEvidence. It accepts a path only when the action terminal status is SUCCEEDED, the Nav2 result error code is NONE, the returned Path frame matches the requested map frame, and every PoseStamped frame matches the Path header. PathEvidence.frame_id is populated from the actual returned Path header rather than copied from configuration. Prepare the repository-owned ROS-compatible probe environment once from the clean source checkout; it is not selected by config:
 
 ```bash
 uv venv --python /usr/bin/python3.12 .venv-ros
@@ -166,7 +166,7 @@ changed path, expired window, Stop→Play epoch, runtime drift, or consumed nonc
 fails closed. `valid=true` with `decision=BLOCK`
 means the artifact is internally trustworthy and correctly prevents motion. The CLI returns exit `0` only for valid `PASS`, exit `3` for valid `BLOCK`, and exit `2` for an invalid artifact.
 
-For every adjacent interpolated path segment, the artifact preserves the sampled minimum, the explicit unobserved-motion error bound, the conservative minimum, segment index, start/end poses, and the obstacle/boundary witness. PASS/BLOCK uses only the conservative minimum. Increasing sample density never removes the error-bound subtraction. The offline validator re-derives these fields.
+Every adjacent interpolated path segment is re-evaluated offline. The artifact preserves aggregate sampled and conservative minima, the maximum interpolation-error bound, the evaluated-segment count, and the complete worst-segment witness with its index, start/end poses, and obstacle or grid boundary. PASS/BLOCK uses only the conservative minimum. Increasing sample density never removes the error-bound subtraction.
 
 Every costmap layer preserves a complete, content-digested RLE grid as raw Evidence. Hazard-cell witnesses are reconstructed from that grid; deleting or replacing a summarized cell cannot create a valid artifact. The final assembled artifact must carry a non-empty input digest.
 

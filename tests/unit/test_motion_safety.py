@@ -42,6 +42,7 @@ from jenai.acceptance.motion_safety import (
     NavFootprintComponent,
     NavFootprintEvidence,
     PathEvidence,
+    PlanActionEvidence,
     Point2,
     Point3,
     Polygon2,
@@ -443,8 +444,8 @@ def _artifact(
     request = motion_request or _motion_request(start=path[0], goal=path[-1])
     layers = layers or tuple(_layer(kind) for kind in ClearanceLayer)
     raw = MotionReadinessArtifact(
-        schema_version=5,
-        evidence_derivation_version=5,
+        schema_version=6,
+        evidence_derivation_version=6,
         runtime=_binding(),
         runtime_after=_binding(),
         probe_identity=_probe_identity(),
@@ -453,6 +454,15 @@ def _artifact(
         path=PathEvidence.create(
             evidence_id="planned-path",
             frame_id="map",
+            plan_action=PlanActionEvidence(
+                planner_id=request.planner_id,
+                requested_frame_id="map",
+                returned_path_frame_id="map",
+                pose_frame_ids=("map",) * len(path),
+                terminal_status="SUCCEEDED",
+                error_code=0,
+                goal_uuid="00112233445566778899aabbccddeeff",
+            ),
             source_timestamp_ns=10_000,
             received_host_monotonic_ns=20_000,
             map_sha256="c" * 64,
@@ -1006,6 +1016,9 @@ def test_offline_validator_returns_invalid_for_non_finite_number(tmp_path: Path)
         lambda payload: payload["clearance_budget"]["terms"][0].__setitem__("value_m", 0.0),
         lambda payload: payload["runtime"].__setitem__("simulation_epoch", "other-epoch"),
         lambda payload: payload["path"].__setitem__("source_timestamp_ns", 99_000),
+        lambda payload: payload["path"]["plan_action"].__setitem__(
+            "planner_id", "tampered-planner"
+        ),
     ],
 )
 def test_offline_validator_rejects_tampered_raw_evidence(
@@ -1023,6 +1036,76 @@ def test_offline_validator_rejects_tampered_raw_evidence(
 
     assert report.valid is False
     assert report.failures
+
+
+def test_path_evidence_accepts_only_optional_leading_frame_slash() -> None:
+    path = PathEvidence.create(
+        evidence_id="leading-slash-path",
+        frame_id="map",
+        plan_action=PlanActionEvidence(
+            planner_id="GridBased",
+            requested_frame_id="/map",
+            returned_path_frame_id="map",
+            pose_frame_ids=("/map", "map"),
+            terminal_status="SUCCEEDED",
+            error_code=0,
+            goal_uuid="00112233445566778899aabbccddeeff",
+        ),
+        source_timestamp_ns=10_000,
+        received_host_monotonic_ns=20_000,
+        map_sha256="c" * 64,
+        runtime_fingerprint="e" * 64,
+        simulation_epoch="epoch-1",
+        runtime_boot_id="boot-1",
+        motion_request_sha256="f" * 64,
+        nav2_params_sha256="d" * 64,
+        poses=(Pose2(x=0.0, y=0.0, yaw=0.0), Pose2(x=1.0, y=0.0, yaw=0.0)),
+    )
+
+    assert path.frame_id == "map"
+
+
+def test_trailing_slash_path_frame_does_not_match_map_costmaps() -> None:
+    artifact = _artifact()
+    trailing_action = artifact.path.plan_action.model_copy(
+        update={
+            "requested_frame_id": "map/",
+            "returned_path_frame_id": "map/",
+            "pose_frame_ids": ("map/", "map/"),
+        }
+    )
+    trailing_path = PathEvidence.create(
+        **artifact.path.model_dump(
+            mode="python", exclude={"content_sha256", "frame_id", "plan_action"}
+        ),
+        frame_id="map/",
+        plan_action=trailing_action,
+    )
+
+    changed = artifact.model_copy(update={"path": trailing_path})
+    report = validate_motion_readiness_artifact(changed)
+    rederived = evaluate_motion_readiness(changed)
+
+    assert "planned path must use map frame" in report.failures
+    assert (
+        "static_lethal layer frame does not match planned path"
+        in rederived.swept_clearance.failures
+    )
+
+
+def test_path_evidence_planner_identity_must_match_motion_request() -> None:
+    artifact = _artifact()
+    changed_action = artifact.path.plan_action.model_copy(
+        update={"planner_id": "different-planner"}
+    )
+    changed_path = PathEvidence.create(
+        **artifact.path.model_dump(mode="python", exclude={"content_sha256", "plan_action"}),
+        plan_action=changed_action,
+    )
+
+    report = validate_motion_readiness_artifact(artifact.model_copy(update={"path": changed_path}))
+
+    assert "planned path planner identity differs from motion request" in report.failures
 
 
 @pytest.mark.parametrize(
@@ -1394,7 +1477,12 @@ def test_motion_authorization_concurrent_consume_has_one_winner() -> None:
 def test_motion_authorization_binds_exact_path_and_artifact_input() -> None:
     artifact = _artifact()
     changed_path = PathEvidence.create(
-        **artifact.path.model_dump(mode="python", exclude={"content_sha256", "poses"}),
+        **artifact.path.model_dump(
+            mode="python", exclude={"content_sha256", "poses", "plan_action"}
+        ),
+        plan_action=artifact.path.plan_action.model_copy(
+            update={"pose_frame_ids": ("map", "map", "map")}
+        ),
         poses=(
             artifact.motion_request.start,
             Pose2(x=0.5, y=0.1, yaw=0.0),
@@ -2109,6 +2197,178 @@ def test_plan_goal_cancellation_requires_acknowledgement() -> None:
         )
 
 
+def _install_fake_compute_path_ros(  # noqa: C901
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    path_frame: str = "map",
+    pose_frames: tuple[str, ...] = ("map", "map"),
+    error_code: int = 0,
+) -> list[object]:
+    requests: list[object] = []
+
+    class Future:
+        def __init__(self, result: object) -> None:
+            self._result = result
+
+        def result(self) -> object:
+            return self._result
+
+    class Goal:
+        def __init__(self) -> None:
+            def pose() -> SimpleNamespace:
+                return SimpleNamespace(
+                    header=SimpleNamespace(frame_id=""),
+                    pose=SimpleNamespace(
+                        position=SimpleNamespace(x=0.0, y=0.0),
+                        orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+                    ),
+                )
+
+            self.use_start = False
+            self.start = pose()
+            self.goal = pose()
+            self.planner_id = ""
+
+    class Result:
+        NONE = 0
+
+    class ComputePathToPose:
+        pass
+
+    ComputePathToPose.Goal = Goal
+    ComputePathToPose.Result = Result
+
+    stamp = SimpleNamespace(sec=0, nanosec=10_000)
+    path_poses = [
+        SimpleNamespace(
+            header=SimpleNamespace(frame_id=frame_id),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=float(index), y=0.0),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+        )
+        for index, frame_id in enumerate(pose_frames)
+    ]
+    wrapped = SimpleNamespace(
+        status=4,
+        result=SimpleNamespace(
+            error_code=error_code,
+            path=SimpleNamespace(
+                header=SimpleNamespace(frame_id=path_frame, stamp=stamp),
+                poses=path_poses,
+            ),
+        ),
+    )
+
+    class Handle:
+        accepted = True
+        goal_id = SimpleNamespace(uuid=bytes.fromhex("00112233445566778899aabbccddeeff"))
+
+        def get_result_async(self) -> Future:
+            return Future(wrapped)
+
+    class ActionClient:
+        def __init__(self, _node: object, _action: object, _name: str) -> None:
+            pass
+
+        def wait_for_server(self, *, timeout_sec: float) -> bool:
+            assert timeout_sec == 0.5
+            return True
+
+        def send_goal_async(self, request: object) -> Future:
+            requests.append(request)
+            return Future(Handle())
+
+    class Context:
+        pass
+
+    class Node:
+        def __init__(self, _name: str, *, context: object) -> None:
+            self.context = context
+
+        def destroy_node(self) -> None:
+            pass
+
+    rclpy = SimpleNamespace(
+        init=lambda *, context: None,
+        shutdown=lambda *, context: None,
+        spin_until_future_complete=lambda _node, _future, timeout_sec: None,
+    )
+    modules = {
+        "rclpy": rclpy,
+        "rclpy.action": SimpleNamespace(ActionClient=ActionClient),
+        "rclpy.context": SimpleNamespace(Context=Context),
+        "rclpy.node": SimpleNamespace(Node=Node),
+        "action_msgs.msg": SimpleNamespace(
+            GoalStatus=SimpleNamespace(STATUS_SUCCEEDED=4, STATUS_CANCELED=5)
+        ),
+        "nav2_msgs.action": SimpleNamespace(ComputePathToPose=ComputePathToPose),
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    return requests
+
+
+def test_compute_path_forwards_exact_planner_and_records_actual_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = _install_fake_compute_path_ros(monkeypatch)
+
+    poses, action, stamp_ns, _host_ns = motion_safety_probe.LiveRosObservationBackend(
+        0.5
+    ).compute_path(
+        Pose2(x=0.0, y=0.0, yaw=0.0),
+        Pose2(x=1.0, y=0.0, yaw=0.0),
+        "map",
+        "GridBased",
+    )
+
+    assert requests[0].planner_id == "GridBased"
+    assert poses == [Pose2(x=0.0, y=0.0, yaw=0.0), Pose2(x=1.0, y=0.0, yaw=0.0)]
+    assert stamp_ns == 10_000
+    assert action == PlanActionEvidence(
+        planner_id="GridBased",
+        requested_frame_id="map",
+        returned_path_frame_id="map",
+        pose_frame_ids=("map", "map"),
+        terminal_status="SUCCEEDED",
+        error_code=0,
+        goal_uuid="00112233445566778899aabbccddeeff",
+    )
+
+
+@pytest.mark.parametrize(
+    ("path_frame", "pose_frames", "error_code", "message"),
+    [
+        ("odom", ("odom", "odom"), 0, "different frame"),
+        ("map/", ("map/", "map/"), 0, "different frame"),
+        ("map", ("map", "odom"), 0, "pose frame differs"),
+        ("map", ("map", "map"), 208, "error code"),
+    ],
+)
+def test_compute_path_fails_closed_on_unbound_action_result(
+    monkeypatch: pytest.MonkeyPatch,
+    path_frame: str,
+    pose_frames: tuple[str, ...],
+    error_code: int,
+    message: str,
+) -> None:
+    _install_fake_compute_path_ros(
+        monkeypatch,
+        path_frame=path_frame,
+        pose_frames=pose_frames,
+        error_code=error_code,
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        motion_safety_probe.LiveRosObservationBackend(0.5).compute_path(
+            Pose2(x=0.0, y=0.0, yaw=0.0),
+            Pose2(x=1.0, y=0.0, yaw=0.0),
+            "map",
+            "GridBased",
+        )
+
+
 def test_artifact_persistence_completes_short_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2219,14 +2479,19 @@ def test_repository_probe_builds_reconstructible_block_from_raw_fake_runtime(  #
             return (json.dumps(polygon), 0.03, "base_link")
 
         def compute_path(
-            self, start: Pose2, goal: Pose2, frame_id: str
-        ) -> tuple[list[Pose2], int, int]:
-            assert (start, goal, frame_id) == (
+            self,
+            start: Pose2,
+            goal: Pose2,
+            frame_id: str,
+            planner_id: str,
+        ) -> tuple[list[Pose2], PlanActionEvidence, int, int]:
+            assert (start, goal, frame_id, planner_id) == (
                 expected.motion_request.start,
                 expected.motion_request.goal,
                 "map",
+                expected.motion_request.planner_id,
             )
-            return list(expected.path.poses), 10_000, 20_000
+            return list(expected.path.poses), expected.path.plan_action, 10_000, 20_000
 
         def topic_type(self, topic: str) -> None:
             assert topic == "/twin/collision"
@@ -2502,6 +2767,58 @@ class _FakeIsaacReadOnlyRuntime:
 
 def _assembled_capture(raw: MotionReadinessArtifact) -> MotionReadinessArtifact:
     return raw.model_copy(update={"result": evaluate_motion_readiness(raw)})
+
+
+@pytest.mark.parametrize(
+    ("path_frame", "pose_frames", "error_code"),
+    [
+        ("odom", ("odom", "odom"), 0),
+        ("map/", ("map/", "map/"), 0),
+        ("map", ("map", "odom"), 0),
+        ("map", ("map", "map"), 208),
+    ],
+)
+def test_collector_persists_valid_block_for_unbound_compute_path_result(
+    monkeypatch: pytest.MonkeyPatch,
+    path_frame: str,
+    pose_frames: tuple[str, ...],
+    error_code: int,
+) -> None:
+    expected = _artifact()
+    _install_fake_compute_path_ros(
+        monkeypatch,
+        path_frame=path_frame,
+        pose_frames=pose_frames,
+        error_code=error_code,
+    )
+    backend = motion_safety_probe.LiveRosObservationBackend(0.5)
+
+    class InvalidPlanSource(_FakeIsaacReadOnlyRuntime):
+        async def planned_path(
+            self,
+            runtime: RuntimeBinding,
+            request: MotionRequestBinding,
+        ) -> PathEvidence:
+            backend.compute_path(
+                request.start,
+                request.goal,
+                expected.path.plan_action.requested_frame_id,
+                request.planner_id,
+            )
+            raise AssertionError("invalid plan result must not produce PathEvidence")
+
+    outcome = asyncio.run(IsaacMotionReadinessCollector(InvalidPlanSource(expected)).collect())
+
+    assert outcome.status == "blocked"
+    assert isinstance(outcome.artifact, BlockedMotionReadinessArtifact)
+    assert validate_blocked_collection_artifact(outcome.artifact).valid is True
+    assert [
+        (failure.operation, failure.reason, failure.exception_type) for failure in outcome.failures
+    ] == [("planned_path", "source_error", "RuntimeError")]
+    assert all(
+        operation != "planned_path"
+        for operation, _digest in outcome.artifact.completed_operation_sha256
+    )
 
 
 def test_concrete_isaac_collector_produces_offline_valid_artifact() -> None:

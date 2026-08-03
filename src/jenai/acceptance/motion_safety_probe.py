@@ -35,6 +35,7 @@ from jenai.acceptance.motion_safety import (
     NavFootprintComponent,
     NavFootprintEvidence,
     PathEvidence,
+    PlanActionEvidence,
     Point2,
     Point3,
     Polygon2,
@@ -46,6 +47,7 @@ from jenai.acceptance.motion_safety import (
     UsdSceneCollisionEnumerationEvidence,
     collision_prim_inventory_sha256,
     costmap_rle_sha256,
+    normalize_ros_frame_id,
     offset_convex_polygon,
 )
 
@@ -380,12 +382,63 @@ class LiveRosObservationBackend:
         if terminal is None or int(terminal.status) != canceled_status:
             raise RuntimeError("ComputePathToPose cancellation did not reach terminal state")
 
+    @staticmethod
+    def _decode_plan_result(
+        handle: Any,
+        result: Any,
+        frame_id: str,
+        planner_id: str,
+        none_error_code: int,
+    ) -> tuple[list[Pose2], PlanActionEvidence, int]:
+        requested_frame = normalize_ros_frame_id(frame_id)
+        error_code = int(result.error_code)
+        if error_code != none_error_code:
+            raise RuntimeError(
+                f"ComputePathToPose succeeded with non-NONE error code: {error_code}"
+            )
+        path = result.path
+        returned_frame = str(path.header.frame_id)
+        try:
+            if normalize_ros_frame_id(returned_frame) != requested_frame:
+                raise RuntimeError("ComputePathToPose returned a different frame")
+        except ValueError as exc:
+            raise RuntimeError("ComputePathToPose returned an invalid frame") from exc
+        pose_frames = tuple(str(item.header.frame_id) for item in path.poses)
+        try:
+            if any(
+                normalize_ros_frame_id(pose_frame) != requested_frame for pose_frame in pose_frames
+            ):
+                raise RuntimeError("ComputePathToPose pose frame differs from Path header")
+        except ValueError as exc:
+            raise RuntimeError("ComputePathToPose pose frame differs from Path header") from exc
+        poses = [
+            Pose2(
+                x=float(item.pose.position.x),
+                y=float(item.pose.position.y),
+                yaw=_yaw(item.pose.orientation),
+            )
+            for item in path.poses
+        ]
+        if not poses:
+            raise RuntimeError("ComputePathToPose returned an empty path")
+        action = PlanActionEvidence(
+            planner_id=planner_id,
+            requested_frame_id=frame_id,
+            returned_path_frame_id=returned_frame,
+            pose_frame_ids=pose_frames,
+            terminal_status="SUCCEEDED",
+            error_code=0,
+            goal_uuid=bytes(handle.goal_id.uuid).hex(),
+        )
+        return poses, action, _stamp_ns(path.header.stamp)
+
     def compute_path(
         self,
         start: Pose2,
         goal: Pose2,
         frame_id: str,
-    ) -> tuple[list[Pose2], int, int]:
+        planner_id: str,
+    ) -> tuple[list[Pose2], PlanActionEvidence, int, int]:
         import rclpy
         from action_msgs.msg import GoalStatus
         from nav2_msgs.action import ComputePathToPose
@@ -393,6 +446,9 @@ class LiveRosObservationBackend:
         from rclpy.context import Context
         from rclpy.node import Node
 
+        normalize_ros_frame_id(frame_id)
+        if not planner_id:
+            raise ValueError("ComputePathToPose planner identity is empty")
         context = Context()
         rclpy.init(context=context)
         node = Node("jenai_motion_safety_planner", context=context)
@@ -402,6 +458,7 @@ class LiveRosObservationBackend:
                 raise TimeoutError("ComputePathToPose is unavailable")
             request = ComputePathToPose.Goal()
             request.use_start = True
+            request.planner_id = planner_id
             request.start.header.frame_id = frame_id
             request.start.pose.position.x = start.x
             request.start.pose.position.y = start.y
@@ -432,18 +489,14 @@ class LiveRosObservationBackend:
                 raise TimeoutError("ComputePathToPose result timed out after cancellation")
             if int(wrapped.status) != GoalStatus.STATUS_SUCCEEDED:
                 raise RuntimeError("ComputePathToPose did not succeed")
-            path = wrapped.result.path
-            poses = [
-                Pose2(
-                    x=float(item.pose.position.x),
-                    y=float(item.pose.position.y),
-                    yaw=_yaw(item.pose.orientation),
-                )
-                for item in path.poses
-            ]
-            if not poses:
-                raise RuntimeError("ComputePathToPose returned an empty path")
-            return poses, _stamp_ns(path.header.stamp), time.monotonic_ns()
+            poses, action, stamp_ns = self._decode_plan_result(
+                handle,
+                wrapped.result,
+                frame_id,
+                planner_id,
+                int(ComputePathToPose.Result.NONE),
+            )
+            return poses, action, stamp_ns, time.monotonic_ns()
         finally:
             node.destroy_node()
             rclpy.shutdown(context=context)
@@ -809,14 +862,16 @@ class RepositoryIsaacProbe:
         runtime: RuntimeBinding,
         request: MotionRequestBinding,
     ) -> PathEvidence:
-        poses, stamp_ns, host_ns = self.ros.compute_path(
+        poses, plan_action, stamp_ns, host_ns = self.ros.compute_path(
             request.start,
             request.goal,
             self.config.map_frame,
+            request.planner_id,
         )
         return PathEvidence.create(
             evidence_id="live-compute-path-to-pose",
-            frame_id=self.config.map_frame,
+            frame_id=plan_action.returned_path_frame_id,
+            plan_action=plan_action,
             source_timestamp_ns=stamp_ns,
             received_host_monotonic_ns=host_ns,
             map_sha256=runtime.map_sha256,

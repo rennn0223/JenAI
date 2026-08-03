@@ -327,8 +327,8 @@ class IsaacMotionReadinessCollector:
         runtime_after = cast(RuntimeBinding, runtime_after_result.value)
 
         raw = MotionReadinessArtifact(
-            schema_version=5,
-            evidence_derivation_version=5,
+            schema_version=6,
+            evidence_derivation_version=6,
             runtime=runtime,
             runtime_after=runtime_after,
             probe_identity=cast(ProbeIdentityEvidence, probe_task.result().value),

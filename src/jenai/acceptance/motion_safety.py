@@ -74,6 +74,15 @@ class Pose2(FrozenModel):
     yaw: float
 
 
+def normalize_ros_frame_id(frame_id: str) -> str:
+    """Return the canonical ROS frame identity used by evidence bindings."""
+
+    normalized = frame_id.strip().lstrip("/")
+    if not normalized:
+        raise ValueError("ROS frame identity is empty")
+    return normalized
+
+
 class Polygon2(FrozenModel):
     vertices: tuple[Point2, ...]
 
@@ -205,9 +214,20 @@ class MotionAuthorizationBinding(FrozenModel):
         )
 
 
+class PlanActionEvidence(FrozenModel):
+    planner_id: str = Field(min_length=1)
+    requested_frame_id: str = Field(min_length=1)
+    returned_path_frame_id: str = Field(min_length=1)
+    pose_frame_ids: tuple[str, ...] = Field(min_length=1)
+    terminal_status: Literal["SUCCEEDED"]
+    error_code: Literal[0]
+    goal_uuid: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 class PathEvidence(FrozenModel):
     evidence_id: str
     frame_id: str
+    plan_action: PlanActionEvidence
     source_timestamp_ns: int
     received_host_monotonic_ns: int
     map_sha256: str = Field(min_length=_DIGEST_LENGTH, max_length=_DIGEST_LENGTH)
@@ -232,6 +252,17 @@ class PathEvidence(FrozenModel):
     def validate_path(self) -> Self:
         if len(self.poses) < 1:
             raise ValueError("planned path must contain at least one pose")
+        action = self.plan_action
+        if self.frame_id != action.returned_path_frame_id:
+            raise ValueError("planned path frame must come from the returned Path header")
+        requested = normalize_ros_frame_id(action.requested_frame_id)
+        returned = normalize_ros_frame_id(action.returned_path_frame_id)
+        if returned != requested:
+            raise ValueError("ComputePathToPose returned a different frame")
+        if len(action.pose_frame_ids) != len(self.poses):
+            raise ValueError("planned path pose-frame count differs from pose count")
+        if any(normalize_ros_frame_id(frame_id) != returned for frame_id in action.pose_frame_ids):
+            raise ValueError("planned path pose frame differs from Path header")
         return self
 
 
@@ -1171,7 +1202,9 @@ def _validate_clearance_layers(artifact: MotionReadinessArtifact) -> list[str]:
             failures.append(f"{kind.value} layer evidence is not observed")
         elif layer.semantic_attestation == "unavailable":
             failures.append(f"{kind.value} layer semantics are not attested")
-        elif layer.frame_id != artifact.path.frame_id:
+        elif normalize_ros_frame_id(layer.frame_id) != normalize_ros_frame_id(
+            artifact.path.frame_id
+        ):
             failures.append(f"{kind.value} layer frame does not match planned path")
     return failures
 
@@ -2190,6 +2223,9 @@ def _identity_binding_failures(artifact: MotionReadinessArtifact) -> list[str]:
         for observed, expected, label in bindings
         if observed != expected
     )
+    if artifact.path.plan_action.planner_id != artifact.motion_request.planner_id:
+        failures.append("planned path planner identity differs from motion request")
+
     failures.extend(_authorization_binding_failures(artifact))
     if artifact.path.poses[0] != artifact.motion_request.start:
         failures.append("planned path start differs from motion request")
@@ -2281,9 +2317,9 @@ def validate_motion_readiness_artifact(
     failures = _evidence_digest_failures(artifact) + _evidence_binding_failures(artifact)
     if artifact.input_sha256 != artifact.expected_input_sha256():
         failures.append("artifact input digest mismatch")
-    if artifact.schema_version != 5 or artifact.evidence_derivation_version != 5:
+    if artifact.schema_version != 6 or artifact.evidence_derivation_version != 6:
         failures.append("unsupported motion-readiness evidence version")
-    if artifact.path.frame_id != "map":
+    if normalize_ros_frame_id(artifact.path.frame_id) != "map":
         failures.append("planned path must use map frame")
     if artifact.nav_footprint.frame_id != "base_link":
         failures.append("Nav2 footprint must use base_link frame")

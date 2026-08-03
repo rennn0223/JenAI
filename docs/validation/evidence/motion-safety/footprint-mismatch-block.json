@@ -1,6 +1,6 @@
 {
-  "schema_version": 5,
-  "evidence_derivation_version": 5,
+  "schema_version": 6,
+  "evidence_derivation_version": 6,
   "runtime": {
     "git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "scene_path": "/sim/JenAI.usd",
@@ -81,13 +81,25 @@
   "authorization": {
     "authorization_nonce": "authorization-nonce-0001",
     "motion_request_sha256": "4ac9d5df30808a027b0c591b0cc97d76f09002c8ad43ef201206903dee808f33",
-    "path_evidence_sha256": "44ebd5e56f5e97021b3b9a72df7f67aadc76100d650476b8665b9d63de20a3bb",
-    "artifact_input_sha256": "211f8ce1c189b989e7e5c4937fc53f683247eaa62c4f03793cfb98feeeb04f54",
-    "content_sha256": "f418cb09c4b2be6a89ab3266a0ba4d7549a174a0624a788215686057c4f079d4"
+    "path_evidence_sha256": "ca6a4088cb36dbe8af3eaac8e3ee2bdf8d42353f6b8d634e98c4e5cdc975591d",
+    "artifact_input_sha256": "1e872d1b501f07dbe5bb41f6f0f073e62c1e569bba2716192cb7dd472d31ffc7",
+    "content_sha256": "50cb2a00a4c614eea28752877b03001ada60e05307ca4175f84a3fe2b7f6ed2b"
   },
   "path": {
     "evidence_id": "planned-path",
     "frame_id": "map",
+    "plan_action": {
+      "planner_id": "nav2-global-planner",
+      "requested_frame_id": "map",
+      "returned_path_frame_id": "map",
+      "pose_frame_ids": [
+        "map",
+        "map"
+      ],
+      "terminal_status": "SUCCEEDED",
+      "error_code": 0,
+      "goal_uuid": "00112233445566778899aabbccddeeff"
+    },
     "source_timestamp_ns": 10000,
     "received_host_monotonic_ns": 20000,
     "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -108,7 +120,7 @@
         "yaw": 0.0
       }
     ],
-    "content_sha256": "44ebd5e56f5e97021b3b9a72df7f67aadc76100d650476b8665b9d63de20a3bb"
+    "content_sha256": "ca6a4088cb36dbe8af3eaac8e3ee2bdf8d42353f6b8d634e98c4e5cdc975591d"
   },
   "nav_footprint": {
     "evidence_id": "nav-footprint",
@@ -878,5 +890,5 @@
     },
     "evidence_contract_failures": []
   },
-  "input_sha256": "211f8ce1c189b989e7e5c4937fc53f683247eaa62c4f03793cfb98feeeb04f54"
+  "input_sha256": "1e872d1b501f07dbe5bb41f6f0f073e62c1e569bba2716192cb7dd472d31ffc7"
 }

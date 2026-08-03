@@ -30,7 +30,7 @@ conjunctive contracts:
 4. a required-clearance budget whose seven positive terms each carry source,
    method, timestamp, configuration, and unit evidence.
 
-All raw Evidence is typed and content-digested. Evidence schema v5 supersedes v4 and is intentionally not wire-compatible: it adds per-segment sampled clearance, an explicit translation-plus-rotation interpolation error bound, the conservative clearance used for admission, witness segment endpoints, and typed before/after RuntimeBinding snapshots. The offline validator rejects v4 artifacts for new admission decisions; historical v4 files remain diagnostics only. A schema-v5 MotionRequestBinding
+All raw Evidence is typed and content-digested. Evidence schema v6 supersedes v5 and is intentionally not wire-compatible: it retains v5's conservative sampled-clearance bound and typed before/after RuntimeBinding snapshots, and adds required typed PlanActionEvidence binding the exact planner sent to ComputePathToPose, requested and returned frames, every PoseStamped frame, terminal status, Nav2 error code, and goal UUID. The offline validator rejects v5 artifacts for new admission decisions; historical v5 files remain diagnostics only. A schema-v6 MotionRequestBinding
 binds a single-use nonce, capture-overlapping ROS/host validity whose endpoints
 and use-time remain inside the Evidence age bound, Site, start, goal, planner,
 product/Nav2 configuration, scene, map, runtime, collision-filter, boot, and epoch

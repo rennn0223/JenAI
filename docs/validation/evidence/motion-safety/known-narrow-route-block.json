@@ -1,6 +1,6 @@
 {
-  "schema_version": 5,
-  "evidence_derivation_version": 5,
+  "schema_version": 6,
+  "evidence_derivation_version": 6,
   "runtime": {
     "git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "scene_path": "/sim/JenAI.usd",
@@ -81,13 +81,25 @@
   "authorization": {
     "authorization_nonce": "authorization-nonce-0001",
     "motion_request_sha256": "4ac9d5df30808a027b0c591b0cc97d76f09002c8ad43ef201206903dee808f33",
-    "path_evidence_sha256": "44ebd5e56f5e97021b3b9a72df7f67aadc76100d650476b8665b9d63de20a3bb",
-    "artifact_input_sha256": "425e2a7d80bd13fb5536a805e43d7a53094120893eb21fdc7cfa9e0cdfb6e169",
-    "content_sha256": "417738148e891d6046c38dc99498e1dd342dec99bfe90e1558dbecbab0747ed8"
+    "path_evidence_sha256": "ca6a4088cb36dbe8af3eaac8e3ee2bdf8d42353f6b8d634e98c4e5cdc975591d",
+    "artifact_input_sha256": "bd95d1a76ad26458e29c179381a430b0c9cc0e8ab053d68995b5c53b11aa21b8",
+    "content_sha256": "a6bdee8693d2d69d271fb3655955b8c1382009df40584ef66785289c1f5b8b4a"
   },
   "path": {
     "evidence_id": "planned-path",
     "frame_id": "map",
+    "plan_action": {
+      "planner_id": "nav2-global-planner",
+      "requested_frame_id": "map",
+      "returned_path_frame_id": "map",
+      "pose_frame_ids": [
+        "map",
+        "map"
+      ],
+      "terminal_status": "SUCCEEDED",
+      "error_code": 0,
+      "goal_uuid": "00112233445566778899aabbccddeeff"
+    },
     "source_timestamp_ns": 10000,
     "received_host_monotonic_ns": 20000,
     "map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -108,7 +120,7 @@
         "yaw": 0.0
       }
     ],
-    "content_sha256": "44ebd5e56f5e97021b3b9a72df7f67aadc76100d650476b8665b9d63de20a3bb"
+    "content_sha256": "ca6a4088cb36dbe8af3eaac8e3ee2bdf8d42353f6b8d634e98c4e5cdc975591d"
   },
   "nav_footprint": {
     "evidence_id": "nav-footprint",
@@ -894,5 +906,5 @@
     },
     "evidence_contract_failures": []
   },
-  "input_sha256": "425e2a7d80bd13fb5536a805e43d7a53094120893eb21fdc7cfa9e0cdfb6e169"
+  "input_sha256": "bd95d1a76ad26458e29c179381a430b0c9cc0e8ab053d68995b5c53b11aa21b8"
 }
