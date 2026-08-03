@@ -1891,6 +1891,293 @@ def test_stage_export_bootstrap_holds_git_verified_bundle_descriptor(
         namespace["_open_reviewed_bundle"](bundle, tmp_path)
 
 
+def test_stage_export_bootstrap_isolates_reused_descriptor_zip_cache(
+    tmp_path: Path,
+) -> None:
+    old_bundle = tmp_path / "old.zip"
+    with zipfile.ZipFile(old_bundle, "w") as archive:
+        archive.writestr("jenai/__init__.py", "")
+        archive.writestr(
+            "jenai/acceptance/__init__.py",
+            "from missing_old_dependency import value\n",
+        )
+        archive.writestr("jenai/acceptance/target.py", "VALUE = 'old'\n")
+    new_bundle = tmp_path / "new.zip"
+    with zipfile.ZipFile(new_bundle, "w") as archive:
+        archive.writestr("jenai/__init__.py", "")
+        archive.writestr(
+            "jenai/acceptance/__init__.py",
+            '"""New reviewed package with intentionally different ZIP offsets."""\n',
+        )
+        archive.writestr("jenai/acceptance/target.py", "VALUE = 'new'\n")
+    entrypoint = (
+        Path(__file__).resolve().parents[2] / "scripts" / "isaac_motion_readiness_stage_export.py"
+    )
+    code = f"""
+import os
+import runpy
+import sys
+
+namespace = runpy.run_path({str(entrypoint)!r})
+activate = namespace["_activate_reviewed_bundle"]
+deactivate = namespace["_deactivate_reviewed_bundle"]
+
+old_fd = os.open({str(old_bundle)!r}, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+old_path = activate(old_fd)
+try:
+    try:
+        import jenai.acceptance.target
+    except ModuleNotFoundError as exc:
+        assert exc.name == "missing_old_dependency"
+finally:
+    os.close(old_fd)
+
+new_fd = os.open({str(new_bundle)!r}, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+assert new_fd == old_fd
+new_path = activate(new_fd)
+try:
+    from jenai.acceptance.target import VALUE
+    assert VALUE == "new"
+finally:
+    deactivate(new_path)
+    os.close(new_fd)
+
+assert old_path not in sys.path
+assert not any(
+    key == old_path or key.startswith(old_path + "/")
+    for key in sys.path_importer_cache
+)
+assert not any(name == "jenai" or name.startswith("jenai.") for name in sys.modules)
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_stage_export_bootstrap_replaces_old_bundle_using_different_fd(
+    tmp_path: Path,
+) -> None:
+    old_bundle = tmp_path / "old.zip"
+    new_bundle = tmp_path / "new.zip"
+    unrelated_bundle = tmp_path / "unrelated.zip"
+    for bundle, value in ((old_bundle, "old"), (new_bundle, "new")):
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("jenai/__init__.py", "")
+            archive.writestr("jenai/acceptance/__init__.py", "")
+            archive.writestr("jenai/acceptance/target.py", f"VALUE = {value!r}\n")
+    with zipfile.ZipFile(unrelated_bundle, "w") as archive:
+        archive.writestr("unrelated_package.py", "VALUE = 'preserved'\n")
+    entrypoint = (
+        Path(__file__).resolve().parents[2] / "scripts" / "isaac_motion_readiness_stage_export.py"
+    )
+    code = f"""
+import os
+import runpy
+import sys
+
+sys.path.insert(0, {str(unrelated_bundle)!r})
+import unrelated_package
+unrelated_module = unrelated_package
+
+namespace = runpy.run_path({str(entrypoint)!r})
+activate = namespace["_activate_reviewed_bundle"]
+deactivate = namespace["_deactivate_reviewed_bundle"]
+
+old_fd = os.open({str(old_bundle)!r}, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+old_path = activate(old_fd)
+from jenai.acceptance.target import VALUE as OLD_VALUE
+assert OLD_VALUE == "old"
+os.close(old_fd)
+
+blocker_fd = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
+assert blocker_fd == old_fd
+new_fd = os.open({str(new_bundle)!r}, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+assert new_fd != old_fd
+new_path = activate(new_fd)
+try:
+    from jenai.acceptance.target import VALUE as NEW_VALUE
+    assert NEW_VALUE == "new"
+finally:
+    deactivate(new_path)
+    os.close(new_fd)
+    os.close(blocker_fd)
+
+assert old_path not in sys.path
+assert new_path not in sys.path
+assert not any(
+    key == old_path
+    or key.startswith(old_path + "/")
+    or key == new_path
+    or key.startswith(new_path + "/")
+    for key in sys.path_importer_cache
+)
+assert not any(name == "jenai" or name.startswith("jenai.") for name in sys.modules)
+assert sys.modules["unrelated_package"] is unrelated_module
+assert unrelated_package.VALUE == "preserved"
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_stage_export_bootstrap_rejects_nonsealed_loaded_jenai(tmp_path: Path) -> None:
+    entrypoint = (
+        Path(__file__).resolve().parents[2] / "scripts" / "isaac_motion_readiness_stage_export.py"
+    )
+    bundle = tmp_path / "source.zip"
+    bundle.write_bytes(b"placeholder")
+    mutable_source = tmp_path / "mutable"
+    (mutable_source / "jenai").mkdir(parents=True)
+    (mutable_source / "jenai" / "__init__.py").write_text("", encoding="utf-8")
+    code = f"""
+import os
+import runpy
+import sys
+
+sys.path.insert(0, {str(mutable_source)!r})
+import jenai
+namespace = runpy.run_path({str(entrypoint)!r})
+descriptor = os.open({str(bundle)!r}, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+try:
+    try:
+        namespace["_activate_reviewed_bundle"](descriptor)
+    except RuntimeError as exc:
+        assert "non-sealed JenAI module" in str(exc)
+    else:
+        raise AssertionError("non-sealed JenAI module was accepted")
+finally:
+    os.close(descriptor)
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize("export_fails", [False, True])
+def test_stage_export_bootstrap_main_deactivates_bundle_after_export(
+    tmp_path: Path,
+    export_fails: bool,
+) -> None:
+    bundle = tmp_path / "source.zip"
+    export_body = (
+        "raise RuntimeError('export failed')" if export_fails else "return 'export-digest'"
+    )
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("jenai/__init__.py", "")
+        archive.writestr("jenai/acceptance/__init__.py", "")
+        archive.writestr(
+            "jenai/acceptance/motion_safety_stage_export.py",
+            "def export_stage(config, output):\n    " + export_body + "\n",
+        )
+    entrypoint = (
+        Path(__file__).resolve().parents[2] / "scripts" / "isaac_motion_readiness_stage_export.py"
+    )
+    code = f"""
+import os
+import runpy
+import sys
+
+namespace = runpy.run_path({str(entrypoint)!r})
+opened = []
+def open_bundle(_path, _repository):
+    descriptor = os.open({str(bundle)!r}, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    opened.append(descriptor)
+    return descriptor
+namespace["main"].__globals__["_open_reviewed_bundle"] = open_bundle
+try:
+    result = namespace["main"]([
+        "--source-bundle", {str(bundle)!r},
+        "--config", {str(tmp_path / "config.json")!r},
+        "--output", {str(tmp_path / "output.json")!r},
+    ])
+    assert {export_fails!r} is False
+    assert result == 0
+except RuntimeError as exc:
+    assert {export_fails!r} is True
+    assert str(exc) == "export failed"
+
+bundle_path = f"/proc/self/fd/{{opened[0]}}"
+assert bundle_path not in sys.path
+assert not any(
+    key == bundle_path or key.startswith(bundle_path + "/")
+    for key in sys.path_importer_cache
+)
+assert not any(name == "jenai" or name.startswith("jenai.") for name in sys.modules)
+try:
+    os.fstat(opened[0])
+except OSError:
+    pass
+else:
+    raise AssertionError("bundle descriptor remained open")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_stage_export_bootstrap_closes_descriptor_when_activation_fails(
+    tmp_path: Path,
+) -> None:
+    namespace = runpy.run_path(
+        str(
+            Path(__file__).resolve().parents[2]
+            / "scripts"
+            / "isaac_motion_readiness_stage_export.py"
+        )
+    )
+    bundle = tmp_path / "source.zip"
+    bundle.write_bytes(b"reviewed")
+    descriptor = os.open(bundle, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+
+    def fail_activation(_descriptor: int) -> str:
+        raise RuntimeError("cache activation failed")
+
+    namespace["main"].__globals__["_open_reviewed_bundle"] = lambda _path, _repository: descriptor
+    namespace["main"].__globals__["_activate_reviewed_bundle"] = fail_activation
+
+    with pytest.raises(RuntimeError, match="cache activation failed"):
+        namespace["main"](
+            [
+                "--source-bundle",
+                str(bundle),
+                "--config",
+                str(tmp_path / "config.json"),
+                "--output",
+                str(tmp_path / "output.json"),
+            ]
+        )
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
 def test_repository_transport_reaps_forked_process_group_after_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
