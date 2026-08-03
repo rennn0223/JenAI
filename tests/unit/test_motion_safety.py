@@ -1783,6 +1783,42 @@ def test_real_probe_source_identity_uses_sealed_bundle_manifest(tmp_path: Path) 
     assert completed.stdout.strip() == "manifest-ok"
 
 
+def test_stage_export_module_import_does_not_require_hil_config_dependencies(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "reviewed-source.zip"
+    source_root = Path(__file__).resolve().parents[2] / "src"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for source in sorted((source_root / "jenai").rglob("*.py")):
+            archive.writestr(source.relative_to(source_root).as_posix(), source.read_bytes())
+    code = f"""
+import importlib.abc
+import sys
+
+class RejectUnrelatedHilDependency(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "tomli_w":
+            raise ModuleNotFoundError("blocked unrelated HIL config dependency: tomli_w")
+        return None
+
+sys.meta_path.insert(0, RejectUnrelatedHilDependency())
+sys.path.insert(0, {str(bundle)!r})
+from jenai.acceptance.motion_safety_stage_export import export_stage
+print(export_stage.__name__)
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "export_stage"
+
+
 def test_stage_export_preparation_is_create_once_and_source_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
