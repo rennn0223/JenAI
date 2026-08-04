@@ -1,6 +1,6 @@
 # ADR 0008: Versioned geometry attestation precedes simulation motion
 
-- Status: Accepted ADR; proposed amendment dated 2026-08-04
+- Status: Accepted; amended 2026-08-04
 - Original date: 2026-08-03
 - Scope: Simulation geometry readiness, motion admission, and acceptance evidence
 
@@ -159,8 +159,9 @@ Headless extractor, Nova Carter attestation, `doctor` integration, Motion
 Safety Gate behavior change, Navigation Gateway change, GUI exporter removal,
 Isaac execution, or motion test.
 
-After this ADR is approved, implementation proceeds without reopening the
-three-flow architecture:
+When the current Product Constitution and product milestone authorize this
+migration, implementation must follow the dependency order below without
+reopening the three-flow architecture:
 
 1. typed calibration schema;
 2. pure footprint canonicalization;
@@ -170,6 +171,9 @@ three-flow architecture:
 6. `doctor` and startup binding;
 7. Motion Safety admission convergence;
 8. GUI exporter migration or deprecation.
+
+This order defines technical dependencies, not roadmap priority, and does not
+authorize work on a frozen subsystem.
 
 The first three steps are pure, deterministic Python work and require no Isaac
 process. Each implementation PR may refine internal structure, but it must not
