@@ -5,12 +5,34 @@
 
 ## 開始工作前
 
-依序閱讀：
+任何分析或實作開始前依序閱讀：
 
-1. `CONTEXT.md`：產品領域、正式術語與使用者可見語言。
-2. `docs/ARCHITECTURE.md`：現行產品邊界、模組責任、seam 與依賴方向。
-3. 與任務直接相關的 ADR、測試及操作文件。
-4. 目前 Git diff、分支與測試狀態。
+1. `docs/product/PRODUCT.md`：JenAI v1 Product Constitution 與 North Star。
+2. `docs/product/TECH_LEAD.md`：目前唯一 live Milestone 授權、允許範圍與刻意忽略項目。
+3. `docs/product/MILESTONES.md`：里程碑順序、狀態投影與完成 gate。
+4. `docs/product/PRODUCT_GOVERNANCE.md`：決策優先級、Freeze 與例外。
+5. `docs/product/DECISION_POLICY.md`：開工 Decision Gate 與 PR 宣告。
+6. `docs/product/ROADMAP.md`：Completed、Current、Next 與 Deferred projection。
+7. `CONTEXT.md`：產品領域、正式術語與使用者可見語言。
+8. `docs/ARCHITECTURE.md`：現行產品邊界、模組責任、seam 與依賴方向。
+9. 與任務直接相關的 Epic、ADR、測試及操作文件。
+10. 目前 Git diff、分支與測試狀態。
+
+工作授權的優先順序為：
+
+```text
+Product Constitution
+→ Current Product Milestone / TECH_LEAD
+→ Accepted ADR
+→ Epic
+→ Design Brief
+→ Implementation PR
+```
+
+若工作不能直接推進目前 Milestone，且沒有具可審查證據並由 Product Owner 核准的
+critical-blocker exception，必須停止實作並記入
+`docs/product/DEFERRED_WORK.md`。ADR 不得自行改變 Product Constitution 或目前 Milestone。
+Frozen subsystem 只准進行 `PRODUCT_GOVERNANCE.md` 定義的最小 maintenance exception。
 
 工程事實的優先順序為：
 
