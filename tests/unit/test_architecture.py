@@ -52,6 +52,19 @@ _WORKFLOW_FORBIDDEN_IMPORT_PREFIXES = (
     "jenai.tui",
     "jenai.webui",
 )
+_RUNTIME_CORE_FORBIDDEN_IMPORT_PREFIXES = (
+    "agents",
+    "openai",
+    "rclpy",
+    "jenai.acceptance",
+    "jenai.adapters",
+    "jenai.agent",
+    "jenai.bridge",
+    "jenai.providers",
+    "jenai.tools",
+    "jenai.tui",
+    "jenai.webui",
+)
 
 # Rule 2: layers above the vehicle profile must not name a vehicle. The
 # profile itself (config/models.py) and the bridge-side message-family clamp
@@ -176,6 +189,18 @@ def _imports_of(path: Path, *, package_root: Path = SRC) -> list[str]:
                 if alias.name != "*"
             )
     return found
+
+
+def _runtime_core_import_violations(runtime_root: Path) -> list[str]:
+    violations: list[str] = []
+    for path in sorted(runtime_root.rglob("*.py")):
+        relative = path.relative_to(runtime_root).as_posix()
+        violations.extend(
+            f"{relative} imports {name}"
+            for name in _imports_of(path, package_root=runtime_root.parent)
+            if name.startswith(_RUNTIME_CORE_FORBIDDEN_IMPORT_PREFIXES)
+        )
+    return violations
 
 
 def _direct_importers_of_differential_runner(
@@ -441,6 +466,27 @@ def test_workflow_domain_is_independent_of_llm_ros_and_user_interfaces() -> None
         "Workflow domain must not depend on LLM, ROS, tools, or UI adapters:\n"
         + "\n".join(violations)
     )
+
+
+def test_runtime_core_is_independent_of_llm_ros_acceptance_and_user_interfaces() -> None:
+    """Authority contracts stay platform-neutral and provider-free."""
+
+    runtime_root = SRC / "runtime"
+    assert next(runtime_root.rglob("*.py"), None) is not None, "Runtime core package disappeared"
+    violations = _runtime_core_import_violations(runtime_root)
+    assert not violations, (
+        "Runtime core must not depend on LLM, ROS, acceptance, tools, or UI adapters:\n"
+        + "\n".join(violations)
+    )
+
+
+def test_runtime_architecture_guard_scans_nested_modules(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    nested = runtime_root / "authority" / "leak.py"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("import rclpy\n", encoding="utf-8")
+
+    assert _runtime_core_import_violations(runtime_root) == ["authority/leak.py imports rclpy"]
 
 
 def test_area_patrol_service_is_independent_of_agent_and_ui_adapters() -> None:
