@@ -22,6 +22,36 @@ available capability, supervises its execution, and reports a verified outcome.
 It decides *what* the robot should do, while existing controllers decide *how*
 the robot moves.
 
+### Mission Draft
+
+A typed but untrusted interpretation of operator intent. It cannot be approved,
+compiled, or executed until a deterministic Validator/Binder resolves
+registered identities, policy, and defaults.
+
+### Mission Spec
+
+The immutable, validated high-level Task request produced from a Mission Draft.
+It states what must be completed without mutable execution progress. The first
+product Mission kind is `patrol`.
+
+### Execution Plan
+
+The immutable ordered steps deterministically compiled from one Mission Spec.
+Its exact digest is the approval boundary; an approved plan cannot be silently
+reordered, extended, or rebound.
+
+### Execution Engine
+
+The deterministic role that owns mutable progress for one approved Execution
+Plan. It advances steps, applies bounded policy, handles STOP, and invokes the
+Capability Executor. It does not interpret language or control the robot.
+
+### Patrol Mission
+
+The first product Mission. In v1 it compiles registered patrol locations and a
+system-added home into a fixed Execution Plan. It is narrower than Semantic
+Area Patrol, which adds observations and coverage in a later Epic.
+
 ### Capability
 
 A registered action or observation that a robot can perform through a known

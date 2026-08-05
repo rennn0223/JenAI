@@ -7,40 +7,57 @@
 
 ## Current milestone
 
-[`EPIC-0003 — Robot Runtime v0`](../epics/EPIC-0003-ROBOT-RUNTIME-V0.md)
+[`EPIC-0003 — Natural-Language Patrol Golden Path`](../epics/EPIC-0003-ROBOT-RUNTIME-V0.md)
 
 ## Focus
 
-交付一個由 Robot Runtime Authority 完整擁有、可批准、可停止、可重啟後誠實恢復、可驗證
-並能產生 Receipt 的 Task／Workflow Instance lifecycle。TUI／WebUI 可將其呈現為 MissionRun，
-但不擁有第二份狀態。成功以可展示的完整生命週期衡量，不以新增類別或 protocol 文件數量衡量。
+交付一條真實可用、可驗收的產品流程：操作員以自然語言要求巡邏，JenAI 顯示 exact Plan，
+經 `Yes / Auto / No` 批准後，以確定性流程依序前往 `A → B → C → Dock`，最後形成誠實的
+`TaskOutcome` 與 Receipt。成功以這條流程完整完成衡量，不以新增 Runtime abstraction、protocol
+或 infrastructure 數量衡量。
 
 ## Authorized work
 
-- typed high-level Task、Runtime-owned Workflow Instance 與其 MissionRun projection；
-- Approval resource 與 lifecycle；
-- command lease、safety epoch 與 startup reconciliation；
-- deterministic Workflow instance execution；
-- ordered durable Runtime Events 與 projections；
-- STOP／cancel、Completion Contract、Task Outcome 與 Task Receipt；
-- in-memory／transport seam 及既有 Isaac Navigation Gateway parity；
-- 讓既有 TUI／WebUI 讀取同一 Runtime truth 所需的最小 thin-client integration。
+- `MissionDraft → MissionSpec → ExecutionPlan` 的 typed、validated、immutable contract；
+- 第一個且唯一的 `patrol` Mission compiler；
+- exact Plan preview 與 `Yes / Auto / No` approval binding；
+- 單一 `ExecutionEngine`／Workflow Instance 擁有執行進度、有限重試、取消與 terminal state；
+- 既有 `CapabilityExecutor → NavigationGateway → Nav2` 原子步驟路徑；
+- waypoint-local failure 與 navigation-system failure 的 typed policy；
+- STOP、late-success prevention、Completion Contract、`TaskOutcome` 與 Receipt；
+- 既有 TUI 顯示 Plan、批准、進度、錯誤建議與結果所需的最小整合；
+- 固定 Isaac reference scenario 的產品級 Golden Path 驗證。
 
 ## Intentionally ignored
 
+- durable Event Store、startup reconciliation、HTTP／SSE 與跨介面 Runtime migration；
+- PR #157 的 Authority candidate implementation；
 - Geometry、Motion Safety、Differential、Acceptance、Stage Export、Headless parity；
-- Inspection Mission 的完整產品流程（屬 EPIC-0004）；
-- NXDog effectful capability；
-- React WebUI rewrite 或 TUI redesign；
-- multi-robot、Certification Research 與其他 deferred work。
+- Semantic Area、camera／VLM inspection、coverage 與完整 Inspection Mission；
+- 通用 Mission DSL、plugin framework、Delivery／Escort／Inventory 等其他 Mission kind；
+- NXDog effectful capability、React WebUI rewrite、TUI redesign、multi-robot 與 Certification Research。
 
-上述項目只有符合 Product Governance 的 minimal critical-blocker exception 才可觸及。
+上述項目只有符合 Product Governance 的 minimal critical-blocker exception 才可觸及。可信
+`BLOCK` 不構成擴張 infrastructure 的理由。
 
 ## Exit gate
 
-必須完成 EPIC-0003 的可展示 Definition of Done，包含 single authority、restart honesty、
-LLM-independent STOP、跨介面一致 truth 與 Isaac path parity。Definition of Done 達成後，
-由 Product Owner 更新本文件，將 Current Milestone 切換至 EPIC-0004。
+固定 Isaac reference scenario 必須完整展示：
 
-在該更新合併前，EPIC-0004 仍未取得工作授權；不得以「EPIC-0003 已完成」自行開始下一個
-Epic，也不得留在 Runtime 抽象層繼續無界打磨。
+```text
+自然語言
+→ MissionSpec
+→ exact ExecutionPlan
+→ Yes / Auto / No
+→ A → B → C → Dock
+→ verified TaskOutcome
+→ Receipt
+```
+
+同一 commit／scene／profile 下，合併門檻為連續 3 次完整成功；release claim 門檻為 5/5。
+另須以自動測試證明 `No` 不執行、`Auto` 不越過 digest／session／safety epoch 邊界、局部失敗
+與系統失敗政策正確、STOP 不依賴 LLM，且 STOP 後不接受 late success。
+
+Definition of Done 達成後，由 Product Owner 決定切換至 Inspection Mission，或另行授權 ADR 0006
+所描述的跨介面 Authority migration。在該更新合併前，不得自行開始下一個 Epic，也不得留在
+Execution／Runtime abstraction 層繼續無界打磨。
