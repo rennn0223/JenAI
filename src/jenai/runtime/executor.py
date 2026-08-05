@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from jenai.runtime.models import (
+    CancelContext,
     CapabilityExecutionReport,
     ExecutionContext,
+    ExecutorCancelResult,
     ExecutorEvent,
     ExecutorStopResult,
     ObservationContext,
@@ -54,7 +56,13 @@ class _DetachedEventSink:
 
 
 class CapabilityExecutor(Protocol):
-    """Internal Runtime port; policy, approval, and outcomes remain Authority-owned."""
+    """Internal Runtime port; policy, approval, and outcomes remain Authority-owned.
+
+    A production adapter must validate ``ExecutionContext`` at its actual effect-dispatch
+    seam and independently bound provider calls. Cancelling this coroutine is only an
+    in-process scheduling signal; it is never physical-stop or cancel acknowledgement.
+    Adapter results may report acknowledgement only from platform/provider Evidence.
+    """
 
     async def snapshot(
         self,
@@ -75,6 +83,12 @@ class CapabilityExecutor(Protocol):
         events: ExecutorEventSink,
     ) -> CapabilityExecutionReport: ...
 
+    async def cancel(
+        self,
+        context: CancelContext,
+        events: ExecutorEventSink,
+    ) -> ExecutorCancelResult: ...
+
     async def stop(
         self,
         context: StopContext,
@@ -89,6 +103,7 @@ PreparationHandler = Callable[
 ExecutionHandler = Callable[
     [PreparedCapabilityStep, ExecutorEventSink], Awaitable[CapabilityExecutionReport]
 ]
+CancelHandler = Callable[[CancelContext, ExecutorEventSink], Awaitable[ExecutorCancelResult]]
 StopHandler = Callable[[StopContext, ExecutorEventSink], Awaitable[ExecutorStopResult]]
 
 
@@ -116,6 +131,7 @@ class InMemoryCapabilityExecutor:
         *,
         snapshot_handler: SnapshotHandler,
         registrations: Iterable[CapabilityExecutionRegistration],
+        cancel_handler: CancelHandler,
         stop_handler: StopHandler,
     ) -> None:
         self._snapshot_handler = snapshot_handler
@@ -127,6 +143,7 @@ class InMemoryCapabilityExecutor:
                 raise ValueError(f"duplicate capability execution registration: {key!r}")
             self._registrations[key] = registration
             self._capability_ids.add(registration.capability_id)
+        self._cancel_handler = cancel_handler
         self._stop_handler = stop_handler
 
     async def snapshot(
@@ -201,6 +218,18 @@ class InMemoryCapabilityExecutor:
             _DetachedEventSink(events),
         )
         return CapabilityExecutionReport.model_validate(candidate.model_dump(mode="json"))
+
+    async def cancel(
+        self,
+        context: CancelContext,
+        events: ExecutorEventSink,
+    ) -> ExecutorCancelResult:
+        detached_context = CancelContext.model_validate(context.model_dump(mode="json"))
+        candidate = await self._cancel_handler(
+            detached_context,
+            _DetachedEventSink(events),
+        )
+        return ExecutorCancelResult.model_validate(candidate.model_dump(mode="json"))
 
     async def stop(
         self,

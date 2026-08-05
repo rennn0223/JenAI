@@ -174,6 +174,25 @@ class CapabilityExecutionReport(RuntimeModel):
     _summary_required = field_validator("summary")(_required_text)
 
 
+class CancelContext(RuntimeModel):
+    """Task-scoped cancellation identity supplied by the Runtime Authority."""
+
+    authority: AuthorityContext
+    robot_id: str
+    task_id: str
+    command_id: str
+    reason: str
+
+    _required_ids = field_validator("robot_id", "task_id", "command_id", "reason")(_required_text)
+
+
+class ExecutorCancelResult(RuntimeModel):
+    request_accepted: bool
+    cancel_requested: bool
+    cancel_acknowledged: bool | None = None
+    limitations: tuple[str, ...] = ()
+
+
 class StopTrigger(StrEnum):
     OPERATOR = "operator"
     POLICY = "policy"

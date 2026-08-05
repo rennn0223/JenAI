@@ -58,7 +58,7 @@ approval, policy, and evidence interfaces.
 | `tools/area_patrol_service.py` | Run semantic area patrol | Load site areas, call navigation and observation adapters, preserve evidence, return home, build report |
 | `tools/navigation_gateway.py` | Submit or stop navigation | Single motion dispatch seam shared by Agent, TUI, WebUI, MCP, and daemon |
 | `bridge/` | Typed JSON request/result protocol | ROS graph, Nav2 actions, pose, scan, camera, watchdog, cancellation, bounded legacy bring-up |
-| `runtime/` | Execute platform-neutral prepared Capability steps | Versioned effect-free preparation, immutable input binding, caller-supplied context matching, observation, execution and STOP ports, in-memory test adapter |
+| `runtime/` | Submit and observe typed Tasks, resolve Approval, STOP, and execute prepared Capability steps | In-memory single-owner Authority for Task lifecycle, lease, epoch, ordered Events, Outcome and Receipt; versioned immutable Executor contracts and test adapter |
 | `twin/` | Validate a candidate task | Isolated-domain rehearsal and pass/block/inconclusive verdicts |
 | `state/` | Store task lifecycle and evidence | Runs, audit, receipts, reports, history, local data lifecycle |
 | `tui/`, `webui/`, `cli/`, `mcp_server/` | Human or external entry points | Rendering and transport only; shared execution modules own behaviour |
@@ -107,20 +107,51 @@ Robot runtime side
   Workflow / Navigation Gateway / ROS bridge / Nav2
 ```
 
-ADR 0006 accepts a single authenticated high-level HTTP Robot Runtime authority. The first
-implementation slice now provides only transport-neutral Capability Executor contracts and an
-in-memory adapter: it has no Runtime Authority, HTTP server, durable event journal, command lease,
-or product motion path. No interaction adapter has migrated, and current commands still enter
-through the existing adapters before reaching the shared Navigation Gateway. Migration must
-deliver one parity-tested vertical slice before the runtime flow changes. It must not expose raw
-ROS topics, services, actions, `/cmd_vel`, or vendor motion endpoints over HTTP.
+ADR 0006 accepts one Robot Runtime Authority behind an authenticated high-level interface. The
+current implementation provides a transport-neutral `InMemoryRuntimeAuthority`. For each accepted
+typed Task it is the sole mutable owner of Approval, an optional effectful command lease, safety
+epoch, deterministic Workflow Instance progress, public Event sequencing, canonical Task Outcome,
+and an immutable in-memory Receipt. Pending Approval does not consume the command lease. Effectful
+Tasks are admitted one at a time per robot without a hidden queue; read-only Tasks may run without
+acquiring that lease. Approval binds the exact Task, generated steps, Workflow definition version,
+epoch, and expiry.
 
-This slice validates a registered `(capability_id, input_schema_version)`, runs an effect-free
-preparation handler, and binds its recursively immutable canonical input to the caller-supplied
-`ExecutionContext`. `execute` can reject a different context or digest; it does not know whether a
-matching context is still authoritative and does not provide one-shot consumption. Durable current
-authority generation, safety epoch and fencing continuity, command lease, idempotency, and
-duplicate/replay prevention remain responsibilities of the next Robot Runtime Authority slice.
+The Authority provides task-scoped cancel separately from robot-wide STOP. STOP advances the
+safety epoch, revokes the lease, invalidates pending Approval, and marks affected Tasks stopping
+before it invokes the Executor STOP port. Robot-wide STOP dominates overlapping task cancellation.
+Effectful admission remains closed through adapter cleanup; timeout, failure, or missing
+acknowledgement leaves it blocked for future startup-reconciliation work. Adapter calls are bounded
+without waiting for cancellation-resistant coroutines, whose late results are quarantined.
+Terminal Outcome assignment is single-shot, so late adapter completion can become diagnostic
+progress but cannot replace a prior terminal Outcome. Unverified cleanup produces `UNAVAILABLE`,
+and its acknowledgement state and limitations remain in terminal Event and Receipt data. Executor
+dispositions, Events, and Evidence remain adapter facts: the Authority alone assigns public
+sequence and evaluates the Completion Contract into `TaskOutcome` and Receipt. Snapshots, public
+Events, and Receipts are detached recursively immutable projections.
+
+The Executor seam validates a registered `(capability_id, input_schema_version)`, runs an
+effect-free preparation handler, and binds its recursively immutable canonical input to the
+Authority-supplied `ExecutionContext`. It does not become a second owner of currentness or outcome.
+Every production Adapter must also reject stale generation, safety epoch, and fencing token at the
+actual platform effect-dispatch seam and bound its provider calls independently. Cancelling an
+`asyncio` task is only an in-process scheduling signal, never Evidence that robot work stopped.
+Cancel/STOP acknowledgement must come from Adapter/platform Evidence. A quarantined late callback
+cannot reopen effectful admission or change terminal truth. The in-memory Executor is a test seam,
+not evidence that a future NavigationGateway or physical Adapter satisfies this contract. No
+production Adapter may connect to this Authority until the Executor contract adds a linearizable
+current-fence/dispatch permit at the actual effect seam and the Adapter proves that it honors the
+permit. This slice provides prepared-context binding and fail-closed cleanup truth; it does not
+claim complete stale-work prevention at a robot effect seam.
+
+All Authority state in this slice is process-local. A restart loses Tasks, Events, leases, STOP
+idempotency records, Outcomes, and Receipts, so this implementation must not claim restart recovery
+or durable audit. Durable Event Store, authority-generation takeover, startup reconciliation,
+unknown-work handling, and cross-restart idempotency are the next EPIC-0003 slice. HTTP/JSON and SSE
+remain later transport work. No interaction adapter has migrated, no product motion path uses this
+Authority yet, and current commands still enter through existing adapters before reaching the
+shared Navigation Gateway. Migration must deliver one parity-tested vertical slice before the
+runtime flow changes. A future public transport must not expose raw ROS topics, services, actions,
+`/cmd_vel`, or vendor motion endpoints.
 
 NXDog HTTP observer 刻意位於 motion path 之外：Doctor 只能透過它取得 vendor 可觀察狀態，
 不得註冊 Agent motion tool、授權移動或宣稱定位與導航 ready。未來 NXDog motion

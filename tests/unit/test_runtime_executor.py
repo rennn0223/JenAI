@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from jenai.runtime import (
     AuthorityContext,
+    CancelContext,
     CapabilityExecutionRegistration,
     CapabilityExecutionReport,
     CapabilityPreparationError,
@@ -16,6 +17,7 @@ from jenai.runtime import (
     EvidenceTimestampStatus,
     ExecutionContext,
     ExecutionContextMismatchError,
+    ExecutorCancelResult,
     ExecutorEvent,
     ExecutorEvidence,
     ExecutorStopResult,
@@ -119,6 +121,14 @@ def _executor(
             summary="Observation complete",
         )
 
+    async def cancel(_context, events):
+        await events.publish(ExecutorEvent(kind="cancel_delivered"))
+        return ExecutorCancelResult(
+            request_accepted=True,
+            cancel_requested=True,
+            cancel_acknowledged=True,
+        )
+
     async def stop(context, events):
         if stopped is not None:
             stopped.append(context)
@@ -141,6 +151,7 @@ def _executor(
             ),
         ),
         stop_handler=stop,
+        cancel_handler=cancel,
     )
 
 
@@ -575,5 +586,27 @@ def test_stop_uses_a_separate_provider_free_port() -> None:
         assert result.request_accepted is True
         assert result.cancel_acknowledged is True
         assert [event.kind for event in events.items] == ["stop_delivered"]
+
+    asyncio.run(run())
+
+
+def test_cancel_uses_a_task_scoped_provider_free_port() -> None:
+    async def run() -> None:
+        events = RecordingEvents()
+        executor = _executor()
+        context = CancelContext(
+            authority=_authority_context(),
+            robot_id="robot_test",
+            task_id="task_test",
+            command_id="command_test",
+            reason="operator cancel",
+        )
+
+        result = await executor.cancel(context, events)
+
+        assert result.request_accepted is True
+        assert result.cancel_requested is True
+        assert result.cancel_acknowledged is True
+        assert [event.kind for event in events.items] == ["cancel_delivered"]
 
     asyncio.run(run())
