@@ -59,14 +59,22 @@ startup reconciliation 或 HTTP／SSE 為前置條件；未來 Authority 可包�
 並且：
 
 - LLM 不產生座標、控制 Nav2、決定 retry loop 或改寫已批准 Plan；
+- LLM 只抽取使用者明確指定的 registered locations 與順序；未指定時由 Binder 使用 Site Profile
+  的 deterministic default `A → B → C`，不得由 LLM 選 subset 或重排；
 - `mission_digest` 排除 `mission_id`，`plan_digest` 精確綁定批准內容；
-- `Yes` 只批准該 `mission_id + plan_digest + approval epoch` 一次；
-- `Auto` 只匹配同 session、同 safety epoch、完全相同 `plan_digest`；
-- `No` 不建立 effectful execution；
+- `approval_generation` 由 Golden Path coordinator 擁有，為 session-local monotonic generation；
+- `Yes` 只批准該 `mission_id + plan_digest + session_id + approval_generation` 一次；
+- `Auto` 只匹配 `plan_digest + session_id + approval_generation`；STOP、restart、profile change、
+  runtime uncertainty 或退出 Auto 都會 advance generation；
+- `No` 形成 `TaskOutcome.BLOCKED` 且不建立 effectful execution；
 - waypoint failure 最多重試一次，仍失敗則記錄並繼續；
 - navigation-system failure 停止後續步驟，不得盲目返航；
 - STOP 不依賴 LLM，且 late success 不得改寫 terminal truth；
+- STOP 只走 `ExecutionEngine.stop() → CapabilityExecutor.stop() → NavigationGateway cancel／halt`，
+  bounded acknowledgement 後形成 `TaskOutcome.CANCELLED`；
 - Return Home 只證明回到 home pose，不宣稱 charging success；
+- Receipt 保存 approved ordered steps、actual `StepResults`、Evidence references、final endpoint result
+  與 canonical `TaskOutcome`；
 - 相同 commit／scene／profile 的固定 Isaac scenario 連續 3 次完成才可合併，5/5 才可形成
   release claim。
 
@@ -81,7 +89,7 @@ startup reconciliation 或 HTTP／SSE 為前置條件；未來 Authority 可包�
 
 ## Dependencies
 
-[ADR 0003](../adr/0003-task-outcome-contract.md)、
+[ADR 0003](../adr/0003-task-outcome-is-separate-from-run-lifecycle.md)、
 [ADR 0004](../adr/0004-llm-selects-deterministic-workflows.md)、既有 Capability Registry、
 Capability Executor seam、Navigation Gateway、RunStore／Task Receipt 與 reference Site／Vehicle Profile。
 [ADR 0006](../adr/0006-single-high-level-http-robot-runtime.md) 是未來 migration direction，不是本 Epic

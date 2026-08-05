@@ -46,6 +46,15 @@ The deterministic role that owns mutable progress for one approved Execution
 Plan. It advances steps, applies bounded policy, handles STOP, and invokes the
 Capability Executor. It does not interpret language or control the robot.
 
+### Approval Generation
+
+A session-local, monotonically increasing generation that invalidates Golden
+Path Yes／Auto authority after STOP, profile change, unknown runtime state, or
+explicit Auto exit. Process restart creates a new Session and generation
+domain; it does not require durable generation storage.
+
+_Avoid:_ “Safety Epoch”, which belongs to the future durable Runtime Authority.
+
 ### Patrol Mission
 
 The first product Mission. In v1 it compiles registered patrol locations and a
@@ -67,10 +76,10 @@ and reporting. The LLM selects it but does not execute its normal steps.
 
 ### Workflow Instance
 
-One Runtime-owned execution of a Workflow Capability for one accepted Task. It
-holds mutable progress, approvals, retries, evidence, and terminal state; the
-pure Workflow definition may be shared, but only the Robot Runtime Authority
-may change an active instance.
+One execution of a Workflow Capability for one accepted Task. It holds mutable
+progress, retries, evidence, and terminal state. The Golden Path Execution
+Engine is its sole mutable owner; after ADR 0006 migration, the Robot Runtime
+Authority contains that engine rather than creating a parallel instance.
 
 _Avoid:_ “application workflow” or “UI workflow”, which can imply a second
 execution owner outside the Runtime.
@@ -104,18 +113,17 @@ this seam; the Workflow domain does not import them.
 
 ### Robot Runtime Authority
 
-The single owner of effectful Task admission, Approval resources, active
-Workflow Instances, execution, stopping, Completion Contract evaluation, Task
-Outcomes, receipts, and Evidence truth for one robot. Intent layers submit
-typed high-level Tasks to this authority and must not retain a second mutable
-execution lifecycle.
+The future cross-interface owner of effectful Task admission, Approval
+resources, active Workflow Instances, stopping, Task Outcomes, receipts, and
+Evidence truth for one robot. Under ADR 0006 it contains the Execution Engine;
+it never replaces it with a parallel mutable execution lifecycle.
 
 _Avoid:_ “shared backend” or “vendor API proxy”, which omit the ownership and
 safety responsibility.
 
 ### Capability Executor
 
-The Runtime-owned role that dispatches an admitted platform-neutral Workflow
+The execution-layer role that dispatches an admitted platform-neutral Workflow
 step to navigation, platform-command, or observation Interfaces and returns
 typed Events and Evidence. It does not interpret intent, grant Approval, or
 decide a Task Outcome.

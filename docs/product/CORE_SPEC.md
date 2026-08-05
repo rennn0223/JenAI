@@ -62,8 +62,10 @@ require_yaw             = false
 capture_photo           = false
 ```
 
-The LLM may select the registered Mission and locations. It may not invent coordinates, add non-policy
-steps, choose Nav2 recovery behavior, or modify the bound tolerance.
+The LLM may extract only registered location references and ordering that the operator explicitly states.
+When the operator says only「巡檢一圈」, the Validator／Binder uses the Site Profile's deterministic
+default patrol `A → B → C`. The LLM may not choose a subset, optimize or reorder the default route,
+invent coordinates, add locations, choose Nav2 recovery behavior, or modify the bound tolerance.
 
 ### Identity and digest rules
 
@@ -71,7 +73,11 @@ steps, choose Nav2 recovery behavior, or modify the bound tolerance.
 - `mission_digest` covers semantic Mission content, profiles, locations, policies, and completion.
 - The compiler produces exactly `Navigate(A) → Navigate(B) → Navigate(C) → ReturnHome(Dock)`.
 - `plan_digest` covers ordered steps and every execution-relevant bound field.
-- Receipt preserves `mission_id`, `mission_digest`, and `plan_digest`.
+- Receipt preserves `mission_id`, `mission_digest`, `plan_digest`, approved ordered steps, actual
+  `StepResults`, Evidence references, the final endpoint result, and the canonical `TaskOutcome`.
+
+This requires a controlled migration of the existing Task Receipt schema. It does not require a durable
+Event Store and must not introduce a second Receipt or Outcome model.
 
 ## Approval contract
 
@@ -85,10 +91,16 @@ Plan
 Execute? [y] Yes once  [a] Auto  [n] No
 ```
 
-- `Yes` binds one use of `mission_id + plan_digest + approval epoch`.
-- `Auto` matches only the same `plan_digest`, robot, site, session, and safety epoch. It expires on
-  restart, STOP, epoch advance, profile change, or runtime uncertainty.
-- `No` performs no effectful step.
+- `approval_generation` is owned by the Golden Path approval／execution coordinator. It is session-local,
+  monotonically increasing, and is not ADR 0006's future durable `safety_epoch`.
+- `Yes` binds one use of `mission_id + plan_digest + session_id + approval_generation`.
+- `Auto` matches only `plan_digest + session_id + approval_generation`. The bound Plan already includes
+  exact robot, Site, profile, locations, and policy.
+- STOP, active Site／Robot／Profile change, unknown runtime state, or explicit Auto exit advances
+  `approval_generation` and invalidates prior Yes／Auto authority.
+- Process restart creates a fresh `session_id` and generation domain. Previous authority cannot match or
+  be reused; this v1 rule does not require durable generation storage.
+- `No` maps to `TaskOutcome.BLOCKED` and performs no effectful step or Nav2 goal.
 - Any Plan change requires a new digest and approval.
 
 ## Execution, failure, and STOP
@@ -105,9 +117,10 @@ STOP does not consult the LLM:
 
 ```text
 ExecutionEngine.stop()
-→ prevent next step and invalidate active dispatch
-→ CapabilityExecutor.cancel()
+→ prevent next-step dispatch and invalidate the active step token
+→ CapabilityExecutor.stop()
 → NavigationGateway cancel / halt
+→ bounded acknowledgement
 ```
 
 Delayed Nav2 success after STOP is diagnostic Evidence only and cannot overwrite terminal truth.
@@ -118,7 +131,9 @@ Each navigation step requires Nav2 terminal Evidence plus a fresh endpoint obser
 Yaw is disabled for v1. Return Home verifies only the Dock pose and does not claim charging.
 
 Results map to the existing `TaskOutcome`: `succeeded`, `partial`, `endpoint_mismatch`, `blocked`,
-`unavailable`, or `failed`. `interrupted` remains lifecycle state; no second outcome enum is added.
+`unavailable`, `failed`, or `cancelled`. `No` maps to `blocked`; STOP or operator cancel maps to
+`cancelled`. A process ending without a trustworthy terminal result maps to `RunStatus.INTERRUPTED` and
+must not be relabelled successful. No second Mission outcome enum is added.
 
 Every operator error states what happened, the affected and completed steps, JenAI's next action, and an
 evidence-based remedy. A traceback is diagnostic data, not the operator message.

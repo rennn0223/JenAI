@@ -55,8 +55,9 @@
 ```
 
 同一 commit／scene／profile 下，合併門檻為連續 3 次完整成功；release claim 門檻為 5/5。
-另須以自動測試證明 `No` 不執行、`Auto` 不越過 digest／session／safety epoch 邊界、局部失敗
-與系統失敗政策正確、STOP 不依賴 LLM，且 STOP 後不接受 late success。
+另須以自動測試證明 `No` 不執行、`Auto` 不越過
+`plan_digest + session_id + approval_generation` 邊界、局部失敗與系統失敗政策正確、
+STOP 不依賴 LLM，且 STOP 後不接受 late success。
 
 Definition of Done 達成後，由 Product Owner 決定切換至 Inspection Mission，或另行授權 ADR 0006
 所描述的跨介面 Authority migration。在該更新合併前，不得自行開始下一個 Epic，也不得留在
