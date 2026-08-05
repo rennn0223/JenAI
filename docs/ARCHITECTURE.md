@@ -58,6 +58,7 @@ approval, policy, and evidence interfaces.
 | `tools/area_patrol_service.py` | Run semantic area patrol | Load site areas, call navigation and observation adapters, preserve evidence, return home, build report |
 | `tools/navigation_gateway.py` | Submit or stop navigation | Single motion dispatch seam shared by Agent, TUI, WebUI, MCP, and daemon |
 | `bridge/` | Typed JSON request/result protocol | ROS graph, Nav2 actions, pose, scan, camera, watchdog, cancellation, bounded legacy bring-up |
+| `runtime/` | Execute platform-neutral prepared Capability steps | Versioned effect-free preparation, immutable input binding, caller-supplied context matching, observation, execution and STOP ports, in-memory test adapter |
 | `twin/` | Validate a candidate task | Isolated-domain rehearsal and pass/block/inconclusive verdicts |
 | `state/` | Store task lifecycle and evidence | Runs, audit, receipts, reports, history, local data lifecycle |
 | `tui/`, `webui/`, `cli/`, `mcp_server/` | Human or external entry points | Rendering and transport only; shared execution modules own behaviour |
@@ -106,12 +107,20 @@ Robot runtime side
   Workflow / Navigation Gateway / ROS bridge / Nav2
 ```
 
-ADR 0006 accepts a future single authenticated high-level HTTP Robot Runtime authority. It is
-an architecture direction, not a current production component: no runtime HTTP server is
-registered, no interaction adapter has migrated, and current commands still enter through the
-existing adapters before reaching the shared Navigation Gateway. A future implementation must
-deliver one parity-tested vertical slice before this flow or module map changes. It must not
-expose raw ROS topics, services, actions, `/cmd_vel`, or vendor motion endpoints over HTTP.
+ADR 0006 accepts a single authenticated high-level HTTP Robot Runtime authority. The first
+implementation slice now provides only transport-neutral Capability Executor contracts and an
+in-memory adapter: it has no Runtime Authority, HTTP server, durable event journal, command lease,
+or product motion path. No interaction adapter has migrated, and current commands still enter
+through the existing adapters before reaching the shared Navigation Gateway. Migration must
+deliver one parity-tested vertical slice before the runtime flow changes. It must not expose raw
+ROS topics, services, actions, `/cmd_vel`, or vendor motion endpoints over HTTP.
+
+This slice validates a registered `(capability_id, input_schema_version)`, runs an effect-free
+preparation handler, and binds its recursively immutable canonical input to the caller-supplied
+`ExecutionContext`. `execute` can reject a different context or digest; it does not know whether a
+matching context is still authoritative and does not provide one-shot consumption. Durable current
+authority generation, safety epoch and fencing continuity, command lease, idempotency, and
+duplicate/replay prevention remain responsibilities of the next Robot Runtime Authority slice.
 
 NXDog HTTP observer 刻意位於 motion path 之外：Doctor 只能透過它取得 vendor 可觀察狀態，
 不得註冊 Agent motion tool、授權移動或宣稱定位與導航 ready。未來 NXDog motion
