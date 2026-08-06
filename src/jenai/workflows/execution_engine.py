@@ -170,11 +170,21 @@ class EngineDiagnostic(EngineModel):
     summary: str
 
 
+class ActiveExecuteUnsettledDiagnostic(EngineModel):
+    kind: Literal["active_execute_unsettled_after_stop"] = "active_execute_unsettled_after_stop"
+    step_index: int = Field(ge=0)
+    attempt: int = Field(ge=1)
+    timeout_s: float = Field(gt=0, allow_inf_nan=False)
+    limitation: Literal["adapter_execute_task_did_not_settle"] = (
+        "adapter_execute_task_did_not_settle"
+    )
+
+
 class ExecutionReport(EngineModel):
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     outcome: TaskOutcome
     step_records: tuple[StepRecord, ...]
-    diagnostics: tuple[EngineDiagnostic, ...] = ()
+    diagnostics: tuple[EngineDiagnostic | ActiveExecuteUnsettledDiagnostic, ...] = ()
     stop_result: StopResult | None = None
 
 
@@ -227,22 +237,27 @@ class ExecutionEngine:
         adapter: AtomicStepAdapter,
         *,
         stop_timeout_s: float = 1.0,
+        execute_settlement_timeout_s: float = 1.0,
     ) -> None:
         if not isfinite(stop_timeout_s) or stop_timeout_s <= 0:
             raise ValueError("stop_timeout_s must be finite and greater than zero")
+        if not isfinite(execute_settlement_timeout_s) or execute_settlement_timeout_s <= 0:
+            raise ValueError("execute_settlement_timeout_s must be finite and greater than zero")
         self._plan = ExecutionPlan.model_validate(plan.model_dump(mode="json"))
         self._adapter = adapter
         self._stop_timeout_s = stop_timeout_s
+        self._execute_settlement_timeout_s = execute_settlement_timeout_s
         self._lock = asyncio.Lock()
         self._run_started = False
         self._stop_requested = False
         self._active_fence: _DispatchFence | None = None
         self._active_execute_task: asyncio.Task[StepResult] | None = None
+        self._unsettled_execute_tasks: set[asyncio.Task[StepResult]] = set()
         self._terminal_outcome: TaskOutcome | None = None
         self._stop_task: asyncio.Task[StopResult] | None = None
         self._stop_result: StopResult | None = None
         self._records: list[StepRecord] = []
-        self._diagnostics: list[EngineDiagnostic] = []
+        self._diagnostics: list[EngineDiagnostic | ActiveExecuteUnsettledDiagnostic] = []
         self._completed_step_indices: list[int] = []
         self._skipped_step_indices: list[int] = []
         self._current_step_index = 0
@@ -253,6 +268,7 @@ class ExecutionEngine:
             return await self._run()
         except asyncio.CancelledError:
             await asyncio.shield(self.stop())
+            await asyncio.shield(self._settle_cancelled_run())
             raise
 
     async def _run(self) -> ExecutionReport:
@@ -337,7 +353,6 @@ class ExecutionEngine:
                 cancellation_wait.cancel()
 
         if fence.context.cancellation.cancelled:
-            execute_task.cancel()
             return None
         if execute_task not in done:
             raise RuntimeError("dispatch observation ended without a result")
@@ -348,6 +363,8 @@ class ExecutionEngine:
         step: ExecutionStep,
         context: DispatchContext,
     ) -> StepResult:
+        if context.cancellation.cancelled:
+            raise asyncio.CancelledError
         try:
             observed = await self._adapter.execute(step, context)
             return StepResult.model_validate(observed.model_dump(mode="json"))
@@ -370,9 +387,11 @@ class ExecutionEngine:
         stop_result = await asyncio.shield(self.stop())
         async with self._lock:
             execute_task = self._active_execute_task
-        if execute_task is not None:
-            await asyncio.sleep(0)
-        late_result = self._completed_task_result(execute_task)
+        late_result, settlement_diagnostic = await self._settle_active_execute_task(
+            execute_task,
+            step_index=step_index,
+            attempt=attempt,
+        )
 
         cancelled = StepResult(
             disposition=StepDisposition.CANCELLED,
@@ -383,6 +402,8 @@ class ExecutionEngine:
             if late_result is not None:
                 self._record_late_result(step_index, attempt, late_result)
             attempts.append(StepAttempt(attempt=attempt, result=cancelled))
+            if settlement_diagnostic is not None:
+                self._diagnostics.append(settlement_diagnostic)
             self._records.append(
                 StepRecord(
                     step_index=step_index,
@@ -394,6 +415,57 @@ class ExecutionEngine:
             self._active_execute_task = None
             self._stop_result = stop_result
             return self._report_locked()
+
+    async def _settle_active_execute_task(
+        self,
+        execute_task: asyncio.Task[StepResult] | None,
+        *,
+        step_index: int,
+        attempt: int,
+    ) -> tuple[StepResult | None, ActiveExecuteUnsettledDiagnostic | None]:
+        if execute_task is None:
+            return None, None
+        execute_task.cancel()
+        done, _ = await asyncio.wait(
+            {execute_task},
+            timeout=self._execute_settlement_timeout_s,
+        )
+        if execute_task in done:
+            return self._completed_task_result(execute_task), None
+
+        self._unsettled_execute_tasks.add(execute_task)
+        execute_task.add_done_callback(self._consume_unsettled_execute_task)
+        return None, ActiveExecuteUnsettledDiagnostic(
+            step_index=step_index,
+            attempt=attempt,
+            timeout_s=self._execute_settlement_timeout_s,
+        )
+
+    def _consume_unsettled_execute_task(
+        self,
+        execute_task: asyncio.Task[StepResult],
+    ) -> None:
+        self._unsettled_execute_tasks.discard(execute_task)
+        self._completed_task_result(execute_task)
+
+    async def _settle_cancelled_run(self) -> None:
+        async with self._lock:
+            execute_task = self._active_execute_task
+            step_index = self._current_step_index
+            attempt = self._attempt_count
+
+        late_result, settlement_diagnostic = await self._settle_active_execute_task(
+            execute_task,
+            step_index=step_index,
+            attempt=attempt,
+        )
+        async with self._lock:
+            if late_result is not None:
+                self._record_late_result(step_index, attempt, late_result)
+            if settlement_diagnostic is not None:
+                self._diagnostics.append(settlement_diagnostic)
+            self._active_fence = None
+            self._active_execute_task = None
 
     @staticmethod
     def _completed_task_result(

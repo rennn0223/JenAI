@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from jenai.schemas.models import TaskOutcome
 from jenai.workflows.execution_engine import (
+    ActiveExecuteUnsettledDiagnostic,
     DispatchContext,
     ExecutionEngine,
     ExecutionReport,
@@ -363,7 +364,11 @@ def test_engine_detaches_the_approved_plan_from_external_mutation() -> None:
 def test_stop_returns_a_report_even_when_active_execute_does_not_return() -> None:
     async def scenario() -> tuple[ExecutionReport, StopResult, _HungExecuteAdapter]:
         adapter = _HungExecuteAdapter()
-        engine = ExecutionEngine(_plan(), adapter)
+        engine = ExecutionEngine(
+            _plan(),
+            adapter,
+            execute_settlement_timeout_s=0.01,
+        )
         run_task = asyncio.create_task(engine.run())
         await adapter.started.wait()
         stop_result = await engine.stop()
@@ -382,6 +387,11 @@ def test_stop_returns_a_report_even_when_active_execute_does_not_return() -> Non
     assert len(adapter.stop_calls) == 1
     assert len(report.step_records) == 1
     assert report.step_records[0].attempts[-1].result.disposition is StepDisposition.CANCELLED
+    assert len(report.diagnostics) == 1
+    diagnostic = report.diagnostics[0]
+    assert isinstance(diagnostic, ActiveExecuteUnsettledDiagnostic)
+    assert diagnostic.limitation == "adapter_execute_task_did_not_settle"
+    assert diagnostic.timeout_s == 0.01
 
 
 class _HungStopAdapter(_HungExecuteAdapter):
@@ -438,7 +448,12 @@ def test_malformed_completion_evidence_is_rejected() -> None:
 def test_stop_is_bounded_when_adapter_stop_does_not_return() -> None:
     async def scenario() -> tuple[ExecutionReport, StopResult, _HungStopAdapter]:
         adapter = _HungStopAdapter()
-        engine = ExecutionEngine(_plan(), adapter, stop_timeout_s=0.01)
+        engine = ExecutionEngine(
+            _plan(),
+            adapter,
+            stop_timeout_s=0.01,
+            execute_settlement_timeout_s=0.01,
+        )
         run_task = asyncio.create_task(engine.run())
         await adapter.started.wait()
         stop_result = await engine.stop()
@@ -483,14 +498,20 @@ def test_cancelling_one_stop_waiter_does_not_cancel_shared_stop() -> None:
 
 
 def test_cancelling_run_performs_shielded_stop_before_propagating() -> None:
-    async def scenario() -> _BlockingAtomicStepAdapter:
-        adapter = _BlockingAtomicStepAdapter()
-        engine = ExecutionEngine(_plan(), adapter)
+    async def scenario() -> _HungExecuteAdapter:
+        adapter = _HungExecuteAdapter()
+        engine = ExecutionEngine(
+            _plan(),
+            adapter,
+            execute_settlement_timeout_s=0.01,
+        )
         run_task = asyncio.create_task(engine.run())
         await adapter.started.wait()
         run_task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await run_task
+            await asyncio.wait_for(run_task, timeout=0.1)
+        adapter.release.set()
+        await asyncio.sleep(0)
         return adapter
 
     adapter = asyncio.run(scenario())
@@ -502,7 +523,11 @@ def test_cancelling_run_performs_shielded_stop_before_propagating() -> None:
 def test_stop_preserves_prior_retry_attempt_and_active_attempt() -> None:
     async def scenario() -> tuple[ExecutionReport, _RetryThenHangAdapter]:
         adapter = _RetryThenHangAdapter()
-        engine = ExecutionEngine(_plan(), adapter)
+        engine = ExecutionEngine(
+            _plan(),
+            adapter,
+            execute_settlement_timeout_s=0.01,
+        )
         run_task = asyncio.create_task(engine.run())
         await adapter.started.wait()
         await engine.stop()
@@ -520,3 +545,78 @@ def test_stop_preserves_prior_retry_attempt_and_active_attempt() -> None:
         StepDisposition.WAYPOINT_LOCAL_FAILURE,
         StepDisposition.CANCELLED,
     ]
+
+
+class _PreDispatchStopAdapter:
+    def __init__(self) -> None:
+        self.execute_calls = 0
+        self.stop_calls: list[DispatchContext] = []
+
+    async def execute(
+        self,
+        step: ExecutionStep,
+        dispatch_context: DispatchContext,
+    ) -> StepResult:
+        del step, dispatch_context
+        self.execute_calls += 1
+        raise AssertionError("execute must not be called after the dispatch fence is invalidated")
+
+    async def stop(self, active_dispatch: DispatchContext) -> StopResult:
+        self.stop_calls.append(active_dispatch)
+        return StopResult(summary="pre-dispatch STOP acknowledged", cancel_acknowledged=True)
+
+
+def test_stop_after_fence_creation_prevents_adapter_execute_from_being_called() -> None:
+    async def scenario() -> tuple[ExecutionReport, _PreDispatchStopAdapter]:
+        adapter = _PreDispatchStopAdapter()
+        engine = ExecutionEngine(_plan(), adapter)
+        run_task = asyncio.create_task(engine.run())
+        stop_task = asyncio.create_task(engine.stop())
+        report, _ = await asyncio.gather(run_task, stop_task)
+        return report, adapter
+
+    report, adapter = asyncio.run(scenario())
+
+    assert report.outcome is TaskOutcome.CANCELLED
+    assert adapter.execute_calls == 0
+    assert len(adapter.stop_calls) == 1
+
+
+class _CancellationFailureAdapter:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.never = asyncio.Event()
+
+    async def execute(
+        self,
+        step: ExecutionStep,
+        dispatch_context: DispatchContext,
+    ) -> StepResult:
+        del step, dispatch_context
+        self.started.set()
+        try:
+            await self.never.wait()
+        except asyncio.CancelledError as exc:
+            raise RuntimeError("adapter cancellation cleanup failed") from exc
+
+    async def stop(self, active_dispatch: DispatchContext) -> StopResult:
+        del active_dispatch
+        return StopResult(summary="STOP acknowledged", cancel_acknowledged=True)
+
+
+def test_stop_consumes_execute_exception_during_bounded_settlement() -> None:
+    async def scenario() -> ExecutionReport:
+        adapter = _CancellationFailureAdapter()
+        engine = ExecutionEngine(_plan(), adapter)
+        run_task = asyncio.create_task(engine.run())
+        await adapter.started.wait()
+        await engine.stop()
+        return await run_task
+
+    report = asyncio.run(scenario())
+
+    assert report.outcome is TaskOutcome.CANCELLED
+    assert len(report.diagnostics) == 1
+    diagnostic = report.diagnostics[0]
+    assert diagnostic.kind == "late_step_result_after_stop"
+    assert diagnostic.disposition is StepDisposition.NAVIGATION_SYSTEM_FAILURE
