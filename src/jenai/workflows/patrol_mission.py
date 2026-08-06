@@ -45,6 +45,19 @@ def _canonical_digest(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _render_tolerance_m(value: float) -> str:
+    """Render a lossless float while keeping ordinary values at two decimals."""
+
+    rendered = repr(value)
+    mantissa, exponent_marker, exponent = rendered.partition("e")
+    whole, decimal_marker, fraction = mantissa.partition(".")
+    if not decimal_marker:
+        mantissa = f"{whole}.00"
+    elif len(fraction) < 2:
+        mantissa = f"{whole}.{fraction.ljust(2, '0')}"
+    return f"{mantissa}{exponent_marker}{exponent}"
+
+
 class MissionDraft(MissionModel):
     """Typed but untrusted patrol intent produced from operator language."""
 
@@ -108,23 +121,27 @@ class PatrolMissionSpec(MissionModel):
     kind: Literal["patrol"] = "patrol"
     site_id: str
     site_version: str
-    site_profile_digest: str
+    site_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     robot_id: str
-    vehicle_profile_digest: str
+    vehicle_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     locations_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     ordered_locations: tuple[BoundLocation, ...]
     home_location: BoundLocation
     policy: PatrolMissionPolicy
 
+    _normalize_profile_identity = field_validator(
+        "site_id",
+        "site_version",
+        "robot_id",
+    )(_required_text)
     _normalize_mission_id = field_validator("mission_id")(_required_text)
 
     @model_validator(mode="after")
     def validate_route(self) -> PatrolMissionSpec:
-        if not self.ordered_locations:
-            raise ValueError("a patrol mission requires at least one waypoint")
-        if self.home_location.location_id in {
-            location.location_id for location in self.ordered_locations
-        }:
+        location_ids = tuple(location.location_id for location in self.ordered_locations)
+        if len(location_ids) != 3 or len(set(location_ids)) != 3:
+            raise ValueError("a v1 patrol mission requires exactly three distinct waypoints")
+        if self.home_location.location_id in location_ids:
             raise ValueError("the system home location cannot be an operator waypoint")
         return self
 
@@ -151,6 +168,8 @@ class NavigateStep(MissionModel):
     position_tolerance_m: float = Field(gt=0, allow_inf_nan=False)
     require_yaw: Literal[False] = False
 
+    _normalize_location_identity = field_validator("location_id", "location_name")(_required_text)
+
 
 class ReturnHomeStep(MissionModel):
     kind: Literal["return_home"] = "return_home"
@@ -158,6 +177,8 @@ class ReturnHomeStep(MissionModel):
     location_name: str
     position_tolerance_m: float = Field(gt=0, allow_inf_nan=False)
     require_yaw: Literal[False] = False
+
+    _normalize_location_identity = field_validator("location_id", "location_name")(_required_text)
 
 
 ExecutionStep = Annotated[NavigateStep | ReturnHomeStep, Field(discriminator="kind")]
@@ -272,8 +293,26 @@ def compile_patrol_mission(spec: PatrolMissionSpec) -> ExecutionPlan:
 def render_plan_preview(plan: ExecutionPlan) -> str:
     """Render the exact approved order without coordinates or invented prose."""
 
-    lines = ["計畫"]
+    policy = plan.mission.policy
+    lines = [
+        "計畫",
+        "",
+        f"Site: {plan.mission.site_id}",
+        f"Robot: {plan.mission.robot_id}",
+        "",
+    ]
     for index, step in enumerate(plan.steps, start=1):
         action = "前往" if isinstance(step, NavigateStep) else "返回"
         lines.append(f"{index}. {action} {step.location_name}")
+    retry_summary = "重試一次，仍失敗則略過" if policy.retry_count == 1 else "不重試，失敗則略過"
+    lines.extend(
+        (
+            "",
+            f"抵達容差：≤ {_render_tolerance_m(policy.position_tolerance_m)} m",
+            "朝向要求：無",
+            f"航點失敗：{retry_summary}",
+            "系統級導航故障：中止剩餘步驟",
+            "拍照：否",
+        )
+    )
     return "\n".join(lines)

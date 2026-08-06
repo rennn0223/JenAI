@@ -43,7 +43,7 @@ def _site(*, default_patrol: list[str]) -> SiteProfile:
         map_sha256="a" * 64,
         locations_sha256=_LOCATION_DIGEST,
         locations_path="locations.toml",
-        validated_routes=["A", "B", "C", "Dock"],
+        validated_routes=["A", "B", "C", "D", "Dock"],
         default_patrol=default_patrol,
         home_location="Dock",
         dock_location="Dock",
@@ -55,6 +55,7 @@ def _locations() -> tuple[Location, ...]:
         _location("loc-a", "A"),
         _location("loc-b", "B"),
         _location("loc-c", "C"),
+        _location("loc-d", "D"),
         _location("loc-dock", "Dock"),
     )
 
@@ -106,7 +107,23 @@ def test_default_patrol_binds_and_compiles_site_order_with_system_home(
         ReturnHomeStep,
     ]
     assert [step.location_name for step in plan.steps] == ["A", "B", "C", "Dock"]
-    assert render_plan_preview(plan) == ("計畫\n1. 前往 A\n2. 前往 B\n3. 前往 C\n4. 返回 Dock")
+    assert render_plan_preview(plan) == (
+        "計畫\n"
+        "\n"
+        "Site: warehouse\n"
+        "Robot: robot-1\n"
+        "\n"
+        "1. 前往 A\n"
+        "2. 前往 B\n"
+        "3. 前往 C\n"
+        "4. 返回 Dock\n"
+        "\n"
+        "抵達容差：≤ 0.15 m\n"
+        "朝向要求：無\n"
+        "航點失敗：重試一次，仍失敗則略過\n"
+        "系統級導航故障：中止剩餘步驟\n"
+        "拍照：否"
+    )
 
 
 def test_explicit_operator_order_is_preserved_and_dock_is_system_added(
@@ -114,12 +131,53 @@ def test_explicit_operator_order_is_preserved_and_dock_is_system_added(
 ) -> None:
     spec = _bind(
         tmp_path,
-        MissionDraft(ordered_location_references=["C", "A"]),
+        MissionDraft(ordered_location_references=["C", "A", "B"]),
     )
     plan = compile_patrol_mission(spec)
 
-    assert [step.location_name for step in plan.steps] == ["C", "A", "Dock"]
+    assert [step.location_name for step in plan.steps] == ["C", "A", "B", "Dock"]
     assert isinstance(plan.steps[-1], ReturnHomeStep)
+
+
+@pytest.mark.parametrize(
+    "references",
+    (
+        ["C", "A"],
+        ["A", "B", "D"],
+        ["A", "A", "B"],
+        ["A", "B", "C", "A"],
+    ),
+)
+def test_explicit_patrol_must_be_a_permutation_of_the_reviewed_three_locations(
+    tmp_path: Path,
+    references: list[str],
+) -> None:
+    with pytest.raises(MissionBindingError, match="permutation"):
+        _bind(
+            tmp_path,
+            MissionDraft(ordered_location_references=references),
+        )
+
+
+@pytest.mark.parametrize(
+    "default_patrol",
+    (
+        ["A", "B"],
+        ["A", "B", "C", "D"],
+        ["A", "A", "B"],
+        ["A", "B", "Dock"],
+    ),
+)
+def test_default_patrol_must_be_exactly_three_distinct_non_dock_locations(
+    tmp_path: Path,
+    default_patrol: list[str],
+) -> None:
+    with pytest.raises(MissionBindingError, match="three distinct non-Dock"):
+        _bind(
+            tmp_path,
+            MissionDraft(),
+            site=_site(default_patrol=default_patrol),
+        )
 
 
 def test_unknown_location_missing_catalog_and_missing_default_fail_closed(
@@ -218,6 +276,116 @@ def test_policy_profile_and_completion_contract_are_digest_bound(tmp_path: Path)
         update={"completion_contract_version": "nav2-terminal+fresh-map-pose-v2"}
     )
     assert plan.plan_digest != future_contract.plan_digest
+
+
+def test_policy_change_is_visible_in_plan_digest_and_preview(tmp_path: Path) -> None:
+    baseline = compile_patrol_mission(_bind(tmp_path, MissionDraft()))
+    stricter = compile_patrol_mission(
+        _bind(
+            tmp_path,
+            MissionDraft(),
+            policy=PatrolMissionPolicy(
+                retry_count=0,
+                position_tolerance_m=0.1,
+            ),
+        )
+    )
+
+    assert baseline.plan_digest != stricter.plan_digest
+    assert "抵達容差：≤ 0.15 m" in render_plan_preview(baseline)
+    assert "航點失敗：重試一次，仍失敗則略過" in render_plan_preview(baseline)
+    assert "抵達容差：≤ 0.10 m" in render_plan_preview(stricter)
+    assert "航點失敗：不重試，失敗則略過" in render_plan_preview(stricter)
+
+
+def test_distinct_tolerances_cannot_collapse_to_the_same_approval_preview(
+    tmp_path: Path,
+) -> None:
+    first = compile_patrol_mission(
+        _bind(
+            tmp_path,
+            MissionDraft(),
+            policy=PatrolMissionPolicy(position_tolerance_m=0.101),
+        )
+    )
+    second = compile_patrol_mission(
+        _bind(
+            tmp_path,
+            MissionDraft(),
+            policy=PatrolMissionPolicy(position_tolerance_m=0.104),
+        )
+    )
+
+    first_preview = render_plan_preview(first)
+    second_preview = render_plan_preview(second)
+
+    assert first.plan_digest != second.plan_digest
+    assert first_preview != second_preview
+    assert "抵達容差：≤ 0.101 m" in first_preview
+    assert "抵達容差：≤ 0.104 m" in second_preview
+
+
+@pytest.mark.parametrize(
+    "ordered_locations",
+    (
+        [{"location_id": "loc-a", "location_name": "A"}],
+        [
+            {"location_id": "loc-a", "location_name": "A"},
+            {"location_id": "loc-a", "location_name": "A"},
+            {"location_id": "loc-b", "location_name": "B"},
+        ],
+    ),
+)
+def test_trusted_mission_requires_exactly_three_distinct_waypoints(
+    tmp_path: Path,
+    ordered_locations: list[dict[str, str]],
+) -> None:
+    payload = _bind(tmp_path, MissionDraft()).model_dump(mode="json")
+    payload["ordered_locations"] = ordered_locations
+
+    with pytest.raises(ValidationError, match="exactly three distinct waypoints"):
+        PatrolMissionSpec.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ("site_id", "site_version", "robot_id"))
+def test_trusted_mission_rejects_blank_profile_identity(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    payload = _bind(tmp_path, MissionDraft()).model_dump(mode="json")
+    payload[field] = "  "
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        PatrolMissionSpec.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ("site_profile_digest", "vehicle_profile_digest"))
+def test_trusted_mission_rejects_invalid_profile_digest(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    payload = _bind(tmp_path, MissionDraft()).model_dump(mode="json")
+    payload[field] = "not-a-digest"
+
+    with pytest.raises(ValidationError, match="String should match pattern"):
+        PatrolMissionSpec.model_validate(payload)
+
+
+@pytest.mark.parametrize("step_type", (NavigateStep, ReturnHomeStep))
+@pytest.mark.parametrize("field", ("location_id", "location_name"))
+def test_execution_step_rejects_blank_location_identity(
+    step_type: type[NavigateStep] | type[ReturnHomeStep],
+    field: str,
+) -> None:
+    payload: dict[str, object] = {
+        "location_id": "loc-a",
+        "location_name": "A",
+        "position_tolerance_m": 0.15,
+    }
+    payload[field] = "  "
+
+    with pytest.raises(ValidationError, match="must not be blank"):
+        step_type.model_validate(payload)
 
 
 def test_models_are_detached_and_recursively_immutable(tmp_path: Path) -> None:

@@ -223,12 +223,29 @@ def bind_patrol_mission(
     if home.id != dock.id:
         raise SiteAssetError("home_location and dock_location must identify the same location.")
 
-    references = detached_draft.ordered_location_references
-    if references is None:
-        references = tuple(site.default_patrol)
-    if not references:
+    default_references = tuple(site.default_patrol)
+    if not default_references:
         raise MissionBindingError("The active Site Profile has no default patrol.")
+    default_locations = tuple(
+        _validated_location(
+            locations,
+            site.validated_routes,
+            reference,
+            owner="default_patrol",
+        )
+        for reference in default_references
+    )
+    default_location_ids = tuple(location.id for location in default_locations)
+    if (
+        len(default_location_ids) != 3
+        or len(set(default_location_ids)) != 3
+        or home.id in default_location_ids
+    ):
+        raise MissionBindingError(
+            "The v1 default patrol must contain exactly three distinct non-Dock locations."
+        )
 
+    references = detached_draft.ordered_location_references or default_references
     ordered: list[BoundLocation] = []
     for reference in references:
         location = _validated_location(
@@ -240,6 +257,18 @@ def bind_patrol_mission(
         if location.id == home.id:
             raise MissionBindingError("Dock is system-added and cannot be an operator waypoint.")
         ordered.append(BoundLocation(location_id=location.id, location_name=location.name))
+
+    if detached_draft.ordered_location_references is not None:
+        ordered_location_ids = tuple(location.location_id for location in ordered)
+        if (
+            len(ordered_location_ids) != 3
+            or len(set(ordered_location_ids)) != 3
+            or set(ordered_location_ids) != set(default_location_ids)
+        ):
+            raise MissionBindingError(
+                "The v1 explicit patrol order must be a permutation of the reviewed "
+                "three default locations."
+            )
 
     return build_patrol_mission_spec(
         mission_id=mission_id,
