@@ -71,7 +71,9 @@ invent coordinates, add locations, choose Nav2 recovery behavior, or modify the 
 
 - `mission_id` is unique execution identity and is excluded from semantic `mission_digest`.
 - `mission_digest` covers semantic Mission content, profiles, locations, policies, and completion.
-- The compiler produces exactly `Navigate(A) → Navigate(B) → Navigate(C) → ReturnHome(Dock)`.
+- The compiler preserves `mission_spec.ordered_locations` exactly and appends
+  `ReturnHome(Dock)`. For「巡檢一圈」without an explicit operator order, the bound reference
+  route is `Navigate(A) → Navigate(B) → Navigate(C) → ReturnHome(Dock)`.
 - `plan_digest` covers ordered steps and every execution-relevant bound field.
 - Receipt preserves `mission_id`, `mission_digest`, `plan_digest`, approved ordered steps, actual
   `StepResults`, Evidence references, the final endpoint result, and the canonical `TaskOutcome`.

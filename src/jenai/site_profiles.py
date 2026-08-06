@@ -113,6 +113,7 @@ def build_site_profile_draft(
         reference_scene=reference_scene,
         locations_path=locations_path,
         validated_routes=names,
+        default_patrol=[],
         home_location=dock_location,
         dock_location=dock_location,
         patrol_areas=areas,
