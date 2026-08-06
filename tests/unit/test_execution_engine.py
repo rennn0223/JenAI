@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import FrozenInstanceError
+
+import pytest
+from pydantic import ValidationError
 
 from jenai.schemas.models import TaskOutcome
 from jenai.workflows.execution_engine import (
-    DispatchToken,
+    DispatchContext,
     ExecutionEngine,
     ExecutionReport,
     ScriptedAtomicStepAdapter,
     StepDisposition,
+    StepEvidence,
+    StepEvidenceKind,
     StepResult,
     StopResult,
 )
@@ -43,30 +49,66 @@ def _plan(*, retry_count: int = 1) -> ExecutionPlan:
 
 
 def _result(disposition: StepDisposition, summary: str) -> StepResult:
-    return StepResult(disposition=disposition, summary=summary)
+    kwargs: dict[str, object] = {}
+    if disposition is StepDisposition.SUCCEEDED:
+        kwargs = {
+            "evidence": (
+                StepEvidence(kind=StepEvidenceKind.NAVIGATION_TERMINAL, evidence_id="nav-result"),
+                StepEvidence(kind=StepEvidenceKind.ENDPOINT_POSE, evidence_id="fresh-pose"),
+            ),
+            "position_error_m": 0.05,
+        }
+    return StepResult(disposition=disposition, summary=summary, **kwargs)
 
 
 class _BlockingAtomicStepAdapter:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
-        self.execute_calls: list[tuple[ExecutionStep, DispatchToken]] = []
-        self.stop_calls: list[DispatchToken] = []
+        self.execute_calls: list[tuple[ExecutionStep, DispatchContext]] = []
+        self.stop_calls: list[DispatchContext] = []
 
     async def execute(
         self,
         step: ExecutionStep,
-        dispatch_token: DispatchToken,
+        dispatch_context: DispatchContext,
     ) -> StepResult:
-        self.execute_calls.append((step, dispatch_token))
+        self.execute_calls.append((step, dispatch_context))
         self.started.set()
-        await self.release.wait()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            await self.release.wait()
         return _result(StepDisposition.SUCCEEDED, "late success")
 
-    async def stop(self, active_dispatch: DispatchToken) -> StopResult:
-        assert active_dispatch.valid is False
+    async def stop(self, active_dispatch: DispatchContext) -> StopResult:
+        assert active_dispatch.cancellation.cancelled is True
         self.stop_calls.append(active_dispatch)
         self.release.set()
+        return StopResult(summary="cancel acknowledged", cancel_acknowledged=True)
+
+
+class _HungExecuteAdapter:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.stop_calls: list[DispatchContext] = []
+
+    async def execute(
+        self,
+        step: ExecutionStep,
+        dispatch_context: DispatchContext,
+    ) -> StepResult:
+        del step, dispatch_context
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            await self.release.wait()
+        return _result(StepDisposition.SUCCEEDED, "late success")
+
+    async def stop(self, active_dispatch: DispatchContext) -> StopResult:
+        self.stop_calls.append(active_dispatch)
         return StopResult(summary="cancel acknowledged", cancel_acknowledged=True)
 
 
@@ -96,6 +138,43 @@ def test_all_steps_succeed_in_the_exact_approved_order() -> None:
         "Dock",
     ]
     assert all(len(record.attempts) == 1 for record in report.step_records)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"position_error_m": 0.05, "evidence": ()},
+        {
+            "position_error_m": None,
+            "evidence": (
+                {"kind": "navigation_terminal", "evidence_id": "nav-result"},
+                {"kind": "endpoint_pose", "evidence_id": "fresh-pose"},
+            ),
+        },
+        {
+            "position_error_m": 0.05,
+            "evidence": ({"kind": "navigation_terminal", "evidence_id": "nav-result"},),
+        },
+    ),
+)
+def test_success_requires_terminal_and_endpoint_evidence_plus_pose_error(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        StepResult(disposition=StepDisposition.SUCCEEDED, summary="arrived", **payload)
+
+
+def test_engine_converts_adapter_success_beyond_step_tolerance_to_endpoint_mismatch() -> None:
+    plan = _plan()
+    results = [_result(StepDisposition.SUCCEEDED, "arrived") for _ in plan.steps]
+    results[-1] = results[-1].model_copy(update={"position_error_m": 0.16})
+
+    report = asyncio.run(ExecutionEngine(plan, ScriptedAtomicStepAdapter(results)).run())
+
+    assert report.outcome is TaskOutcome.ENDPOINT_MISMATCH
+    assert report.step_records[-1].attempts[-1].result.disposition is (
+        StepDisposition.ENDPOINT_MISMATCH
+    )
 
 
 def test_waypoint_local_failure_retries_once_then_continues_after_success() -> None:
@@ -247,9 +326,15 @@ def test_active_stop_invalidates_token_before_adapter_stop_and_late_success_is_d
 
     assert first == second
     assert len(adapter.stop_calls) == 1
-    assert adapter.stop_calls[0].valid is False
+    context = adapter.stop_calls[0]
+    assert context.cancellation.cancelled is True
+    assert not hasattr(context, "invalidate")
+    with pytest.raises(FrozenInstanceError):
+        context.attempt = 99
     assert report.outcome is TaskOutcome.CANCELLED
-    assert report.step_records == ()
+    assert report.stop_result == first
+    assert len(report.step_records) == 1
+    assert report.step_records[0].attempts[-1].result.disposition is (StepDisposition.CANCELLED)
     assert len(report.diagnostics) == 1
     assert report.diagnostics[0].kind == "late_step_result_after_stop"
     assert report.diagnostics[0].disposition is StepDisposition.SUCCEEDED
@@ -273,3 +358,165 @@ def test_engine_detaches_the_approved_plan_from_external_mutation() -> None:
     ]
     assert [record.step_index for record in report.step_records] == [0, 1, 2, 3]
     assert report.outcome is TaskOutcome.SUCCEEDED
+
+
+def test_stop_returns_a_report_even_when_active_execute_does_not_return() -> None:
+    async def scenario() -> tuple[ExecutionReport, StopResult, _HungExecuteAdapter]:
+        adapter = _HungExecuteAdapter()
+        engine = ExecutionEngine(_plan(), adapter)
+        run_task = asyncio.create_task(engine.run())
+        await adapter.started.wait()
+        stop_result = await engine.stop()
+        try:
+            report = await asyncio.wait_for(asyncio.shield(run_task), timeout=0.1)
+        finally:
+            adapter.release.set()
+            if not run_task.done():
+                await run_task
+        return report, stop_result, adapter
+
+    report, stop_result, adapter = asyncio.run(scenario())
+
+    assert report.outcome is TaskOutcome.CANCELLED
+    assert report.stop_result == stop_result
+    assert len(adapter.stop_calls) == 1
+    assert len(report.step_records) == 1
+    assert report.step_records[0].attempts[-1].result.disposition is StepDisposition.CANCELLED
+
+
+class _HungStopAdapter(_HungExecuteAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stop_started = asyncio.Event()
+        self.stop_release = asyncio.Event()
+
+    async def stop(self, active_dispatch: DispatchContext) -> StopResult:
+        self.stop_calls.append(active_dispatch)
+        self.stop_started.set()
+        try:
+            await self.stop_release.wait()
+        except asyncio.CancelledError:
+            await self.stop_release.wait()
+        return StopResult(summary="late STOP acknowledgement", cancel_acknowledged=True)
+
+
+class _RetryThenHangAdapter(_HungExecuteAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.execute_count = 0
+
+    async def execute(
+        self,
+        step: ExecutionStep,
+        dispatch_context: DispatchContext,
+    ) -> StepResult:
+        del step, dispatch_context
+        self.execute_count += 1
+        if self.execute_count == 1:
+            return _result(StepDisposition.WAYPOINT_LOCAL_FAILURE, "retry me")
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            await self.release.wait()
+        return _result(StepDisposition.SUCCEEDED, "late success")
+
+
+def test_malformed_completion_evidence_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        StepResult(
+            disposition=StepDisposition.SUCCEEDED,
+            summary="arrived",
+            position_error_m=0.05,
+            evidence=(
+                {"kind": "untrusted_pose", "evidence_id": "bad"},
+                {"kind": "navigation_terminal", "evidence_id": "nav-result"},
+            ),
+        )
+
+
+def test_stop_is_bounded_when_adapter_stop_does_not_return() -> None:
+    async def scenario() -> tuple[ExecutionReport, StopResult, _HungStopAdapter]:
+        adapter = _HungStopAdapter()
+        engine = ExecutionEngine(_plan(), adapter, stop_timeout_s=0.01)
+        run_task = asyncio.create_task(engine.run())
+        await adapter.started.wait()
+        stop_result = await engine.stop()
+        report = await asyncio.wait_for(asyncio.shield(run_task), timeout=0.1)
+        adapter.release.set()
+        adapter.stop_release.set()
+        await asyncio.sleep(0)
+        return report, stop_result, adapter
+
+    report, stop_result, adapter = asyncio.run(scenario())
+
+    assert stop_result.timed_out is True
+    assert stop_result.cancel_acknowledged is False
+    assert report.stop_result == stop_result
+    assert report.outcome is TaskOutcome.CANCELLED
+    assert len(adapter.stop_calls) == 1
+
+
+def test_cancelling_one_stop_waiter_does_not_cancel_shared_stop() -> None:
+    async def scenario() -> tuple[StopResult, ExecutionReport, _HungStopAdapter]:
+        adapter = _HungStopAdapter()
+        engine = ExecutionEngine(_plan(), adapter)
+        run_task = asyncio.create_task(engine.run())
+        await adapter.started.wait()
+        waiter = asyncio.create_task(engine.stop())
+        await adapter.stop_started.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        adapter.stop_release.set()
+        adapter.release.set()
+        stop_result = await engine.stop()
+        report = await run_task
+        return stop_result, report, adapter
+
+    stop_result, report, adapter = asyncio.run(scenario())
+
+    assert stop_result.cancel_acknowledged is True
+    assert stop_result.timed_out is False
+    assert report.stop_result == stop_result
+    assert len(adapter.stop_calls) == 1
+
+
+def test_cancelling_run_performs_shielded_stop_before_propagating() -> None:
+    async def scenario() -> _BlockingAtomicStepAdapter:
+        adapter = _BlockingAtomicStepAdapter()
+        engine = ExecutionEngine(_plan(), adapter)
+        run_task = asyncio.create_task(engine.run())
+        await adapter.started.wait()
+        run_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run_task
+        return adapter
+
+    adapter = asyncio.run(scenario())
+
+    assert len(adapter.stop_calls) == 1
+    assert adapter.stop_calls[0].cancellation.cancelled is True
+
+
+def test_stop_preserves_prior_retry_attempt_and_active_attempt() -> None:
+    async def scenario() -> tuple[ExecutionReport, _RetryThenHangAdapter]:
+        adapter = _RetryThenHangAdapter()
+        engine = ExecutionEngine(_plan(), adapter)
+        run_task = asyncio.create_task(engine.run())
+        await adapter.started.wait()
+        await engine.stop()
+        report = await run_task
+        adapter.release.set()
+        await asyncio.sleep(0)
+        return report, adapter
+
+    report, adapter = asyncio.run(scenario())
+
+    assert report.outcome is TaskOutcome.CANCELLED
+    assert adapter.execute_count == 2
+    assert len(report.step_records) == 1
+    assert [attempt.result.disposition for attempt in report.step_records[0].attempts] == [
+        StepDisposition.WAYPOINT_LOCAL_FAILURE,
+        StepDisposition.CANCELLED,
+    ]

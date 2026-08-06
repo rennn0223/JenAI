@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from jenai.schemas.models import TaskOutcome
 from jenai.workflows.patrol_mission import ExecutionPlan, ExecutionStep, ReturnHomeStep
@@ -28,6 +30,18 @@ def _required_text(value: str) -> str:
     return stripped
 
 
+class StepEvidenceKind(StrEnum):
+    NAVIGATION_TERMINAL = "navigation_terminal"
+    ENDPOINT_POSE = "endpoint_pose"
+
+
+class StepEvidence(EngineModel):
+    kind: StepEvidenceKind
+    evidence_id: str
+
+    _normalize_evidence_id = field_validator("evidence_id")(_required_text)
+
+
 class StepDisposition(StrEnum):
     """Atomic adapter observation; it does not decide mission policy."""
 
@@ -41,40 +55,87 @@ class StepDisposition(StrEnum):
 class StepResult(EngineModel):
     disposition: StepDisposition
     summary: str
-    evidence: tuple[str, ...] = ()
+    evidence: tuple[StepEvidence, ...] = ()
     cancel_acknowledged: bool | None = None
     position_error_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     _normalize_summary = field_validator("summary")(_required_text)
 
-    @field_validator("evidence")
-    @classmethod
-    def normalize_evidence(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(_required_text(item) for item in value)
+    @model_validator(mode="after")
+    def successful_result_has_completion_evidence(self) -> StepResult:
+        if self.disposition is not StepDisposition.SUCCEEDED:
+            return self
+        required = {
+            StepEvidenceKind.NAVIGATION_TERMINAL,
+            StepEvidenceKind.ENDPOINT_POSE,
+        }
+        observed = {item.kind for item in self.evidence}
+        if self.position_error_m is None:
+            raise ValueError("successful step requires a fresh endpoint pose error")
+        if not required.issubset(observed):
+            raise ValueError("successful step requires terminal and endpoint Evidence")
+        return self
 
 
 class StopResult(EngineModel):
     summary: str
     cancel_acknowledged: bool | None = None
+    timed_out: bool = False
 
     _normalize_summary = field_validator("summary")(_required_text)
 
 
-class DispatchToken:
-    """Engine-owned cancellation fence shared with one atomic dispatch."""
+class CancellationView:
+    """Live cancellation state without mutation authority."""
 
+    __slots__ = ("__is_cancelled", "__wait_cancelled")
+
+    def __init__(
+        self,
+        *,
+        is_cancelled: Callable[[], bool],
+        wait_cancelled: Callable[[], Awaitable[bool]],
+    ) -> None:
+        self.__is_cancelled = is_cancelled
+        self.__wait_cancelled = wait_cancelled
+
+    @property
+    def cancelled(self) -> bool:
+        return self.__is_cancelled()
+
+    async def wait_cancelled(self) -> None:
+        await self.__wait_cancelled()
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchContext:
+    """Immutable adapter view of one Engine-owned dispatch fence."""
+
+    dispatch_id: str
+    step_index: int
+    attempt: int
+    cancellation: CancellationView
+
+
+class _DispatchFence:
     def __init__(self, *, step_index: int, attempt: int) -> None:
-        self.dispatch_id = uuid4().hex
-        self.step_index = step_index
-        self.attempt = attempt
-        self._valid = True
+        self._cancelled = asyncio.Event()
+        self.context = DispatchContext(
+            dispatch_id=uuid4().hex,
+            step_index=step_index,
+            attempt=attempt,
+            cancellation=CancellationView(
+                is_cancelled=self._cancelled.is_set,
+                wait_cancelled=self._cancelled.wait,
+            ),
+        )
 
     @property
     def valid(self) -> bool:
-        return self._valid
+        return not self._cancelled.is_set()
 
     def invalidate(self) -> None:
-        self._valid = False
+        self._cancelled.set()
 
 
 class AtomicStepAdapter(Protocol):
@@ -83,10 +144,10 @@ class AtomicStepAdapter(Protocol):
     async def execute(
         self,
         step: ExecutionStep,
-        dispatch_token: DispatchToken,
+        dispatch_context: DispatchContext,
     ) -> StepResult: ...
 
-    async def stop(self, active_dispatch: DispatchToken) -> StopResult: ...
+    async def stop(self, active_dispatch: DispatchContext) -> StopResult: ...
 
 
 class StepAttempt(EngineModel):
@@ -114,6 +175,7 @@ class ExecutionReport(EngineModel):
     outcome: TaskOutcome
     step_records: tuple[StepRecord, ...]
     diagnostics: tuple[EngineDiagnostic, ...] = ()
+    stop_result: StopResult | None = None
 
 
 class ExecutionCall(EngineModel):
@@ -131,19 +193,19 @@ class ScriptedAtomicStepAdapter:
             StepResult.model_validate(result.model_dump(mode="json")) for result in results
         )
         self.execute_calls: list[ExecutionCall] = []
-        self.stop_calls: list[DispatchToken] = []
+        self.stop_calls: list[DispatchContext] = []
 
     async def execute(
         self,
         step: ExecutionStep,
-        dispatch_token: DispatchToken,
+        dispatch_context: DispatchContext,
     ) -> StepResult:
         self.execute_calls.append(
             ExecutionCall(
                 step=step,
-                dispatch_id=dispatch_token.dispatch_id,
-                step_index=dispatch_token.step_index,
-                attempt=dispatch_token.attempt,
+                dispatch_id=dispatch_context.dispatch_id,
+                step_index=dispatch_context.step_index,
+                attempt=dispatch_context.attempt,
             )
         )
         if not self._results:
@@ -151,7 +213,7 @@ class ScriptedAtomicStepAdapter:
         result = self._results.popleft()
         return StepResult.model_validate(result.model_dump(mode="json"))
 
-    async def stop(self, active_dispatch: DispatchToken) -> StopResult:
+    async def stop(self, active_dispatch: DispatchContext) -> StopResult:
         self.stop_calls.append(active_dispatch)
         return StopResult(summary="fake adapter stopped", cancel_acknowledged=True)
 
@@ -159,13 +221,23 @@ class ScriptedAtomicStepAdapter:
 class ExecutionEngine:
     """Single mutable owner of progress for one approved ExecutionPlan."""
 
-    def __init__(self, plan: ExecutionPlan, adapter: AtomicStepAdapter) -> None:
+    def __init__(
+        self,
+        plan: ExecutionPlan,
+        adapter: AtomicStepAdapter,
+        *,
+        stop_timeout_s: float = 1.0,
+    ) -> None:
+        if not isfinite(stop_timeout_s) or stop_timeout_s <= 0:
+            raise ValueError("stop_timeout_s must be finite and greater than zero")
         self._plan = ExecutionPlan.model_validate(plan.model_dump(mode="json"))
         self._adapter = adapter
+        self._stop_timeout_s = stop_timeout_s
         self._lock = asyncio.Lock()
         self._run_started = False
         self._stop_requested = False
-        self._active_token: DispatchToken | None = None
+        self._active_fence: _DispatchFence | None = None
+        self._active_execute_task: asyncio.Task[StepResult] | None = None
         self._terminal_outcome: TaskOutcome | None = None
         self._stop_task: asyncio.Task[StopResult] | None = None
         self._stop_result: StopResult | None = None
@@ -177,6 +249,13 @@ class ExecutionEngine:
         self._attempt_count = 0
 
     async def run(self) -> ExecutionReport:
+        try:
+            return await self._run()
+        except asyncio.CancelledError:
+            await asyncio.shield(self.stop())
+            raise
+
+    async def _run(self) -> ExecutionReport:
         early_report = await self._begin_run()
         if early_report is not None:
             return early_report
@@ -188,14 +267,28 @@ class ExecutionEngine:
                 if isinstance(dispatch, ExecutionReport):
                     return dispatch
                 result = await self._observe_step(step, dispatch)
-                retry, terminal_report = await self._accept_attempt(
+                if result is None:
+                    return await self._finalize_stopped_attempt(
+                        step=step,
+                        step_index=step_index,
+                        attempt=attempt,
+                        attempts=attempts,
+                    )
+                retry, terminal_report, stopped = await self._accept_attempt(
                     step=step,
                     step_index=step_index,
                     attempt=attempt,
-                    token=dispatch,
+                    fence=dispatch,
                     result=result,
                     attempts=attempts,
                 )
+                if stopped:
+                    return await self._finalize_stopped_attempt(
+                        step=step,
+                        step_index=step_index,
+                        attempt=attempt,
+                        attempts=attempts,
+                    )
                 if terminal_report is not None:
                     return terminal_report
                 if not retry:
@@ -214,29 +307,104 @@ class ExecutionEngine:
         self,
         step_index: int,
         attempt: int,
-    ) -> DispatchToken | ExecutionReport:
+    ) -> _DispatchFence | ExecutionReport:
         async with self._lock:
             if self._stop_requested:
                 return self._report_locked()
-            token = DispatchToken(step_index=step_index, attempt=attempt)
-            self._active_token = token
+            fence = _DispatchFence(step_index=step_index, attempt=attempt)
+            self._active_fence = fence
             self._current_step_index = step_index
             self._attempt_count = attempt
-            return token
+            return fence
 
     async def _observe_step(
         self,
         step: ExecutionStep,
-        token: DispatchToken,
+        fence: _DispatchFence,
+    ) -> StepResult | None:
+        execute_task = asyncio.create_task(self._call_adapter_execute(step, fence.context))
+        async with self._lock:
+            if self._active_fence is fence:
+                self._active_execute_task = execute_task
+        cancellation_wait = asyncio.create_task(fence.context.cancellation.wait_cancelled())
+        try:
+            done, _ = await asyncio.wait(
+                {execute_task, cancellation_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if not cancellation_wait.done():
+                cancellation_wait.cancel()
+
+        if fence.context.cancellation.cancelled:
+            execute_task.cancel()
+            return None
+        if execute_task not in done:
+            raise RuntimeError("dispatch observation ended without a result")
+        return execute_task.result()
+
+    async def _call_adapter_execute(
+        self,
+        step: ExecutionStep,
+        context: DispatchContext,
     ) -> StepResult:
         try:
-            observed = await self._adapter.execute(step, token)
+            observed = await self._adapter.execute(step, context)
             return StepResult.model_validate(observed.model_dump(mode="json"))
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             return StepResult(
                 disposition=StepDisposition.NAVIGATION_SYSTEM_FAILURE,
                 summary=f"atomic adapter raised {type(exc).__name__}",
             )
+
+    async def _finalize_stopped_attempt(
+        self,
+        *,
+        step: ExecutionStep,
+        step_index: int,
+        attempt: int,
+        attempts: list[StepAttempt],
+    ) -> ExecutionReport:
+        stop_result = await asyncio.shield(self.stop())
+        async with self._lock:
+            execute_task = self._active_execute_task
+        if execute_task is not None:
+            await asyncio.sleep(0)
+        late_result = self._completed_task_result(execute_task)
+
+        cancelled = StepResult(
+            disposition=StepDisposition.CANCELLED,
+            summary="active dispatch cancelled by STOP",
+            cancel_acknowledged=stop_result.cancel_acknowledged,
+        )
+        async with self._lock:
+            if late_result is not None:
+                self._record_late_result(step_index, attempt, late_result)
+            attempts.append(StepAttempt(attempt=attempt, result=cancelled))
+            self._records.append(
+                StepRecord(
+                    step_index=step_index,
+                    step=step,
+                    attempts=tuple(attempts),
+                )
+            )
+            self._active_fence = None
+            self._active_execute_task = None
+            self._stop_result = stop_result
+            return self._report_locked()
+
+    @staticmethod
+    def _completed_task_result(
+        execute_task: asyncio.Task[StepResult] | None,
+    ) -> StepResult | None:
+        if execute_task is None or not execute_task.done() or execute_task.cancelled():
+            return None
+        try:
+            return execute_task.result()
+        except Exception:
+            return None
 
     async def _accept_attempt(
         self,
@@ -244,20 +412,21 @@ class ExecutionEngine:
         step: ExecutionStep,
         step_index: int,
         attempt: int,
-        token: DispatchToken,
+        fence: _DispatchFence,
         result: StepResult,
         attempts: list[StepAttempt],
-    ) -> tuple[bool, ExecutionReport | None]:
+    ) -> tuple[bool, ExecutionReport | None, bool]:
         async with self._lock:
-            if self._active_token is token:
-                self._active_token = None
-            if self._stop_requested or not token.valid:
-                self._record_late_result(step_index, attempt, result)
-                return False, self._report_locked()
+            if self._stop_requested or not fence.valid:
+                return False, None, True
+            if self._active_fence is fence:
+                self._active_fence = None
+            self._active_execute_task = None
 
+            result = self._apply_completion_truth(step, result)
             attempts.append(StepAttempt(attempt=attempt, result=result))
             if self._should_retry(result, attempt):
-                return True, None
+                return True, None, False
 
             skipped = (
                 result.disposition is StepDisposition.WAYPOINT_LOCAL_FAILURE
@@ -273,13 +442,31 @@ class ExecutionEngine:
             )
             self._record_disposition_locked(step_index, result.disposition, skipped)
             if self._terminal_outcome is not None:
-                return False, self._report_locked()
-            return False, None
+                return False, self._report_locked(), False
+            return False, None, False
 
     def _should_retry(self, result: StepResult, attempt: int) -> bool:
         return (
             result.disposition is StepDisposition.WAYPOINT_LOCAL_FAILURE
             and attempt <= self._plan.mission.policy.retry_count
+        )
+
+    def _apply_completion_truth(
+        self,
+        step: ExecutionStep,
+        result: StepResult,
+    ) -> StepResult:
+        if result.disposition is not StepDisposition.SUCCEEDED:
+            return result
+        if result.position_error_m is None:
+            raise RuntimeError("validated success lost its endpoint pose error")
+        if result.position_error_m <= step.position_tolerance_m:
+            return result
+        return StepResult(
+            disposition=StepDisposition.ENDPOINT_MISMATCH,
+            summary="endpoint pose exceeds the approved step tolerance",
+            evidence=result.evidence,
+            position_error_m=result.position_error_m,
         )
 
     def _record_late_result(
@@ -340,34 +527,58 @@ class ExecutionEngine:
             else:
                 self._stop_requested = True
                 self._terminal_outcome = TaskOutcome.CANCELLED
-                token = self._active_token
-                if token is None:
+                fence = self._active_fence
+                if fence is None:
                     self._stop_result = StopResult(
                         summary="stopped before active dispatch",
                         cancel_acknowledged=None,
                     )
                     return self._stop_result
-                token.invalidate()
-                stop_task = asyncio.create_task(self._stop_active(token))
+                fence.invalidate()
+                stop_task = asyncio.create_task(self._stop_active(fence.context))
                 self._stop_task = stop_task
 
         if stop_task is None:
             raise RuntimeError("STOP coordination lost its task")
-        result = await stop_task
+        result = await asyncio.shield(stop_task)
         async with self._lock:
             if self._stop_result is None:
                 self._stop_result = result
             return self._stop_result
 
-    async def _stop_active(self, token: DispatchToken) -> StopResult:
+    async def _stop_active(self, context: DispatchContext) -> StopResult:
+        stop_call = asyncio.create_task(self._call_adapter_stop(context))
+        done, _ = await asyncio.wait({stop_call}, timeout=self._stop_timeout_s)
+        if stop_call not in done:
+            stop_call.cancel()
+            stop_call.add_done_callback(self._consume_background_task_result)
+            return StopResult(
+                summary="adapter STOP timed out",
+                cancel_acknowledged=False,
+                timed_out=True,
+            )
+        return stop_call.result()
+
+    async def _call_adapter_stop(self, context: DispatchContext) -> StopResult:
         try:
-            observed = await self._adapter.stop(token)
+            observed = await self._adapter.stop(context)
             return StopResult.model_validate(observed.model_dump(mode="json"))
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             return StopResult(
                 summary=f"adapter STOP raised {type(exc).__name__}",
                 cancel_acknowledged=False,
             )
+
+    @staticmethod
+    def _consume_background_task_result(task: asyncio.Task[StopResult]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            return
 
     def _report_locked(self) -> ExecutionReport:
         if self._terminal_outcome is None:
@@ -377,4 +588,5 @@ class ExecutionEngine:
             outcome=self._terminal_outcome,
             step_records=tuple(self._records),
             diagnostics=tuple(self._diagnostics),
+            stop_result=self._stop_result,
         )
