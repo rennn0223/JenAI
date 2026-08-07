@@ -19,8 +19,12 @@ from jenai.workflows.patrol_mission import (
     BoundLocation,
     MissionBindingError,
     MissionDraft,
+    NavigateMissionDraft,
+    NavigateMissionPolicy,
+    NavigateMissionSpec,
     PatrolMissionPolicy,
     PatrolMissionSpec,
+    build_navigation_mission_spec,
     build_patrol_mission_spec,
 )
 
@@ -277,6 +281,59 @@ def bind_patrol_mission(
         locations_sha256=locations_sha256,
         ordered_locations=tuple(ordered),
         home_location=BoundLocation(location_id=home.id, location_name=home.name),
+        policy=policy,
+    )
+
+
+def bind_navigation_mission(
+    config: AppConfig,
+    config_path: Path,
+    draft: NavigateMissionDraft,
+    *,
+    mission_id: str,
+    policy: NavigateMissionPolicy | None = None,
+) -> NavigateMissionSpec:
+    """Bind one untrusted location reference to a fresh reviewed Site snapshot."""
+
+    detached_config = AppConfig.model_validate(config.model_dump(mode="json"))
+    detached_draft = NavigateMissionDraft.model_validate(draft.model_dump(mode="json"))
+    if detached_draft.decision != "navigate" or detached_draft.location_reference is None:
+        raise MissionBindingError("This NavigateMissionDraft does not authorize navigation.")
+
+    locations = validate_site_assets(detached_config, config_path)
+    normalized = detached_draft.location_reference.strip().casefold()
+    matches = [
+        location
+        for location in locations
+        if normalized in {location.id.casefold(), location.name.casefold()}
+    ]
+    if not matches:
+        raise SiteAssetError(
+            f"Site Profile references unknown location '{detached_draft.location_reference}'."
+        )
+    if len(matches) != 1:
+        raise SiteAssetError(
+            f"Site Profile location reference '{detached_draft.location_reference}' is ambiguous."
+        )
+    target = _validated_location(
+        locations,
+        detached_config.site.validated_routes,
+        matches[0].id,
+        owner="navigation mission",
+    )
+    locations_sha256 = detached_config.site.locations_sha256
+    if locations_sha256 is None:
+        raise SiteAssetError("The active Site Profile has no locations identity.")
+
+    return build_navigation_mission_spec(
+        mission_id=mission_id,
+        site=detached_config.site,
+        vehicle=detached_config.vehicle,
+        locations_sha256=locations_sha256,
+        target_location=BoundLocation(
+            location_id=target.id,
+            location_name=target.name,
+        ),
         policy=policy,
     )
 

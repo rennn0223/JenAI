@@ -8,12 +8,18 @@ from pydantic import ValidationError
 from jenai.adapters.locations import save_locations
 from jenai.config.models import AppConfig, SiteProfile, VehicleProfile
 from jenai.schemas import Location, Pose2D
-from jenai.site_assets import SiteAssetError, bind_patrol_mission, fingerprint_locations_file
+from jenai.site_assets import (
+    SiteAssetError,
+    bind_navigation_mission,
+    bind_patrol_mission,
+    fingerprint_locations_file,
+)
 from jenai.workflows.patrol_mission import (
     BoundLocation,
     ExecutionPlan,
     MissionBindingError,
     MissionDraft,
+    NavigateMissionDraft,
     NavigateMissionPolicy,
     NavigateMissionSpec,
     NavigateStep,
@@ -24,6 +30,145 @@ from jenai.workflows.patrol_mission import (
     compile_single_navigation,
     render_plan_preview,
 )
+
+
+def test_navigation_draft_binds_one_registered_location_and_compiles_exact_plan(
+    tmp_path: Path,
+) -> None:
+    locations_path = tmp_path / "locations.toml"
+    save_locations(list(_locations()), locations_path)
+    site_data = _site(default_patrol=["A", "B", "C"]).model_dump(mode="python")
+    site_data.update(
+        {
+            "locations_path": "locations.toml",
+            "locations_sha256": fingerprint_locations_file(locations_path),
+        }
+    )
+    config = AppConfig(
+        locations_path="locations.toml",
+        vehicle=VehicleProfile(robot_id="robot-1"),
+        site=SiteProfile.model_validate(site_data),
+    )
+
+    spec = bind_navigation_mission(
+        config,
+        tmp_path / "config.toml",
+        NavigateMissionDraft(decision="navigate", location_reference="A"),
+        mission_id="navigate-1",
+    )
+    plan = compile_single_navigation(spec)
+
+    assert spec.target_location == BoundLocation(location_id="loc-a", location_name="A")
+    assert len(plan.steps) == 1
+    assert plan.steps[0].location_name == "A"
+    assert "1. 前往 A" in render_plan_preview(plan)
+    assert "抵達容差：≤ 0.15 m" in render_plan_preview(plan)
+    assert "航點失敗：不重試，任務失敗" in render_plan_preview(plan)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"decision": "navigate"},
+        {
+            "decision": "navigate",
+            "location_reference": "A",
+            "clarification_question": "真的要去嗎？",
+        },
+        {"decision": "clarify"},
+        {
+            "decision": "not_applicable",
+            "location_reference": "A",
+        },
+    ),
+)
+def test_navigation_draft_rejects_inconsistent_structured_output(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        NavigateMissionDraft.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("draft", "message"),
+    (
+        (
+            NavigateMissionDraft(
+                decision="navigate",
+                location_reference="Unknown",
+            ),
+            "unknown location",
+        ),
+        (
+            NavigateMissionDraft(
+                decision="clarify",
+                clarification_question="你要去哪一個已登錄地點？",
+            ),
+            "does not authorize",
+        ),
+        (
+            NavigateMissionDraft(decision="not_applicable"),
+            "does not authorize",
+        ),
+    ),
+)
+def test_navigation_draft_without_one_registered_target_creates_no_plan(
+    tmp_path: Path,
+    draft: NavigateMissionDraft,
+    message: str,
+) -> None:
+    locations_path = tmp_path / "locations.toml"
+    save_locations(list(_locations()), locations_path)
+    site_data = _site(default_patrol=["A", "B", "C"]).model_dump(mode="python")
+    site_data.update(
+        {
+            "locations_path": "locations.toml",
+            "locations_sha256": fingerprint_locations_file(locations_path),
+        }
+    )
+    config = AppConfig(
+        locations_path="locations.toml",
+        vehicle=VehicleProfile(robot_id="robot-1"),
+        site=SiteProfile.model_validate(site_data),
+    )
+
+    with pytest.raises((MissionBindingError, SiteAssetError), match=message):
+        bind_navigation_mission(
+            config,
+            tmp_path / "config.toml",
+            draft,
+            mission_id="navigate-1",
+        )
+
+
+def test_navigation_binding_rejects_ambiguous_registered_name(tmp_path: Path) -> None:
+    locations = (
+        *_locations(),
+        Location(id="loc-a-duplicate", name="A", pose=Pose2D(x=9.0, y=9.0, yaw=0.0)),
+    )
+    locations_path = tmp_path / "locations.toml"
+    save_locations(list(locations), locations_path)
+    site_data = _site(default_patrol=["loc-a", "B", "C"]).model_dump(mode="python")
+    site_data.update(
+        {
+            "locations_path": "locations.toml",
+            "locations_sha256": fingerprint_locations_file(locations_path),
+            "validated_routes": ["loc-a", "B", "C", "D", "Dock", "loc-a-duplicate"],
+        }
+    )
+    config = AppConfig(
+        locations_path="locations.toml",
+        vehicle=VehicleProfile(robot_id="robot-1"),
+        site=SiteProfile.model_validate(site_data),
+    )
+
+    with pytest.raises(SiteAssetError, match="ambiguous"):
+        bind_navigation_mission(
+            config,
+            tmp_path / "config.toml",
+            NavigateMissionDraft(decision="navigate", location_reference="A"),
+            mission_id="navigate-1",
+        )
 
 
 def test_single_navigation_plan_is_one_registered_step_with_no_retry() -> None:

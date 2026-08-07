@@ -81,6 +81,33 @@ class MissionDraft(MissionModel):
         return tuple(references)
 
 
+class NavigateMissionDraft(MissionModel):
+    """Typed but untrusted single-location intent produced by the Intent Agent."""
+
+    decision: Literal["navigate", "clarify", "not_applicable"]
+    location_reference: str | None = None
+    clarification_question: str | None = None
+
+    @field_validator("location_reference", "clarification_question")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        return None if value is None else _required_text(value)
+
+    @model_validator(mode="after")
+    def fields_match_decision(self) -> NavigateMissionDraft:
+        if self.decision == "navigate":
+            if self.location_reference is None or self.clarification_question is not None:
+                raise ValueError(
+                    "navigate requires one location reference and no clarification question"
+                )
+        elif self.decision == "clarify":
+            if self.clarification_question is None:
+                raise ValueError("clarify requires one clarification question")
+        elif self.location_reference is not None or self.clarification_question is not None:
+            raise ValueError("not_applicable must not contain navigation fields")
+        return self
+
+
 class PatrolMissionPolicy(MissionModel):
     """Reviewed v1 policy; it cannot be supplied by the language model."""
 
@@ -402,7 +429,12 @@ def render_plan_preview(plan: ExecutionPlan) -> str:
     for index, step in enumerate(plan.steps, start=1):
         action = "前往" if isinstance(step, NavigateStep) else "返回"
         lines.append(f"{index}. {action} {step.location_name}")
-    retry_summary = "重試一次，仍失敗則略過" if policy.retry_count == 1 else "不重試，失敗則略過"
+    if isinstance(plan.mission, NavigateMissionSpec):
+        retry_summary = "不重試，任務失敗"
+    else:
+        retry_summary = (
+            "重試一次，仍失敗則略過" if policy.retry_count == 1 else "不重試，失敗則略過"
+        )
     lines.extend(
         (
             "",
