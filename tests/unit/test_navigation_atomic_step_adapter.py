@@ -44,7 +44,9 @@ from jenai.workflows.patrol_mission import (
     NavigateStep,
     PatrolMissionPolicy,
     PatrolMissionSpec,
+    build_navigation_mission_spec,
     compile_patrol_mission,
+    compile_single_navigation,
 )
 
 
@@ -134,7 +136,12 @@ def _dispatch() -> DispatchContext:
     )
 
 
-def _production_engine(tmp_path: Path, gateway) -> ExecutionEngine:
+def _production_engine(
+    tmp_path: Path,
+    gateway,
+    *,
+    single_target: bool = False,
+) -> ExecutionEngine:
     locations = [
         Location(id="a", name="A", pose=Pose2D(x=1.0, y=0.0, yaw=0.0)),
         Location(id="b", name="B", pose=Pose2D(x=2.0, y=0.0, yaw=0.0)),
@@ -163,12 +170,23 @@ def _production_engine(tmp_path: Path, gateway) -> ExecutionEngine:
             dock_location="Dock",
         ),
     )
-    mission = bind_patrol_mission(
-        config,
-        config_path,
-        MissionDraft(),
-        mission_id="mission-1",
-    )
+    if single_target:
+        mission = build_navigation_mission_spec(
+            mission_id="mission-1",
+            site=config.site,
+            vehicle=config.vehicle,
+            locations_sha256=config.site.locations_sha256 or "",
+            target_location=BoundLocation(location_id="a", location_name="A"),
+        )
+        plan = compile_single_navigation(mission)
+    else:
+        mission = bind_patrol_mission(
+            config,
+            config_path,
+            MissionDraft(),
+            mission_id="mission-1",
+        )
+        plan = compile_patrol_mission(mission)
     adapter = NavigationAtomicStepAdapter(
         executor=build_navigation_capability_executor(
             config=config,
@@ -185,7 +203,7 @@ def _production_engine(tmp_path: Path, gateway) -> ExecutionEngine:
         fencing_token=1,
         events=_NoEvents(),
     )
-    return ExecutionEngine(compile_patrol_mission(mission), adapter)
+    return ExecutionEngine(plan, adapter)
 
 
 def test_navigation_atomic_step_uses_capability_executor_and_returns_typed_completion() -> None:
@@ -848,6 +866,46 @@ def test_terminal_failures_default_to_navigation_system(terminal_status: str) ->
     assert report.disposition == ExecutionDisposition.FAILED
     assert len(report.evidence) == 1
     assert report.evidence[0].payload["scope"] == "navigation_system"
+
+
+def test_single_navigation_production_chain_dispatches_exactly_one_goal(
+    tmp_path: Path,
+) -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def execute(self, action, **_kwargs) -> RouteOutput:
+            goal = action["goal"]
+            assert isinstance(goal, dict)
+            self.calls.append(str(goal["name"]))
+            return RouteOutput(
+                input_text="",
+                execution_status="succeeded",
+                route_preview="Arrived at A",
+                navigation_attempts=[
+                    NavigationAttemptEvidence(
+                        attempt=1,
+                        tag="goal-A",
+                        execution_status="succeeded",
+                        detail="Arrived at A",
+                        terminal_status="succeeded",
+                        terminal_observed=True,
+                        endpoint_pose_observed=True,
+                        position_error_m=0.04,
+                    )
+                ],
+            )
+
+        async def stop(self) -> HaltReceipt:
+            raise AssertionError("STOP was not requested")
+
+    gateway = Gateway()
+    report = asyncio.run(_production_engine(tmp_path, gateway, single_target=True).run())
+
+    assert report.outcome is TaskOutcome.SUCCEEDED
+    assert gateway.calls == ["A"]
+    assert len(report.step_records) == 1
 
 
 def test_production_chain_retries_no_valid_path_once_then_continues(tmp_path: Path) -> None:

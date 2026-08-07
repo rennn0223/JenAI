@@ -10,16 +10,48 @@ from jenai.config.models import AppConfig, SiteProfile, VehicleProfile
 from jenai.schemas import Location, Pose2D
 from jenai.site_assets import SiteAssetError, bind_patrol_mission, fingerprint_locations_file
 from jenai.workflows.patrol_mission import (
+    BoundLocation,
     ExecutionPlan,
     MissionBindingError,
     MissionDraft,
+    NavigateMissionPolicy,
+    NavigateMissionSpec,
     NavigateStep,
     PatrolMissionPolicy,
     PatrolMissionSpec,
     ReturnHomeStep,
     compile_patrol_mission,
+    compile_single_navigation,
     render_plan_preview,
 )
+
+
+def test_single_navigation_plan_is_one_registered_step_with_no_retry() -> None:
+    mission = NavigateMissionSpec(
+        mission_id="mission-single-a",
+        site_id="site-1",
+        site_version="1",
+        site_profile_digest="1" * 64,
+        robot_id="robot-1",
+        vehicle_profile_digest="2" * 64,
+        locations_sha256="3" * 64,
+        target_location=BoundLocation(location_id="a", location_name="A"),
+        policy=NavigateMissionPolicy(),
+    )
+
+    plan = compile_single_navigation(mission)
+
+    assert plan.mission.kind == "navigate"
+    assert plan.mission.policy.retry_count == 0
+    assert plan.steps == (
+        NavigateStep(
+            location_id="a",
+            location_name="A",
+            position_tolerance_m=0.15,
+            require_yaw=False,
+        ),
+    )
+
 
 _LOCATION_DIGEST = "b" * 64
 

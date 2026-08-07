@@ -158,7 +158,52 @@ class PatrolMissionSpec(MissionModel):
         return _canonical_digest(self.semantic_payload())
 
 
-MissionSpec = PatrolMissionSpec
+class NavigateMissionPolicy(MissionModel):
+    """Reviewed one-goal policy for the proof-of-value navigation path."""
+
+    retry_count: Literal[0] = 0
+    position_tolerance_m: float = Field(
+        default=0.15,
+        gt=0,
+        le=0.15,
+        allow_inf_nan=False,
+    )
+    require_yaw: Literal[False] = False
+
+
+class NavigateMissionSpec(MissionModel):
+    """One registered-location mission bound to exact reviewed profiles."""
+
+    mission_id: str
+    kind: Literal["navigate"] = "navigate"
+    site_id: str
+    site_version: str
+    site_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    robot_id: str
+    vehicle_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    locations_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_location: BoundLocation
+    policy: NavigateMissionPolicy
+
+    _normalize_profile_identity = field_validator(
+        "site_id",
+        "site_version",
+        "robot_id",
+    )(_required_text)
+    _normalize_mission_id = field_validator("mission_id")(_required_text)
+
+    def semantic_payload(self) -> dict[str, object]:
+        return self.model_dump(
+            mode="json",
+            exclude={"mission_id", "mission_digest"},
+        )
+
+    @property
+    def mission_digest(self) -> str:
+        return _canonical_digest(self.semantic_payload())
+
+
+MissionSpec = PatrolMissionSpec | NavigateMissionSpec
 
 
 class NavigateStep(MissionModel):
@@ -187,7 +232,7 @@ ExecutionStep = Annotated[NavigateStep | ReturnHomeStep, Field(discriminator="ki
 class ExecutionPlan(MissionModel):
     """Exact ordered plan displayed for approval and consumed later by execution."""
 
-    mission: PatrolMissionSpec
+    mission: MissionSpec
     compiler_version: Literal["patrol-compiler-v1"] = PATROL_COMPILER_VERSION
     completion_contract_version: Literal["nav2-terminal+fresh-map-pose-v1"] = (
         PATROL_COMPLETION_CONTRACT_VERSION
@@ -196,17 +241,23 @@ class ExecutionPlan(MissionModel):
 
     @model_validator(mode="after")
     def steps_match_mission(self) -> ExecutionPlan:
-        expected: tuple[tuple[str, str, str], ...] = (
-            *(
-                ("navigate", location.location_id, location.location_name)
-                for location in self.mission.ordered_locations
-            ),
-            (
-                "return_home",
-                self.mission.home_location.location_id,
-                self.mission.home_location.location_name,
-            ),
-        )
+        if isinstance(self.mission, NavigateMissionSpec):
+            target = self.mission.target_location
+            expected: tuple[tuple[str, str, str], ...] = (
+                ("navigate", target.location_id, target.location_name),
+            )
+        else:
+            expected = (
+                *(
+                    ("navigate", location.location_id, location.location_name)
+                    for location in self.mission.ordered_locations
+                ),
+                (
+                    "return_home",
+                    self.mission.home_location.location_id,
+                    self.mission.home_location.location_name,
+                ),
+            )
         actual = tuple((step.kind, step.location_id, step.location_name) for step in self.steps)
         if actual != expected:
             raise ValueError("execution steps do not match the bound mission order")
@@ -262,6 +313,53 @@ def build_patrol_mission_spec(
         ordered_locations=ordered_locations,
         home_location=home_location,
         policy=policy or PatrolMissionPolicy(),
+    )
+
+
+def build_navigation_mission_spec(
+    *,
+    mission_id: str,
+    site: SiteProfile,
+    vehicle: VehicleProfile,
+    locations_sha256: str,
+    target_location: BoundLocation,
+    policy: NavigateMissionPolicy | None = None,
+) -> NavigateMissionSpec:
+    """Build one navigation mission from already validated Site assets."""
+
+    detached_site = SiteProfile.model_validate(site.model_dump(mode="json"))
+    detached_vehicle = VehicleProfile.model_validate(vehicle.model_dump(mode="json"))
+    if not detached_site.execution_ready:
+        raise MissionBindingError("The active Site Profile is not execution-ready")
+    if detached_site.locations_sha256 != locations_sha256:
+        raise MissionBindingError("Locations identity does not match the active Site Profile")
+    return NavigateMissionSpec(
+        mission_id=mission_id,
+        site_id=detached_site.site_id,
+        site_version=detached_site.version,
+        site_profile_digest=_canonical_digest(detached_site.model_dump(mode="json")),
+        robot_id=detached_vehicle.robot_id,
+        vehicle_profile_digest=_canonical_digest(detached_vehicle.model_dump(mode="json")),
+        locations_sha256=locations_sha256,
+        target_location=target_location,
+        policy=policy or NavigateMissionPolicy(),
+    )
+
+
+def compile_single_navigation(spec: NavigateMissionSpec) -> ExecutionPlan:
+    """Compile exactly one registered-location navigation step."""
+
+    detached = NavigateMissionSpec.model_validate(spec.model_dump(mode="json"))
+    return ExecutionPlan(
+        mission=detached,
+        steps=(
+            NavigateStep(
+                location_id=detached.target_location.location_id,
+                location_name=detached.target_location.location_name,
+                position_tolerance_m=detached.policy.position_tolerance_m,
+                require_yaw=detached.policy.require_yaw,
+            ),
+        ),
     )
 
 

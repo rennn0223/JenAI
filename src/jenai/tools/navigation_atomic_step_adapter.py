@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from jenai.config.models import AppConfig
 from jenai.runtime import (
@@ -46,7 +46,7 @@ from jenai.workflows.execution_engine import (
     StepResult,
     StopResult,
 )
-from jenai.workflows.patrol_mission import ExecutionStep, PatrolMissionSpec
+from jenai.workflows.patrol_mission import ExecutionStep, MissionSpec
 
 
 class EffectfulMissionBlockedError(RuntimeError):
@@ -281,7 +281,7 @@ class NavigationAtomicStepAdapter(AtomicStepAdapter):
         *,
         executor: CapabilityExecutor,
         authority: AuthorityContext,
-        mission: PatrolMissionSpec,
+        mission: MissionSpec,
         fencing_token: int,
         events: ExecutorEventSink,
     ) -> None:
@@ -291,7 +291,9 @@ class NavigationAtomicStepAdapter(AtomicStepAdapter):
             )
         self._executor = executor
         self._authority = AuthorityContext.model_validate(authority.model_dump(mode="json"))
-        self._mission = PatrolMissionSpec.model_validate(mission.model_dump(mode="json"))
+        self._mission: MissionSpec = TypeAdapter(MissionSpec).validate_python(
+            mission.model_dump(mode="json")
+        )
         self._fencing_token = fencing_token
         self._events = events
         self._reconfirmation_required = False
