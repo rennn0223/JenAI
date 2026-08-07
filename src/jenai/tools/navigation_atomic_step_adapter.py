@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -52,6 +53,14 @@ class EffectfulMissionBlockedError(RuntimeError):
     """A STOP boundary requires fresh robot/Nav2 confirmation before more effects."""
 
 
+def _required_cancellation_check(
+    is_cancelled: Callable[[], bool] | None,
+) -> Callable[[], bool]:
+    if is_cancelled is None:
+        raise RuntimeError("navigation execution requires an explicit cancellation check")
+    return is_cancelled
+
+
 class _NavigationGatewayPort(Protocol):
     async def execute(
         self,
@@ -60,6 +69,7 @@ class _NavigationGatewayPort(Protocol):
         run_id: str | None = None,
         session_id: str | None = None,
         endpoint_retry_limit: int | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> RouteOutput: ...
 
     async def stop(self) -> HaltReceipt: ...
@@ -143,15 +153,23 @@ def build_navigation_capability_executor(
     async def execute(
         prepared: PreparedCapabilityStep,
         _events: ExecutorEventSink,
+        is_cancelled: Callable[[], bool] | None,
     ) -> CapabilityExecutionReport:
         request = _NavigationInput.model_validate(prepared.step.model_dump(mode="json")["input"])
         if request.goal is None:
             raise ValueError("prepared navigation input has no bound goal")
+        is_cancelled = _required_cancellation_check(is_cancelled)
+        if is_cancelled():
+            return CapabilityExecutionReport(
+                disposition=ExecutionDisposition.CANCELLED,
+                summary="Navigation dispatch cancelled before Gateway execution.",
+            )
         output = await gateway.execute(
             {"capability_id": "navigate", "goal": request.goal},
             run_id=prepared.context.task_id,
             endpoint_retry_limit=0,
             session_id=prepared.context.authority.boot_id,
+            is_cancelled=is_cancelled,
         )
         return _capability_report(output)
 
@@ -227,17 +245,14 @@ def _capability_report(output: RouteOutput) -> CapabilityExecutionReport:
             evidence=evidence,
         )
     terminal_status = attempt.terminal_status if attempt is not None else None
-    if terminal_status == "canceled":
+    if output.execution_status == "cancelled" or terminal_status == "canceled":
         return CapabilityExecutionReport(
             disposition=ExecutionDisposition.CANCELLED,
             summary=output.route_preview or "Navigation canceled.",
         )
 
-    local_terminal_statuses = {"aborted", "rejected", "timed_out"}
     failure_scope = (
-        "waypoint_local"
-        if output.failure_scope == "waypoint_local" or terminal_status in local_terminal_statuses
-        else "navigation_system"
+        "waypoint_local" if output.failure_scope == "waypoint_local" else "navigation_system"
     )
     failure_evidence = ExecutorEvidence(
         kind="navigation_failure",
@@ -270,6 +285,10 @@ class NavigationAtomicStepAdapter(AtomicStepAdapter):
         fencing_token: int,
         events: ExecutorEventSink,
     ) -> None:
+        if authority.safety_epoch < 1:
+            raise ValueError(
+                "NavigationAtomicStepAdapter requires a STOP-capable authority context"
+            )
         self._executor = executor
         self._authority = AuthorityContext.model_validate(authority.model_dump(mode="json"))
         self._mission = PatrolMissionSpec.model_validate(mission.model_dump(mode="json"))
@@ -310,7 +329,17 @@ class NavigationAtomicStepAdapter(AtomicStepAdapter):
             },
         )
         prepared = await self._executor.prepare(typed_step, context)
-        report = await self._executor.execute(prepared, context, self._events)
+        if dispatch_context.cancellation.cancelled:
+            return StepResult(
+                disposition=StepDisposition.CANCELLED,
+                summary="Navigation dispatch cancelled before Capability execution.",
+            )
+        report = await self._executor.execute(
+            prepared,
+            context,
+            self._events,
+            is_cancelled=lambda: dispatch_context.cancellation.cancelled,
+        )
         return _step_result(report)
 
     async def stop(self, active_dispatch: DispatchContext) -> StopResult:

@@ -111,6 +111,10 @@ class NavigationCancelled(asyncio.CancelledError):
         self.nav_cancel_acknowledged = nav_cancel_acknowledged
 
 
+class _NavigationDispatchSuppressed(RuntimeError):
+    """A cancellation fence prevented the motion command from being sent."""
+
+
 @dataclass(frozen=True, slots=True)
 class _HaltOutcome:
     """What is known after a best-effort emergency halt request."""
@@ -180,13 +184,17 @@ async def _navigation_plan_failure(
         )
     if plan.feasible:
         return None
+    waypoint_local_errors = {"GOAL_OCCUPIED", "GOAL_OUTSIDE_MAP", "NO_VALID_PATH"}
+    failure_scope: NavigationFailureScope = (
+        "waypoint_local" if plan.error_name in waypoint_local_errors else "navigation_system"
+    )
     reason = plan.error_name
     if plan.error_message:
         reason = f"{reason}: {plan.error_message}"
     return (
         "failed",
         f"Nav2 preflight found no safe path ({reason}) — the goal was NOT sent.",
-        "waypoint_local",
+        failure_scope,
     )
 
 
@@ -370,8 +378,11 @@ async def _dispatch_navigation(
     vehicle: VehicleProfile | None,
     avoidance: dict[str, Any] | None,
     timeout: float,
+    is_cancelled: Callable[[], bool] | None,
 ) -> None:
     """Dispatch exactly one goal through Nav2 or the explicit direct driver."""
+    if is_cancelled is not None and is_cancelled():
+        raise _NavigationDispatchSuppressed
     if direct:
         await bridge.drive_to_pose(
             x=float(pose.get("x", 0.0)),
@@ -421,6 +432,7 @@ async def _run_navigation_attempt(
     direct: bool,
     vehicle: VehicleProfile | None,
     avoidance: dict[str, Any] | None,
+    is_cancelled: Callable[[], bool] | None,
 ) -> _NavigationAttemptResult:
     """Dispatch one goal, own its handlers, and classify its terminal state."""
     endpoint_stall_radius_m: float | None = None
@@ -447,6 +459,7 @@ async def _run_navigation_attempt(
             vehicle=vehicle,
             avoidance=avoidance,
             timeout=timeout,
+            is_cancelled=is_cancelled,
         )
         terminal = await _wait_for_navigation_result(collector, timeout)
         execution, detail, position_error = await _accepted_navigation_outcome(
@@ -460,6 +473,12 @@ async def _run_navigation_attempt(
             terminal_observed=True,
             endpoint_pose_observed=position_error is not None,
             position_error_m=position_error,
+        )
+    except _NavigationDispatchSuppressed:
+        return _NavigationAttemptResult(
+            execution="cancelled",
+            detail="Navigation dispatch cancelled before a motion command was sent.",
+            tag=collector.tag,
         )
     except _EndpointStalled:
         halt = await _halt_quietly(bridge, vehicle)
@@ -517,25 +536,33 @@ async def navigate_live(
     vehicle: VehicleProfile | None = None,
     endpoint_retry_limit: int | None = None,
     avoidance: dict[str, Any] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> RouteOutput:
-    """Drive through the rclpy bridge with live feedback and cancellation.
+    """Drive through the supervised bridge with live feedback and cancellation.
 
-    Unlike the CLI adapter (fire `ros2 action send_goal`, block, done), this
-    streams distance-remaining while the robot moves and reacts to task
-    cancellation (TUI Esc) by cancelling the goal — the robot actually
-    stops instead of sailing on after the UI gave up.
-
-    `direct=True` uses the Nav2-less odom→cmd_vel driver (open ground / a bare
-    ground plane with no planner); it clamps to the vehicle's speed limits.
+    The final cancellation check occurs immediately before the motion command.
     """
     goal = outgoing_action.get("goal") or {}
     pose = goal.get("pose") or {}
 
     if not direct:
         planning_failure = await _navigation_plan_failure(bridge, goal, pose)
+        if is_cancelled is not None and is_cancelled():
+            return _route_output(
+                outgoing_action,
+                "cancelled",
+                "Navigation dispatch cancelled after plan preflight.",
+            )
         if planning_failure is not None:
             execution, detail, failure_scope = planning_failure
             return _route_output(outgoing_action, execution, detail, failure_scope=failure_scope)
+
+    if is_cancelled is not None and is_cancelled():
+        return _route_output(
+            outgoing_action,
+            "cancelled",
+            "Navigation dispatch cancelled before a motion command was sent.",
+        )
 
     retry_limit = (
         endpoint_retry_limit
@@ -557,6 +584,7 @@ async def navigate_live(
             direct=direct,
             vehicle=vehicle,
             avoidance=avoidance,
+            is_cancelled=is_cancelled,
         )
         navigation_attempts.append(
             NavigationAttemptEvidence(
@@ -603,6 +631,13 @@ async def navigate_live(
             result.execution,
             detail,
             navigation_attempts=navigation_attempts,
+            failure_scope=(
+                None
+                if result.execution == "cancelled"
+                else "waypoint_local"
+                if result.endpoint_retry_allowed
+                else "navigation_system"
+            ),
         )
 
     raise AssertionError("navigation retry loop exhausted without an outcome")
@@ -659,6 +694,54 @@ def _twin_shares_target_domain(config: AppConfig) -> bool:
         return str(config.twin.domain_id) == ambient
 
 
+async def _twin_gate_outcome(
+    config: AppConfig,
+    outgoing_action: NavigationAction,
+    *,
+    on_gate: Callable[[str], None] | None,
+    on_gate_report: Callable[[GateReport], None] | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> RouteOutput | None:
+    twin_shares_target = config.twin.enabled and _twin_shares_target_domain(config)
+    if twin_shares_target and config.deployment_mode == "physical":
+        return RouteOutput(
+            input_text="",
+            outgoing_action=outgoing_action,
+            approval_status="approved",
+            execution_status="blocked",
+            route_preview=(
+                "Twin Gate isolation is invalid for physical deployment: the Twin and target "
+                f"share ROS_DOMAIN_ID={config.twin.domain_id}. The goal was NOT sent."
+            ),
+        )
+    if config.twin.enabled and not twin_shares_target:
+        from jenai.twin import rehearse_goal
+
+        report = await rehearse_goal(config.twin, outgoing_action, on_status=on_gate)
+        if is_cancelled is not None and is_cancelled():
+            return _route_output(
+                outgoing_action,
+                "cancelled",
+                "Navigation dispatch cancelled after Twin preflight.",
+            )
+        if on_gate_report is not None:
+            on_gate_report(report)
+        if report.verdict != "pass":
+            return RouteOutput(
+                input_text="",
+                outgoing_action=outgoing_action,
+                approval_status="approved",
+                execution_status=("blocked" if report.verdict == "block" else "referred"),
+                route_preview=f"{report.summary} — the real robot was NOT moved.",
+            )
+    elif twin_shares_target and on_gate is not None:
+        on_gate(
+            "Simulation-only Twin rehearsal skipped because Twin and target share "
+            f"ROS_DOMAIN_ID={config.twin.domain_id}; sending one simulated target goal."
+        )
+    return None
+
+
 async def navigate_with_fallback(
     config: AppConfig,
     get_bridge: Callable[[], Awaitable[RosBridgeClient]],
@@ -668,6 +751,7 @@ async def navigate_with_fallback(
     on_gate: Callable[[str], None] | None = None,
     on_gate_report: Callable[[GateReport], None] | None = None,
     endpoint_retry_limit: int | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> RouteOutput:
     """Execute navigation through the supervised live bridge.
 
@@ -697,46 +781,32 @@ async def navigate_with_fallback(
             ),
         )
 
-    twin_shares_target = config.twin.enabled and _twin_shares_target_domain(config)
-    if twin_shares_target and config.deployment_mode == "physical":
-        return RouteOutput(
-            input_text="",
-            outgoing_action=outgoing_action,
-            approval_status="approved",
-            execution_status="blocked",
-            route_preview=(
-                "Twin Gate isolation is invalid for physical deployment: the Twin and target "
-                f"share ROS_DOMAIN_ID={config.twin.domain_id}. The goal was NOT sent."
-            ),
+    if is_cancelled is not None and is_cancelled():
+        return _route_output(
+            outgoing_action,
+            "cancelled",
+            "Navigation dispatch cancelled before live bridge acquisition.",
         )
-    if config.twin.enabled and not twin_shares_target:
-        from jenai.twin import rehearse_goal
 
-        report = await rehearse_goal(config.twin, outgoing_action, on_status=on_gate)
-        if on_gate_report is not None:
-            on_gate_report(report)
-        if report.verdict != "pass":
-            return RouteOutput(
-                input_text="",
-                outgoing_action=outgoing_action,
-                approval_status="approved",
-                # Preserve the gate's three-valued verdict instead of
-                # flattening both outcomes into a generic navigation failure.
-                # Callers still treat every non-success status as "do not
-                # continue", while the operator can now distinguish a hard
-                # safety block from an inconclusive result that needs review.
-                execution_status=("blocked" if report.verdict == "block" else "referred"),
-                route_preview=f"{report.summary} — the real robot was NOT moved.",
-            )
-    elif twin_shares_target and on_gate is not None:
-        on_gate(
-            "Simulation-only Twin rehearsal skipped because Twin and target share "
-            f"ROS_DOMAIN_ID={config.twin.domain_id}; sending one simulated target goal."
-        )
+    gate_outcome = await _twin_gate_outcome(
+        config,
+        outgoing_action,
+        on_gate=on_gate,
+        on_gate_report=on_gate_report,
+        is_cancelled=is_cancelled,
+    )
+    if gate_outcome is not None:
+        return gate_outcome
 
     if config.route_adapter in ("nav2", "odom") and RosBridgeClient.available():
         try:
             bridge = await get_bridge()
+            if is_cancelled is not None and is_cancelled():
+                return _route_output(
+                    outgoing_action,
+                    "cancelled",
+                    "Navigation dispatch cancelled after target bridge acquisition.",
+                )
             return await navigate_live(
                 bridge,
                 outgoing_action,
@@ -746,6 +816,7 @@ async def navigate_with_fallback(
                 vehicle=config.vehicle,
                 avoidance=config.avoidance.as_params(),
                 endpoint_retry_limit=endpoint_retry_limit,
+                is_cancelled=is_cancelled,
             )
         except BridgeError as exc:
             return RouteOutput(

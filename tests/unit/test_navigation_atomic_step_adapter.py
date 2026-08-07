@@ -12,6 +12,7 @@ from jenai.runtime import (
     CapabilityExecutionReport,
     EvidenceTimestampStatus,
     ExecutionContext,
+    ExecutionDisposition,
     ExecutorEvidence,
     ExecutorStopResult,
     PreparedCapabilityStep,
@@ -27,6 +28,7 @@ from jenai.site_assets import bind_patrol_mission, fingerprint_locations_file
 from jenai.tools.navigation_atomic_step_adapter import (
     EffectfulMissionBlockedError,
     NavigationAtomicStepAdapter,
+    _capability_report,
     build_navigation_capability_executor,
 )
 from jenai.tools.safety import HaltReceipt, NavigationCancelStatus
@@ -79,7 +81,7 @@ class _RecordingExecutor:
             binding_sha256="a" * 64,
         )
 
-    async def execute(self, prepared, context, _events):
+    async def execute(self, prepared, context, _events, *, is_cancelled=None):
         assert prepared.context == context
         return self.report
 
@@ -132,7 +134,62 @@ def _dispatch() -> DispatchContext:
     )
 
 
+def _production_engine(tmp_path: Path, gateway) -> ExecutionEngine:
+    locations = [
+        Location(id="a", name="A", pose=Pose2D(x=1.0, y=0.0, yaw=0.0)),
+        Location(id="b", name="B", pose=Pose2D(x=2.0, y=0.0, yaw=0.0)),
+        Location(id="c", name="C", pose=Pose2D(x=3.0, y=0.0, yaw=0.0)),
+        Location(id="dock", name="Dock", pose=Pose2D(x=0.0, y=0.0, yaw=0.0)),
+    ]
+    locations_path = tmp_path / "locations.toml"
+    save_locations(locations, locations_path)
+    config_path = tmp_path / "config.toml"
+    config = AppConfig(
+        locations_path="locations.toml",
+        route_adapter="nav2",
+        vehicle=VehicleProfile(robot_id="robot-1"),
+        site=SiteProfile(
+            site_id="site-1",
+            display_name="Site 1",
+            version="1",
+            active=True,
+            validated=True,
+            map_sha256="f" * 64,
+            locations_sha256=fingerprint_locations_file(locations_path),
+            locations_path="locations.toml",
+            validated_routes=["A", "B", "C", "Dock"],
+            default_patrol=["A", "B", "C"],
+            home_location="Dock",
+            dock_location="Dock",
+        ),
+    )
+    mission = bind_patrol_mission(
+        config,
+        config_path,
+        MissionDraft(),
+        mission_id="mission-1",
+    )
+    adapter = NavigationAtomicStepAdapter(
+        executor=build_navigation_capability_executor(
+            config=config,
+            config_path=config_path,
+            gateway=gateway,
+        ),
+        authority=AuthorityContext(
+            runtime_id="golden-path",
+            boot_id="boot-1",
+            authority_generation=1,
+            safety_epoch=1,
+        ),
+        mission=mission,
+        fencing_token=1,
+        events=_NoEvents(),
+    )
+    return ExecutionEngine(compile_patrol_mission(mission), adapter)
+
+
 def test_navigation_atomic_step_uses_capability_executor_and_returns_typed_completion() -> None:
+
     async def run() -> None:
         executor = _RecordingExecutor(
             CapabilityExecutionReport(
@@ -298,6 +355,10 @@ def test_production_registration_resolves_bound_location_and_calls_navigation_ga
                 "goal": locations[0].model_dump(mode="json"),
             }
         ]
+        assert len(gateway.kwargs) == 1
+        cancellation = gateway.kwargs[0].pop("is_cancelled")
+        assert callable(cancellation)
+        assert cancellation() is False
         assert gateway.kwargs == [
             {
                 "run_id": "mission-1",
@@ -563,3 +624,300 @@ def test_adapter_maps_typed_failure_and_cancel_without_owning_policy() -> None:
 
     assert asyncio.run(observe(local_failure)) is StepDisposition.WAYPOINT_LOCAL_FAILURE
     assert asyncio.run(observe(cancelled)) is StepDisposition.CANCELLED
+
+
+def test_adapter_rejects_authority_that_cannot_use_stop_port(tmp_path: Path) -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.execute_calls = 0
+
+        async def execute(self, _action, **_kwargs) -> RouteOutput:
+            self.execute_calls += 1
+            raise AssertionError("effect reached Gateway with a STOP-incapable authority")
+
+        async def stop(self) -> HaltReceipt:
+            raise AssertionError("stop was not requested")
+
+    gateway = Gateway()
+    executor = build_navigation_capability_executor(
+        config=AppConfig(),
+        config_path=tmp_path / "config.toml",
+        gateway=gateway,
+    )
+
+    with pytest.raises(ValueError, match="STOP-capable authority context"):
+        NavigationAtomicStepAdapter(
+            executor=executor,
+            authority=AuthorityContext(
+                runtime_id="golden-path",
+                boot_id="boot-1",
+                authority_generation=1,
+                safety_epoch=0,
+            ),
+            mission=_mission(),
+            fencing_token=1,
+            events=_NoEvents(),
+        )
+
+    assert gateway.execute_calls == 0
+
+
+def test_stop_during_prepare_prevents_capability_execute() -> None:
+    class PausedPrepareExecutor(_RecordingExecutor):
+        def __init__(self) -> None:
+            super().__init__(
+                CapabilityExecutionReport(
+                    disposition="completed",
+                    summary="must not execute",
+                ),
+                stop_results=[
+                    ExecutorStopResult(
+                        request_accepted=True,
+                        cancel_requested=False,
+                        cancel_acknowledged=None,
+                        zero_velocity_command_published=True,
+                    )
+                ],
+            )
+            self.prepare_started = asyncio.Event()
+            self.release_prepare = asyncio.Event()
+            self.execute_calls = 0
+
+        async def prepare(
+            self,
+            step: TypedCapabilityStep,
+            context: ExecutionContext,
+        ) -> PreparedCapabilityStep:
+            self.prepare_started.set()
+            try:
+                await asyncio.shield(self.release_prepare.wait())
+            except asyncio.CancelledError:
+                await self.release_prepare.wait()
+            return await super().prepare(step, context)
+
+        async def execute(self, prepared, context, events, *, is_cancelled=None):
+            self.execute_calls += 1
+            return await super().execute(prepared, context, events)
+
+    async def run() -> None:
+        executor = PausedPrepareExecutor()
+        adapter = NavigationAtomicStepAdapter(
+            executor=executor,
+            authority=AuthorityContext(
+                runtime_id="golden-path",
+                boot_id="boot-1",
+                authority_generation=1,
+                safety_epoch=1,
+            ),
+            mission=_mission(),
+            fencing_token=1,
+            events=_NoEvents(),
+        )
+        engine = ExecutionEngine(compile_patrol_mission(_mission()), adapter)
+        run_task = asyncio.create_task(engine.run())
+        await executor.prepare_started.wait()
+
+        await engine.stop()
+        executor.release_prepare.set()
+        report = await run_task
+
+        assert report.outcome is TaskOutcome.CANCELLED
+        assert executor.execute_calls == 0
+
+    asyncio.run(run())
+
+
+def test_stop_during_gateway_preflight_prevents_effectful_dispatch(tmp_path: Path) -> None:
+    async def run() -> None:
+        locations = [
+            Location(id="a", name="A", pose=Pose2D(x=1.0, y=0.0, yaw=0.0)),
+            Location(id="b", name="B", pose=Pose2D(x=2.0, y=0.0, yaw=0.0)),
+            Location(id="c", name="C", pose=Pose2D(x=3.0, y=0.0, yaw=0.0)),
+            Location(id="dock", name="Dock", pose=Pose2D(x=0.0, y=0.0, yaw=0.0)),
+        ]
+        locations_path = tmp_path / "locations.toml"
+        save_locations(locations, locations_path)
+        config_path = tmp_path / "config.toml"
+        config = AppConfig(
+            locations_path="locations.toml",
+            route_adapter="nav2",
+            vehicle=VehicleProfile(robot_id="robot-1"),
+            site=SiteProfile(
+                site_id="site-1",
+                display_name="Site 1",
+                version="1",
+                active=True,
+                validated=True,
+                map_sha256="f" * 64,
+                locations_sha256=fingerprint_locations_file(locations_path),
+                locations_path="locations.toml",
+                validated_routes=["A", "B", "C", "Dock"],
+                default_patrol=["A", "B", "C"],
+                home_location="Dock",
+                dock_location="Dock",
+            ),
+        )
+        mission = bind_patrol_mission(
+            config,
+            config_path,
+            MissionDraft(),
+            mission_id="mission-1",
+        )
+
+        class PausedGateway:
+            def __init__(self) -> None:
+                self.preflight_started = asyncio.Event()
+                self.release_preflight = asyncio.Event()
+                self.effect_calls = 0
+
+            async def execute(self, action, *, is_cancelled, **_kwargs) -> RouteOutput:
+                self.preflight_started.set()
+                try:
+                    await asyncio.shield(self.release_preflight.wait())
+                except asyncio.CancelledError:
+                    await self.release_preflight.wait()
+                if is_cancelled():
+                    return RouteOutput(
+                        input_text="",
+                        outgoing_action=action,
+                        approval_status="approved",
+                        execution_status="cancelled",
+                        route_preview="Cancelled during preflight.",
+                    )
+                self.effect_calls += 1
+                raise AssertionError("effectful dispatch ran after STOP")
+
+            async def stop(self) -> HaltReceipt:
+                return HaltReceipt(
+                    navigation_cancel_status=NavigationCancelStatus.NOT_ACTIVE,
+                    zero_velocity_delivered=True,
+                    message="No active goal.",
+                )
+
+        gateway = PausedGateway()
+        adapter = NavigationAtomicStepAdapter(
+            executor=build_navigation_capability_executor(
+                config=config,
+                config_path=config_path,
+                gateway=gateway,
+            ),
+            authority=AuthorityContext(
+                runtime_id="golden-path",
+                boot_id="boot-1",
+                authority_generation=1,
+                safety_epoch=1,
+            ),
+            mission=mission,
+            fencing_token=1,
+            events=_NoEvents(),
+        )
+        engine = ExecutionEngine(compile_patrol_mission(mission), adapter)
+        run_task = asyncio.create_task(engine.run())
+        await gateway.preflight_started.wait()
+
+        await engine.stop()
+        gateway.release_preflight.set()
+        report = await run_task
+
+        assert report.outcome is TaskOutcome.CANCELLED
+        assert gateway.effect_calls == 0
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("terminal_status", ["aborted", "rejected", "timed_out"])
+def test_terminal_failures_default_to_navigation_system(terminal_status: str) -> None:
+    output = RouteOutput(
+        input_text="",
+        execution_status="failed",
+        route_preview="Nav2 terminal failure.",
+        navigation_attempts=[
+            NavigationAttemptEvidence(
+                attempt=1,
+                tag="goal-1",
+                execution_status="failed",
+                detail="Nav2 terminal failure.",
+                terminal_status=terminal_status,
+                terminal_observed=True,
+            )
+        ],
+    )
+
+    report = _capability_report(output)
+
+    assert report.disposition == ExecutionDisposition.FAILED
+    assert len(report.evidence) == 1
+    assert report.evidence[0].payload["scope"] == "navigation_system"
+
+
+def test_production_chain_retries_no_valid_path_once_then_continues(tmp_path: Path) -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def execute(self, action, **_kwargs) -> RouteOutput:
+            goal = action["goal"]
+            assert isinstance(goal, dict)
+            name = str(goal["name"])
+            self.calls.append(name)
+            if name == "A":
+                return RouteOutput(
+                    input_text="",
+                    execution_status="failed",
+                    route_preview="NO_VALID_PATH",
+                    failure_scope="waypoint_local",
+                )
+            return RouteOutput(
+                input_text="",
+                execution_status="succeeded",
+                route_preview=f"Arrived at {name}",
+                navigation_attempts=[
+                    NavigationAttemptEvidence(
+                        attempt=1,
+                        tag=f"goal-{name}",
+                        execution_status="succeeded",
+                        detail=f"Arrived at {name}",
+                        terminal_status="succeeded",
+                        terminal_observed=True,
+                        endpoint_pose_observed=True,
+                        position_error_m=0.04,
+                    )
+                ],
+            )
+
+        async def stop(self) -> HaltReceipt:
+            raise AssertionError("STOP was not requested")
+
+    gateway = Gateway()
+    report = asyncio.run(_production_engine(tmp_path, gateway).run())
+
+    assert report.outcome is TaskOutcome.PARTIAL
+    assert gateway.calls == ["A", "A", "B", "C", "Dock"]
+
+
+def test_production_chain_system_plan_failure_aborts_before_next_waypoint(
+    tmp_path: Path,
+) -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def execute(self, action, **_kwargs) -> RouteOutput:
+            goal = action["goal"]
+            assert isinstance(goal, dict)
+            self.calls.append(str(goal["name"]))
+            return RouteOutput(
+                input_text="",
+                execution_status="failed",
+                route_preview="TF_ERROR",
+                failure_scope="navigation_system",
+            )
+
+        async def stop(self) -> HaltReceipt:
+            raise AssertionError("STOP was not requested")
+
+    gateway = Gateway()
+    report = asyncio.run(_production_engine(tmp_path, gateway).run())
+
+    assert report.outcome is TaskOutcome.FAILED
+    assert gateway.calls == ["A"]

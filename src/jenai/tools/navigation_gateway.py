@@ -303,6 +303,7 @@ class NavigationGateway:
         run_id: str | None = None,
         endpoint_retry_limit: int | None = None,
         session_id: str | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> RouteOutput:
         audit_gate = partial(
             self._observe_gate_report,
@@ -319,6 +320,14 @@ class NavigationGateway:
             run_id=run_id,
             session_id=session_id,
         )
+        if is_cancelled is not None and is_cancelled():
+            return RouteOutput(
+                input_text="",
+                route_preview="Navigation dispatch cancelled after Site preflight.",
+                outgoing_action=outgoing_action,
+                approval_status="approved",
+                execution_status="cancelled",
+            )
         if site_block is not None:
             return site_block
         try:
@@ -347,6 +356,14 @@ class NavigationGateway:
             self._config, capability_id
         ):
             return _blocked_capability(outgoing_action, capability_id)
+        if is_cancelled is not None and is_cancelled():
+            return RouteOutput(
+                input_text="",
+                route_preview="Navigation dispatch cancelled after action binding.",
+                outgoing_action=outgoing_action,
+                approval_status="approved",
+                execution_status="cancelled",
+            )
 
         self._audit_site_assets(
             "pass", "Site assets verified.", run_id=run_id, session_id=session_id
@@ -373,6 +390,7 @@ class NavigationGateway:
             on_gate=on_gate,
             on_gate_report=audit_gate,
             endpoint_retry_limit=endpoint_retry_limit,
+            is_cancelled=is_cancelled,
         )
 
     async def stop(self) -> HaltReceipt:

@@ -907,3 +907,229 @@ def test_navigate_live_surfaces_localization_jump_reason(terminal_status: str) -
         assert "zero velocity sent" in output.route_preview
 
     asyncio.run(run())
+
+
+def test_navigate_live_cancellation_after_plan_prevents_nav_send() -> None:
+    class PausedPlanBridge:
+        def __init__(self) -> None:
+            self.plan_started = asyncio.Event()
+            self.release_plan = asyncio.Event()
+            self.nav_send_calls = 0
+
+        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+            self.plan_started.set()
+            await self.release_plan.wait()
+            return _feasible_plan()
+
+        async def nav_send(self, **_kwargs) -> None:
+            self.nav_send_calls += 1
+
+    async def run() -> None:
+        bridge = PausedPlanBridge()
+        cancelled = False
+        task = asyncio.create_task(
+            navigate_live(
+                bridge,
+                ACTION,
+                is_cancelled=lambda: cancelled,
+            )
+        )
+        await bridge.plan_started.wait()
+
+        cancelled = True
+        bridge.release_plan.set()
+        output = await task
+
+        assert output.execution_status == "cancelled"
+        assert bridge.nav_send_calls == 0
+
+    asyncio.run(run())
+
+
+def test_navigate_live_cancellation_at_dispatch_seam_prevents_nav_send() -> None:
+    cancelled = False
+
+    class DispatchBridge:
+        def __init__(self) -> None:
+            self.handlers: dict[str, list] = {}
+            self.nav_send_calls = 0
+
+        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+            return _feasible_plan()
+
+        def on_event(self, event: str, handler) -> None:
+            nonlocal cancelled
+            cancelled = True
+            self.handlers.setdefault(event, []).append(handler)
+
+        def off_event(self, event: str, handler) -> None:
+            self.handlers[event].remove(handler)
+
+        async def ping(self) -> bool:
+            return True
+
+        async def nav_send(self, **_kwargs) -> None:
+            self.nav_send_calls += 1
+
+    async def run() -> None:
+        bridge = DispatchBridge()
+        output = await navigate_live(bridge, ACTION, is_cancelled=lambda: cancelled)
+
+        assert output.execution_status == "cancelled"
+        assert bridge.nav_send_calls == 0
+        assert output.failure_scope is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("error_name", "expected_scope"),
+    [
+        ("NO_VALID_PATH", "waypoint_local"),
+        ("GOAL_OCCUPIED", "waypoint_local"),
+        ("GOAL_OUTSIDE_MAP", "waypoint_local"),
+        ("TF_ERROR", "navigation_system"),
+        ("INVALID_PLANNER", "navigation_system"),
+        ("TIMEOUT", "navigation_system"),
+        ("UNKNOWN", "navigation_system"),
+    ],
+)
+def test_navigate_live_classifies_plan_failure_conservatively(
+    error_name: str,
+    expected_scope: str,
+) -> None:
+    class PlanFailureBridge:
+        async def nav_plan(self, **_kwargs) -> NavPlanInfo:
+            return NavPlanInfo(
+                feasible=False,
+                pose_count=0,
+                path_length_m=0.0,
+                planning_time_s=0.0,
+                error_code=1,
+                error_name=error_name,
+                error_message="",
+            )
+
+        async def nav_send(self, **_kwargs) -> None:
+            raise AssertionError("nav_send ran after failed plan preflight")
+
+    async def run() -> None:
+        output = await navigate_live(PlanFailureBridge(), ACTION)
+
+        assert output.execution_status == "failed"
+        assert output.failure_scope == expected_scope
+
+    asyncio.run(run())
+
+
+def test_confirmed_endpoint_stall_without_gateway_retry_is_waypoint_local() -> None:
+    class EndpointStallBridge(_SuccessfulNavBridge):
+        def __init__(self) -> None:
+            super().__init__(feedback_x=2.04, post_stop_x=2.0)
+            self.sent = 0
+
+        async def nav_send(self, **kwargs) -> None:
+            self.sent += 1
+            event = {
+                "event": "nav_feedback",
+                "tag": kwargs["tag"],
+                "distance_remaining": 0.04,
+                "recoveries": 0,
+                "elapsed": 10.0,
+            }
+            for handler in self.handlers["nav_feedback"]:
+                handler(event)
+
+    async def run() -> None:
+        bridge = EndpointStallBridge()
+        vehicle = VehicleProfile(
+            arrival_position_tolerance_m=0.05,
+            arrival_yaw_tolerance_rad=0.15,
+            nav_endpoint_retry_limit=1,
+            nav_endpoint_stall_radius_m=0.10,
+            nav_endpoint_stall_timeout_s=0.01,
+            nav_endpoint_retry_timeout_s=0.05,
+        )
+
+        output = await navigate_live(
+            bridge,
+            ACTION,
+            timeout=0.10,
+            vehicle=vehicle,
+            endpoint_retry_limit=0,
+        )
+
+        assert output.execution_status == "failed"
+        assert output.failure_scope == "waypoint_local"
+        assert len(output.navigation_attempts) == 1
+        assert output.navigation_attempts[0].endpoint_retry_allowed is True
+        assert bridge.sent == 1
+
+    asyncio.run(run())
+
+
+def test_navigate_with_fallback_cancellation_after_twin_preflight_stops(monkeypatch) -> None:
+    from jenai.config.store import build_minimal_config
+    from jenai.tools.nav_live import navigate_with_fallback
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.twin.enabled = True
+    cancelled = False
+
+    async def fake_rehearse(*_args, **_kwargs):
+        nonlocal cancelled
+        cancelled = True
+        return GateReport(verdict="pass")
+
+    async def unused_bridge():
+        raise AssertionError("target bridge acquired after cancellation")
+
+    monkeypatch.setattr("jenai.twin.rehearse_goal", fake_rehearse)
+
+    output = asyncio.run(
+        navigate_with_fallback(
+            config,
+            unused_bridge,
+            ACTION,
+            is_cancelled=lambda: cancelled,
+        )
+    )
+
+    assert output.execution_status == "cancelled"
+
+
+def test_navigate_with_fallback_cancellation_after_bridge_acquisition_stops(
+    monkeypatch,
+) -> None:
+    import jenai.tools.nav_live as nav_live_module
+    from jenai.config.store import build_minimal_config
+
+    config = build_minimal_config(
+        provider_name="t", provider="openai", default_model="m", api_key_env=""
+    )
+    config.route_adapter = "nav2"
+    cancelled = False
+
+    async def get_bridge():
+        nonlocal cancelled
+        cancelled = True
+        return object()
+
+    async def must_not_navigate(*_args, **_kwargs):
+        raise AssertionError("Nav2 preflight ran after bridge-acquisition cancellation")
+
+    monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+    monkeypatch.setattr(nav_live_module, "navigate_live", must_not_navigate)
+
+    output = asyncio.run(
+        nav_live_module.navigate_with_fallback(
+            config,
+            get_bridge,
+            ACTION,
+            is_cancelled=lambda: cancelled,
+        )
+    )
+
+    assert output.execution_status == "cancelled"

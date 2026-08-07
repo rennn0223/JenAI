@@ -73,6 +73,8 @@ class CapabilityExecutor(Protocol):
         prepared: PreparedCapabilityStep,
         context: ExecutionContext,
         events: ExecutorEventSink,
+        *,
+        is_cancelled: CancellationCheck | None = None,
     ) -> CapabilityExecutionReport: ...
 
     async def stop(
@@ -86,8 +88,10 @@ SnapshotHandler = Callable[[SnapshotRequest, ObservationContext], Awaitable[Obse
 PreparationHandler = Callable[
     [TypedCapabilityStep, ExecutionContext], Awaitable[TypedCapabilityStep]
 ]
+CancellationCheck = Callable[[], bool]
 ExecutionHandler = Callable[
-    [PreparedCapabilityStep, ExecutorEventSink], Awaitable[CapabilityExecutionReport]
+    [PreparedCapabilityStep, ExecutorEventSink, CancellationCheck | None],
+    Awaitable[CapabilityExecutionReport],
 ]
 StopHandler = Callable[[StopContext, ExecutorEventSink], Awaitable[ExecutorStopResult]]
 
@@ -181,6 +185,8 @@ class InMemoryCapabilityExecutor:
         prepared: PreparedCapabilityStep,
         context: ExecutionContext,
         events: ExecutorEventSink,
+        *,
+        is_cancelled: CancellationCheck | None = None,
     ) -> CapabilityExecutionReport:
         detached_context = ExecutionContext.model_validate(context.model_dump(mode="json"))
         detached_prepared = PreparedCapabilityStep.model_validate(prepared.model_dump(mode="json"))
@@ -199,6 +205,7 @@ class InMemoryCapabilityExecutor:
         candidate = await registration.execute(
             detached_prepared,
             _DetachedEventSink(events),
+            is_cancelled,
         )
         return CapabilityExecutionReport.model_validate(candidate.model_dump(mode="json"))
 

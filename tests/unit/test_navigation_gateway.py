@@ -211,3 +211,45 @@ def test_gateway_blocks_an_unregistered_navigation_capability(monkeypatch) -> No
     assert output.execution_status == "blocked"
     assert "navigate" in output.route_preview
     assert "not registered" in output.route_preview
+
+
+def test_gateway_cancellation_after_site_preflight_prevents_dispatch(monkeypatch) -> None:
+    site_started = asyncio.Event()
+    release_site = asyncio.Event()
+    cancelled = False
+    dispatch_calls = 0
+
+    async def paused_site(_self, _action, *, run_id, session_id):
+        site_started.set()
+        await release_site.wait()
+        return None
+
+    async def must_not_dispatch(*_args, **_kwargs):
+        nonlocal dispatch_calls
+        dispatch_calls += 1
+        raise AssertionError("dispatch ran after cancellation")
+
+    async def get_bridge():
+        raise AssertionError("bridge acquisition ran after cancellation")
+
+    monkeypatch.setattr(gateway_module.NavigationGateway, "_verify_active_site", paused_site)
+    monkeypatch.setattr(gateway_module, "navigate_with_fallback", must_not_dispatch)
+    gateway = gateway_module.NavigationGateway(
+        AppConfig(),
+        config_path=Path("/tmp/config.toml"),
+        get_bridge=get_bridge,
+    )
+
+    async def run() -> None:
+        nonlocal cancelled
+        task = asyncio.create_task(gateway.execute(ACTION, is_cancelled=lambda: cancelled))
+        await site_started.wait()
+        cancelled = True
+        release_site.set()
+
+        output = await task
+
+        assert output.execution_status == "cancelled"
+        assert dispatch_calls == 0
+
+    asyncio.run(run())
