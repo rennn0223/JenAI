@@ -106,6 +106,11 @@ def test_navigate_live_success_with_progress(fake_bridge) -> None:
         assert "Arrived" in output.route_preview
         assert "position error 0.000 m" in output.route_preview
         assert progress and progress[0].distance_remaining == 3.2
+        attempt = output.navigation_attempts[-1]
+        assert attempt.terminal_status == "succeeded"
+        assert attempt.terminal_observed is True
+        assert attempt.endpoint_pose_observed is True
+        assert attempt.position_error_m == 0.0
         await client.stop()
 
     asyncio.run(run())
@@ -126,6 +131,11 @@ def test_navigate_live_rejects_nav2_success_outside_endpoint_tolerance() -> None
         assert "Post-stop zero-velocity command was published." in output.route_preview
         assert "cancellation" not in output.route_preview
         assert bridge.halted == 1
+        attempt = output.navigation_attempts[-1]
+        assert attempt.terminal_status == "succeeded"
+        assert attempt.terminal_observed is True
+        assert attempt.endpoint_pose_observed is True
+        assert attempt.position_error_m == pytest.approx(0.08)
 
     asyncio.run(run())
 
@@ -240,6 +250,7 @@ def test_navigate_live_refuses_unplannable_goal_without_sending_it(
         output = await navigate_live(client, ACTION)
 
         assert output.execution_status == "failed"
+        assert output.failure_scope == "waypoint_local"
         assert "NO_VALID_PATH" in output.route_preview
         assert "NOT sent" in output.route_preview
         await client.stop()

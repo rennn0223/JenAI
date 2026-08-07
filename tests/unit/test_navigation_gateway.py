@@ -10,6 +10,7 @@ from jenai.config.models import AppConfig
 from jenai.schemas import GateCriterion, GateReport, RouteOutput
 from jenai.state.audit import AuditStore
 from jenai.tools import navigation_gateway as gateway_module
+from jenai.tools.safety import HaltReceipt, NavigationCancelStatus
 
 ACTION = {"goal": {"frame_id": "map", "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0}}}
 
@@ -91,6 +92,36 @@ def test_external_gateway_reuses_bridge_without_taking_ownership(monkeypatch) ->
     asyncio.run(gateway.close())
 
     assert events == ["arm"]
+
+
+def test_gateway_stop_uses_provider_free_halt_on_the_active_bridge(monkeypatch) -> None:
+    bridge = SimpleNamespace(running=True)
+    config = AppConfig()
+    receipt = HaltReceipt(
+        navigation_cancel_status=NavigationCancelStatus.ACKNOWLEDGED,
+        zero_velocity_delivered=True,
+        message="Cancellation acknowledged.",
+    )
+    observed: list[object] = []
+
+    async def get_bridge():
+        return bridge
+
+    async def fake_arm(_config, seen_bridge) -> None:
+        assert seen_bridge is bridge
+
+    async def fake_halt(seen_config, seen_bridge) -> HaltReceipt:
+        observed.extend((seen_config, seen_bridge))
+        return receipt
+
+    monkeypatch.setattr(gateway_module, "arm_watchdog", fake_arm)
+    monkeypatch.setattr(gateway_module, "halt_robot_with_receipt", fake_halt)
+    gateway = gateway_module.NavigationGateway(config, get_bridge=get_bridge)
+
+    result = asyncio.run(gateway.stop())
+
+    assert result is receipt
+    assert observed == [config, bridge]
 
 
 def test_gateway_persists_structured_gate_verdict(monkeypatch, tmp_path) -> None:

@@ -8,7 +8,7 @@ import math
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from jenai.bridge import BridgeError, RosBridgeClient
@@ -129,9 +129,14 @@ class _NavigationAttemptResult:
     endpoint_retry_allowed: bool = False
     halt_delivered: bool | None = None
     nav_cancel_acknowledged: bool | None = None
+    terminal_status: str | None = None
+    terminal_observed: bool = False
+    endpoint_pose_observed: bool = False
+    position_error_m: float | None = None
 
 
 NavigationAction = dict[str, Any]
+NavigationFailureScope = Literal["waypoint_local", "navigation_system"]
 
 
 def _route_output(
@@ -140,6 +145,7 @@ def _route_output(
     detail: str,
     *,
     navigation_attempts: list[NavigationAttemptEvidence] | None = None,
+    failure_scope: NavigationFailureScope | None = None,
 ) -> RouteOutput:
     """Build the canonical approved navigation result."""
     return RouteOutput(
@@ -149,6 +155,7 @@ def _route_output(
         execution_status=execution_status,
         route_preview=detail,
         navigation_attempts=navigation_attempts or [],
+        failure_scope=failure_scope,
     )
 
 
@@ -156,7 +163,7 @@ async def _navigation_plan_failure(
     bridge: RosBridgeClient,
     goal: dict[str, Any],
     pose: dict[str, Any],
-) -> tuple[str, str] | None:
+) -> tuple[str, str, NavigationFailureScope] | None:
     """Return a fail-closed outcome when Nav2 cannot plan without motion."""
     try:
         plan = await bridge.nav_plan(
@@ -166,7 +173,11 @@ async def _navigation_plan_failure(
             frame_id=str(goal.get("frame_id", "map")),
         )
     except BridgeError as exc:
-        return "unavailable", f"Read-only Nav2 planning failed: {exc} — the goal was NOT sent."
+        return (
+            "unavailable",
+            f"Read-only Nav2 planning failed: {exc} — the goal was NOT sent.",
+            "navigation_system",
+        )
     if plan.feasible:
         return None
     reason = plan.error_name
@@ -175,6 +186,7 @@ async def _navigation_plan_failure(
     return (
         "failed",
         f"Nav2 preflight found no safe path ({reason}) — the goal was NOT sent.",
+        "waypoint_local",
     )
 
 
@@ -216,7 +228,7 @@ async def _verify_nav2_arrival(
     terminal: dict[str, Any],
     goal: dict[str, Any],
     vehicle: VehicleProfile | None,
-) -> tuple[str, str]:
+) -> tuple[str, str, float | None]:
     """Independently verify a Nav2 success against JenAI's endpoint contract.
 
     Nav2's ``SUCCEEDED`` status means its own goal checker accepted the pose;
@@ -241,6 +253,7 @@ async def _verify_nav2_arrival(
             "endpoint_mismatch",
             "Nav2 reported success, but JenAI could not obtain a post-stop pose "
             f"({exc}); success was not accepted. {_halt_detail(halt, cancellation_expected=False)}",
+            None,
         )
     observed = {
         "x": pose.x,
@@ -266,6 +279,7 @@ async def _verify_nav2_arrival(
             "failed",
             "Nav2 reported success, but its terminal pose was incomplete or non-finite; "
             f"success was not accepted. {_halt_detail(halt, cancellation_expected=False)}",
+            None,
         )
 
     if _normalized_frame(frame_id) != _normalized_frame(expected_frame):
@@ -275,6 +289,7 @@ async def _verify_nav2_arrival(
             "Nav2 reported success, but JenAI cannot compare terminal pose frame "
             f"'{frame_id}' with goal frame '{expected_frame}'; success was not accepted. "
             f"{_halt_detail(halt, cancellation_expected=False)}",
+            None,
         )
 
     goal_pose = goal.get("pose") or {}
@@ -294,6 +309,7 @@ async def _verify_nav2_arrival(
             f"position error {position_error:.3f} m (limit {position_tolerance:.3f} m), "
             f"yaw error {yaw_error:.3f} rad (limit {yaw_tolerance:.3f} rad). "
             f"{_halt_detail(halt, cancellation_expected=False)}",
+            position_error,
         )
 
     return (
@@ -301,6 +317,7 @@ async def _verify_nav2_arrival(
         "Arrived at the goal; endpoint verified from "
         f"{evidence_source} (position error {position_error:.3f} m, "
         f"yaw error {yaw_error:.3f} rad).",
+        position_error,
     )
 
 
@@ -386,12 +403,12 @@ async def _accepted_navigation_outcome(
     vehicle: VehicleProfile | None,
     *,
     direct: bool,
-) -> tuple[str, str]:
+) -> tuple[str, str, float | None]:
     """Translate the bridge result and independently verify Nav2 success."""
     execution, detail = _navigation_outcome(terminal)
     if execution == "succeeded" and not direct:
         return await _verify_nav2_arrival(bridge, terminal, goal, vehicle)
-    return execution, detail
+    return execution, detail, None
 
 
 async def _run_navigation_attempt(
@@ -432,10 +449,18 @@ async def _run_navigation_attempt(
             timeout=timeout,
         )
         terminal = await _wait_for_navigation_result(collector, timeout)
-        execution, detail = await _accepted_navigation_outcome(
+        execution, detail, position_error = await _accepted_navigation_outcome(
             bridge, terminal, goal, vehicle, direct=direct
         )
-        return _NavigationAttemptResult(execution=execution, detail=detail, tag=collector.tag)
+        return _NavigationAttemptResult(
+            execution=execution,
+            detail=detail,
+            tag=collector.tag,
+            terminal_status=str(terminal.get("status") or "unknown"),
+            terminal_observed=True,
+            endpoint_pose_observed=position_error is not None,
+            position_error_m=position_error,
+        )
     except _EndpointStalled:
         halt = await _halt_quietly(bridge, vehicle)
         retry_allowed = halt.delivered and halt.nav_cancel_acknowledged
@@ -490,6 +515,7 @@ async def navigate_live(
     timeout: float = 600.0,
     direct: bool = False,
     vehicle: VehicleProfile | None = None,
+    endpoint_retry_limit: int | None = None,
     avoidance: dict[str, Any] | None = None,
 ) -> RouteOutput:
     """Drive through the rclpy bridge with live feedback and cancellation.
@@ -508,10 +534,16 @@ async def navigate_live(
     if not direct:
         planning_failure = await _navigation_plan_failure(bridge, goal, pose)
         if planning_failure is not None:
-            execution, detail = planning_failure
-            return _route_output(outgoing_action, execution, detail)
+            execution, detail, failure_scope = planning_failure
+            return _route_output(outgoing_action, execution, detail, failure_scope=failure_scope)
 
-    retry_limit = vehicle.nav_endpoint_retry_limit if vehicle is not None and not direct else 0
+    retry_limit = (
+        endpoint_retry_limit
+        if endpoint_retry_limit is not None
+        else vehicle.nav_endpoint_retry_limit
+        if vehicle is not None and not direct
+        else 0
+    )
     attempt_timeout = timeout
     first_stall_detail: str | None = None
     navigation_attempts: list[NavigationAttemptEvidence] = []
@@ -535,6 +567,10 @@ async def navigate_live(
                 endpoint_retry_allowed=result.endpoint_retry_allowed,
                 halt_delivered=result.halt_delivered,
                 nav_cancel_acknowledged=result.nav_cancel_acknowledged,
+                terminal_status=result.terminal_status,
+                terminal_observed=result.terminal_observed,
+                endpoint_pose_observed=result.endpoint_pose_observed,
+                position_error_m=result.position_error_m,
             )
         )
         if result.execution == "succeeded":
@@ -631,6 +667,7 @@ async def navigate_with_fallback(
     on_progress: Callable[[NavProgress], None] | None = None,
     on_gate: Callable[[str], None] | None = None,
     on_gate_report: Callable[[GateReport], None] | None = None,
+    endpoint_retry_limit: int | None = None,
 ) -> RouteOutput:
     """Execute navigation through the supervised live bridge.
 
@@ -708,6 +745,7 @@ async def navigate_with_fallback(
                 direct=config.route_adapter == "odom",
                 vehicle=config.vehicle,
                 avoidance=config.avoidance.as_params(),
+                endpoint_retry_limit=endpoint_retry_limit,
             )
         except BridgeError as exc:
             return RouteOutput(
