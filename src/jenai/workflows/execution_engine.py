@@ -151,8 +151,11 @@ class AtomicStepAdapter(Protocol):
 
 
 class StepAttempt(EngineModel):
+    dispatch_id: str
     attempt: int = Field(ge=1)
     result: StepResult
+
+    _normalize_dispatch_id = field_validator("dispatch_id")(_required_text)
 
 
 class StepRecord(EngineModel):
@@ -288,6 +291,7 @@ class ExecutionEngine:
                         step=step,
                         step_index=step_index,
                         attempt=attempt,
+                        fence=dispatch,
                         attempts=attempts,
                     )
                 retry, terminal_report, stopped = await self._accept_attempt(
@@ -303,6 +307,7 @@ class ExecutionEngine:
                         step=step,
                         step_index=step_index,
                         attempt=attempt,
+                        fence=dispatch,
                         attempts=attempts,
                     )
                 if terminal_report is not None:
@@ -382,6 +387,7 @@ class ExecutionEngine:
         step: ExecutionStep,
         step_index: int,
         attempt: int,
+        fence: _DispatchFence,
         attempts: list[StepAttempt],
     ) -> ExecutionReport:
         stop_result = await asyncio.shield(self.stop())
@@ -401,7 +407,13 @@ class ExecutionEngine:
         async with self._lock:
             if late_result is not None:
                 self._record_late_result(step_index, attempt, late_result)
-            attempts.append(StepAttempt(attempt=attempt, result=cancelled))
+            attempts.append(
+                StepAttempt(
+                    dispatch_id=fence.context.dispatch_id,
+                    attempt=attempt,
+                    result=cancelled,
+                )
+            )
             if settlement_diagnostic is not None:
                 self._diagnostics.append(settlement_diagnostic)
             self._records.append(
@@ -496,7 +508,13 @@ class ExecutionEngine:
             self._active_execute_task = None
 
             result = self._apply_completion_truth(step, result)
-            attempts.append(StepAttempt(attempt=attempt, result=result))
+            attempts.append(
+                StepAttempt(
+                    dispatch_id=fence.context.dispatch_id,
+                    attempt=attempt,
+                    result=result,
+                )
+            )
             if self._should_retry(result, attempt):
                 return True, None, False
 

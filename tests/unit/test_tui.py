@@ -328,10 +328,54 @@ def _single_navigation_plan(target: str = "A"):
     )
 
 
+def _successful_navigation_report(plan):
+    from jenai.schemas import TaskOutcome
+    from jenai.workflows.execution_engine import (
+        ExecutionReport,
+        StepAttempt,
+        StepDisposition,
+        StepEvidence,
+        StepEvidenceKind,
+        StepRecord,
+        StepResult,
+    )
+
+    return ExecutionReport(
+        plan_digest=plan.plan_digest,
+        outcome=TaskOutcome.SUCCEEDED,
+        step_records=(
+            StepRecord(
+                step_index=0,
+                step=plan.steps[0],
+                attempts=(
+                    StepAttempt(
+                        dispatch_id="dispatch-test-a",
+                        attempt=1,
+                        result=StepResult(
+                            disposition=StepDisposition.SUCCEEDED,
+                            summary="arrived",
+                            evidence=(
+                                StepEvidence(
+                                    kind=StepEvidenceKind.NAVIGATION_TERMINAL,
+                                    evidence_id="terminal:goal-test-a",
+                                ),
+                                StepEvidence(
+                                    kind=StepEvidenceKind.ENDPOINT_POSE,
+                                    evidence_id="endpoint:goal-test-a",
+                                ),
+                            ),
+                            position_error_m=0.044,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 def test_tui_golden_path_shows_exact_plan_and_waits_for_yes(monkeypatch, tmp_path) -> None:
     from jenai.agent.navigate_intent import PreparedNavigation
     from jenai.schemas import TaskOutcome
-    from jenai.workflows.execution_engine import ExecutionReport
 
     async def run() -> None:
         app = _app(tmp_path)
@@ -349,11 +393,7 @@ def test_tui_golden_path_shows_exact_plan_and_waits_for_yes(monkeypatch, tmp_pat
 
         async def fake_execute(received):
             executed.append(received.plan_digest)
-            return ExecutionReport(
-                plan_digest=received.plan_digest,
-                outcome=TaskOutcome.SUCCEEDED,
-                step_records=(),
-            )
+            return _successful_navigation_report(received)
 
         monkeypatch.setattr(app, "_prepare_navigation_request", fake_prepare)
         monkeypatch.setattr(app, "_execute_navigation_plan", fake_execute)
@@ -378,14 +418,20 @@ def test_tui_golden_path_shows_exact_plan_and_waits_for_yes(monkeypatch, tmp_pat
 
             assert executed == [plan.plan_digest]
             assert app._current_run().outcome == TaskOutcome.SUCCEEDED
+            paths = app.run_store.receipt_store.list_paths()
+            receipt = app.run_store.receipt_store.load(paths[0])
+            assert receipt is not None
+            assert receipt.schema_version == 3
+            assert receipt.golden_path is not None
+            assert receipt.golden_path.plan_digest == plan.plan_digest
+            assert receipt.golden_path.step_results[0].attempts[0].dispatch_id
+            assert receipt.golden_path.final_endpoint_result.position_error_m == 0.044
 
     asyncio.run(run())
 
 
 def test_tui_golden_path_auto_reuses_only_the_same_exact_plan(monkeypatch, tmp_path) -> None:
     from jenai.agent.navigate_intent import PreparedNavigation
-    from jenai.schemas import TaskOutcome
-    from jenai.workflows.execution_engine import ExecutionReport
 
     async def run() -> None:
         app = _app(tmp_path)
@@ -403,11 +449,7 @@ def test_tui_golden_path_auto_reuses_only_the_same_exact_plan(monkeypatch, tmp_p
 
         async def fake_execute(received):
             executed.append(received.plan_digest)
-            return ExecutionReport(
-                plan_digest=received.plan_digest,
-                outcome=TaskOutcome.SUCCEEDED,
-                step_records=(),
-            )
+            return _successful_navigation_report(received)
 
         monkeypatch.setattr(app, "_prepare_navigation_request", fake_prepare)
         monkeypatch.setattr(app, "_execute_navigation_plan", fake_execute)

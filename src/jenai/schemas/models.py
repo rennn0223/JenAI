@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -261,6 +261,66 @@ class ApprovalRequest(JenAIModel):
     resolved_at: datetime | None = None
 
 
+class GoldenPathApprovedStep(JenAIModel):
+    step_index: int = Field(ge=0)
+    kind: Literal["navigate", "return_home"]
+    location_id: str
+    location_name: str
+    position_tolerance_m: float = Field(gt=0, allow_inf_nan=False)
+    require_yaw: bool
+
+
+class GoldenPathStepAttemptReceipt(JenAIModel):
+    dispatch_id: str
+    attempt: int = Field(ge=1)
+    disposition: Literal[
+        "succeeded",
+        "waypoint_local_failure",
+        "navigation_system_failure",
+        "endpoint_mismatch",
+        "cancelled",
+    ]
+    summary: str
+    evidence_references: tuple[str, ...] = ()
+    cancel_acknowledged: bool | None = None
+    position_error_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class GoldenPathStepResultReceipt(JenAIModel):
+    step_index: int = Field(ge=0)
+    kind: Literal["navigate", "return_home"]
+    location_id: str
+    location_name: str
+    skipped: bool = False
+    attempts: tuple[GoldenPathStepAttemptReceipt, ...]
+
+
+class GoldenPathEndpointResult(JenAIModel):
+    location_id: str
+    location_name: str
+    disposition: Literal[
+        "succeeded",
+        "waypoint_local_failure",
+        "navigation_system_failure",
+        "endpoint_mismatch",
+        "cancelled",
+    ]
+    position_error_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    position_tolerance_m: float = Field(gt=0, allow_inf_nan=False)
+    within_tolerance: bool
+    terminal_evidence_reference: str | None = None
+    endpoint_evidence_reference: str | None = None
+
+
+class GoldenPathReceipt(JenAIModel):
+    mission_id: str
+    mission_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approved_steps: tuple[GoldenPathApprovedStep, ...]
+    step_results: tuple[GoldenPathStepResultReceipt, ...]
+    final_endpoint_result: GoldenPathEndpointResult | None = None
+
+
 class RunRecord(JenAIModel):
     run_id: str = Field(default_factory=lambda: new_id("run"))
     session_id: str
@@ -271,6 +331,7 @@ class RunRecord(JenAIModel):
     plan_steps: list[PlanStep] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     interruptions: list[ApprovalRequest] = Field(default_factory=list)
+    golden_path: GoldenPathReceipt | None = None
     final_output: str | None = None
     error: JenAIError | None = None
     started_at: datetime = Field(default_factory=utc_now)
@@ -288,7 +349,7 @@ class TaskActionReceipt(JenAIModel):
 class TaskReceipt(JenAIModel):
     """Durable, deterministic outcome for one terminal ``RunRecord``."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     run_id: str
     session_id: str
     request: str
@@ -302,7 +363,23 @@ class TaskReceipt(JenAIModel):
     approval_approved: int = Field(ge=0)
     approval_rejected: int = Field(ge=0)
     actions: list[TaskActionReceipt] = Field(default_factory=list)
+    golden_path: GoldenPathReceipt | None = None
     result: str | None = None
+
+    @model_validator(mode="after")
+    def golden_path_action_has_structured_receipt(self) -> TaskReceipt:
+        is_successful_golden_path = any(
+            action.tool_name == "navigation_golden_path"
+            and action.status == ToolCallStatus.SUCCEEDED
+            for action in self.actions
+        )
+        if self.schema_version >= 3 and is_successful_golden_path and self.golden_path is None:
+            raise ValueError("Golden Path action requires structured receipt evidence")
+        if self.golden_path is not None and self.outcome == TaskOutcome.SUCCEEDED:
+            endpoint = self.golden_path.final_endpoint_result
+            if endpoint is None or not endpoint.within_tolerance:
+                raise ValueError("successful Golden Path receipt requires verified endpoint")
+        return self
 
 
 class SessionState(JenAIModel):

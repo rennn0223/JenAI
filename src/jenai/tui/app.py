@@ -54,6 +54,7 @@ from jenai.schemas import (
     ToolCallStatus,
 )
 from jenai.state import AuditStore, InputHistory, RunStore, TaskReceiptStore, create_session
+from jenai.state.task_receipts import build_golden_path_receipt
 from jenai.tools.navigation_atomic_step_adapter import (
     NavigationAtomicStepAdapter,
     build_navigation_capability_executor,
@@ -753,6 +754,10 @@ class JenAITuiApp(
             report = result.execution_report
             if report is None:
                 raise RuntimeError("approved navigation produced no ExecutionReport")
+            self.run_store.set_golden_path_receipt(
+                ctx.run,
+                build_golden_path_receipt(plan, report),
+            )
             outcome = report.outcome
             run_status = (
                 RunStatus.COMPLETED

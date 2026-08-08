@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from jenai.schemas import (
     ApprovalRequest,
@@ -12,6 +15,7 @@ from jenai.schemas import (
     RunRecord,
     RunStatus,
     TaskOutcome,
+    TaskReceipt,
     ToolCallCategory,
     ToolCallRecord,
     ToolCallStatus,
@@ -19,9 +23,24 @@ from jenai.schemas import (
 from jenai.state.runs import RunStore
 from jenai.state.task_receipts import (
     TaskReceiptStore,
+    build_golden_path_receipt,
     build_task_receipt,
     classify_failure,
     render_task_receipt,
+)
+from jenai.workflows.execution_engine import (
+    ExecutionEngine,
+    ScriptedAtomicStepAdapter,
+    StepDisposition,
+    StepEvidence,
+    StepEvidenceKind,
+    StepResult,
+)
+from jenai.workflows.patrol_mission import (
+    BoundLocation,
+    NavigateMissionPolicy,
+    NavigateMissionSpec,
+    compile_single_navigation,
 )
 
 
@@ -47,6 +66,107 @@ def _terminal_run(status: RunStatus = RunStatus.COMPLETED) -> RunRecord:
             )
         ],
     )
+
+
+def _navigation_plan():
+    return compile_single_navigation(
+        NavigateMissionSpec(
+            mission_id="mission-a",
+            site_id="site-1",
+            site_version="1",
+            site_profile_digest="1" * 64,
+            robot_id="robot-1",
+            vehicle_profile_digest="2" * 64,
+            locations_sha256="3" * 64,
+            target_location=BoundLocation(location_id="loc-a", location_name="A"),
+            policy=NavigateMissionPolicy(),
+        )
+    )
+
+
+def test_golden_path_receipt_binds_approved_plan_to_actual_dispatch_and_evidence() -> None:
+    plan = _navigation_plan()
+    report = asyncio.run(
+        ExecutionEngine(
+            plan,
+            ScriptedAtomicStepAdapter(
+                [
+                    StepResult(
+                        disposition=StepDisposition.SUCCEEDED,
+                        summary="arrived",
+                        evidence=(
+                            StepEvidence(
+                                kind=StepEvidenceKind.NAVIGATION_TERMINAL,
+                                evidence_id="terminal:goal-1",
+                            ),
+                            StepEvidence(
+                                kind=StepEvidenceKind.ENDPOINT_POSE,
+                                evidence_id="endpoint:goal-1",
+                            ),
+                        ),
+                        position_error_m=0.044,
+                    )
+                ]
+            ),
+        ).run()
+    )
+
+    golden_path = build_golden_path_receipt(plan, report)
+    run = _terminal_run()
+    run.user_input = "去 A 點"
+    run.outcome = TaskOutcome.SUCCEEDED
+    run.tool_calls[0].tool_name = "navigation_golden_path"
+    run.golden_path = golden_path
+    receipt = build_task_receipt(run)
+
+    assert receipt.schema_version == 3
+    assert receipt.golden_path is not None
+    assert receipt.golden_path.mission_id == "mission-a"
+    assert receipt.golden_path.mission_digest == plan.mission.mission_digest
+    assert receipt.golden_path.plan_digest == plan.plan_digest
+    assert receipt.golden_path.approved_steps[0].location_id == "loc-a"
+    attempt = receipt.golden_path.step_results[0].attempts[0]
+    assert attempt.dispatch_id
+    assert attempt.disposition == "succeeded"
+    assert attempt.evidence_references == (
+        "terminal:goal-1",
+        "endpoint:goal-1",
+    )
+    assert receipt.golden_path.final_endpoint_result is not None
+    assert receipt.golden_path.final_endpoint_result.position_error_m == 0.044
+    assert receipt.golden_path.final_endpoint_result.within_tolerance is True
+
+
+def test_task_receipt_v3_still_loads_historical_v2_without_golden_path() -> None:
+    legacy = build_task_receipt(_terminal_run()).model_dump(mode="json")
+    legacy["schema_version"] = 2
+    legacy.pop("golden_path", None)
+
+    loaded = TaskReceipt.model_validate(legacy)
+
+    assert loaded.schema_version == 2
+    assert loaded.golden_path is None
+
+
+def test_v3_golden_path_action_cannot_persist_without_structured_evidence() -> None:
+    run = _terminal_run()
+    run.outcome = TaskOutcome.SUCCEEDED
+    run.tool_calls[0].tool_name = "navigation_golden_path"
+
+    with pytest.raises(ValueError, match="structured receipt evidence"):
+        build_task_receipt(run)
+
+
+def test_rejected_golden_path_can_persist_blocked_receipt_without_execution_evidence() -> None:
+    run = _terminal_run(RunStatus.BLOCKED)
+    run.outcome = TaskOutcome.BLOCKED
+    run.tool_calls[0].tool_name = "navigation_golden_path"
+    run.tool_calls[0].status = ToolCallStatus.REJECTED
+
+    receipt = build_task_receipt(run)
+
+    assert receipt.outcome == TaskOutcome.BLOCKED
+    assert receipt.golden_path is None
 
 
 def test_completed_task_without_explicit_outcome_is_partial() -> None:
