@@ -137,6 +137,58 @@ def test_golden_path_receipt_binds_approved_plan_to_actual_dispatch_and_evidence
     assert receipt.golden_path.final_endpoint_result.within_tolerance is True
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("within_tolerance", True),
+        ("disposition", "navigation_system_failure"),
+        ("terminal_evidence_reference", None),
+        ("endpoint_evidence_reference", None),
+    ),
+)
+def test_successful_golden_path_receipt_rejects_tampered_endpoint_truth(
+    field: str,
+    value: object,
+) -> None:
+    plan = _navigation_plan()
+    report = asyncio.run(
+        ExecutionEngine(
+            plan,
+            ScriptedAtomicStepAdapter(
+                [
+                    StepResult(
+                        disposition=StepDisposition.SUCCEEDED,
+                        summary="arrived",
+                        evidence=(
+                            StepEvidence(
+                                kind=StepEvidenceKind.NAVIGATION_TERMINAL,
+                                evidence_id="terminal:goal-1",
+                            ),
+                            StepEvidence(
+                                kind=StepEvidenceKind.ENDPOINT_POSE,
+                                evidence_id="endpoint:goal-1",
+                            ),
+                        ),
+                        position_error_m=0.044,
+                    )
+                ]
+            ),
+        ).run()
+    )
+    run = _terminal_run()
+    run.outcome = TaskOutcome.SUCCEEDED
+    run.tool_calls[0].tool_name = "navigation_golden_path"
+    run.golden_path = build_golden_path_receipt(plan, report)
+    payload = build_task_receipt(run).model_dump(mode="json")
+    endpoint = payload["golden_path"]["final_endpoint_result"]
+    endpoint[field] = value
+    if field == "within_tolerance":
+        endpoint["position_error_m"] = endpoint["position_tolerance_m"] + 0.001
+
+    with pytest.raises(ValueError, match="verified endpoint"):
+        TaskReceipt.model_validate(payload)
+
+
 def test_task_receipt_v3_still_loads_historical_v2_without_golden_path() -> None:
     legacy = build_task_receipt(_terminal_run()).model_dump(mode="json")
     legacy["schema_version"] = 2

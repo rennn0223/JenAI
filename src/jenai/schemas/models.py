@@ -377,7 +377,15 @@ class TaskReceipt(JenAIModel):
             raise ValueError("Golden Path action requires structured receipt evidence")
         if self.golden_path is not None and self.outcome == TaskOutcome.SUCCEEDED:
             endpoint = self.golden_path.final_endpoint_result
-            if endpoint is None or not endpoint.within_tolerance:
+            if (
+                endpoint is None
+                or not endpoint.within_tolerance
+                or endpoint.position_error_m is None
+                or endpoint.position_error_m > endpoint.position_tolerance_m
+                or endpoint.disposition != "succeeded"
+                or endpoint.terminal_evidence_reference is None
+                or endpoint.endpoint_evidence_reference is None
+            ):
                 raise ValueError("successful Golden Path receipt requires verified endpoint")
         return self
 

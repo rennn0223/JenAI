@@ -224,6 +224,54 @@ def test_failed_or_cancelled_execution_does_not_leave_auto_enabled(
     assert scope.prepare(plan).requires_operator_input is True
 
 
+@pytest.mark.parametrize("advance_during_execution", (False, True))
+def test_cancelled_report_never_reinstalls_auto_after_stop(
+    advance_during_execution: bool,
+) -> None:
+    scope = NavigationApprovalScope(session_id="session-1")
+    plan = _plan()
+    pending = scope.prepare(plan)
+
+    async def execute(received):
+        if advance_during_execution:
+            scope.advance_generation("STOP")
+        return ExecutionReport(
+            plan_digest=received.plan_digest,
+            outcome=TaskOutcome.CANCELLED,
+            step_records=(),
+        )
+
+    result = asyncio.run(scope.resolve(pending, plan, ApprovalChoice.AUTO, execute))
+
+    assert result.outcome is TaskOutcome.CANCELLED
+    assert scope.prepare(plan).requires_operator_input is True
+
+
+def test_cancelled_automatic_execution_clears_existing_auto_authorization() -> None:
+    scope = NavigationApprovalScope(session_id="session-1")
+    plan = _plan()
+
+    async def succeed(received):
+        return _successful_report(received.plan_digest)
+
+    initial = scope.prepare(plan)
+    asyncio.run(scope.resolve(initial, plan, ApprovalChoice.AUTO, succeed))
+    automatic = scope.prepare(plan)
+    assert automatic.requires_operator_input is False
+
+    async def cancel(received):
+        return ExecutionReport(
+            plan_digest=received.plan_digest,
+            outcome=TaskOutcome.CANCELLED,
+            step_records=(),
+        )
+
+    result = asyncio.run(scope.resolve(automatic, plan, None, cancel))
+
+    assert result.outcome is TaskOutcome.CANCELLED
+    assert scope.prepare(plan).requires_operator_input is True
+
+
 def test_yes_runs_the_exact_one_step_plan_through_execution_engine() -> None:
     scope = NavigationApprovalScope(session_id="session-1")
     plan = _plan()

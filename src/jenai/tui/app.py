@@ -759,6 +759,20 @@ class JenAITuiApp(
                 build_golden_path_receipt(plan, report),
             )
             outcome = report.outcome
+            if outcome is TaskOutcome.CANCELLED:
+                self._navigation_approval_scope.advance_generation("execution cancelled")
+                self._navigation_safety_epoch += 1
+                stop = report.stop_result
+                if (
+                    stop is None
+                    or stop.timed_out
+                    or stop.cancel_acknowledged is False
+                    or any(
+                        diagnostic.kind == "active_execute_unsettled_after_stop"
+                        for diagnostic in report.diagnostics
+                    )
+                ):
+                    self._navigation_runtime_uncertain = True
             run_status = (
                 RunStatus.COMPLETED
                 if outcome is TaskOutcome.SUCCEEDED

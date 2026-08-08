@@ -135,13 +135,33 @@ class NavigationApprovalScope:
             raise NavigationApprovalMismatchError(
                 "execution report plan digest differs from the approved plan"
             )
-        if choice is ApprovalChoice.AUTO:
-            self._auto_plan_digest = detached_plan.plan_digest
+        self._update_auto_authorization(
+            choice=choice,
+            pending=detached_pending,
+            plan=detached_plan,
+            report=detached_report,
+        )
         return NavigationApprovalResult(
             outcome=detached_report.outcome,
             automatic=automatic,
             execution_report=detached_report,
         )
+
+    def _update_auto_authorization(
+        self,
+        *,
+        choice: ApprovalChoice | None,
+        pending: PendingNavigationApproval,
+        plan: ExecutionPlan,
+        report: ExecutionReport,
+    ) -> None:
+        if report.outcome is TaskOutcome.CANCELLED:
+            self._auto_plan_digest = None
+        elif (
+            choice is ApprovalChoice.AUTO
+            and pending.approval_generation == self._approval_generation
+        ):
+            self._auto_plan_digest = plan.plan_digest
 
     def _validate_pending(
         self,
