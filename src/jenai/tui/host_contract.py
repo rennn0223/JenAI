@@ -31,6 +31,12 @@ from jenai.schemas import (
 )
 from jenai.state import RunStore
 from jenai.tools.perception import PerceptionLoop
+from jenai.workflows.execution_engine import ExecutionReport
+from jenai.workflows.navigation_approval import (
+    ApprovalChoice,
+    NavigationApprovalScope,
+)
+from jenai.workflows.patrol_mission import ExecutionPlan
 
 if TYPE_CHECKING:
     from jenai.tui.direct_execution import PendingCommand
@@ -49,6 +55,8 @@ class TuiHostContract:
         _doctor_is_full: bool
         _pending_direct_approvals: dict[str, PendingCommand]
         _pending_approvals: dict[str, dict[str, Any]]
+        _pending_navigation_approvals: dict[str, dict[str, Any]]
+        _navigation_approval_scope: NavigationApprovalScope
         _auto_approved: set[str]
         _active_task: asyncio.Task[None] | None
         _active_task_is_stop: bool
@@ -72,6 +80,14 @@ class TuiHostContract:
         async def _get_bridge(self) -> RosBridgeClient: ...
 
         async def _execute_route_action(self, outgoing_action: dict[str, Any]) -> RouteOutput: ...
+
+        async def _execute_navigation_plan(self, plan: ExecutionPlan) -> ExecutionReport: ...
+
+        async def _run_navigation_approval_task(
+            self,
+            state: dict[str, Any],
+            choice: ApprovalChoice,
+        ) -> None: ...
 
         async def _execute_direct(self, pending: PendingCommand) -> None: ...
 

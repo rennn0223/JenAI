@@ -10,6 +10,7 @@ from jenai.config.models import AppConfig
 from jenai.schemas import GateCriterion, GateReport, RouteOutput
 from jenai.state.audit import AuditStore
 from jenai.tools import navigation_gateway as gateway_module
+from jenai.tools.safety import HaltReceipt, NavigationCancelStatus
 
 ACTION = {"goal": {"frame_id": "map", "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0}}}
 
@@ -91,6 +92,36 @@ def test_external_gateway_reuses_bridge_without_taking_ownership(monkeypatch) ->
     asyncio.run(gateway.close())
 
     assert events == ["arm"]
+
+
+def test_gateway_stop_uses_provider_free_halt_on_the_active_bridge(monkeypatch) -> None:
+    bridge = SimpleNamespace(running=True)
+    config = AppConfig()
+    receipt = HaltReceipt(
+        navigation_cancel_status=NavigationCancelStatus.ACKNOWLEDGED,
+        zero_velocity_delivered=True,
+        message="Cancellation acknowledged.",
+    )
+    observed: list[object] = []
+
+    async def get_bridge():
+        return bridge
+
+    async def fake_arm(_config, seen_bridge) -> None:
+        assert seen_bridge is bridge
+
+    async def fake_halt(seen_config, seen_bridge) -> HaltReceipt:
+        observed.extend((seen_config, seen_bridge))
+        return receipt
+
+    monkeypatch.setattr(gateway_module, "arm_watchdog", fake_arm)
+    monkeypatch.setattr(gateway_module, "halt_robot_with_receipt", fake_halt)
+    gateway = gateway_module.NavigationGateway(config, get_bridge=get_bridge)
+
+    result = asyncio.run(gateway.stop())
+
+    assert result is receipt
+    assert observed == [config, bridge]
 
 
 def test_gateway_persists_structured_gate_verdict(monkeypatch, tmp_path) -> None:
@@ -180,3 +211,45 @@ def test_gateway_blocks_an_unregistered_navigation_capability(monkeypatch) -> No
     assert output.execution_status == "blocked"
     assert "navigate" in output.route_preview
     assert "not registered" in output.route_preview
+
+
+def test_gateway_cancellation_after_site_preflight_prevents_dispatch(monkeypatch) -> None:
+    site_started = asyncio.Event()
+    release_site = asyncio.Event()
+    cancelled = False
+    dispatch_calls = 0
+
+    async def paused_site(_self, _action, *, run_id, session_id):
+        site_started.set()
+        await release_site.wait()
+        return None
+
+    async def must_not_dispatch(*_args, **_kwargs):
+        nonlocal dispatch_calls
+        dispatch_calls += 1
+        raise AssertionError("dispatch ran after cancellation")
+
+    async def get_bridge():
+        raise AssertionError("bridge acquisition ran after cancellation")
+
+    monkeypatch.setattr(gateway_module.NavigationGateway, "_verify_active_site", paused_site)
+    monkeypatch.setattr(gateway_module, "navigate_with_fallback", must_not_dispatch)
+    gateway = gateway_module.NavigationGateway(
+        AppConfig(),
+        config_path=Path("/tmp/config.toml"),
+        get_bridge=get_bridge,
+    )
+
+    async def run() -> None:
+        nonlocal cancelled
+        task = asyncio.create_task(gateway.execute(ACTION, is_cancelled=lambda: cancelled))
+        await site_started.wait()
+        cancelled = True
+        release_site.set()
+
+        output = await task
+
+        assert output.execution_status == "cancelled"
+        assert dispatch_calls == 0
+
+    asyncio.run(run())

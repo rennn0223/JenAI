@@ -75,6 +75,10 @@ class NavigationAttemptEvidence(JenAIModel):
     endpoint_retry_allowed: bool = False
     halt_delivered: bool | None = None
     nav_cancel_acknowledged: bool | None = None
+    terminal_status: str | None = None
+    terminal_observed: bool = False
+    endpoint_pose_observed: bool = False
+    position_error_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class RouteOutput(JenAIModel):
@@ -86,6 +90,7 @@ class RouteOutput(JenAIModel):
     outgoing_action: dict[str, Any] = Field(default_factory=dict)
     approval_status: str = "pending"
     execution_status: str = "not_executed"
+    failure_scope: Literal["waypoint_local", "navigation_system"] | None = None
     navigation_attempts: list[NavigationAttemptEvidence] = Field(default_factory=list)
 
 

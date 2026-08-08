@@ -1,6 +1,7 @@
 """Robot Runtime v0 internal contracts and in-memory adapters."""
 
 from jenai.runtime.executor import (
+    CancellationCheck,
     CapabilityExecutionRegistration,
     CapabilityExecutor,
     CapabilityPreparationError,
@@ -34,6 +35,7 @@ from jenai.runtime.models import (
 )
 
 __all__ = [
+    "CancellationCheck",
     "AuthorityContext",
     "CapabilityExecutionRegistration",
     "CapabilityExecutionReport",

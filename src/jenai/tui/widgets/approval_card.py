@@ -68,7 +68,14 @@ class ApprovalCard(Static):
     def __init__(self, approval: ApprovalRequest) -> None:
         super().__init__(classes="approval-card")
         self.approval = approval
-        self._options = _REMEMBER_OPTIONS if can_remember_approval(approval) else _ONCE_OPTIONS
+        if approval.tool_name == "navigation_golden_path":
+            self._options = [
+                ("Yes：本次允許", True, False),
+                ("Auto：本 session 自動允許相同 exact Plan", True, True),
+                ("No：不允許", False, False),
+            ]
+        else:
+            self._options = _REMEMBER_OPTIONS if can_remember_approval(approval) else _ONCE_OPTIONS
         self._selected = len(self._options) - 1 if should_default_to_reject(approval) else 0
 
     def on_mount(self) -> None:
