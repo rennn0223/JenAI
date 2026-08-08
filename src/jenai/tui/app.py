@@ -22,7 +22,7 @@ from jenai.agent import build_run_agent, orchestrator, review_plan, run_plan
 from jenai.agent.context import JenAIRunContext
 from jenai.agent.fast_paths import start_capability_card_run
 from jenai.agent.instructions import CHAT_INSTRUCTIONS
-from jenai.agent.intent_routing import RunAgentRoute, route_run_request
+from jenai.agent.navigate_intent import PreparedNavigation, prepare_navigation_golden_path
 from jenai.agent.session import JenAIFileSession
 from jenai.bridge import RosBridgeClient
 from jenai.capabilities import has_registered_capability
@@ -39,16 +39,26 @@ from jenai.providers import (
     resolve_model_alias,
     stream_provider,
 )
+from jenai.runtime import AuthorityContext, ExecutorEvent
 from jenai.schemas import (
     ApprovalRequest,
     ApprovalStatus,
     DoctorResult,
+    EffectScope,
+    RiskLevel,
     RunRecord,
     RunStatus,
+    TaskOutcome,
     ToolCallCategory,
     ToolCallRecord,
+    ToolCallStatus,
 )
 from jenai.state import AuditStore, InputHistory, RunStore, TaskReceiptStore, create_session
+from jenai.tools.navigation_atomic_step_adapter import (
+    NavigationAtomicStepAdapter,
+    build_navigation_capability_executor,
+)
+from jenai.tools.navigation_gateway import NavigationGateway
 from jenai.tools.shell_core import assess_command, preview_command
 from jenai.tools.user_skills import load_user_skills
 from jenai.tui.approval_flow import ApprovalFlowMixin
@@ -79,8 +89,21 @@ from jenai.tui.widgets import (
     PlanBlock,
     ToolBlock,
 )
+from jenai.workflows.execution_engine import ExecutionEngine, ExecutionReport
+from jenai.workflows.navigation_approval import (
+    ApprovalChoice,
+    NavigationApprovalScope,
+)
+from jenai.workflows.patrol_mission import ExecutionPlan
 
 SlashHandler = Callable[[str], Awaitable[None]]
+
+
+class _TuiNavigationEventSink:
+    """Keep the production executor seam typed; Gateway owns live progress."""
+
+    async def publish(self, _event: ExecutorEvent) -> None:
+        return
 
 
 def run_tui(
@@ -177,6 +200,15 @@ class JenAITuiApp(
         # tool_call_id -> {"kind", "ctx", ...} for approvals from deterministic,
         # non-agent commands (/ros pub, /route) that skip the LLM entirely.
         self._pending_direct_approvals: dict[str, dict[str, Any]] = {}
+        # request_id -> exact scope-issued Golden Path approval state.
+        self._pending_navigation_approvals: dict[str, dict[str, Any]] = {}
+        self._navigation_approval_scope = NavigationApprovalScope(
+            session_id=self.session.session_id
+        )
+        self._active_navigation_engine: ExecutionEngine | None = None
+        self._navigation_fencing_token = 0
+        self._navigation_safety_epoch = 1
+        self._navigation_runtime_uncertain = False
         self._command_queue: deque[str] = deque()
         # Claude Code-style working indicator + interruptible execution.
         self._active_task: asyncio.Task[None] | None = None
@@ -371,6 +403,7 @@ class JenAITuiApp(
         predecessor: asyncio.Task[None] | None,
     ) -> None:
         """Invalidate queued and approval-paused intent before stopping."""
+        await self._stop_active_navigation_engine()
         cleared = len(self._command_queue)
         self._command_queue.clear()
         rejected = await self._reject_pending_approvals_for_emergency_stop()
@@ -423,7 +456,11 @@ class JenAITuiApp(
         self._scroll_to_bottom()
 
     def _has_pending_approvals(self) -> bool:
-        return bool(self._pending_approvals or self._pending_direct_approvals)
+        return bool(
+            self._pending_approvals
+            or self._pending_direct_approvals
+            or self._pending_navigation_approvals
+        )
 
     def _start_next_queued(self) -> None:
         active = self._active_task is not None and not self._active_task.done()
@@ -604,15 +641,235 @@ class JenAITuiApp(
                 self.config, "inspect_state"
             ):
                 await self._show_state_inspection(value)
-            elif route_run_request(value) is RunAgentRoute.AREA_PATROL:
-                # A compound coverage mission may mention its final dock/home.
-                # Keep it intact instead of taking the one-location reflex.
-                await self._show_run(value)
-            elif not await self._try_explicit_route_reflex(value):
-                # approve / auto — the run agent answers questions too.
-                await self._show_run(value)
+            else:
+                await self._show_navigation_golden_path(value)
         except Exception as exc:
             await self._mount_event(TimelineItem("error", f"Failed: {escape(str(exc))}"))
+
+    async def _prepare_navigation_request(
+        self,
+        text: str,
+        *,
+        mission_id: str,
+    ) -> PreparedNavigation:
+        return await prepare_navigation_golden_path(
+            self.config,
+            self.config_path,
+            text,
+            mission_id=mission_id,
+        )
+
+    async def _show_navigation_golden_path(self, value: str) -> None:
+        """Prepare one registered-location Plan and stop at exact approval."""
+
+        ctx = self._new_run_context(value)
+        self.run_store.set_status(ctx.run, RunStatus.UNDERSTANDING)
+        prepared = await self._prepare_navigation_request(value, mission_id=ctx.run.run_id)
+        if prepared.plan is None:
+            message = prepared.clarification_question
+            if message is None:
+                message = "此指令不屬於已支援的 registered-location navigation。"
+            self.run_store.finish(
+                ctx.run,
+                status=RunStatus.BLOCKED,
+                outcome=TaskOutcome.BLOCKED,
+                final_output=message,
+            )
+            await self._mount_event(TimelineItem("warn", message))
+            return
+
+        plan = ExecutionPlan.model_validate(prepared.plan.model_dump(mode="json"))
+        pending = self._navigation_approval_scope.prepare(plan)
+        await self._mount_event(OutputPanel("計畫", pending.preview))
+
+        tool_call = ToolCallRecord(
+            tool_call_id=pending.request_id,
+            tool_name="navigation_golden_path",
+            category=ToolCallCategory.ROUTE,
+            input_summary=f"Navigate to {plan.steps[0].location_name}",
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            status=ToolCallStatus.AWAITING_APPROVAL,
+        )
+        approval = ApprovalRequest(
+            run_id=ctx.run.run_id,
+            tool_call_id=pending.request_id,
+            tool_name="navigation_golden_path",
+            title=f"前往 {plan.steps[0].location_name}",
+            summary="執行畫面中這份 exact Plan。",
+            raw_action=pending.preview,
+            risk_level=RiskLevel.P1,
+            effect_scope=EffectScope.SIM_CONTROL,
+            justification="操作員提出 registered-location navigation。",
+        )
+        state = {
+            "ctx": ctx,
+            "plan": plan,
+            "pending": pending,
+            "approval": approval,
+            "tool_call_id": pending.request_id,
+        }
+        self.run_store.register_pending_approval(ctx.run, tool_call, approval)
+        self._pending_navigation_approvals[pending.request_id] = state
+        if pending.requires_operator_input:
+            await self._mount_event(ApprovalCard(approval))
+            return
+
+        self._pending_navigation_approvals.pop(pending.request_id, None)
+        await self._mount_event(TimelineItem("warn", "AUTO：exact Plan 已在本 session 核准。"))
+        await self._run_navigation_approval(state, None)
+
+    async def _run_navigation_approval_task(
+        self,
+        state: dict[str, Any],
+        choice: ApprovalChoice,
+    ) -> None:
+        try:
+            await self._run_navigation_approval(state, choice)
+        finally:
+            if self._active_task is asyncio.current_task():
+                self._stop_spinner()
+                self._active_task = None
+                self._active_task_is_stop = False
+                self._start_next_queued()
+
+    async def _run_navigation_approval(
+        self,
+        state: dict[str, Any],
+        choice: ApprovalChoice | None,
+    ) -> None:
+        ctx: JenAIRunContext = state["ctx"]
+        plan: ExecutionPlan = state["plan"]
+        pending = state["pending"]
+        tool_call_id = str(state["tool_call_id"])
+        try:
+            self.run_store.start_approved_tool(ctx.run, tool_call_id)
+            result = await self._navigation_approval_scope.resolve(
+                pending,
+                plan,
+                choice,
+                self._execute_navigation_plan,
+            )
+            report = result.execution_report
+            if report is None:
+                raise RuntimeError("approved navigation produced no ExecutionReport")
+            outcome = report.outcome
+            run_status = (
+                RunStatus.COMPLETED
+                if outcome is TaskOutcome.SUCCEEDED
+                else RunStatus.INTERRUPTED
+                if outcome is TaskOutcome.CANCELLED
+                else RunStatus.BLOCKED
+                if outcome is TaskOutcome.BLOCKED
+                else RunStatus.FAILED
+            )
+            tool_status = (
+                ToolCallStatus.SUCCEEDED
+                if outcome is TaskOutcome.SUCCEEDED
+                else ToolCallStatus.FAILED
+            )
+            summary = self._navigation_report_summary(report)
+            self.run_store.finish_tool_and_run(
+                ctx.run,
+                tool_call_id,
+                tool_status=tool_status,
+                run_status=run_status,
+                outcome=outcome,
+                summary=summary,
+            )
+            variant = "success" if outcome is TaskOutcome.SUCCEEDED else "warn"
+            await self._mount_event(TimelineItem(variant, summary))
+        except asyncio.CancelledError:
+            self._navigation_runtime_uncertain = True
+            self._navigation_approval_scope.advance_generation("execution cancelled")
+            self.run_store.finish_tool_and_run(
+                ctx.run,
+                tool_call_id,
+                tool_status=ToolCallStatus.FAILED,
+                run_status=RunStatus.INTERRUPTED,
+                outcome=TaskOutcome.CANCELLED,
+                summary="導航執行被中止；需重新確認 robot/Nav2 狀態。",
+            )
+            raise
+        except Exception as exc:
+            self._navigation_runtime_uncertain = True
+            self._navigation_approval_scope.advance_generation("runtime state unknown")
+            self.run_store.finish_tool_and_run(
+                ctx.run,
+                tool_call_id,
+                tool_status=ToolCallStatus.FAILED,
+                run_status=RunStatus.FAILED,
+                outcome=TaskOutcome.FAILED,
+                summary=f"導航失敗：{type(exc).__name__}",
+            )
+            await self._mount_event(
+                TimelineItem("error", "導航狀態不確定；重新確認前不得執行新的移動任務。")
+            )
+
+    async def _execute_navigation_plan(self, plan: ExecutionPlan) -> ExecutionReport:
+        if self._navigation_runtime_uncertain:
+            raise RuntimeError("robot/Nav2 state requires reconfirmation")
+        self._navigation_fencing_token += 1
+        gateway = NavigationGateway(
+            self.config,
+            get_bridge=self._get_bridge,
+            config_path=self.config_path,
+            audit_store=self.run_store.audit_store,
+        )
+        executor = build_navigation_capability_executor(
+            config=self.config,
+            config_path=self.config_path,
+            gateway=gateway,
+        )
+        adapter = NavigationAtomicStepAdapter(
+            executor=executor,
+            authority=AuthorityContext(
+                runtime_id="tui-golden-path",
+                boot_id=self.session.session_id,
+                authority_generation=1,
+                safety_epoch=self._navigation_safety_epoch,
+            ),
+            mission=plan.mission,
+            fencing_token=self._navigation_fencing_token,
+            events=_TuiNavigationEventSink(),
+        )
+        engine = ExecutionEngine(plan, adapter)
+        self._active_navigation_engine = engine
+        try:
+            report = await engine.run()
+            if any(
+                diagnostic.kind == "active_execute_unsettled_after_stop"
+                for diagnostic in report.diagnostics
+            ):
+                self._navigation_runtime_uncertain = True
+            return report
+        finally:
+            if self._active_navigation_engine is engine:
+                self._active_navigation_engine = None
+
+    async def _stop_active_navigation_engine(self) -> None:
+        self._navigation_approval_scope.advance_generation("STOP")
+        self._navigation_safety_epoch += 1
+        engine = self._active_navigation_engine
+        if engine is None:
+            return
+        result = await engine.stop()
+        if result.timed_out or result.cancel_acknowledged is False:
+            self._navigation_runtime_uncertain = True
+
+    @staticmethod
+    def _navigation_report_summary(report: ExecutionReport) -> str:
+        error = next(
+            (
+                attempt.result.position_error_m
+                for record in reversed(report.step_records)
+                for attempt in reversed(record.attempts)
+                if attempt.result.position_error_m is not None
+            ),
+            None,
+        )
+        suffix = "" if error is None else f"，終點誤差 {error:.3f} m"
+        return f"導航結果：{report.outcome.value}{suffix}。"
 
     async def _stream_chat_reply(self, prompt: str) -> None:
         """Stream a tool-free chat reply into one timeline item."""
@@ -789,6 +1046,8 @@ class JenAITuiApp(
         return handler, resolved.argument
 
     async def on_unmount(self) -> None:
+        if self._active_navigation_engine is not None:
+            await self._active_navigation_engine.stop()
         if self._perception is not None:
             await self._perception.stop()
         if self._bridge is not None:
