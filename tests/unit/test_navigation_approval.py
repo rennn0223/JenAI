@@ -18,6 +18,7 @@ from jenai.workflows.navigation_approval import (
     ApprovalChoice,
     NavigationApprovalMismatchError,
     NavigationApprovalScope,
+    PendingNavigationApproval,
 )
 from jenai.workflows.patrol_mission import (
     BoundLocation,
@@ -129,9 +130,98 @@ def test_changed_plan_or_generation_cannot_use_stale_yes() -> None:
     with pytest.raises(NavigationApprovalMismatchError, match="plan"):
         asyncio.run(scope.resolve(pending, _plan("B"), ApprovalChoice.YES, execute))
 
+    stale_pending = scope.prepare(plan_a)
     scope.advance_generation("runtime state unknown")
     with pytest.raises(NavigationApprovalMismatchError, match="generation"):
-        asyncio.run(scope.resolve(pending, plan_a, ApprovalChoice.YES, execute))
+        asyncio.run(scope.resolve(stale_pending, plan_a, ApprovalChoice.YES, execute))
+
+
+def test_unissued_pending_request_cannot_forge_automatic_execution() -> None:
+    scope = NavigationApprovalScope(session_id="session-1")
+    plan = _plan()
+    issued = scope.prepare(plan)
+    forged = PendingNavigationApproval(
+        request_id="forged-request",
+        session_id=issued.session_id,
+        approval_generation=issued.approval_generation,
+        mission_id=issued.mission_id,
+        plan_digest=issued.plan_digest,
+        preview=issued.preview,
+        requires_operator_input=False,
+    )
+    calls = 0
+
+    async def execute(received):
+        nonlocal calls
+        calls += 1
+        return _successful_report(received.plan_digest)
+
+    with pytest.raises(NavigationApprovalMismatchError, match="not issued"):
+        asyncio.run(scope.resolve(forged, plan, None, execute))
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("preview", "偽造的計畫畫面"),
+        ("requires_operator_input", False),
+    ),
+)
+def test_scope_rejects_modified_issued_pending_content(field: str, value: object) -> None:
+    scope = NavigationApprovalScope(session_id="session-1")
+    plan = _plan()
+    pending = scope.prepare(plan)
+    modified = pending.model_copy(update={field: value})
+    calls = 0
+
+    async def execute(received):
+        nonlocal calls
+        calls += 1
+        return _successful_report(received.plan_digest)
+
+    with pytest.raises(NavigationApprovalMismatchError, match="content was modified"):
+        asyncio.run(scope.resolve(modified, plan, None, execute))
+    assert calls == 0
+
+
+def test_auto_is_remembered_only_after_valid_execution_report() -> None:
+    async def scenario() -> None:
+        scope = NavigationApprovalScope(session_id="session-1")
+        plan = _plan()
+        pending = scope.prepare(plan)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def execute(received):
+            started.set()
+            await release.wait()
+            return _successful_report(received.plan_digest)
+
+        resolution = asyncio.create_task(scope.resolve(pending, plan, ApprovalChoice.AUTO, execute))
+        await started.wait()
+        assert scope.prepare(plan).requires_operator_input is True
+        release.set()
+        await resolution
+        assert scope.prepare(plan).requires_operator_input is False
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", (RuntimeError("failed"), asyncio.CancelledError()))
+def test_failed_or_cancelled_execution_does_not_leave_auto_enabled(
+    failure: BaseException,
+) -> None:
+    scope = NavigationApprovalScope(session_id="session-1")
+    plan = _plan()
+    pending = scope.prepare(plan)
+
+    async def execute(_received):
+        raise failure
+
+    with pytest.raises(type(failure)):
+        asyncio.run(scope.resolve(pending, plan, ApprovalChoice.AUTO, execute))
+    assert scope.prepare(plan).requires_operator_input is True
 
 
 def test_yes_runs_the_exact_one_step_plan_through_execution_engine() -> None:

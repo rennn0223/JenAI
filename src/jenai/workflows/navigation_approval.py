@@ -68,6 +68,7 @@ class NavigationApprovalScope:
         self._approval_generation = 1
         self._auto_plan_digest: str | None = None
         self._consumed_request_ids: set[str] = set()
+        self._issued_requests: dict[str, PendingNavigationApproval] = {}
 
     @property
     def approval_generation(self) -> int:
@@ -75,7 +76,7 @@ class NavigationApprovalScope:
 
     def prepare(self, plan: ExecutionPlan) -> PendingNavigationApproval:
         detached = ExecutionPlan.model_validate(plan.model_dump(mode="json"))
-        return PendingNavigationApproval(
+        pending = PendingNavigationApproval(
             request_id=uuid4().hex,
             session_id=self._session_id,
             approval_generation=self._approval_generation,
@@ -84,6 +85,8 @@ class NavigationApprovalScope:
             preview=render_plan_preview(detached),
             requires_operator_input=self._auto_plan_digest != detached.plan_digest,
         )
+        self._issued_requests[pending.request_id] = pending
+        return pending
 
     def advance_generation(self, reason: str) -> int:
         """Invalidate every outstanding Yes/Auto authority after a safety boundary."""
@@ -102,9 +105,17 @@ class NavigationApprovalScope:
     ) -> NavigationApprovalResult:
         detached_pending = PendingNavigationApproval.model_validate(pending.model_dump(mode="json"))
         detached_plan = ExecutionPlan.model_validate(plan.model_dump(mode="json"))
+        issued = self._issued_requests.pop(detached_pending.request_id, None)
+        if issued is None:
+            if detached_pending.request_id in self._consumed_request_ids:
+                raise NavigationApprovalMismatchError("approval request was already consumed")
+            raise NavigationApprovalMismatchError("approval request was not issued by this scope")
+        self._consumed_request_ids.add(detached_pending.request_id)
+        if issued != detached_pending:
+            raise NavigationApprovalMismatchError("approval request content was modified")
         self._validate_pending(detached_pending, detached_plan)
 
-        automatic = not detached_pending.requires_operator_input
+        automatic = self._auto_plan_digest == detached_plan.plan_digest
         if automatic:
             if choice is not None:
                 raise NavigationApprovalMismatchError(
@@ -113,21 +124,19 @@ class NavigationApprovalScope:
         elif choice is None:
             raise NavigationApprovalMismatchError("operator approval is required")
 
-        self._consumed_request_ids.add(detached_pending.request_id)
         if choice is ApprovalChoice.NO:
             return NavigationApprovalResult(
                 outcome=TaskOutcome.BLOCKED,
                 automatic=False,
             )
-        if choice is ApprovalChoice.AUTO:
-            self._auto_plan_digest = detached_plan.plan_digest
-
         report = await execute(detached_plan)
         detached_report = ExecutionReport.model_validate(report.model_dump(mode="json"))
         if detached_report.plan_digest != detached_plan.plan_digest:
             raise NavigationApprovalMismatchError(
                 "execution report plan digest differs from the approved plan"
             )
+        if choice is ApprovalChoice.AUTO:
+            self._auto_plan_digest = detached_plan.plan_digest
         return NavigationApprovalResult(
             outcome=detached_report.outcome,
             automatic=automatic,
@@ -139,11 +148,11 @@ class NavigationApprovalScope:
         pending: PendingNavigationApproval,
         plan: ExecutionPlan,
     ) -> None:
-        if pending.request_id in self._consumed_request_ids:
-            raise NavigationApprovalMismatchError("approval request was already consumed")
         if pending.session_id != self._session_id:
             raise NavigationApprovalMismatchError("approval belongs to a different session")
         if pending.approval_generation != self._approval_generation:
             raise NavigationApprovalMismatchError("approval generation is stale")
         if pending.mission_id != plan.mission.mission_id or pending.plan_digest != plan.plan_digest:
             raise NavigationApprovalMismatchError("approval plan binding does not match")
+        if pending.preview != render_plan_preview(plan):
+            raise NavigationApprovalMismatchError("approval preview does not match the exact plan")
