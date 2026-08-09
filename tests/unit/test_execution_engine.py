@@ -23,9 +23,12 @@ from jenai.workflows.patrol_mission import (
     BoundLocation,
     ExecutionPlan,
     ExecutionStep,
+    NavigateMissionPolicy,
+    NavigateMissionSpec,
     PatrolMissionPolicy,
     PatrolMissionSpec,
     compile_patrol_mission,
+    compile_single_navigation,
 )
 
 
@@ -47,6 +50,22 @@ def _plan(*, retry_count: int = 1) -> ExecutionPlan:
         policy=PatrolMissionPolicy(retry_count=retry_count),
     )
     return compile_patrol_mission(mission)
+
+
+def _navigate_plan() -> ExecutionPlan:
+    return compile_single_navigation(
+        NavigateMissionSpec(
+            mission_id="navigate-1",
+            site_id="warehouse",
+            site_version="7",
+            site_profile_digest="a" * 64,
+            robot_id="robot-1",
+            vehicle_profile_digest="b" * 64,
+            locations_sha256="c" * 64,
+            target_location=BoundLocation(location_id="loc-a", location_name="A"),
+            policy=NavigateMissionPolicy(),
+        )
+    )
 
 
 def _result(disposition: StepDisposition, summary: str) -> StepResult:
@@ -228,6 +247,18 @@ def test_exhausted_waypoint_local_failure_is_skipped_and_mission_is_partial() ->
     ]
     assert report.step_records[1].skipped is True
     assert [attempt.attempt for attempt in report.step_records[1].attempts] == [1, 2]
+
+
+def test_single_navigation_local_failure_is_failed_not_partial() -> None:
+    adapter = ScriptedAtomicStepAdapter(
+        [_result(StepDisposition.WAYPOINT_LOCAL_FAILURE, "A blocked")]
+    )
+
+    report = asyncio.run(ExecutionEngine(_navigate_plan(), adapter).run())
+
+    assert report.outcome is TaskOutcome.FAILED
+    assert len(report.step_records) == 1
+    assert report.step_records[0].skipped is False
 
 
 def test_navigation_system_failure_aborts_without_dispatching_later_steps() -> None:

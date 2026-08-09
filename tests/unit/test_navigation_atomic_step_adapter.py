@@ -868,6 +868,36 @@ def test_terminal_failures_default_to_navigation_system(terminal_status: str) ->
     assert report.evidence[0].payload["scope"] == "navigation_system"
 
 
+def test_cancelled_terminal_within_tolerance_is_not_success(tmp_path: Path) -> None:
+    class Gateway:
+        async def execute(self, _action, **_kwargs) -> RouteOutput:
+            return RouteOutput(
+                input_text="",
+                execution_status="cancelled",
+                route_preview="Nav2 goal was cancelled near A.",
+                navigation_attempts=[
+                    NavigationAttemptEvidence(
+                        attempt=1,
+                        tag="goal-A",
+                        execution_status="cancelled",
+                        detail="Nav2 goal was cancelled near A.",
+                        terminal_status="canceled",
+                        terminal_observed=True,
+                        endpoint_pose_observed=True,
+                        position_error_m=0.04,
+                    )
+                ],
+            )
+
+        async def stop(self) -> HaltReceipt:
+            raise AssertionError("STOP was not requested")
+
+    report = asyncio.run(_production_engine(tmp_path, Gateway(), single_target=True).run())
+
+    assert report.outcome is TaskOutcome.CANCELLED
+    assert report.step_records[0].attempts[0].result.disposition is StepDisposition.CANCELLED
+
+
 def test_single_navigation_production_chain_dispatches_exactly_one_goal(
     tmp_path: Path,
 ) -> None:

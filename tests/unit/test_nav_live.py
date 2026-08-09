@@ -1022,15 +1022,16 @@ def test_navigate_live_classifies_plan_failure_conservatively(
     asyncio.run(run())
 
 
-def test_confirmed_endpoint_stall_without_gateway_retry_is_waypoint_local() -> None:
+def test_zero_effective_endpoint_retry_disables_gateway_stall_ownership() -> None:
     class EndpointStallBridge(_SuccessfulNavBridge):
         def __init__(self) -> None:
             super().__init__(feedback_x=2.04, post_stop_x=2.0)
             self.sent = 0
+            self.result_tasks: list[asyncio.Task[None]] = []
 
         async def nav_send(self, **kwargs) -> None:
             self.sent += 1
-            event = {
+            feedback = {
                 "event": "nav_feedback",
                 "tag": kwargs["tag"],
                 "distance_remaining": 0.04,
@@ -1038,7 +1039,26 @@ def test_confirmed_endpoint_stall_without_gateway_retry_is_waypoint_local() -> N
                 "elapsed": 10.0,
             }
             for handler in self.handlers["nav_feedback"]:
-                handler(event)
+                handler(feedback)
+
+            async def publish_later_success() -> None:
+                await asyncio.sleep(0.30)
+                result = {
+                    "event": "nav_result",
+                    "tag": kwargs["tag"],
+                    "status": "succeeded",
+                    "final_pose": {
+                        "x": 2.0,
+                        "y": 1.5,
+                        "yaw": 0.0,
+                        "frame_id": "map",
+                        "source": "nav2_feedback",
+                    },
+                }
+                for handler in self.handlers["nav_result"]:
+                    handler(result)
+
+            self.result_tasks.append(asyncio.create_task(publish_later_success()))
 
     async def run() -> None:
         bridge = EndpointStallBridge()
@@ -1054,16 +1074,20 @@ def test_confirmed_endpoint_stall_without_gateway_retry_is_waypoint_local() -> N
         output = await navigate_live(
             bridge,
             ACTION,
-            timeout=0.10,
+            timeout=0.50,
             vehicle=vehicle,
             endpoint_retry_limit=0,
         )
 
-        assert output.execution_status == "failed"
-        assert output.failure_scope == "waypoint_local"
+        await asyncio.gather(*bridge.result_tasks)
+
+        assert output.execution_status == "succeeded"
+        assert output.failure_scope is None
         assert len(output.navigation_attempts) == 1
-        assert output.navigation_attempts[0].endpoint_retry_allowed is True
+        assert output.navigation_attempts[0].terminal_status == "succeeded"
+        assert output.navigation_attempts[0].endpoint_retry_allowed is False
         assert bridge.sent == 1
+        assert bridge.halted == 0
 
     asyncio.run(run())
 

@@ -430,6 +430,7 @@ async def _run_navigation_attempt(
     on_progress: Callable[[NavProgress], None] | None,
     timeout: float,
     direct: bool,
+    endpoint_stall_enabled: bool,
     vehicle: VehicleProfile | None,
     avoidance: dict[str, Any] | None,
     is_cancelled: Callable[[], bool] | None,
@@ -437,7 +438,7 @@ async def _run_navigation_attempt(
     """Dispatch one goal, own its handlers, and classify its terminal state."""
     endpoint_stall_radius_m: float | None = None
     endpoint_stall_timeout_s = 0.0
-    if vehicle is not None and not direct and vehicle.nav_endpoint_retry_limit > 0:
+    if endpoint_stall_enabled and vehicle is not None and not direct:
         endpoint_stall_radius_m = vehicle.nav_endpoint_stall_radius_m
         endpoint_stall_timeout_s = vehicle.nav_endpoint_stall_timeout_s
     collector = _NavigationEventCollector(
@@ -582,6 +583,7 @@ async def navigate_live(
             on_progress=on_progress,
             timeout=attempt_timeout,
             direct=direct,
+            endpoint_stall_enabled=retry_limit > 0,
             vehicle=vehicle,
             avoidance=avoidance,
             is_cancelled=is_cancelled,

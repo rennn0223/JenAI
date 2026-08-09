@@ -14,7 +14,12 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from jenai.schemas.models import TaskOutcome
-from jenai.workflows.patrol_mission import ExecutionPlan, ExecutionStep, ReturnHomeStep
+from jenai.workflows.patrol_mission import (
+    ExecutionPlan,
+    ExecutionStep,
+    PatrolMissionSpec,
+    ReturnHomeStep,
+)
 
 
 class EngineModel(BaseModel):
@@ -520,6 +525,7 @@ class ExecutionEngine:
 
             skipped = (
                 result.disposition is StepDisposition.WAYPOINT_LOCAL_FAILURE
+                and isinstance(self._plan.mission, PatrolMissionSpec)
                 and not isinstance(step, ReturnHomeStep)
             )
             self._records.append(
