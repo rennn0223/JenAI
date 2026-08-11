@@ -241,7 +241,10 @@ def _capability_report(output: RouteOutput) -> CapabilityExecutionReport:
         )
         return CapabilityExecutionReport(
             disposition=ExecutionDisposition.COMPLETED,
-            summary=output.route_preview,
+            summary=(
+                "Nav2 terminal success and fresh endpoint evidence were captured; "
+                "completion was evaluated against the approved ExecutionPlan."
+            ),
             evidence=evidence,
         )
     terminal_status = attempt.terminal_status if attempt is not None else None

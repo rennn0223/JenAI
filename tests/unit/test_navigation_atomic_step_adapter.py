@@ -325,8 +325,12 @@ def test_production_registration_resolves_bound_location_and_calls_navigation_ga
                     input_text="",
                     outgoing_action=action,
                     approval_status="approved",
-                    execution_status="succeeded",
-                    route_preview="Arrived at A",
+                    execution_status="endpoint_mismatch",
+                    route_preview=(
+                        "Nav2 reported success, but JenAI rejected the endpoint: "
+                        "position error 0.129 m (limit 0.050 m), "
+                        "yaw error 2.157 rad (limit 0.150 rad)."
+                    ),
                     navigation_attempts=[
                         NavigationAttemptEvidence(
                             attempt=1,
@@ -367,6 +371,12 @@ def test_production_registration_resolves_bound_location_and_calls_navigation_ga
 
         assert result.disposition is StepDisposition.SUCCEEDED
         assert result.position_error_m == 0.04
+        assert result.summary == (
+            "Nav2 terminal success and fresh endpoint evidence were captured; "
+            "completion was evaluated against the approved ExecutionPlan."
+        )
+        assert "rejected the endpoint" not in result.summary
+        assert "limit 0.050 m" not in result.summary
         assert gateway.actions == [
             {
                 "capability_id": "navigate",
