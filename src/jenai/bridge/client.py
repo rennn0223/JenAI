@@ -586,6 +586,7 @@ class MapIdentityInfo:
     origin_yaw: float
     frame_id: str
     source: str
+    runtime_source_sha256: str
 
     @classmethod
     def from_payload(cls, result: BridgePayload) -> MapIdentityInfo:
@@ -600,6 +601,7 @@ class MapIdentityInfo:
         origin_yaw = _require_finite_float(result, "origin_yaw", operation)
         frame_id = _require_text(result, "frame_id", operation)
         source = _require_text(result, "source", operation)
+        runtime_source_sha256 = _require_text(result, "runtime_source_sha256", operation)
 
         if algorithm != "sha256-occupancy-grid-v1":
             raise BridgeError("invalid map_identity response: unsupported algorithm")
@@ -609,6 +611,12 @@ class MapIdentityInfo:
             raise BridgeError("invalid map_identity response: map dimensions must be positive")
         if resolution <= 0.0:
             raise BridgeError("invalid map_identity response: resolution must be positive")
+        if len(runtime_source_sha256) != 64 or any(
+            char not in "0123456789abcdef" for char in runtime_source_sha256
+        ):
+            raise BridgeError(
+                "invalid map_identity response: runtime_source_sha256 must be lowercase SHA-256"
+            )
 
         return cls(
             algorithm=algorithm,
@@ -621,7 +629,16 @@ class MapIdentityInfo:
             origin_yaw=origin_yaw,
             frame_id=frame_id,
             source=source,
+            runtime_source_sha256=runtime_source_sha256,
         )
+
+
+@dataclass(frozen=True)
+class _MapIdentityPin:
+    binding_sha256: str
+    bridge_runtime: BridgeRuntimeIdentity
+    runtime_source_sha256: str
+    identity: MapIdentityInfo
 
 
 @dataclass(frozen=True)
@@ -696,6 +713,7 @@ class RosBridgeClient:
         self._ready_runtime_identity_payload: object | None = None
         self._expected_launch_nonce: str | None = None
         self._pinned_runtime_identity: BridgeRuntimeIdentity | None = None
+        self._map_identity_pin: _MapIdentityPin | None = None
         self._start_lock = asyncio.Lock()
         # Safety config survives the process: once set, EVERY spawn re-arms
         # the watchdog — including silent respawns via request(). Without
@@ -806,6 +824,7 @@ class RosBridgeClient:
 
     async def stop(self) -> None:
         """Shut the bridge down cleanly, failing any in-flight requests."""
+        self._map_identity_pin = None
         proc = self._proc
         reader_task, self._reader_task = self._reader_task, None
         stderr_task, self._stderr_task = self._stderr_task, None
@@ -907,6 +926,7 @@ class RosBridgeClient:
         self._fail_pending(error)
         if self._proc is proc:
             self._proc = None
+            self._map_identity_pin = None
         logger.warning("ROS bridge reader stopped: %s", error)
 
     def _fail_pending(self, error: BridgeError) -> None:
@@ -1119,15 +1139,65 @@ class RosBridgeClient:
         )
         return MapCellInfo.from_payload(result)
 
-    async def map_identity(self, *, timeout: float = 3.0) -> MapIdentityInfo:
-        """Read the canonical identity of the latched static map."""
+    async def _map_source_identity(self) -> str:
+        result = await self.request("map_source_identity", timeout=2.0)
+        digest = _require_text(result, "runtime_source_sha256", "map_source_identity")
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise BridgeError(
+                "invalid map_source_identity response: "
+                "runtime_source_sha256 must be lowercase SHA-256"
+            )
+        return digest
+
+    async def map_identity(
+        self,
+        *,
+        timeout: float = 3.0,
+        binding_sha256: str | None = None,
+        reset_subscription: bool = False,
+    ) -> MapIdentityInfo:
+        """Read or safely reuse the map identity for one Bridge/runtime binding."""
         parsed_timeout = _require_finite_input("map_identity", "timeout", timeout, context="query")
         if parsed_timeout <= 0.0:
             raise BridgeError("invalid map_identity query: timeout must be positive")
+        if binding_sha256 is not None and (
+            len(binding_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in binding_sha256)
+        ):
+            raise BridgeError(
+                "invalid map_identity query: binding_sha256 must be lowercase SHA-256"
+            )
+
+        bridge_runtime: BridgeRuntimeIdentity | None = None
+        if binding_sha256 is not None:
+            bridge_runtime = await self.runtime_identity()
+            pin = self._map_identity_pin
+            if not reset_subscription and pin is not None:
+                runtime_source_sha256 = await self._map_source_identity()
+                if (
+                    pin.binding_sha256 == binding_sha256
+                    and pin.bridge_runtime == bridge_runtime
+                    and pin.runtime_source_sha256 == runtime_source_sha256
+                ):
+                    return pin.identity
+
         result = await self.request(
-            "map_identity", timeout=timeout + 2.0, params={"timeout": timeout}
+            "map_identity",
+            timeout=timeout + 2.0,
+            params={
+                "timeout": timeout,
+                "reset_subscription": reset_subscription,
+            },
         )
-        return MapIdentityInfo.from_payload(result)
+        identity = MapIdentityInfo.from_payload(result)
+        if binding_sha256 is not None and bridge_runtime is not None:
+            self._map_identity_pin = _MapIdentityPin(
+                binding_sha256=binding_sha256,
+                bridge_runtime=bridge_runtime,
+                runtime_source_sha256=identity.runtime_source_sha256,
+                identity=identity,
+            )
+        return identity
 
     async def nav_send(
         self, x: float, y: float, yaw: float = 0.0, frame_id: str = "map", tag: str = ""

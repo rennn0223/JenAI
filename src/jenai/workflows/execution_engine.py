@@ -53,6 +53,7 @@ class StepDisposition(StrEnum):
     SUCCEEDED = "succeeded"
     WAYPOINT_LOCAL_FAILURE = "waypoint_local_failure"
     NAVIGATION_SYSTEM_FAILURE = "navigation_system_failure"
+    BLOCKED = "blocked"
     ENDPOINT_MISMATCH = "endpoint_mismatch"
     CANCELLED = "cancelled"
 
@@ -594,6 +595,7 @@ class ExecutionEngine:
             self._skipped_step_indices.append(step_index)
             return
         terminal_by_disposition = {
+            StepDisposition.BLOCKED: TaskOutcome.BLOCKED,
             StepDisposition.ENDPOINT_MISMATCH: TaskOutcome.ENDPOINT_MISMATCH,
             StepDisposition.CANCELLED: TaskOutcome.CANCELLED,
         }

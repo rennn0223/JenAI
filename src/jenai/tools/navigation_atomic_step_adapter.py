@@ -251,9 +251,12 @@ def _capability_report(output: RouteOutput) -> CapabilityExecutionReport:
             summary=output.route_preview or "Navigation canceled.",
         )
 
-    failure_scope = (
-        "waypoint_local" if output.failure_scope == "waypoint_local" else "navigation_system"
-    )
+    if output.execution_status == "blocked":
+        failure_scope = "blocked"
+    else:
+        failure_scope = (
+            "waypoint_local" if output.failure_scope == "waypoint_local" else "navigation_system"
+        )
     failure_evidence = ExecutorEvidence(
         kind="navigation_failure",
         source="navigation_gateway",
@@ -403,12 +406,14 @@ def _step_result(report: CapabilityExecutionReport) -> StepResult:
     if report.disposition == ExecutionDisposition.FAILED:
         failure = _evidence_payload(evidence, "navigation_failure")
         scope = failure.payload.get("scope") if failure is not None else None
+        if scope == "blocked":
+            disposition = StepDisposition.BLOCKED
+        elif scope == "waypoint_local":
+            disposition = StepDisposition.WAYPOINT_LOCAL_FAILURE
+        else:
+            disposition = StepDisposition.NAVIGATION_SYSTEM_FAILURE
         return StepResult(
-            disposition=(
-                StepDisposition.WAYPOINT_LOCAL_FAILURE
-                if scope == "waypoint_local"
-                else StepDisposition.NAVIGATION_SYSTEM_FAILURE
-            ),
+            disposition=disposition,
             summary=report.summary,
         )
     terminal = _evidence_payload(evidence, "navigation_terminal")

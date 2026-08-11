@@ -639,9 +639,34 @@ def test_adapter_maps_typed_failure_and_cancel_without_owning_policy() -> None:
         disposition="cancelled",
         summary="Navigation canceled.",
     )
+    blocked = CapabilityExecutionReport(
+        disposition="failed",
+        summary="Navigation was blocked.",
+        evidence=(
+            _evidence(
+                "navigation_failure",
+                {"scope": "blocked"},
+            ),
+        ),
+    )
 
     assert asyncio.run(observe(local_failure)) is StepDisposition.WAYPOINT_LOCAL_FAILURE
     assert asyncio.run(observe(cancelled)) is StepDisposition.CANCELLED
+    assert asyncio.run(observe(blocked)) is StepDisposition.BLOCKED
+
+
+def test_gateway_blocked_output_preserves_blocked_scope() -> None:
+    output = RouteOutput(
+        input_text="",
+        execution_status="blocked",
+        route_preview="Navigation was blocked.",
+    )
+
+    report = _capability_report(output)
+
+    assert report.disposition == ExecutionDisposition.FAILED
+    assert len(report.evidence) == 1
+    assert report.evidence[0].payload["scope"] == "blocked"
 
 
 def test_adapter_rejects_authority_that_cannot_use_stop_port(tmp_path: Path) -> None:

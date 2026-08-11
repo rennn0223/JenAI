@@ -221,6 +221,31 @@ def test_rejected_golden_path_can_persist_blocked_receipt_without_execution_evid
     assert receipt.golden_path is None
 
 
+def test_map_gate_block_preserves_structured_golden_path_receipt() -> None:
+    plan = _navigation_plan()
+    report = asyncio.run(
+        ExecutionEngine(
+            plan,
+            ScriptedAtomicStepAdapter(
+                [
+                    StepResult(
+                        disposition=StepDisposition.BLOCKED,
+                        summary="Live map identity unavailable",
+                    )
+                ]
+            ),
+        ).run()
+    )
+
+    golden_path = build_golden_path_receipt(plan, report)
+
+    assert report.outcome is TaskOutcome.BLOCKED
+    assert golden_path.step_results[0].attempts[0].disposition == "blocked"
+    assert golden_path.final_endpoint_result is not None
+    assert golden_path.final_endpoint_result.disposition == "blocked"
+    assert golden_path.final_endpoint_result.within_tolerance is False
+
+
 def test_completed_task_without_explicit_outcome_is_partial() -> None:
     receipt = build_task_receipt(_terminal_run())
     assert receipt.status == RunStatus.COMPLETED

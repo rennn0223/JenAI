@@ -261,6 +261,18 @@ def test_single_navigation_local_failure_is_failed_not_partial() -> None:
     assert report.step_records[0].skipped is False
 
 
+def test_blocked_step_preserves_blocked_task_outcome() -> None:
+    adapter = ScriptedAtomicStepAdapter(
+        [_result(StepDisposition.BLOCKED, "Live map identity unavailable")]
+    )
+
+    report = asyncio.run(ExecutionEngine(_navigate_plan(), adapter).run())
+
+    assert report.outcome is TaskOutcome.BLOCKED
+    assert len(report.step_records) == 1
+    assert report.step_records[0].skipped is False
+
+
 def test_navigation_system_failure_aborts_without_dispatching_later_steps() -> None:
     plan = _plan()
     adapter = ScriptedAtomicStepAdapter(

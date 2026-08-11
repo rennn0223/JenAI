@@ -17,6 +17,7 @@ request_nomotion_update, halt, capture_frame, watch, unwatch, shutdown.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -169,6 +170,8 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         self._pose_jump_stamped = False
         self._map_observation: LatchedObservation[Any] = LatchedObservation()
         self._map_subscription = None
+        self._map_observation_generation = 0
+        self._map_subscription_lock = threading.Lock()
         self._tf_buffer = None
         self._tf_listener = None
         self._ensure_tf_listener()
@@ -392,22 +395,79 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         return result
 
     def _ensure_map_subscription(self) -> None:
-        if self._map_subscription is not None:
-            return
-        from nav_msgs.msg import OccupancyGrid
-        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+        with self._map_subscription_lock:
+            if self._map_subscription is not None:
+                return
+            from nav_msgs.msg import OccupancyGrid
+            from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
-        qos = QoSProfile(
-            depth=1,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-        )
-        self._map_subscription = self.create_subscription(
-            OccupancyGrid,
+            qos = QoSProfile(
+                depth=1,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self._map_subscription = self.create_subscription(
+                OccupancyGrid,
+                "/map",
+                self._observe_map,
+                qos,
+            )
+
+    def _observe_map(self, message: Any) -> None:
+        with self._map_subscription_lock:
+            self._map_observation_generation += 1
+            observation = self._map_observation
+        observation.observe(message)
+
+    def _reset_map_subscription(self) -> None:
+        with self._map_subscription_lock:
+            subscription = self._map_subscription
+            self._map_subscription = None
+            self._map_observation = LatchedObservation()
+        if subscription is not None:
+            self.destroy_subscription(subscription)
+
+    def _map_source_identity_sha256(self) -> str:
+        endpoints: list[dict[str, str]] = []
+        for topic in (
             "/map",
-            self._map_observation.observe,
-            qos,
-        )
+            "/compute_path_to_pose/_action/status",
+            "/navigate_to_pose/_action/status",
+        ):
+            endpoints.extend(
+                {
+                    "topic": topic,
+                    "node_name": str(info.node_name),
+                    "node_namespace": str(info.node_namespace),
+                    "topic_type": str(info.topic_type),
+                    "endpoint_gid": bytes(info.endpoint_gid).hex(),
+                }
+                for info in self.get_publishers_info_by_topic(topic)
+            )
+        with self._map_subscription_lock:
+            generation = self._map_observation_generation
+        payload = json.dumps(
+            {
+                "observation_generation": generation,
+                "publisher_endpoints": sorted(
+                    endpoints,
+                    key=lambda item: (
+                        item["topic"],
+                        item["node_namespace"],
+                        item["node_name"],
+                        item["endpoint_gid"],
+                    ),
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def map_source_identity(self) -> WirePayload:
+        """Fingerprint the current map/Nav2 publishers and retained-map generation."""
+
+        return {"runtime_source_sha256": self._map_source_identity_sha256()}
 
     def _map_message(self, timeout: float) -> Any:
         self._ensure_map_subscription()
@@ -436,8 +496,14 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
         result.update({"frame_id": message.header.frame_id or "map", "source": "/map"})
         return result
 
-    def map_identity(self, timeout: float = 3.0) -> WirePayload:
+    def map_identity(
+        self,
+        timeout: float = 3.0,
+        reset_subscription: bool = False,
+    ) -> WirePayload:
         """Read and fingerprint the complete latched static map."""
+        if reset_subscription:
+            self._reset_map_subscription()
         message = self._map_message(timeout)
         origin = message.info.origin
         frame_id = message.header.frame_id or "map"
@@ -466,6 +532,7 @@ class BridgeNode(Node):  # type: ignore[misc]  # rclpy ships no typing metadata
             "origin_yaw": origin_yaw,
             "frame_id": frame_id,
             "source": "/map",
+            "runtime_source_sha256": self._map_source_identity_sha256(),
         }
 
     # -- Nav2 ---------------------------------------------------------------

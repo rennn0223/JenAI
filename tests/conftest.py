@@ -64,6 +64,7 @@ def _differential_runtime_identity(runtime: str) -> dict[str, object]:
         "digest": "b" * 64,
         "frame_id": "map",
         "source": "/map",
+        "runtime_source_sha256": "b" * 64,
         "geometry": {
             "width": 100,
             "height": 100,

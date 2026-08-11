@@ -296,12 +296,35 @@ def _run_daemon_until(
 
     from jenai.bridge import RosBridgeClient
     from jenai.bridge import client as client_module
+    from jenai.bridge.client import BridgeRuntimeIdentity
     from jenai.config.store import build_minimal_config
     from jenai.daemon.runner import run_daemon
 
     monkeypatch.setattr(client_module, "_BRIDGE_SCRIPT", Path(__file__).parent / "fake_bridge.py")
     monkeypatch.setenv("JENAI_BRIDGE_PYTHON", sys.executable)
     monkeypatch.setattr(RosBridgeClient, "available", staticmethod(lambda: True))
+
+    async def runtime_identity(_client) -> BridgeRuntimeIdentity:
+        return BridgeRuntimeIdentity(
+            schema_version=1,
+            pid=1,
+            launch_nonce="a" * 32,
+            boot_id="12345678-1234-5678-1234-567812345678",
+            process_start_ticks=1,
+            python_executable="/usr/bin/python3",
+            python_version="3.12.0",
+            rmw_implementation_requested=None,
+            rmw_implementation_effective="rmw_fastrtps_cpp",
+            ros_domain_id=0,
+            dds_config_mode="middleware_default",
+            dds_bindings=(),
+            dds_config_sha256="4" * 64,
+            ros_environment_bindings=(),
+            ros_environment_sha256="5" * 64,
+            descriptor_sha256="6" * 64,
+        )
+
+    monkeypatch.setattr(RosBridgeClient, "runtime_identity", runtime_identity)
 
     config = build_minimal_config(
         provider_name="t", provider="openai", default_model="m", api_key_env=""

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from functools import partial
@@ -28,6 +30,19 @@ _NAVIGATION_CAPABILITY_IDS = (
     "area_patrol",
     "dock_approach",
 )
+
+
+def _site_map_binding_sha256(config: AppConfig) -> str:
+    """Bind a process-local map pin to the complete reviewed Site Profile."""
+
+    payload = json.dumps(
+        config.site.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _blocked_capability(outgoing_action: dict[str, Any], capability_id: str) -> RouteOutput:
@@ -160,22 +175,34 @@ class NavigationGateway:
         run_id: str | None,
         session_id: str | None,
     ) -> RouteOutput | None:
+        bridge = await self._get_bridge()
+        binding_sha256 = _site_map_binding_sha256(self._config)
         try:
-            identity = await (await self._get_bridge()).map_identity(timeout=3.0)
-        except BridgeError as exc:
-            message = (
-                f"Could not verify the active map for site "
-                f"'{self._config.site.display_name}': {exc}. "
-                "Navigation is temporarily unavailable."
+            identity = await bridge.map_identity(
+                timeout=3.0,
+                binding_sha256=binding_sha256,
             )
-            self._audit_site_map(
-                "unavailable",
-                expected_digest,
-                None,
-                run_id=run_id,
-                session_id=session_id,
-            )
-            return _site_verdict(outgoing_action, message, status="unavailable")
+        except BridgeError:
+            try:
+                identity = await bridge.map_identity(
+                    timeout=3.0,
+                    binding_sha256=binding_sha256,
+                    reset_subscription=True,
+                )
+            except BridgeError as exc:
+                message = (
+                    f"Could not verify the active map for site "
+                    f"'{self._config.site.display_name}': {exc}. "
+                    "Navigation was blocked."
+                )
+                self._audit_site_map(
+                    "blocked",
+                    expected_digest,
+                    None,
+                    run_id=run_id,
+                    session_id=session_id,
+                )
+                return _site_verdict(outgoing_action, message)
 
         mismatch_message = self._map_mismatch_message(identity, expected_digest)
         if mismatch_message is None:

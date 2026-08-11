@@ -277,6 +277,7 @@ class GoldenPathStepAttemptReceipt(JenAIModel):
         "succeeded",
         "waypoint_local_failure",
         "navigation_system_failure",
+        "blocked",
         "endpoint_mismatch",
         "cancelled",
     ]
@@ -302,6 +303,7 @@ class GoldenPathEndpointResult(JenAIModel):
         "succeeded",
         "waypoint_local_failure",
         "navigation_system_failure",
+        "blocked",
         "endpoint_mismatch",
         "cancelled",
     ]
