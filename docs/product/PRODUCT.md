@@ -4,7 +4,7 @@
 >
 > **其唯一可變授權來源是 [`TECH_LEAD.md`](TECH_LEAD.md)。**
 >
-> **本 Constitution 核准時的 Milestone 為 Robot Runtime v0。**
+> **本 Constitution 於 2026-08-06 修訂：第一個產品成果為 Natural-Language Patrol Golden Path。**
 >
 > **不能直接推進目前里程碑、且不是已證明關鍵阻礙的工作，不實作。**
 
@@ -22,8 +22,10 @@ JenAI 把操作員的高階目標轉成可批准、可停止、可驗證並能�
 ## Product positioning
 
 JenAI 是給已有可靠導航或平台 API 團隊的受監督 Mission Runtime 與高階決策產品。LLM
-負責理解意圖與選擇已註冊 Capability；Robot Runtime Authority 擁有接受後的執行生命週期；
-確定性 Workflow 負責正常步驟、有限重試、取消、證據、完成判定與返航。
+負責理解意圖與選擇已註冊 Capability；Golden Path 的 `ExecutionEngine` 擁有一份已批准
+`ExecutionPlan` 的唯一 mutable execution lifecycle；確定性 Workflow 負責正常步驟、有限重試、
+取消、證據、完成判定與返航。ADR 0006 的跨介面 Robot Runtime Authority 是後續 migration，
+未來可包含 `ExecutionEngine`，但不得建立第二份 mutable lifecycle。
 
 JenAI 不是通用低階控制器、任意 ROS API proxy、多 Agent 聊天框架、安全認證產品，亦不是
 為研究工具本身而存在的 acceptance framework。
@@ -40,11 +42,11 @@ JenAI 不是通用低階控制器、任意 ROS API proxy、多 Agent 聊天框�
 
 v1 只聚焦兩個連續產品成果：
 
-1. Robot Runtime v0：單一 Authority 擁有 accepted Task、Runtime-owned Workflow Instance、
-   Approval、lease、safety epoch、Events、Task Outcome 與 Receipt；產品畫面可將這份唯一
-   lifecycle 投影為 MissionRun，但不得建立第二個 mutable aggregate。
-2. Inspection Mission：以巡檢覆蓋、Evidence、bounded skip／retry 與 Return Home 證明 Runtime
-   能完成使用者任務。
+1. Natural-Language Patrol Golden Path：單一 TUI 將自然語言轉成 exact `ExecutionPlan`，經
+   `Yes / Auto / No` 後，由唯一 `ExecutionEngine` 完成 `A → B → C → Dock`、STOP、
+   `TaskOutcome` 與 Receipt。HTTP／SSE、WebUI parity 與 durable Authority 不是此成果的前置條件。
+2. Inspection Mission：以巡檢覆蓋、Evidence、bounded skip／retry 與 Return Home 證明 JenAI
+   能完成使用者任務，而不是只交付 execution infrastructure。
 
 既有 Navigation、TUI、WebUI、NXDog read-only observation 與 acceptance 工具只在支撐上述
 成果時維護；它們不是平行里程碑。
@@ -52,7 +54,7 @@ v1 只聚焦兩個連續產品成果：
 ## Out of scope
 
 - 讓 LLM 直接控制速度、轉向、關節、局部避障或即時安全迴路。
-- 在 Runtime v0 前重做 React WebUI、TUI 外觀或新增 NXDog effectful capability。
+- 在 Golden Path 完成前重做 React WebUI、TUI 外觀或新增 NXDog effectful capability。
 - 主動深化 Geometry、Motion Safety、Differential、Stage Export、Headless parity 或
   Certification Research。
 - 未知空間自主探索、多機協作、Mission marketplace 與安全認證。
@@ -60,8 +62,10 @@ v1 只聚焦兩個連續產品成果：
 
 ## Architecture principles
 
-- 只有 Robot Runtime Authority 能改變 accepted Mission 的執行、批准與結果 truth。
-- Interaction surfaces 是 thin clients；不得各自建立第二套 Workflow、Approval 或 STOP。
+- Golden Path 中只有 `ExecutionEngine` 能改變一份 approved `ExecutionPlan` 的執行進度與
+  terminal truth；批准協調器只擁有批准決策與 session-local `approval_generation`。
+- 未來 ADR 0006 Robot Runtime Authority 可包含 `ExecutionEngine` 並統一跨介面 truth，
+  但不得與它平行擁有第二套 Workflow、Approval、STOP 或 outcome lifecycle。
 - Agent 選擇 typed Capability；正常執行由確定性 Workflow 完成，不逐步詢問 LLM。
 - 所有 navigation 仍經既有 Navigation Gateway；載具差異只存在於 profile 與 adapter。
 - 缺少 Evidence 時回報 blocked、unavailable、partial 或 unverified，不偽裝成功。
@@ -69,9 +73,10 @@ v1 只聚焦兩個連續產品成果：
 
 ## v1 success criteria
 
-JenAI v1 的成功不是類別數量或工具完整度，而是操作員可以提交一個 typed Mission，經批准後
-由唯一 Runtime Authority 建立 Workflow Instance 並執行，隨時 STOP，跨 TUI／WebUI 看到
-同一份 MissionRun projection，最後取得由 Evidence 支撐的 Task Outcome 與 Receipt。完成門檻由
+JenAI v1 的第一個成功門檻不是類別數量或工具完整度，而是操作員能在單一 TUI 以自然語言
+建立 exact `ExecutionPlan`，選擇 `Yes / Auto / No`，由唯一 `ExecutionEngine` 完成
+`A → B → C → Dock`，隨時 STOP，最後取得由 Evidence 支撐的 Task Outcome 與 Receipt。
+跨 TUI／WebUI 的 Authority parity 是後續 migration，不是 Golden Path 前置條件。完成門檻由
 [`EPIC-0003`](../epics/EPIC-0003-ROBOT-RUNTIME-V0.md) 與
 [`EPIC-0004`](../epics/EPIC-0004-INSPECTION-MISSION.md) 定義。
 

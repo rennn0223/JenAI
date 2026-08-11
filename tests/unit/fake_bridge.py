@@ -72,7 +72,16 @@ def main() -> None:
                         "origin_yaw": 0.0,
                         "frame_id": "map",
                         "source": "/map",
+                        "runtime_source_sha256": "b" * 64,
                     },
+                }
+            )
+        elif op == "map_source_identity":
+            emit(
+                {
+                    "id": req_id,
+                    "ok": True,
+                    "result": {"runtime_source_sha256": "b" * 64},
                 }
             )
         elif op == "map_cell":

@@ -302,6 +302,258 @@ def _app(tmp_path: Path | None = None) -> JenAITuiApp:
     return JenAITuiApp(config=config, config_path=Path(str(tmp_path or "/tmp")) / "config.toml")
 
 
+def _single_navigation_plan(target: str = "A"):
+    from jenai.workflows.patrol_mission import (
+        BoundLocation,
+        NavigateMissionPolicy,
+        NavigateMissionSpec,
+        compile_single_navigation,
+    )
+
+    return compile_single_navigation(
+        NavigateMissionSpec(
+            mission_id=f"mission-{target.casefold()}",
+            site_id="site-1",
+            site_version="1",
+            site_profile_digest="1" * 64,
+            robot_id="robot-1",
+            vehicle_profile_digest="2" * 64,
+            locations_sha256="3" * 64,
+            target_location=BoundLocation(
+                location_id=f"loc-{target.casefold()}",
+                location_name=target,
+            ),
+            policy=NavigateMissionPolicy(),
+        )
+    )
+
+
+def _successful_navigation_report(plan):
+    from jenai.schemas import TaskOutcome
+    from jenai.workflows.execution_engine import (
+        ExecutionReport,
+        StepAttempt,
+        StepDisposition,
+        StepEvidence,
+        StepEvidenceKind,
+        StepRecord,
+        StepResult,
+    )
+
+    return ExecutionReport(
+        plan_digest=plan.plan_digest,
+        outcome=TaskOutcome.SUCCEEDED,
+        step_records=(
+            StepRecord(
+                step_index=0,
+                step=plan.steps[0],
+                attempts=(
+                    StepAttempt(
+                        dispatch_id="dispatch-test-a",
+                        attempt=1,
+                        result=StepResult(
+                            disposition=StepDisposition.SUCCEEDED,
+                            summary="arrived",
+                            evidence=(
+                                StepEvidence(
+                                    kind=StepEvidenceKind.NAVIGATION_TERMINAL,
+                                    evidence_id="terminal:goal-test-a",
+                                ),
+                                StepEvidence(
+                                    kind=StepEvidenceKind.ENDPOINT_POSE,
+                                    evidence_id="endpoint:goal-test-a",
+                                ),
+                            ),
+                            position_error_m=0.044,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def test_tui_golden_path_shows_exact_plan_and_waits_for_yes(monkeypatch, tmp_path) -> None:
+    from jenai.agent.navigate_intent import PreparedNavigation
+    from jenai.schemas import TaskOutcome
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        plan = _single_navigation_plan()
+        executed: list[str] = []
+
+        async def fake_prepare(_text: str, *, mission_id: str):
+            assert mission_id
+            return PreparedNavigation(
+                draft=None,
+                plan=plan,
+                preview="計畫\n1. 前往 A",
+                clarification_question=None,
+            )
+
+        async def fake_execute(received):
+            executed.append(received.plan_digest)
+            return _successful_navigation_report(received)
+
+        monkeypatch.setattr(app, "_prepare_navigation_request", fake_prepare)
+        monkeypatch.setattr(app, "_execute_navigation_plan", fake_execute)
+
+        async with app.run_test() as pilot:
+            await app.handle_user_text("去 A 點")
+            cards = list(app.query(ApprovalCard))
+            assert len(cards) == 1
+            rendered_card = str(cards[0].render())
+            assert "Yes：本次允許" in rendered_card
+            assert "Auto：本 session 自動允許相同 exact Plan" in rendered_card
+            assert "No：不允許" in rendered_card
+            assert executed == []
+            assert any("1. 前往 A" in panel.body for panel in app.query(OutputPanel))
+
+            await app.on_approval_card_decision(
+                ApprovalCard.Decision(cards[0].approval.tool_call_id, True, remember=False)
+            )
+            if app._active_task is not None:
+                await app._active_task
+            await pilot.pause()
+
+            assert executed == [plan.plan_digest]
+            assert app._current_run().outcome == TaskOutcome.SUCCEEDED
+            paths = app.run_store.receipt_store.list_paths()
+            receipt = app.run_store.receipt_store.load(paths[0])
+            assert receipt is not None
+            assert receipt.schema_version == 3
+            assert receipt.golden_path is not None
+            assert receipt.golden_path.plan_digest == plan.plan_digest
+            assert receipt.golden_path.step_results[0].attempts[0].dispatch_id
+            assert receipt.golden_path.final_endpoint_result.position_error_m == 0.044
+
+    asyncio.run(run())
+
+
+def test_tui_golden_path_auto_reuses_only_the_same_exact_plan(monkeypatch, tmp_path) -> None:
+    from jenai.agent.navigate_intent import PreparedNavigation
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        plan = _single_navigation_plan()
+        executed: list[str] = []
+
+        async def fake_prepare(_text: str, *, mission_id: str):
+            assert mission_id
+            return PreparedNavigation(
+                draft=None,
+                plan=plan,
+                preview=None,
+                clarification_question=None,
+            )
+
+        async def fake_execute(received):
+            executed.append(received.plan_digest)
+            return _successful_navigation_report(received)
+
+        monkeypatch.setattr(app, "_prepare_navigation_request", fake_prepare)
+        monkeypatch.setattr(app, "_execute_navigation_plan", fake_execute)
+
+        async with app.run_test():
+            await app.handle_user_text("去 A 點")
+            card = list(app.query(ApprovalCard))[0]
+            await app.on_approval_card_decision(
+                ApprovalCard.Decision(card.approval.tool_call_id, True, remember=True)
+            )
+            if app._active_task is not None:
+                await app._active_task
+
+            await app.handle_user_text("再去 A 點")
+
+            assert executed == [plan.plan_digest, plan.plan_digest]
+            assert list(app.query(ApprovalCard)) == []
+            assert app._pending_navigation_approvals == {}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("prepared", "expected"),
+    (
+        ("clarify", "請指定一個地點"),
+        ("not_applicable", "不屬於已支援的 registered-location navigation"),
+    ),
+)
+def test_tui_golden_path_does_not_fall_back_to_effectful_legacy_agent(
+    monkeypatch,
+    tmp_path,
+    prepared: str,
+    expected: str,
+) -> None:
+    from jenai.agent.navigate_intent import PreparedNavigation
+    from jenai.workflows.patrol_mission import NavigateMissionDraft
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        legacy_calls = 0
+
+        async def fake_prepare(_text: str, *, mission_id: str):
+            assert mission_id
+            draft = NavigateMissionDraft(
+                decision=prepared,
+                clarification_question="請指定一個地點" if prepared == "clarify" else None,
+            )
+            return PreparedNavigation(
+                draft=draft,
+                plan=None,
+                preview=None,
+                clarification_question=draft.clarification_question,
+            )
+
+        async def forbidden_legacy(_text: str) -> None:
+            nonlocal legacy_calls
+            legacy_calls += 1
+
+        monkeypatch.setattr(app, "_prepare_navigation_request", fake_prepare)
+        monkeypatch.setattr(app, "_show_run", forbidden_legacy)
+
+        async with app.run_test():
+            await app.handle_user_text("測試輸入")
+            assert legacy_calls == 0
+            assert any(expected in item.body for item in app.query(TimelineItem))
+            assert list(app.query(ApprovalCard)) == []
+
+    asyncio.run(run())
+
+
+def test_tui_stop_invalidates_golden_path_approval_and_stops_active_engine(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class Engine:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stop(self):
+            self.calls += 1
+            return SimpleNamespace(cancel_acknowledged=True, timed_out=False)
+
+    async def run() -> None:
+        app = _app(tmp_path)
+        engine = Engine()
+        app._active_navigation_engine = engine
+        before = app._navigation_approval_scope.approval_generation
+
+        async def fake_get_bridge():
+            return FakeHaltBridge()
+
+        monkeypatch.setattr(app, "_get_bridge", fake_get_bridge)
+        async with app.run_test():
+            await app._preempt_for_emergency_stop("/stop", predecessor=None)
+            assert engine.calls == 1
+            assert app._navigation_approval_scope.approval_generation == before + 1
+
+            if app._active_task is not None:
+                await app._active_task
+
+    asyncio.run(run())
+
+
 def test_tui_composes_jenai_shell() -> None:
     async def run() -> None:
         app = JenAITuiApp(
@@ -1050,7 +1302,9 @@ def test_tui_route_shows_card_and_resolves(monkeypatch, tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_tui_explicit_natural_route_uses_reflex_and_keeps_approval(monkeypatch, tmp_path) -> None:
+def test_tui_explicit_natural_route_uses_golden_path_not_legacy_reflex(
+    monkeypatch, tmp_path
+) -> None:
     locations_path = tmp_path / "locations.toml"
     locations_path.write_text(
         """[[locations]]
@@ -1063,28 +1317,30 @@ yaw = 0.785
 """,
         encoding="utf-8",
     )
-    called = {"agent": False}
+    called = {"agent": False, "golden_path": ""}
 
     async def fake_show_run(self, arg):
         called["agent"] = True
 
+    async def fake_golden_path(self, arg):
+        called["golden_path"] = arg
+
     monkeypatch.setattr(JenAITuiApp, "_show_run", fake_show_run)
+    monkeypatch.setattr(JenAITuiApp, "_show_navigation_golden_path", fake_golden_path)
 
     async def run() -> None:
         app = _app(tmp_path)
         app.config.locations_path = "locations.toml"
         async with app.run_test():
-            await app.handle_user_text("請前往 map_left_down，抵達後回報結果。")
-            cards = list(app.query(ApprovalCard))
-            assert len(cards) == 1
-            assert "map_left_down" in cards[0].approval.summary
-            assert "natural-language route reflex" in cards[0].approval.justification
+            text = "請前往 map_left_down，抵達後回報結果。"
+            await app.handle_user_text(text)
+            assert called["golden_path"] == text
             assert called["agent"] is False
 
     asyncio.run(run())
 
 
-def test_tui_area_patrol_with_return_to_dock_bypasses_single_route_reflex(
+def test_tui_area_patrol_does_not_fall_back_to_legacy_effectful_agent(
     monkeypatch, tmp_path
 ) -> None:
     locations_path = tmp_path / "locations.toml"
@@ -1099,13 +1355,16 @@ yaw = 3.142
 """,
         encoding="utf-8",
     )
-    called = {"agent": False, "text": ""}
+    called = {"agent": False, "golden_path": ""}
 
     async def fake_show_run(self, arg):
         called["agent"] = True
-        called["text"] = arg
+
+    async def fake_golden_path(self, arg):
+        called["golden_path"] = arg
 
     monkeypatch.setattr(JenAITuiApp, "_show_run", fake_show_run)
+    monkeypatch.setattr(JenAITuiApp, "_show_navigation_golden_path", fake_golden_path)
 
     async def run() -> None:
         app = _app(tmp_path)
@@ -1114,12 +1373,12 @@ yaw = 3.142
             text = "巡檢目前場域的所有必要區域，每個區域保存影像證據，完成後回到 dock。"
             await app.handle_user_text(text)
             assert list(app.query(ApprovalCard)) == []
-            assert called == {"agent": True, "text": text}
+            assert called == {"agent": False, "golden_path": text}
 
     asyncio.run(run())
 
 
-def test_tui_negated_natural_route_falls_back_to_agent(monkeypatch, tmp_path) -> None:
+def test_tui_negated_natural_route_stays_in_golden_path_classifier(monkeypatch, tmp_path) -> None:
     locations_path = tmp_path / "locations.toml"
     locations_path.write_text(
         """[[locations]]
@@ -1132,12 +1391,16 @@ yaw = 3.142
 """,
         encoding="utf-8",
     )
-    called = {"agent": False}
+    called = {"agent": False, "golden_path": ""}
 
     async def fake_show_run(self, arg):
         called["agent"] = True
 
+    async def fake_golden_path(self, arg):
+        called["golden_path"] = arg
+
     monkeypatch.setattr(JenAITuiApp, "_show_run", fake_show_run)
+    monkeypatch.setattr(JenAITuiApp, "_show_navigation_golden_path", fake_golden_path)
 
     async def run() -> None:
         app = _app(tmp_path)
@@ -1145,7 +1408,7 @@ yaw = 3.142
         async with app.run_test():
             await app.handle_user_text("不要前往 dock。")
             assert list(app.query(ApprovalCard)) == []
-            assert called["agent"] is True
+            assert called == {"agent": False, "golden_path": "不要前往 dock。"}
 
     asyncio.run(run())
 
@@ -2374,6 +2637,9 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
     async def fake_run(self, arg):
         calls.append(("run", arg))
 
+    async def fake_golden_path(self, arg):
+        calls.append(("golden_path", arg))
+
     async def fake_state(self, arg):
         calls.append(("state", arg))
 
@@ -2382,6 +2648,7 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
 
     monkeypatch.setattr(JenAITuiApp, "_show_plan", fake_plan)
     monkeypatch.setattr(JenAITuiApp, "_show_run", fake_run)
+    monkeypatch.setattr(JenAITuiApp, "_show_navigation_golden_path", fake_golden_path)
     monkeypatch.setattr(JenAITuiApp, "_show_state_inspection", fake_state)
     monkeypatch.setattr(JenAITuiApp, "_show_emergency_stop", fake_stop)
 
@@ -2402,12 +2669,12 @@ def test_plain_language_routes_by_mode(monkeypatch) -> None:
 
     asyncio.run(run())
     assert calls == [
-        ("run", "帶我去機械系館"),
+        ("golden_path", "帶我去機械系館"),
         ("state", "檢查位置、雷射與 Nav2 狀態，不要移動機器人。"),
-        ("run", "檢查 Nav2 狀態，然後回到 dock。"),
+        ("golden_path", "檢查 Nav2 狀態，然後回到 dock。"),
         ("stop", "幫我檢查現在機器人的位置，然後停止機器人"),
         ("plan", "帶我去機械系館"),
-        ("run", "檢查目前機器人位置和 Nav2 狀態"),
+        ("golden_path", "檢查目前機器人位置和 Nav2 狀態"),
     ]
 
 

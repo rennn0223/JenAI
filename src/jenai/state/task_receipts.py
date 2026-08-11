@@ -11,6 +11,11 @@ from jenai.schemas import (
     ApprovalStatus,
     ErrorType,
     FailureCode,
+    GoldenPathApprovedStep,
+    GoldenPathEndpointResult,
+    GoldenPathReceipt,
+    GoldenPathStepAttemptReceipt,
+    GoldenPathStepResultReceipt,
     RunRecord,
     RunStatus,
     TaskActionReceipt,
@@ -20,6 +25,12 @@ from jenai.schemas import (
     ToolCallStatus,
 )
 from jenai.secure_files import atomic_write_text
+from jenai.workflows.execution_engine import (
+    ExecutionReport,
+    StepDisposition,
+    StepEvidenceKind,
+)
+from jenai.workflows.patrol_mission import ExecutionPlan
 
 _TIMEOUT = re.compile(r"\b(timeout|timed out|逾時|超時)\b", re.IGNORECASE)
 _SAFETY = re.compile(
@@ -139,6 +150,117 @@ def classify_outcome(run: RunRecord, failure_code: FailureCode | None = None) ->
     return TaskOutcome.FAILED
 
 
+def build_golden_path_receipt(
+    plan: ExecutionPlan,
+    report: ExecutionReport,
+) -> GoldenPathReceipt:
+    """Bind the approved immutable Plan to the Engine's actual attempt records."""
+
+    detached_plan = ExecutionPlan.model_validate(plan.model_dump(mode="json"))
+    detached_report = ExecutionReport.model_validate(report.model_dump(mode="json"))
+    if detached_report.plan_digest != detached_plan.plan_digest:
+        raise ValueError("ExecutionReport does not match the approved plan digest")
+
+    approved_steps = tuple(
+        GoldenPathApprovedStep(
+            step_index=index,
+            kind=step.kind,
+            location_id=step.location_id,
+            location_name=step.location_name,
+            position_tolerance_m=step.position_tolerance_m,
+            require_yaw=step.require_yaw,
+        )
+        for index, step in enumerate(detached_plan.steps)
+    )
+    step_results: list[GoldenPathStepResultReceipt] = []
+    for record in detached_report.step_records:
+        if record.step_index >= len(detached_plan.steps):
+            raise ValueError("ExecutionReport contains an unknown plan step")
+        approved = detached_plan.steps[record.step_index]
+        if record.step != approved:
+            raise ValueError("ExecutionReport step differs from the approved plan")
+        step_results.append(
+            GoldenPathStepResultReceipt(
+                step_index=record.step_index,
+                kind=record.step.kind,
+                location_id=record.step.location_id,
+                location_name=record.step.location_name,
+                skipped=record.skipped,
+                attempts=tuple(
+                    GoldenPathStepAttemptReceipt(
+                        dispatch_id=attempt.dispatch_id,
+                        attempt=attempt.attempt,
+                        disposition=attempt.result.disposition.value,
+                        summary=attempt.result.summary,
+                        evidence_references=tuple(
+                            evidence.evidence_id for evidence in attempt.result.evidence
+                        ),
+                        cancel_acknowledged=attempt.result.cancel_acknowledged,
+                        position_error_m=attempt.result.position_error_m,
+                    )
+                    for attempt in record.attempts
+                ),
+            )
+        )
+
+    if detached_report.outcome is TaskOutcome.SUCCEEDED and len(step_results) != len(
+        approved_steps
+    ):
+        raise ValueError("successful Golden Path report does not contain every approved step")
+
+    final_endpoint: GoldenPathEndpointResult | None = None
+    if detached_report.step_records:
+        final_record = detached_report.step_records[-1]
+        if final_record.attempts:
+            final_attempt = final_record.attempts[-1].result
+            terminal_ref = next(
+                (
+                    evidence.evidence_id
+                    for evidence in final_attempt.evidence
+                    if evidence.kind is StepEvidenceKind.NAVIGATION_TERMINAL
+                ),
+                None,
+            )
+            endpoint_ref = next(
+                (
+                    evidence.evidence_id
+                    for evidence in final_attempt.evidence
+                    if evidence.kind is StepEvidenceKind.ENDPOINT_POSE
+                ),
+                None,
+            )
+            final_endpoint = GoldenPathEndpointResult(
+                location_id=final_record.step.location_id,
+                location_name=final_record.step.location_name,
+                disposition=final_attempt.disposition.value,
+                position_error_m=final_attempt.position_error_m,
+                position_tolerance_m=final_record.step.position_tolerance_m,
+                within_tolerance=(
+                    final_attempt.disposition is StepDisposition.SUCCEEDED
+                    and final_attempt.position_error_m is not None
+                    and final_attempt.position_error_m <= final_record.step.position_tolerance_m
+                ),
+                terminal_evidence_reference=terminal_ref,
+                endpoint_evidence_reference=endpoint_ref,
+            )
+    if detached_report.outcome is TaskOutcome.SUCCEEDED and (
+        final_endpoint is None
+        or not final_endpoint.within_tolerance
+        or final_endpoint.terminal_evidence_reference is None
+        or final_endpoint.endpoint_evidence_reference is None
+    ):
+        raise ValueError("successful Golden Path report lacks verified final endpoint Evidence")
+
+    return GoldenPathReceipt(
+        mission_id=detached_plan.mission.mission_id,
+        mission_digest=detached_plan.mission.mission_digest,
+        plan_digest=detached_plan.plan_digest,
+        approved_steps=approved_steps,
+        step_results=tuple(step_results),
+        final_endpoint_result=final_endpoint,
+    )
+
+
 def build_task_receipt(run: RunRecord) -> TaskReceipt:
     if run.finished_at is None:
         raise ValueError("cannot build a task receipt before the run finishes")
@@ -170,6 +292,7 @@ def build_task_receipt(run: RunRecord) -> TaskReceipt:
             )
             for call in run.tool_calls
         ],
+        golden_path=run.golden_path,
         result=run.final_output or (run.error.message if run.error is not None else None),
     )
 
@@ -229,6 +352,17 @@ def render_task_receipt(receipt: TaskReceipt) -> str:
         )
     else:
         lines.append("Actions: none")
+    if receipt.golden_path is not None:
+        lines.append(f"Mission digest: {receipt.golden_path.mission_digest}")
+        lines.append(f"Plan digest: {receipt.golden_path.plan_digest}")
+        endpoint = receipt.golden_path.final_endpoint_result
+        if endpoint is not None:
+            error = (
+                "unavailable"
+                if endpoint.position_error_m is None
+                else f"{endpoint.position_error_m:.3f} m"
+            )
+            lines.append(f"Final endpoint: {endpoint.location_name} — error {error}")
     if receipt.result:
         lines.extend(("", "Result:", receipt.result))
     return "\n".join(lines)

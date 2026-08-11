@@ -21,12 +21,40 @@ from jenai.tui.approval_policy import can_remember_approval
 from jenai.tui.host_contract import TuiHostContract
 from jenai.tui.panels import TimelineItem
 from jenai.tui.widgets import ApprovalCard
+from jenai.workflows.navigation_approval import ApprovalChoice
 
 
 class ApprovalFlowMixin(TuiHostContract):
     """Resolve approval cards without owning the actions they authorize."""
 
     async def on_approval_card_decision(self, message: ApprovalCard.Decision) -> None:
+        if message.tool_call_id in self._pending_navigation_approvals:
+            state = self._pending_navigation_approvals.pop(message.tool_call_id)
+            await self._remove_approval_card(message.tool_call_id)
+            if not message.approved:
+                await self._navigation_approval_scope.resolve(
+                    state["pending"],
+                    state["plan"],
+                    ApprovalChoice.NO,
+                    self._execute_navigation_plan,
+                )
+                self.run_store.reject_approval_and_finish(
+                    state["ctx"].run,
+                    message.tool_call_id,
+                    summary="操作員未批准；未送出 Nav2 goal。",
+                )
+                await self._mount_event(TimelineItem("warn", "未批准，沒有執行任何移動。"))
+                self._start_next_queued()
+                return
+            choice = ApprovalChoice.AUTO if message.remember else ApprovalChoice.YES
+            self._active_task = asyncio.create_task(
+                self._run_navigation_approval_task(state, choice)
+            )
+            self._active_task_is_stop = False
+            cast(Any, self)._update_statusbar()
+            await asyncio.sleep(0)
+            return
+
         # Two approval sources share one card + message: deterministic slash
         # commands tracked in _pending_direct_approvals and agent-driven /run
         # interruptions tracked in _pending_approvals.
@@ -93,6 +121,24 @@ class ApprovalFlowMixin(TuiHostContract):
     async def _reject_pending_approvals_for_emergency_stop(self) -> int:
         """Reject every paused action so a pre-stop card can never resume it."""
         rejected = 0
+        for request_id, pending in list(self._pending_navigation_approvals.items()):
+            self._pending_navigation_approvals.pop(request_id, None)
+            await self._remove_approval_card(request_id)
+            try:
+                await self._navigation_approval_scope.resolve(
+                    pending["pending"],
+                    pending["plan"],
+                    ApprovalChoice.NO,
+                    self._execute_navigation_plan,
+                )
+            except Exception:
+                pass
+            self.run_store.reject_approval_and_finish(
+                pending["ctx"].run,
+                request_id,
+                summary="已由緊急停止取代；未送出 Nav2 goal。",
+            )
+            rejected += 1
         for run_id, pending in list(self._pending_approvals.items()):
             self._pending_approvals.pop(run_id, None)
             ctx: JenAIRunContext = pending["ctx"]

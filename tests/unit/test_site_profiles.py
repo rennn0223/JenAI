@@ -186,6 +186,7 @@ def test_site_profile_draft_is_inactive_private_and_refuses_overwrite(
     assert draft.validated is False
     assert draft.home_location == "Dock"
     assert draft.validated_routes == ["Dock", "Inspection A"]
+    assert draft.default_patrol == []
     assert [area.inspection_locations for area in draft.patrol_areas] == [["Inspection A"]]
 
     output = tmp_path / "site-profile.toml"

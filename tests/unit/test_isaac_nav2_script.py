@@ -99,8 +99,8 @@ def test_numeric_parameter_validation_requires_exact_formatted_value() -> None:
 
 def test_default_goal_tolerances_match_the_verified_endpoint_contract() -> None:
     script = _SCRIPT.read_text()
-    assert "JENAI_NAV2_XY_GOAL_TOLERANCE:-0.05" in script
-    assert "JENAI_NAV2_YAW_GOAL_TOLERANCE:-0.15" in script
+    assert "JENAI_NAV2_XY_GOAL_TOLERANCE:-0.15" in script
+    assert "JENAI_NAV2_YAW_GOAL_TOLERANCE:-3.141592653589793" in script
     assert "JENAI_NAV2_MIN_VEL_X:-0.0" in script
     assert "JENAI_NAV2_VTHETA_SAMPLES:-15" in script
     assert "JENAI_NAV2_AMCL_ALPHA:-0.01" in script
@@ -183,11 +183,128 @@ controller_server:
     assert "update_min_d: 0.02" in rendered
 
 
+def test_default_parameter_override_uses_position_only_completion(tmp_path: Path) -> None:
+    source = tmp_path / "source.yaml"
+    target = tmp_path / "rendered.yaml"
+    source.write_text(
+        """
+amcl:
+  ros__parameters:
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+    update_min_a: 0.2
+    update_min_d: 0.25
+controller_server:
+  ros__parameters:
+    general_goal_checker:
+      stateful: true
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+    FollowPath:
+      min_vel_x: 0.0
+      vtheta_samples: 20
+      xy_goal_tolerance: 0.25
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; render_nav2_params_override "$2" "$3"',
+            "bash",
+            str(_SCRIPT),
+            str(source),
+            str(target),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "JENAI_NAV2_OVERRIDE_PARAMS": str(target)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    rendered = target.read_text(encoding="utf-8")
+    assert rendered.count("xy_goal_tolerance: 0.15") == 2
+    assert "yaw_goal_tolerance: 3.141592653589793" in rendered
+
+
 def test_script_never_mutates_controller_plugin_parameters_at_runtime() -> None:
     script = _SCRIPT.read_text(encoding="utf-8")
     assert "ros2 param set" not in script
     assert "params_file:=%q" in script
     assert '"$OVERRIDE_PARAMS_FILE"' in script
+
+
+def test_start_accepts_position_only_completion_defaults(tmp_path: Path) -> None:
+    map_file = tmp_path / "map.yaml"
+    params_file = tmp_path / "params.yaml"
+    override_file = tmp_path / "override.yaml"
+    map_file.write_text("image: map.pgm\n", encoding="utf-8")
+    params_file.write_text("controller_server: {}\n", encoding="utf-8")
+
+    shell = r"""
+source "$1"
+source_environment() { :; }
+render_nav2_params_override() {
+    OVERRIDE_PARAMS_FILE="$2"
+    : > "$2"
+}
+STARTED=0
+session_exists() { [ "$STARTED" -eq 1 ]; }
+tmux() {
+    [ "$1" != "new-session" ] || STARTED=1
+    return 0
+}
+ros2() {
+    if [ "$1 $2 $3" = "lifecycle get /controller_server" ]; then
+        printf 'active [3]\n'
+    elif [ "$1 $2 $3" = "param get /controller_server" ]; then
+        case "$4" in
+            progress_checker.plugin)
+                printf 'String value is: nav2_controller::PoseProgressChecker\n'
+                ;;
+            FollowPath.min_speed_theta) printf 'Double value is: 0.1\n' ;;
+            FollowPath.vtheta_samples) printf 'Integer value is: 15\n' ;;
+            FollowPath.min_vel_x) printf 'Double value is: 0.0\n' ;;
+            general_goal_checker.stateful) printf 'Boolean value is: False\n' ;;
+            general_goal_checker.xy_goal_tolerance) printf 'Double value is: 0.15\n' ;;
+            general_goal_checker.yaw_goal_tolerance)
+                printf 'Double value is: 3.141592653589793\n'
+                ;;
+            FollowPath.xy_goal_tolerance) printf 'Double value is: 0.15\n' ;;
+        esac
+    elif [ "$1 $2 $3" = "param get /amcl" ]; then
+        case "$4" in
+            alpha1|alpha2|alpha3|alpha4|alpha5)
+                printf 'Double value is: 0.01\n'
+                ;;
+            update_min_a|update_min_d) printf 'Double value is: 0.02\n' ;;
+        esac
+    fi
+}
+start_stack
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell, "bash", str(_SCRIPT)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "JENAI_NAV2_MAP": str(map_file),
+            "JENAI_NAV2_PARAMS": str(params_file),
+            "JENAI_NAV2_OVERRIDE_PARAMS": str(override_file),
+            "JENAI_NAV2_STATE_DIR": str(tmp_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "xy=0.15 m, yaw=3.141592653589793 rad" in result.stdout
 
 
 def test_start_failure_cleans_the_owned_tmux_session(tmp_path: Path) -> None:
@@ -243,11 +360,11 @@ ros2() {
     elif [ "$1 $2 $3" = "param get /controller_server" ]; then
         case "$4" in
             progress_checker.plugin)
-                printf 'String value is: nav2_controller::SimpleProgressChecker\n'
+                printf 'String value is: nav2_controller::PoseProgressChecker\n'
                 ;;
             FollowPath.min_speed_theta) printf 'Double value is: 0.1\n' ;;
             FollowPath.vtheta_samples) printf 'Integer value is: 15\n' ;;
-            FollowPath.min_vel_x) printf 'Double value is: -0.1\n' ;;
+            FollowPath.min_vel_x) printf 'Double value is: 0.0\n' ;;
             general_goal_checker.stateful) printf 'Boolean value is: False\n' ;;
             general_goal_checker.xy_goal_tolerance) printf 'Double value is: 0.05\n' ;;
             general_goal_checker.yaw_goal_tolerance) printf 'Double value is: 0.15\n' ;;

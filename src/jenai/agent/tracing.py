@@ -42,6 +42,11 @@ class FileTracingProcessor(TracingProcessor):
         except OSError:
             pass  # tracing must never break a run
 
+    def record_event(self, event: str, metadata: dict[str, Any]) -> None:
+        """Append one application-level low-sensitive trace event."""
+
+        self._write({"event": event, "metadata": metadata})
+
     def on_trace_start(self, trace: Trace) -> None:
         self._write({"event": "trace_start", "trace_id": trace.trace_id, "name": trace.name})
 
@@ -85,3 +90,9 @@ def install_local_tracing(path: Path | None = None) -> None:
         return
     set_trace_processors([FileTracingProcessor(path)])
     _installed = True
+
+
+def record_local_trace_event(*, event: str, metadata: dict[str, Any]) -> None:
+    """Record redacted workflow metadata without restoring the hosted exporter."""
+
+    FileTracingProcessor().record_event(event, metadata)

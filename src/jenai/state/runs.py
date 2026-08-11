@@ -14,6 +14,7 @@ from agents import Agent, RunState
 from jenai.schemas import (
     ApprovalRequest,
     ApprovalStatus,
+    GoldenPathReceipt,
     JenAIError,
     PlanStep,
     RunRecord,
@@ -130,6 +131,15 @@ class RunStore:
     def add_plan_steps(self, run: RunRecord, steps: list[PlanStep]) -> None:
         with self._lock:
             run.plan_steps = steps
+
+    def set_golden_path_receipt(
+        self,
+        run: RunRecord,
+        receipt: GoldenPathReceipt,
+    ) -> None:
+        detached = GoldenPathReceipt.model_validate(receipt.model_dump(mode="json"))
+        with self._lock:
+            run.golden_path = detached
 
     def add_tool_call(self, run: RunRecord, tool_call: ToolCallRecord) -> None:
         with self._lock:

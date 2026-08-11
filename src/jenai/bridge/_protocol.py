@@ -154,7 +154,9 @@ class BridgeNodeProtocol(Protocol):
 
     def map_cell(self, x: float, y: float, timeout: float) -> WirePayload: ...
 
-    def map_identity(self, timeout: float) -> WirePayload: ...
+    def map_identity(self, timeout: float, reset_subscription: bool) -> WirePayload: ...
+
+    def map_source_identity(self) -> WirePayload: ...
 
     def nav_send(self, x: float, y: float, yaw: float, frame_id: str, tag: str) -> WirePayload: ...
 
@@ -260,8 +262,10 @@ _OPERATIONS: dict[str, OperationHandler] = {
         _number(req, "x"), _number(req, "y"), _number(req, "timeout", 3.0, positive=True)
     ),
     "map_identity": lambda node, req, _watchdog: node.map_identity(
-        _number(req, "timeout", 3.0, positive=True)
+        _number(req, "timeout", 3.0, positive=True),
+        _boolean(req, "reset_subscription", False),
     ),
+    "map_source_identity": lambda node, _req, _watchdog: node.map_source_identity(),
     "nav_send": lambda node, req, _watchdog: node.nav_send(
         _number(req, "x"),
         _number(req, "y"),

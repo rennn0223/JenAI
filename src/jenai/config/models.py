@@ -264,6 +264,7 @@ class SiteProfile(BaseModel):
     reference_scene: str | None = None
     locations_path: str | None = None
     validated_routes: list[str] = Field(default_factory=list)
+    default_patrol: list[str] = Field(default_factory=list)
     home_location: str | None = None
     patrol_areas: list[PatrolAreaProfile] = Field(default_factory=list)
     dock_location: str | None = None
@@ -290,7 +291,7 @@ class SiteProfile(BaseModel):
         stripped = value.strip()
         return stripped or None
 
-    @field_validator("validated_routes", "validation_evidence")
+    @field_validator("validated_routes", "default_patrol", "validation_evidence")
     @classmethod
     def asset_reference_list(cls, values: list[str]) -> list[str]:
         normalized: list[str] = []

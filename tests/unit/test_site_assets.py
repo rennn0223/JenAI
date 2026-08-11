@@ -13,6 +13,7 @@ from jenai.site_assets import (
     bind_navigation_action,
     fingerprint_locations_file,
     load_site_patrol_areas,
+    validate_site_assets,
 )
 
 
@@ -68,14 +69,41 @@ def test_site_asset_references_are_versioned_and_normalized() -> None:
     site = _active_site(
         locations_path=" locations.toml ",
         validated_routes=[" map_left_down ", "map_left_down", "dock"],
+        default_patrol=[" map_left_down ", "map_left_down"],
         dock_location=" dock ",
         validation_evidence=[" artifacts/hil.json "],
     )
 
     assert site.locations_path == "locations.toml"
     assert site.validated_routes == ["map_left_down", "dock"]
+    assert site.default_patrol == ["map_left_down"]
     assert site.dock_location == "dock"
     assert site.validation_evidence == ["artifacts/hil.json"]
+
+
+def test_site_assets_reject_unknown_or_unvalidated_default_patrol(tmp_path: Path) -> None:
+    locations_path = tmp_path / "locations.toml"
+    locations = [
+        Location(name="A", pose=Pose2D(x=1.0, y=0.0, yaw=0.0)),
+        Location(name="Dock", pose=Pose2D(x=0.0, y=0.0, yaw=0.0)),
+    ]
+    save_locations(locations, locations_path)
+    digest = fingerprint_locations_file(locations_path)
+
+    for default_patrol, expected in ((["Unknown"], "unknown"), (["A"], "validated_routes")):
+        config = AppConfig(
+            locations_path="locations.toml",
+            site=_active_site(
+                locations_path="locations.toml",
+                locations_sha256=digest,
+                validated_routes=["Dock"],
+                default_patrol=default_patrol,
+                home_location="Dock",
+                dock_location="Dock",
+            ),
+        )
+        with pytest.raises(SiteAssetError, match=expected):
+            validate_site_assets(config, tmp_path / "config.toml")
 
 
 def test_locations_fingerprint_is_content_bound(tmp_path: Path) -> None:

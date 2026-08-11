@@ -15,6 +15,18 @@ from jenai.adapters.locations import (
 from jenai.config.models import AppConfig
 from jenai.schemas import Location
 from jenai.workflows.area_patrol import InspectionPoint, PatrolArea
+from jenai.workflows.patrol_mission import (
+    BoundLocation,
+    MissionBindingError,
+    MissionDraft,
+    NavigateMissionDraft,
+    NavigateMissionPolicy,
+    NavigateMissionSpec,
+    PatrolMissionPolicy,
+    PatrolMissionSpec,
+    build_navigation_mission_spec,
+    build_patrol_mission_spec,
+)
 
 
 def fingerprint_locations_file(path: Path) -> str:
@@ -92,6 +104,8 @@ class _SiteAssetValidator:
         self._require_execution_ready()
         locations, observed_digest = self._load_locations()
         self._require_matching_identity(observed_digest)
+        if not locations:
+            raise SiteAssetError("The active Site Profile has no registered locations.")
         self._validate_route_references(locations)
         self._validate_dock_reference(locations)
         self._validate_mission_references(locations)
@@ -142,6 +156,13 @@ class _SiteAssetValidator:
                 self._site.home_location,
                 owner="home_location",
             )
+        for reference in self._site.default_patrol:
+            _validated_location(
+                locations,
+                self._site.validated_routes,
+                reference,
+                owner="default_patrol",
+            )
         for area in self._site.patrol_areas:
             references = (
                 *area.inspection_locations,
@@ -169,6 +190,152 @@ def validate_site_assets(
         config_path,
         locations_snapshot=locations_snapshot,
     ).validate()
+
+
+def bind_patrol_mission(
+    config: AppConfig,
+    config_path: Path,
+    draft: MissionDraft,
+    *,
+    mission_id: str,
+    policy: PatrolMissionPolicy | None = None,
+) -> PatrolMissionSpec:
+    """Bind a patrol request to one freshly loaded, content-identified Site snapshot."""
+
+    detached_config = AppConfig.model_validate(config.model_dump(mode="json"))
+    detached_draft = MissionDraft.model_validate(draft.model_dump(mode="json"))
+    locations = validate_site_assets(detached_config, config_path)
+    site = detached_config.site
+    if site.home_location is None or site.dock_location is None:
+        raise SiteAssetError("The active Site Profile has no reviewed Dock/home location.")
+    locations_sha256 = site.locations_sha256
+    if locations_sha256 is None:
+        raise SiteAssetError("The active Site Profile has no locations identity.")
+
+    home = _validated_location(
+        locations,
+        site.validated_routes,
+        site.home_location,
+        owner="home_location",
+    )
+    dock = _validated_location(
+        locations,
+        site.validated_routes,
+        site.dock_location,
+        owner="dock_location",
+    )
+    if home.id != dock.id:
+        raise SiteAssetError("home_location and dock_location must identify the same location.")
+
+    default_references = tuple(site.default_patrol)
+    if not default_references:
+        raise MissionBindingError("The active Site Profile has no default patrol.")
+    default_locations = tuple(
+        _validated_location(
+            locations,
+            site.validated_routes,
+            reference,
+            owner="default_patrol",
+        )
+        for reference in default_references
+    )
+    default_location_ids = tuple(location.id for location in default_locations)
+    if (
+        len(default_location_ids) != 3
+        or len(set(default_location_ids)) != 3
+        or home.id in default_location_ids
+    ):
+        raise MissionBindingError(
+            "The v1 default patrol must contain exactly three distinct non-Dock locations."
+        )
+
+    references = detached_draft.ordered_location_references or default_references
+    ordered: list[BoundLocation] = []
+    for reference in references:
+        location = _validated_location(
+            locations,
+            site.validated_routes,
+            reference,
+            owner="patrol mission",
+        )
+        if location.id == home.id:
+            raise MissionBindingError("Dock is system-added and cannot be an operator waypoint.")
+        ordered.append(BoundLocation(location_id=location.id, location_name=location.name))
+
+    if detached_draft.ordered_location_references is not None:
+        ordered_location_ids = tuple(location.location_id for location in ordered)
+        if (
+            len(ordered_location_ids) != 3
+            or len(set(ordered_location_ids)) != 3
+            or set(ordered_location_ids) != set(default_location_ids)
+        ):
+            raise MissionBindingError(
+                "The v1 explicit patrol order must be a permutation of the reviewed "
+                "three default locations."
+            )
+
+    return build_patrol_mission_spec(
+        mission_id=mission_id,
+        site=site,
+        vehicle=detached_config.vehicle,
+        locations_sha256=locations_sha256,
+        ordered_locations=tuple(ordered),
+        home_location=BoundLocation(location_id=home.id, location_name=home.name),
+        policy=policy,
+    )
+
+
+def bind_navigation_mission(
+    config: AppConfig,
+    config_path: Path,
+    draft: NavigateMissionDraft,
+    *,
+    mission_id: str,
+    policy: NavigateMissionPolicy | None = None,
+) -> NavigateMissionSpec:
+    """Bind one untrusted location reference to a fresh reviewed Site snapshot."""
+
+    detached_config = AppConfig.model_validate(config.model_dump(mode="json"))
+    detached_draft = NavigateMissionDraft.model_validate(draft.model_dump(mode="json"))
+    if detached_draft.decision != "navigate" or detached_draft.location_reference is None:
+        raise MissionBindingError("This NavigateMissionDraft does not authorize navigation.")
+
+    locations = validate_site_assets(detached_config, config_path)
+    normalized = detached_draft.location_reference.strip().casefold()
+    matches = [
+        location
+        for location in locations
+        if normalized in {location.id.casefold(), location.name.casefold()}
+    ]
+    if not matches:
+        raise SiteAssetError(
+            f"Site Profile references unknown location '{detached_draft.location_reference}'."
+        )
+    if len(matches) != 1:
+        raise SiteAssetError(
+            f"Site Profile location reference '{detached_draft.location_reference}' is ambiguous."
+        )
+    target = _validated_location(
+        locations,
+        detached_config.site.validated_routes,
+        matches[0].id,
+        owner="navigation mission",
+    )
+    locations_sha256 = detached_config.site.locations_sha256
+    if locations_sha256 is None:
+        raise SiteAssetError("The active Site Profile has no locations identity.")
+
+    return build_navigation_mission_spec(
+        mission_id=mission_id,
+        site=detached_config.site,
+        vehicle=detached_config.vehicle,
+        locations_sha256=locations_sha256,
+        target_location=BoundLocation(
+            location_id=target.id,
+            location_name=target.name,
+        ),
+        policy=policy,
+    )
 
 
 def load_site_patrol_areas(

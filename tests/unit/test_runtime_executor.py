@@ -110,7 +110,7 @@ def _executor(
             input=canonical_input,
         )
 
-    async def execute(prepared, events):
+    async def execute(prepared, events, _is_cancelled):
         if executed is not None:
             executed.append(prepared.step.capability_id)
         await events.publish(ExecutorEvent(kind="step_observed", data={"ready": True}))
@@ -330,7 +330,7 @@ def test_execution_handler_cannot_mutate_the_bound_input() -> None:
     async def run() -> None:
         mutation_rejected = False
 
-        async def execute(prepared, _events):
+        async def execute(prepared, _events, _is_cancelled):
             nonlocal mutation_rejected
             try:
                 prepared.step.input["target"] = "changed"
@@ -394,7 +394,7 @@ def test_external_coroutine_cannot_change_input_after_binding_validation() -> No
         continue_handler = asyncio.Event()
         observed_targets: list[object] = []
 
-        async def execute(prepared, _events):
+        async def execute(prepared, _events, _is_cancelled):
             handler_started.set()
             await continue_handler.wait()
             observed_targets.append(prepared.step.input["target"])
@@ -437,7 +437,7 @@ def test_published_event_is_recursively_immutable_and_detached() -> None:
     async def run() -> None:
         raw_data = {"state": {"ready": True}}
 
-        async def execute(_prepared, events):
+        async def execute(_prepared, events, _is_cancelled):
             event = ExecutorEvent(kind="progress").model_copy(update={"data": raw_data})
             await events.publish(event)
             raw_data["state"]["ready"] = False
@@ -469,7 +469,7 @@ def test_returned_report_evidence_cannot_change_through_retained_references() ->
     async def run() -> None:
         raw_payload = {"result": {"ok": True}}
 
-        async def execute(_prepared, _events):
+        async def execute(_prepared, _events, _is_cancelled):
             evidence = ExecutorEvidence(
                 kind="inspection",
                 source="in_memory",

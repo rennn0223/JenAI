@@ -119,12 +119,12 @@ controller_server:
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: false
-      xy_goal_tolerance: 0.05
-      yaw_goal_tolerance: 0.15
+      xy_goal_tolerance: 0.15
+      yaw_goal_tolerance: 3.141592653589793
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       min_vel_x: 0.0
-      xy_goal_tolerance: 0.05
+      xy_goal_tolerance: 0.15
       min_speed_theta: 0.1
       trans_stopped_velocity: 0.05
 ```
@@ -133,8 +133,7 @@ controller_server:
 原地旋轉的底盤，`general_goal_checker.stateful` 必須為 `false`：若設為 `true`，Nav2
 曾進入位置容差後就只檢查朝向，車輛在對齊 yaw 時再次駛離目標仍可能被判成功。
 JenAI 的
-一鍵啟動會先複製原始參數檔、在副本同步寫入 goal checker 與 DWB 容差，再用該完整副本啟動 Nav2；原始 vendor 設定不會被修改。副本預設將 Nav2 內部位置／朝向門檻設為 0.05 m／0.15 rad，與 JenAI 的對外終點契約
-一致；Nav2 成功後仍必須由 JenAI 取得新鮮的停車後 TF 獨立複核。2026-07-26 實測顯示，
+一鍵啟動會先複製原始參數檔、在副本同步寫入 goal checker 與 DWB 容差，再用該完整副本啟動 Nav2；原始 vendor 設定不會被修改。Isaac reference profile 預設將位置門檻設為 0.15 m、yaw 門檻設為 pi，讓一般 registered-location navigation 採位置限定的 completion contract。這不適用於實體載具或精確對位能力。Nav2 成功後仍必須由 JenAI 取得新鮮的停車後 TF 獨立複核。2026-07-26 實測顯示，
 將內部門檻縮至 0.03 m／0.10 rad 會讓 Nova Carter 在距離約 0.04 m 或僅剩朝向誤差時
 持續 recovery 直到逾時，因此不得把過嚴門檻誤當成精度保證。若 goal checker 為 0.05、
 DWB 仍為 0.25，DWB 會在 25 cm 內停止平移並只修朝向，goal checker 卻仍等車進入 5 cm，
