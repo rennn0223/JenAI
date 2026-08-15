@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "openai>=1.50.0,<3",
+    "openai>=1.50.0,<4",
     "openai-agents>=0.2.0,<1",
     "pydantic>=2.8.0,<3",
     "rich>=13.7.0,<16",
